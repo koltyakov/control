@@ -1,0 +1,101 @@
+name: control-test
+
+x-node-build: &node-build
+  context: .
+  dockerfile: tests/compose/Dockerfile
+  target: node
+
+x-node-env: &node-env
+  CONTROL_TOKEN: control-compose-test-only-token
+  CONTROL_RELAY_ONLY: "false"
+
+x-node: &node
+  image: control-test-node
+  build: *node-build
+  init: true
+  entrypoint: ["/bin/sh", "/usr/local/bin/control-test-node"]
+  depends_on:
+    gateway:
+      condition: service_healthy
+  networks: [pool]
+  healthcheck:
+    test: ["CMD", "control", "call", "", "node.describe"]
+    interval: 2s
+    timeout: 5s
+    retries: 30
+    start_period: 5s
+
+services:
+  gateway:
+    image: control-test-node
+    build: *node-build
+    init: true
+    entrypoint: ["control"]
+    command: ["gateway", "--listen", "0.0.0.0:7330", "--data", "/state"]
+    environment:
+      CONTROL_TOKEN: control-compose-test-only-token
+      CONTROL_SUPERUSER_KEY: control-compose-superuser-only-test-key-0001
+      CONTROL_RELEASE_REPO: ""
+    volumes: ["gateway-state:/state"]
+    networks: [pool]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:7330/healthz"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  source:
+    <<: *node
+    environment:
+      <<: *node-env
+      CONTROL_NODE_NAME: source
+    volumes: ["source-state:/state", "source-work:/work"]
+
+  worker:
+    <<: *node
+    environment:
+      <<: *node-env
+      CONTROL_NODE_NAME: worker
+    volumes: ["worker-state:/state", "worker-work:/work"]
+
+  consumer:
+    <<: *node
+    environment:
+      <<: *node-env
+      CONTROL_NODE_NAME: consumer
+    volumes: ["consumer-state:/state", "consumer-work:/work"]
+
+  tests:
+    build:
+      context: .
+      dockerfile: tests/compose/Dockerfile
+      target: tests
+    init: true
+    environment:
+      CONTROL_TOKEN: control-compose-test-only-token
+      CONTROL_API: http://source:7331
+      CONTROL_EXPECT_TRANSPORT: webrtc
+      CONTROL_GATEWAY: http://gateway:7330
+      CONTROL_SUPERUSER_KEY: control-compose-superuser-only-test-key-0001
+      CONTROL_TEST_SUITE: "${CONTROL_TEST_SUITE:-all}"
+    depends_on:
+      source:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+      consumer:
+        condition: service_healthy
+    networks: [pool]
+
+networks:
+  pool:
+    internal: true
+
+volumes:
+  gateway-state:
+  source-state:
+  source-work:
+  worker-state:
+  worker-work:
+  consumer-state:
+  consumer-work:

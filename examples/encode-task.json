@@ -1,0 +1,22 @@
+{
+  "id": "encode-example-001",
+  "capability": "exec.run",
+  "args": {
+    "command": "ffmpeg",
+    "args": ["-y", "-i", "input.mp4", "-vf", "scale=640:-2", "output.mp4"]
+  },
+  "inputs": [
+    {
+      "artifact": {
+        "node": "source",
+        "id": "REPLACE_WITH_ARTIFACT_SHA256",
+        "name": "input.mp4",
+        "size": 0,
+        "sha256": "REPLACE_WITH_ARTIFACT_SHA256"
+      },
+      "path": "input.mp4"
+    }
+  ],
+  "outputs": ["output.mp4"],
+  "timeoutSeconds": 3600
+}

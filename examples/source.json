@@ -1,0 +1,8 @@
+{
+  "name": "source",
+  "gateway": "http://127.0.0.1:7330",
+  "listen": "127.0.0.1:7331",
+  "dataDir": "state/source",
+  "workDir": "work/source",
+  "labels": { "role": "orchestrator" }
+}

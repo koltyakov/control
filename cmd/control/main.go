@@ -1,0 +1,501 @@
+package main
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/koltyakov/control/internal/buildinfo"
+	"github.com/koltyakov/control/internal/client"
+	"github.com/koltyakov/control/internal/gateway"
+	"github.com/koltyakov/control/internal/identity"
+	"github.com/koltyakov/control/internal/installation"
+	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/node"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+func main() {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "__managed" {
+		managedChild = true
+		args = args[1:]
+		go func() { _, _ = io.Copy(io.Discard, os.Stdin); cancel() }()
+	}
+	if err := run(ctx, args); err != nil {
+		fmt.Fprintln(os.Stderr, "control:", err)
+		os.Exit(1)
+	}
+}
+
+func run(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("control", flag.ContinueOnError)
+	profile := flags.String("config", installation.ConfigPath(), "saved local node configuration for CLI/MCP")
+	api := flags.String("api", env("CONTROL_API", "http://127.0.0.1:7331"), "local node API URL")
+	token := flags.String("token", os.Getenv("CONTROL_TOKEN"), "gateway/local API token")
+	debug := flags.Bool("debug", false, "debug logs to stderr")
+	admin := func() client.Admin {
+		c := adminClient()
+		flags.Visit(func(f *flag.Flag) {
+			if f.Name == "token" {
+				c.Key = *token
+			}
+		})
+		return c
+	}
+	flags.Usage = func() { fmt.Print(commandHelp(ctx, admin())) }
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	args = flags.Args()
+	if len(args) == 0 {
+		fmt.Print(commandHelp(ctx, admin()))
+		return nil
+	}
+	level := slog.LevelInfo
+	if *debug {
+		level = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+	c := client.Client{URL: *api, Token: *token}
+	if args[0] != "node" && args[0] != "gateway" && args[0] != "version" {
+		cfg, err := installation.ReadConfig(*profile)
+		if err != nil {
+			return err
+		}
+		explicitAPI, explicitToken := false, false
+		flags.Visit(func(f *flag.Flag) {
+			if f.Name == "api" {
+				explicitAPI = true
+			}
+			if f.Name == "token" {
+				explicitToken = true
+			}
+		})
+		if !explicitAPI && os.Getenv("CONTROL_API") == "" && cfg.Name != "" {
+			c.URL = installation.API(cfg)
+		}
+		if !explicitToken && os.Getenv("CONTROL_TOKEN") == "" {
+			c.Token = cfg.Token
+		}
+	}
+	switch args[0] {
+	case "install-self":
+		path, err := installation.InstallSelf(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Println("Installed", path)
+		return nil
+	case "setup":
+		return setupCLI(ctx, args[1:], *profile)
+	case "enroll":
+		return enrollCLI(ctx, args[1:], *profile)
+	case "service":
+		return serviceCLI(ctx, args[1:], *profile)
+	case "install-mcp", "install-skill":
+		return agentInstallCLI(ctx, args[0], args[1:], *profile)
+	case "help", "--help", "-h":
+		fmt.Print(commandHelp(ctx, admin()))
+		return nil
+	case "version":
+		if len(args) > 1 && args[1] == "--json" {
+			printJSON(buildinfo.Current())
+		} else {
+			fmt.Println("control", buildinfo.Version)
+			if buildinfo.BuildTime != "" {
+				fmt.Println("built", buildinfo.BuildTime)
+			}
+		}
+		return nil
+	case "update", "keys", "users":
+		return adminCLI(ctx, admin(), args)
+	case "gateway":
+		f := flag.NewFlagSet("gateway", flag.ContinueOnError)
+		listen := f.String("listen", "127.0.0.1:7330", "listen address")
+		data := f.String("data", ".control-gateway", "gateway state directory")
+		cert := f.String("tls-cert", "", "TLS certificate PEM")
+		key := f.String("tls-key", "", "TLS private key PEM")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		return managed(ctx, *data, func(ctx context.Context, apply func(string) error) error {
+			interval := 15 * time.Minute
+			if value := os.Getenv("CONTROL_RELEASE_INTERVAL"); value != "" {
+				var err error
+				interval, err = time.ParseDuration(value)
+				if err != nil || interval < time.Second {
+					return errors.New("invalid release interval")
+				}
+			}
+			g, err := gateway.New(*data, *token, gateway.Options{PublicURL: os.Getenv("CONTROL_PUBLIC_URL"), SuperuserKey: os.Getenv("CONTROL_SUPERUSER_KEY"), Software: buildinfo.Current(), Apply: apply, ReleaseRepo: releaseRepository(), ReleaseToken: os.Getenv("CONTROL_RELEASE_TOKEN"), ReleaseInterval: interval})
+			if err != nil {
+				return err
+			}
+			defer g.Close()
+			g.StartUpdates(ctx)
+			return serve(ctx, node.HTTPServer(*listen, g.Handler()), *cert, *key)
+		})
+	case "node":
+		_ = os.Unsetenv("CONTROL_USER_KEY")
+		_ = os.Unsetenv("CONTROL_SUPERUSER_KEY")
+		_ = os.Unsetenv("CONTROL_RELEASE_TOKEN")
+		f := flag.NewFlagSet("node", flag.ContinueOnError)
+		path := f.String("config", "control.json", "node configuration JSON")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		cfg, err := node.LoadConfig(*path)
+		if err != nil {
+			return err
+		}
+		if *token != "" {
+			cfg.Token = *token
+		}
+		return managed(ctx, cfg.DataDir, func(ctx context.Context, apply func(string) error) error {
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			n, err := node.New(cfg)
+			if err != nil {
+				return err
+			}
+			defer n.Close()
+			n.SetShutdown(cancel)
+			if err = n.ConfigureUpdates(buildinfo.Current(), apply); err != nil {
+				return err
+			}
+			if err = n.Start(ctx); err != nil {
+				return err
+			}
+			slog.Info("node online", "name", n.Config.Name, "id", n.Identity.ID, "api", n.Config.Listen)
+			return serve(ctx, node.HTTPServer(n.Config.Listen, n.Handler()), "", "")
+		})
+	case "mcp":
+		return c.MCPServer().Run(ctx, &mcp.StdioTransport{})
+	case "machines":
+		if len(args) > 1 {
+			return machineCLI(ctx, admin(), args[1:])
+		}
+		return callPrint(ctx, c, "", "nodes.list", map[string]any{})
+	case "dashboard":
+		return dashboardCLI(ctx, c, args[1:])
+	case "system":
+		if len(args) < 2 {
+			return errors.New("usage: control system NODE [--refresh]")
+		}
+		f := flag.NewFlagSet("system", flag.ContinueOnError)
+		refresh := f.Bool("refresh", false, "take a new resource sample instead of returning the cache")
+		if err := f.Parse(args[2:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 {
+			return errors.New("unexpected system arguments")
+		}
+		return callPrint(ctx, c, args[1], "system.info", map[string]any{"refresh": *refresh})
+	case "call":
+		if len(args) < 3 {
+			return errors.New("usage: control call NODE METHOD [JSON|@file]")
+		}
+		params := json.RawMessage(`{}`)
+		var err error
+		if len(args) > 3 {
+			params, err = readJSON(args[3])
+			if err != nil {
+				return err
+			}
+		}
+		return callPrint(ctx, c, args[1], args[2], params)
+	case "exec":
+		if len(args) < 3 {
+			return errors.New("usage: control exec NODE [--] COMMAND [ARG...]")
+		}
+		command := args[2:]
+		if command[0] == "--" {
+			command = command[1:]
+		}
+		if len(command) == 0 {
+			return errors.New("command is required")
+		}
+		spec := model.TaskSpec{ID: identity.NewID(), Capability: "exec.run", Args: model.JSON(map[string]any{"command": command[0], "args": command[1:]})}
+		return submit(ctx, c, args[1], spec, true)
+	case "task":
+		if len(args) < 3 {
+			return errors.New("usage: control task start|get|wait|cancel|logs|list NODE [ID|@spec.json]")
+		}
+		method, target := args[1], args[2]
+		if method == "list" {
+			return callPrint(ctx, c, target, "tasks.list", map[string]any{})
+		}
+		if len(args) < 4 {
+			return errors.New("task ID or specification is required")
+		}
+		if method == "start" {
+			b, err := readJSON(args[3])
+			if err != nil {
+				return err
+			}
+			var spec model.TaskSpec
+			if err = json.Unmarshal(b, &spec); err != nil {
+				return err
+			}
+			return submit(ctx, c, target, spec, false)
+		}
+		if method == "wait" {
+			task, err := c.Wait(ctx, target, args[3])
+			if err != nil {
+				return err
+			}
+			printJSON(task)
+			if task.State != "succeeded" {
+				return errors.New(task.Error)
+			}
+			return nil
+		}
+		switch method {
+		case "get", "cancel", "logs":
+		default:
+			return errors.New("unknown task command")
+		}
+		return callPrint(ctx, c, target, "tasks."+method, map[string]any{"id": args[3]})
+	case "artifact":
+		return artifactCLI(ctx, c, args[1:])
+	case "tunnel":
+		if len(args) < 3 {
+			return errors.New("usage: control tunnel NODE HOST:PORT [--listen 127.0.0.1:PORT]")
+		}
+		f := flag.NewFlagSet("tunnel", flag.ContinueOnError)
+		address := f.String("listen", "127.0.0.1:0", "local listen address")
+		if err := f.Parse(args[3:]); err != nil {
+			return err
+		}
+		listener, err := net.Listen("tcp", *address)
+		if err != nil {
+			return err
+		}
+		defer listener.Close()
+		stop := context.AfterFunc(ctx, func() { _ = listener.Close() })
+		defer stop()
+		fmt.Fprintln(os.Stderr, "listening on", listener.Addr())
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				return err
+			}
+			go func() {
+				defer conn.Close()
+				remote, err := c.Tunnel(ctx, args[1], args[2])
+				if err != nil {
+					slog.Error("tunnel", "error", err)
+					return
+				}
+				node.Bridge(ctx, conn, remote)
+			}()
+		}
+	default:
+		return fmt.Errorf("unknown command %q", args[0])
+	}
+}
+
+func submit(ctx context.Context, c client.Client, target string, spec model.TaskSpec, wait bool) error {
+	if spec.ID == "" {
+		spec.ID = identity.NewID()
+	}
+	fmt.Fprintln(os.Stderr, "task", spec.ID)
+	var task model.Task
+	if err := c.Call(ctx, target, "tasks.start", spec, &task); err != nil {
+		return fmt.Errorf("submit task %s; query this ID before retrying: %w", spec.ID, err)
+	}
+	if wait {
+		var err error
+		task, err = c.Wait(ctx, target, task.ID)
+		if err != nil {
+			return err
+		}
+	}
+	printJSON(task)
+	if task.Terminal() && task.State != "succeeded" {
+		return errors.New(task.Error)
+	}
+	return nil
+}
+
+func artifactCLI(ctx context.Context, c client.Client, args []string) error {
+	if len(args) < 2 {
+		return errors.New("usage: control artifact list|export|deliver|get NODE [PATH|ID] [DESTINATION]")
+	}
+	method, target := args[0], args[1]
+	if method == "list" {
+		return callPrint(ctx, c, target, "artifacts.list", map[string]any{})
+	}
+	if len(args) < 3 {
+		return errors.New("artifact path or ID is required")
+	}
+	if method == "export" {
+		return callPrint(ctx, c, target, "artifacts.export", map[string]any{"path": args[2]})
+	}
+	if len(args) < 4 {
+		return errors.New("destination is required")
+	}
+	if method == "deliver" {
+		return callPrint(ctx, c, target, "artifacts.deliver", map[string]any{"id": args[2], "target": args[3]})
+	}
+	if method != "get" {
+		return errors.New("unknown artifact command")
+	}
+	var artifacts []model.Artifact
+	if err := c.Call(ctx, target, "artifacts.list", map[string]any{}, &artifacts); err != nil {
+		return err
+	}
+	for _, a := range artifacts {
+		if a.ID != args[2] {
+			continue
+		}
+		partial := args[3] + ".partial"
+		f, err := os.OpenFile(partial, os.O_CREATE|os.O_RDWR, 0600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		offset, err := f.Seek(0, io.SeekEnd)
+		if err != nil {
+			return err
+		}
+		if offset > a.Size {
+			return errors.New("partial file exceeds artifact size; remove it before retrying")
+		}
+		if err = c.Download(ctx, a, offset, f); err != nil {
+			return err
+		}
+		if _, err = f.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		hash := sha256.New()
+		if _, err = io.Copy(hash, f); err != nil {
+			return err
+		}
+		if hex.EncodeToString(hash.Sum(nil)) != a.SHA256 {
+			_ = f.Close()
+			_ = os.Remove(partial)
+			return errors.New("artifact checksum mismatch; partial removed")
+		}
+		if err = f.Sync(); err != nil {
+			return err
+		}
+		if err = f.Close(); err != nil {
+			return err
+		}
+		return os.Rename(partial, args[3])
+	}
+	return errors.New("artifact not found")
+}
+
+func callPrint(ctx context.Context, c client.Client, target, method string, params any) error {
+	var result json.RawMessage
+	if err := c.Call(ctx, target, method, params, &result); err != nil {
+		return err
+	}
+	printJSON(result)
+	return nil
+}
+
+func printJSON(value any) { b, _ := json.MarshalIndent(value, "", "  "); fmt.Println(string(b)) }
+func env(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func releaseRepository() string {
+	if value, provided := os.LookupEnv("CONTROL_RELEASE_REPO"); provided {
+		return value
+	}
+	return buildinfo.ReleaseRepo
+}
+func readJSON(value string) (json.RawMessage, error) {
+	b := []byte(value)
+	var err error
+	if strings.HasPrefix(value, "@") {
+		b, err = os.ReadFile(strings.TrimPrefix(value, "@"))
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !json.Valid(b) {
+		return nil, errors.New("invalid JSON")
+	}
+	return b, nil
+}
+
+func serve(ctx context.Context, server *http.Server, cert, key string) error {
+	result := make(chan error, 1)
+	go func() {
+		if cert != "" || key != "" {
+			result <- server.ListenAndServeTLS(cert, key)
+		} else {
+			result <- server.ListenAndServe()
+		}
+	}()
+	slog.Info("listening", "address", server.Addr)
+	select {
+	case err := <-result:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return server.Shutdown(shutdown)
+	}
+}
+
+const usage = `control: peer execution network
+
+Global flags: --config PATH --api URL --token TOKEN --debug
+Environment: CONTROL_API, CONTROL_TOKEN
+
+  gateway [--listen ADDRESS] [--data DIR] [--tls-cert PEM --tls-key PEM]
+  node --config control.json
+  setup --gateway URL --name NAME [--client opencode]  Configure and start this host
+  service start|stop|status|uninstall    Manage the installed user node
+  install-mcp CLIENT [--project DIR]    Configure an AI client's MCP server
+  install-skill CLIENT [--project DIR]  Install the Control CLI skill
+  mcp                                  Serve MCP over stdio using a local node
+  machines                             List the shared machine pool
+  dashboard [--once] [--json] [--node NAME,...]  Live pool activity and resources
+  system NODE [--refresh]               Cached or requested system sample
+  call NODE METHOD [JSON|@file]         Invoke any operation
+  exec NODE [--] COMMAND [ARG...]       Submit a command and wait for its result
+  task start NODE JSON|@file            Submit a durable task
+  task get|wait|cancel|logs NODE ID      Inspect or manage a task
+  task list NODE                       List tasks owned by this node
+  artifact list NODE
+  artifact export NODE PATH
+  artifact deliver NODE ID DEST_NODE   Peer-to-peer transfer
+  artifact get NODE ID LOCAL_PATH      Resumable, checksum-verified download
+  tunnel NODE HOST:PORT [--listen ADDRESS]
+
+Global flags precede the command. Start a local node before CLI or MCP use.
+`

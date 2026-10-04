@@ -1,0 +1,13 @@
+.git
+.opencode
+.env
+.env.*
+.control*
+control.json
+bin
+control
+*.exe
+examples/state
+examples/work
+**/identity.key
+**/*.partial

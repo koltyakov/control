@@ -1,0 +1,13 @@
+services:
+  source:
+    environment:
+      CONTROL_RELAY_ONLY: "true"
+  worker:
+    environment:
+      CONTROL_RELAY_ONLY: "true"
+  consumer:
+    environment:
+      CONTROL_RELAY_ONLY: "true"
+  tests:
+    environment:
+      CONTROL_EXPECT_TRANSPORT: relay

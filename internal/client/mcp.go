@@ -1,0 +1,87 @@
+package client
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/koltyakov/control/internal/model"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+func (c Client) MCPServer() *mcp.Server {
+	server := mcp.NewServer(&mcp.Implementation{Name: "control", Version: "0.1.0"}, &mcp.ServerOptions{Instructions: "Use control_nodes to resolve machine names. Inspect capabilities and their input schemas with control_describe. Execute long work with control_task_start, then inspect status and logs. Machines can fetch artifact inputs directly from peers. Use control_mcp_discover before calling installed MCP tools. Every node argument accepts a machine name or stable ID; an empty node selects the local machine."})
+	add := func(name, description, method string, properties map[string]any, required []string, transform func(map[string]json.RawMessage) (string, any, error)) {
+		input := map[string]any{"type": "object", "properties": properties}
+		if len(required) > 0 {
+			input["required"] = required
+		}
+		server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: input}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			args := map[string]json.RawMessage{}
+			if err := json.Unmarshal(request.Params.Arguments, &args); err != nil {
+				return toolError(err), nil
+			}
+			for _, key := range required {
+				if _, ok := args[key]; !ok {
+					return toolError(fmt.Errorf("missing required field %s", key)), nil
+				}
+			}
+			target, params, err := transform(args)
+			if err != nil {
+				return toolError(err), nil
+			}
+			actualMethod := method
+			if method == "" {
+				if err = json.Unmarshal(args["method"], &actualMethod); err != nil {
+					return toolError(err), nil
+				}
+			}
+			var result json.RawMessage
+			if err = c.Call(ctx, target, actualMethod, params, &result); err != nil {
+				return toolError(err), nil
+			}
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(result)}}}, nil
+		})
+	}
+	text := map[string]any{"type": "string"}
+	object := map[string]any{"type": "object"}
+	normal := func(args map[string]json.RawMessage) (string, any, error) {
+		var target string
+		if b, ok := args["node"]; ok {
+			if err := json.Unmarshal(b, &target); err != nil {
+				return "", nil, err
+			}
+		}
+		delete(args, "node")
+		return target, args, nil
+	}
+	nested := func(field string) func(map[string]json.RawMessage) (string, any, error) {
+		return func(args map[string]json.RawMessage) (string, any, error) {
+			target, _, err := normal(args)
+			params := args[field]
+			if len(params) == 0 {
+				params = model.JSON(map[string]any{})
+			}
+			return target, params, err
+		}
+	}
+	add("control_nodes", "List enrolled machines, online status, labels, and capabilities.", "nodes.list", map[string]any{}, nil, normal)
+	add("control_activities", "Read a pool-wide activity snapshot, including all registered machines, availability, tasks from all owners, transfers, tunnels, and cached system metrics. Unavailable nodes are reported individually. Requires activities.list permission on the observed nodes.", "activities.pool", map[string]any{"nodes": map[string]any{"type": "array", "items": text}, "recent": map[string]any{"type": "integer", "minimum": 0, "maximum": 64}}, nil, normal)
+	add("control_system", "Read OS, CPU, RAM, and disk usage from a node's cached system sample. Set refresh to request a new sample.", "system.info", map[string]any{"node": text, "refresh": map[string]any{"type": "boolean"}}, []string{"node"}, normal)
+	add("control_describe", "Inspect a node and discover capability input schemas.", "node.describe", map[string]any{"node": text}, []string{"node"}, normal)
+	add("control_select", "Find an online machine matching labels and a capability.", "nodes.select", map[string]any{"labels": object, "capability": text}, nil, normal)
+	add("control_call", "Call a node method or capability with structured params. Discover capabilities first. Also supports artifacts.list, artifacts.pull, artifacts.grant, tasks.list, and mcp.request.", "", map[string]any{"node": text, "method": text, "params": object}, []string{"method"}, nested("params"))
+	add("control_task_start", "Submit a tracked task. task has capability, args, optional id, timeoutSeconds, inputs [{artifact,path}], and outputs [relative paths]. Reuse the task ID to reconcile an uncertain submission.", "tasks.start", map[string]any{"node": text, "task": object}, []string{"node", "task"}, nested("task"))
+	add("control_task_get", "Read task status, result, and artifact references.", "tasks.get", map[string]any{"node": text, "id": text}, []string{"node", "id"}, normal)
+	add("control_task_cancel", "Cancel a queued or running task.", "tasks.cancel", map[string]any{"node": text, "id": text}, []string{"node", "id"}, normal)
+	add("control_task_logs", "Read task logs from a byte offset. Returns the next offset.", "tasks.logs", map[string]any{"node": text, "id": text, "offset": map[string]any{"type": "integer"}}, []string{"node", "id"}, normal)
+	add("control_mcp_discover", "List configured MCP servers, or discover a server's tools and input schemas.", "mcp.discover", map[string]any{"node": text, "server": text}, []string{"node"}, normal)
+	add("control_mcp_call", "Invoke an installed MCP tool on the selected node.", "mcp.call", map[string]any{"node": text, "server": text, "tool": text, "arguments": object}, []string{"node", "server", "tool"}, normal)
+	add("control_artifact_export", "Publish a file from a node's filesystem root as an immutable downloadable artifact.", "artifacts.export", map[string]any{"node": text, "path": text}, []string{"node", "path"}, normal)
+	add("control_artifact_deliver", "Tell the source node to deliver an artifact directly to another node, without passing bytes through the orchestrator.", "artifacts.deliver", map[string]any{"node": text, "id": text, "target": text}, []string{"node", "id", "target"}, normal)
+	return server
+}
+
+func toolError(err error) *mcp.CallToolResult {
+	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}
+}

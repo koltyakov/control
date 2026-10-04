@@ -1,0 +1,12 @@
+syntax = "proto3";
+package control.v1;
+option go_package = "github.com/koltyakov/control/internal/protocol";
+
+// Gateway routing and WebRTC signaling. Data contains end-to-end TLS records.
+message Packet {
+  string kind = 1;
+  string from = 2;
+  string to = 3;
+  string session = 4;
+  bytes data = 5;
+}

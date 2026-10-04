@@ -1,0 +1,16 @@
+{
+  "name": "worker",
+  "gateway": "http://127.0.0.1:7330",
+  "listen": "127.0.0.1:7332",
+  "dataDir": "state/worker",
+  "workDir": "work/worker",
+  "labels": { "role": "worker", "media": "ffmpeg" },
+  "maxTasks": 4,
+  "agents": {
+    "claude": {
+      "command": "claude",
+      "args": ["--print"],
+      "description": "Claude CLI authenticated as the machine's user"
+    }
+  }
+}
