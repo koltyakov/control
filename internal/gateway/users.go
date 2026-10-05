@@ -62,7 +62,7 @@ func (g *Gateway) userRoutes(mux *http.ServeMux) {
 		}
 		if u.ID == legacyUser {
 			g.mu.Unlock()
-			http.Error(w, "the legacy operator fleet cannot be disabled", 409)
+			http.Error(w, "the legacy operator fleet cannot be disabled", http.StatusConflict)
 			return
 		}
 		old := u
@@ -110,12 +110,12 @@ func (g *Gateway) createUser(w http.ResponseWriter, r *http.Request) {
 	defer g.mu.Unlock()
 	for _, existing := range g.users {
 		if existing.Name == q.Name {
-			http.Error(w, "user name already registered", 409)
+			http.Error(w, "user name already registered", http.StatusConflict)
 			return
 		}
 	}
 	if len(g.users) >= 4096 {
-		http.Error(w, "user limit reached", 409)
+		http.Error(w, "user limit reached", http.StatusConflict)
 		return
 	}
 	g.users[u.ID] = u

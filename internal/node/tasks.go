@@ -60,16 +60,6 @@ func (n *Node) startTask(owner string, spec model.TaskSpec) (model.Task, error) 
 	if n.ctx == nil {
 		return model.Task{}, errors.New("node is not running")
 	}
-	release, err := n.work.Enter(n.ctx)
-	if err != nil {
-		return model.Task{}, err
-	}
-	accepted := false
-	defer func() {
-		if !accepted {
-			release()
-		}
-	}()
 	if spec.ID == "" {
 		spec.ID = identity.NewID()
 	}
@@ -95,6 +85,28 @@ func (n *Node) startTask(owner string, spec model.TaskSpec) (model.Task, error) 
 	if spec.TimeoutSeconds < 1 || spec.TimeoutSeconds > 86400 {
 		return model.Task{}, errors.New("task timeout must be 1..86400 seconds")
 	}
+	// Durable submissions remain reconcilable while a machine is disabled.
+	n.mu.Lock()
+	if old := n.tasks[spec.ID]; old != nil {
+		matches := old.Owner == owner && string(model.JSON(old.Spec)) == string(model.JSON(spec))
+		copy := cloneTask(old)
+		n.mu.Unlock()
+		if !matches {
+			return model.Task{}, errors.New("task ID already used with a different owner or specification")
+		}
+		return copy, nil
+	}
+	n.mu.Unlock()
+	release, err := n.work.Enter(n.ctx)
+	if err != nil {
+		return model.Task{}, err
+	}
+	accepted := false
+	defer func() {
+		if !accepted {
+			release()
+		}
+	}()
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if old := n.tasks[spec.ID]; old != nil {
@@ -167,7 +179,7 @@ func (n *Node) runTask(ctx context.Context, id string) {
 		n.finishTask(id, ctx, nil, nil, err)
 		return
 	}
-	defer log.Close()
+	defer func() { _ = log.Close() }()
 	output := &limitedLog{w: log, remaining: 10 << 20}
 	var result any
 	var artifacts []model.Artifact
@@ -176,7 +188,7 @@ func (n *Node) runTask(ctx context.Context, id string) {
 		if e != nil {
 			return e
 		}
-		defer root.Close()
+		defer func() { _ = root.Close() }()
 		n.taskPhase(id, "fetching inputs")
 		for _, input := range spec.Inputs {
 			artifact, e := n.pullArtifact(ctx, input.Artifact)
@@ -304,7 +316,7 @@ func (n *Node) taskMethod(owner, method string, args json.RawMessage) (any, erro
 		if err != nil {
 			return nil, err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		if _, err = f.Seek(query.Offset, io.SeekStart); err != nil {
 			return nil, err
 		}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ func TestHelpAndCommandsRequireSuperuser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer g.Close()
+	defer func() { _ = g.Close() }()
 	server := httptest.NewServer(g.Handler())
 	defer server.Close()
 	ctx := context.Background()
@@ -44,5 +45,32 @@ func TestHelpAndCommandsRequireSuperuser(t *testing.T) {
 	}
 	if err = adminCLI(ctx, user, []string{"users", "list"}); err == nil {
 		t.Fatal("user accessed gateway account management")
+	}
+}
+
+func TestMachineCommandReportsAuthenticationFailures(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer common-key" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"role":"common"}`))
+	}))
+	defer server.Close()
+	args := []string{"add", "render-01", "--platform", "windows/amd64", "--ttl", "15m"}
+	for _, tc := range []struct{ key, want string }{
+		{"", "gateway credential is not configured"},
+		{"wrong-key", "401 Unauthorized"},
+		{"common-key", "requires a user account key"},
+	} {
+		err := machineCLI(context.Background(), client.Admin{URL: server.URL, Key: tc.key}, args)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("key %q: got %v, want %q", tc.key, err, tc.want)
+		}
+	}
+	server.Close()
+	err := machineCLI(context.Background(), client.Admin{URL: server.URL, Key: "account-key"}, args)
+	if err == nil || !strings.Contains(err.Error(), "authenticate with gateway "+server.URL) || strings.Contains(err.Error(), "unknown machines command") {
+		t.Fatalf("lost gateway connection error: %v", err)
 	}
 }

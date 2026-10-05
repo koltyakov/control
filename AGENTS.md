@@ -40,7 +40,7 @@ These instructions apply throughout the repository.
 
 ## Implementation rules
 
-- Keep the core in Go, compatible with Go 1.25 and the three supported operating systems. Preserve CGO-free builds.
+- Keep the core in Go, compatible with Go 1.27 and the three supported operating systems. Preserve CGO-free builds.
 - Keep execution in nodes and connection handling in the transport package. Add application integrations through providers or MCP.
 - Share client behavior through `internal/client`; keep CLI and MCP adapters consistent.
 - Propagate contexts and cancellation. Bound queues and buffers, and shut down owned goroutines, streams, subprocesses, and files.
@@ -64,15 +64,19 @@ make test-compose
 
 This runs the core Go checks once and cross-container tests over both WebRTC and the relay. Use `make test-compose-webrtc` or `make test-compose-relay` for a focused run. The script handles startup readiness, failure logs, exit status, and cleanup of its test volumes. See [testing documentation](docs/testing.md) for keeping a deployment around for debugging.
 
-For code changes, format the affected Go files and run the relevant tests. Before completing a change that affects shared behavior, run:
+For code changes, format the affected Go files and run the relevant tests. Before completing any code change, run the following checks after the final edits and verify that they pass:
 
 ```sh
+make fmt-check
+make lint
 go vet ./...
 go test -race ./... -timeout=120s
 go build -o bin/control ./cmd/control
 ```
 
-The Compose runner executes these checks, so a successful full Compose run does not require repeating them on the host. `make check` remains available for native Go checks. CI runs Compose on Linux and native tests and builds on Linux, macOS, and Windows. For platform-sensitive changes, check the affected cross-platform builds; cross-compilation alone does not verify runtime behavior.
+Fix lint and test failures caused by the changes, then rerun the affected checks. Report the commands run and their results in the final response. If a check is blocked or fails for an unrelated reason, state that explicitly; do not claim verification passed or skip a failing check.
+
+The Compose runner executes vet, race tests, and the build, so a successful full Compose run does not require repeating those checks on the host. Formatting and golangci-lint must still be verified separately with `make fmt-check` and `make lint`. `make check` remains available for native Go checks. CI runs Compose on Linux and native tests and builds on Linux, macOS, and Windows. For platform-sensitive changes, check the affected cross-platform builds; cross-compilation alone does not verify runtime behavior.
 
 Prefer behavioral tests covering peer interactions and failures. Existing tests exercise three-node execution and delivery, WebRTC and relay paths, reconnects, cancellation, ownership, grants, leases, MCP, and restart reconciliation. Keep the core Go tests self-contained with temporary state and local listeners. Tests requiring installed applications such as FFmpeg belong in the tagged Compose suite, where the test image supplies those dependencies.
 

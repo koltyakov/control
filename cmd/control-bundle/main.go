@@ -31,11 +31,18 @@ func main() {
 func build() error {
 	now := time.Now().UTC()
 	dir := flag.String("out", "dist", "bundle directory")
+	check := flag.Bool("check", false, "verify an existing bundle in --out and exit")
 	binary := flag.String("binary", "", "build a single native executable instead of a bundle")
 	repository := flag.String("repository", "", "embedded GitHub owner/repository; defaults to the source repository")
-	version := flag.String("version", "dev-"+now.Format("20060102T150405.000000000Z"), "release tag or development version")
+	version := flag.String("version", "", "version override (default: git describe --tags --always --dirty, or dev)")
 	platforms := flag.String("platforms", "linux/amd64,linux/arm64,darwin/amd64,darwin/arm64,windows/amd64,windows/arm64", "comma-separated OS/architecture pairs")
 	flag.Parse()
+	if *check {
+		return checkBundle(*dir)
+	}
+	if *version == "" {
+		*version = sourceVersion()
+	}
 	if *repository == "" {
 		*repository = sourceRepository()
 	}
@@ -107,7 +114,45 @@ func buildBinary(path, osName, arch, ldflags string) error {
 	return cmd.Run()
 }
 
+func checkBundle(dir string) error {
+	data, err := os.ReadFile(filepath.Join(dir, "control-manifest.json"))
+	if err != nil {
+		return err
+	}
+	var manifest update.Manifest
+	if err = json.Unmarshal(data, &manifest); err != nil {
+		return err
+	}
+	if err = manifest.Validate(); err != nil {
+		return err
+	}
+	var checksums strings.Builder
+	for _, asset := range manifest.Assets {
+		if err = update.Verify(filepath.Join(dir, asset.File), asset); err != nil {
+			return fmt.Errorf("%s: %w", asset.File, err)
+		}
+		fmt.Fprintf(&checksums, "%s  %s\n", asset.SHA256, asset.File)
+	}
+	data, err = os.ReadFile(filepath.Join(dir, "checksums.txt"))
+	if err != nil {
+		return err
+	}
+	if string(data) != checksums.String() {
+		return fmt.Errorf("checksums.txt does not match the manifest")
+	}
+	return nil
+}
+
 var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+
+func sourceVersion() string {
+	if output, err := exec.Command("git", "describe", "--tags", "--always", "--dirty").Output(); err == nil {
+		if version := strings.TrimSpace(string(output)); version != "" {
+			return version
+		}
+	}
+	return "dev"
+}
 
 func sourceRepository() string {
 	if output, err := exec.Command("git", "remote", "get-url", "origin").Output(); err == nil {

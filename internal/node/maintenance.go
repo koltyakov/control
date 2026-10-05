@@ -22,6 +22,10 @@ func observational(method string) bool {
 	}
 }
 
+func requiresAdmission(method string) bool {
+	return !observational(method) && method != "tasks.cancel" && method != "leases.release" && method != "leases.renew"
+}
+
 func (n *Node) enterWork(ctx context.Context) (context.Context, func(), error) {
 	if owner, _ := ctx.Value(workContextKey{}).(*Node); owner == n {
 		return ctx, func() {}, nil

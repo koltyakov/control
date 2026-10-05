@@ -12,6 +12,7 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/koltyakov/control/internal/buildinfo"
+	"github.com/koltyakov/control/internal/processutil"
 	"github.com/koltyakov/control/internal/store"
 	"github.com/koltyakov/control/internal/update"
 )
@@ -26,7 +27,7 @@ type runtimeBinary struct {
 
 // The launcher stays alive while the service restarts. Versioned executables
 // avoid replacing a running Windows executable and preserve container PID 1.
-func managed(ctx context.Context, dir string, service func(context.Context, func(string) error) error) error {
+func managed(ctx context.Context, dir string, args []string, service func(context.Context, func(string) error) error) error {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return err
@@ -67,7 +68,7 @@ func managed(ctx context.Context, dir string, service func(context.Context, func
 	if !locked {
 		return errors.New("runtime data directory is already supervised")
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	executable, err := os.Executable()
 	if err != nil {
 		return err
@@ -83,7 +84,8 @@ func managed(ctx context.Context, dir string, service func(context.Context, func
 	}
 	_ = os.Remove(request)
 	for {
-		cmd := exec.CommandContext(ctx, current.Path, append([]string{"__managed"}, os.Args[1:]...)...)
+		cmd := exec.CommandContext(ctx, current.Path, append([]string{"__managed"}, args...)...)
+		processutil.HideWindow(cmd)
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 		// Closing stdin asks the child to shut down on all supported platforms.
 		stopReader, stopWriter, err := os.Pipe()

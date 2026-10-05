@@ -66,8 +66,8 @@ func (n *Node) importArtifact(ctx context.Context, reader io.Reader, name string
 	if err != nil {
 		return model.Artifact{}, err
 	}
-	defer os.Remove(f.Name())
-	defer f.Close()
+	defer func() { _ = os.Remove(f.Name()) }()
+	defer func() { _ = f.Close() }()
 	hash := sha256.New()
 	size, err := io.Copy(activityWriter{writer: io.MultiWriter(f, hash), counter: &activity.bytes}, contextReader{ctx, reader})
 	if err != nil {
@@ -163,7 +163,7 @@ func (n *Node) serveArtifact(ctx context.Context, caller string, conn net.Conn, 
 		_ = writeFrame(conn, model.Response{Error: err.Error()})
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err = f.Seek(q.Offset, io.SeekStart); err != nil {
 		_ = writeFrame(conn, model.Response{Error: err.Error()})
 		return
@@ -198,7 +198,7 @@ func (n *Node) Download(ctx context.Context, a model.Artifact, offset int64, des
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		if _, err = f.Seek(offset, io.SeekStart); err != nil {
 			return err
 		}
@@ -209,7 +209,7 @@ func (n *Node) Download(ctx context.Context, a model.Artifact, offset int64, des
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	var remote model.Artifact
@@ -251,7 +251,7 @@ func (n *Node) pullArtifact(ctx context.Context, a model.Artifact) (_ model.Arti
 	if err != nil {
 		return model.Artifact{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	offset, err := f.Seek(0, io.SeekEnd)
 	if err != nil {
 		return model.Artifact{}, err
@@ -312,7 +312,7 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 		if err != nil {
 			return nil, err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		if stat, e := f.Stat(); e != nil || !stat.Mode().IsRegular() {
 			return nil, errors.New("artifact must be a regular file")
 		}

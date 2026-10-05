@@ -79,6 +79,8 @@ type Node struct {
 	work                *workgate.Gate
 	updater             *update.Agent
 	shutdown            func()
+	lifecycleMu         sync.Mutex
+	machineState        model.MachineState
 }
 
 func New(cfg Config) (*Node, error) {
@@ -110,6 +112,10 @@ func New(cfg Config) (*Node, error) {
 	n := &Node{Config: cfg, Identity: id, root: root, providers: map[string]Provider{}, tasks: map[string]*model.Task{}, cancels: map[string]context.CancelFunc{}, slots: make(chan struct{}, cfg.MaxTasks), mcpSessions: map[string]*mcp.ClientSession{}, transfers: map[string]*sync.Mutex{}}
 	n.lock = lock
 	n.work = workgate.New()
+	if err = n.loadMachineState(); err != nil {
+		_ = root.Close()
+		return nil, err
+	}
 	n.activities = map[string]*activityHandle{}
 	n.system = system.New([]string{cfg.WorkDir, cfg.DataDir}, time.Duration(cfg.MetricsIntervalSeconds)*time.Second)
 	if err = n.registerProviders(); err != nil {
@@ -160,6 +166,10 @@ func (n *Node) SetShutdown(stop func()) { n.shutdown = stop }
 func (n *Node) Start(ctx context.Context) error {
 	n.Peer.SetCapabilities(n.Capabilities())
 	n.ctx, n.cancel = context.WithCancel(ctx)
+	if err := n.syncMachineState(n.ctx); err != nil {
+		n.cancel()
+		return err
+	}
 	initial, err := n.system.Refresh(n.ctx)
 	if err != nil {
 		slog.Warn("initial system sample", "error", err)
@@ -171,6 +181,10 @@ func (n *Node) Start(ctx context.Context) error {
 	}
 	n.wg.Add(1)
 	go func() { defer n.wg.Done(); n.system.Run(n.ctx) }()
+	n.wg.Add(1)
+	go func() { defer n.wg.Done(); n.runHealth(n.ctx) }()
+	n.wg.Add(1)
+	go func() { defer n.wg.Done(); n.runMachineState(n.ctx) }()
 	if n.updater != nil {
 		n.wg.Add(1)
 		go func() { defer n.wg.Done(); n.updater.Run(n.ctx) }()
@@ -308,7 +322,8 @@ func (n *Node) open(ctx context.Context, target, method string, params any) (net
 }
 
 func (n *Node) Call(ctx context.Context, target, method string, params any, result any) error {
-	if !observational(method) {
+	local := target == "" || target == n.Config.Name || target == n.Identity.ID
+	if requiresAdmission(method) && (!local || method != "tasks.start") {
 		workCtx, release, err := n.enterWork(ctx)
 		if err != nil {
 			return err
@@ -316,7 +331,7 @@ func (n *Node) Call(ctx context.Context, target, method string, params any, resu
 		defer release()
 		ctx = workCtx
 	}
-	if target == "" || target == n.Config.Name || target == n.Identity.ID {
+	if local {
 		n.mu.Lock()
 		if n.closed {
 			n.mu.Unlock()
@@ -342,7 +357,7 @@ func (n *Node) Call(ctx context.Context, target, method string, params any, resu
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if result == nil {
 		return nil
 	}
@@ -353,7 +368,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 	if err := n.authorize(ctx, caller, method); err != nil {
 		return nil, err
 	}
-	if !observational(method) {
+	if requiresAdmission(method) && method != "tasks.start" {
 		workCtx, release, err := n.enterWork(ctx)
 		if err != nil {
 			return nil, err
@@ -463,7 +478,7 @@ func (n *Node) selectNode(ctx context.Context, args json.RawMessage) (any, error
 		return nil, err
 	}
 	for _, peer := range nodes {
-		if !peer.Online {
+		if !peer.Online || peer.Disabled || peer.ControlPending {
 			continue
 		}
 		matches := true
@@ -485,5 +500,5 @@ func (n *Node) selectNode(ctx context.Context, args json.RawMessage) (any, error
 			return peer, nil
 		}
 	}
-	return nil, errors.New("no online node matches the selector")
+	return nil, errors.New("no online enabled node matches the selector")
 }

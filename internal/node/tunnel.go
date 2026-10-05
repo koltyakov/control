@@ -41,7 +41,7 @@ func (n *Node) serveTCP(ctx context.Context, caller string, stream net.Conn, arg
 		_ = writeFrame(stream, model.Response{Error: err.Error()})
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if err = writeFrame(stream, model.Response{Result: model.JSON(map[string]any{"connected": true})}); err != nil {
 		return
 	}

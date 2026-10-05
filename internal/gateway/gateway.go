@@ -23,6 +23,7 @@ import (
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/protocol"
+	"github.com/koltyakov/control/internal/system"
 	"github.com/koltyakov/control/internal/update"
 	"google.golang.org/protobuf/proto"
 )
@@ -34,10 +35,14 @@ type Hello struct {
 }
 
 type connection struct {
-	userID string
-	ws     *websocket.Conn
-	out    chan *protocol.Packet
-	keyID  string
+	userID            string
+	ws                *websocket.Conn
+	out               chan *protocol.Packet
+	keyID             string
+	health            *model.NodeHealth
+	healthAt          time.Time
+	lifecycleAt       time.Time
+	lifecycleRevision uint64
 }
 
 type Gateway struct {
@@ -63,6 +68,11 @@ type Gateway struct {
 	updateWG      sync.WaitGroup
 	rolloutMu     sync.Mutex
 	installations map[string]installation
+	metrics       *system.Collector
+	metricsCancel context.CancelFunc
+	metricsWG     sync.WaitGroup
+	startedAt     time.Time
+	machineStates map[string]model.MachineState
 }
 
 func New(dir, token string, options ...Options) (*Gateway, error) {
@@ -108,6 +118,16 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 		n.Online = false
 		g.nodes[id] = n
 	}
+	g.startedAt = time.Now().UTC()
+	g.metrics = system.New([]string{dir}, 15*time.Second)
+	metricsCtx, cancel := context.WithCancel(context.Background())
+	g.metricsCancel = cancel
+	g.metricsWG.Add(1)
+	go func() {
+		defer g.metricsWG.Done()
+		_, _ = g.metrics.Refresh(metricsCtx)
+		g.metrics.Run(metricsCtx)
+	}()
 	return g, nil
 }
 
@@ -115,11 +135,13 @@ func (g *Gateway) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	mux.HandleFunc("GET /v1/nodes", g.auth(g.list))
+	mux.HandleFunc("GET /v1/status", g.auth(g.status))
 	mux.HandleFunc("GET /v1/connect", g.auth(g.connect))
 	g.authRoutes(mux)
 	g.userRoutes(mux)
 	g.updateRoutes(mux)
 	g.installationRoutes(mux)
+	g.machineRoutes(mux)
 	return mux
 }
 
@@ -140,6 +162,7 @@ func (g *Gateway) list(w http.ResponseWriter, r *http.Request) {
 	nodes := make([]model.Node, 0, len(g.nodes))
 	for _, n := range g.nodes {
 		if n.UserID == p.UserID {
+			n.ControlPending = g.machinePending(n.ID)
 			nodes = append(nodes, n)
 		}
 	}
@@ -165,7 +188,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer ws.CloseNow()
+	defer func() { _ = ws.CloseNow() }()
 	ws.SetReadLimit(1 << 20)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -201,6 +224,14 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n.UserID = p.UserID
+	if g.machineStates[n.ID].Unregistered {
+		g.mu.Unlock()
+		_ = ws.Close(websocket.StatusPolicyViolation, "machine was unregistered")
+		return
+	}
+	n.Disabled, n.ControlPending = g.machineStates[n.ID].Disabled, false
+	registered := g.nodes[n.ID]
+	n.Managed = registered.Managed && n.Software.SHA256 != "" && registered.Software.SHA256 == n.Software.SHA256
 	c := &connection{ws: ws, out: make(chan *protocol.Packet, 256), keyID: p.KeyID, userID: p.UserID}
 	if !g.allowInstallation(p.KeyID, n) {
 		g.mu.Unlock()
@@ -256,9 +287,11 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 			default:
 			}
 		}
-		n.Online = false
-		n.LastSeen = time.Now().UTC()
-		g.nodes[n.ID] = n
+		if latest, exists := g.nodes[n.ID]; exists {
+			latest.Online = false
+			latest.LastSeen = time.Now().UTC()
+			g.nodes[n.ID] = latest
+		}
 		_ = g.persist()
 		g.mu.Unlock()
 	}()
@@ -269,7 +302,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		ticker := time.NewTicker(20 * time.Second)
 		defer ticker.Stop()
 		defer cancel()
-		defer ws.CloseNow()
+		defer func() { _ = ws.CloseNow() }()
 		for {
 			select {
 			case <-ctx.Done():
@@ -303,6 +336,12 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		var p protocol.Packet
 		if proto.Unmarshal(b, &p) != nil {
 			return
+		}
+		if p.Kind == "node.health" && p.To == "" {
+			if !g.receiveHealth(n, c, p.Data) {
+				return
+			}
+			continue
 		}
 		if p.Kind == "update.status" && p.To == "" {
 			var status update.Status
@@ -350,6 +389,10 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) Close() error {
+	if g.metricsCancel != nil {
+		g.metricsCancel()
+		g.metricsWG.Wait()
+	}
 	if g.updateCancel != nil {
 		g.updateCancel()
 		g.updateWG.Wait()

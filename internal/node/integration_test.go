@@ -270,13 +270,13 @@ func TestProvidersHTTPAndTCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	go func() {
 		conn, e := listener.Accept()
 		if e != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		_, _ = io.Copy(conn, conn)
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -285,7 +285,7 @@ func TestProvidersHTTPAndTCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	if _, err = conn.Write([]byte("database protocol")); err != nil {
 		t.Fatal(err)
@@ -339,7 +339,7 @@ func TestMCPProxyAndDurableRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer restarted.Close()
+	defer func() { _ = restarted.Close() }()
 	if got := restarted.tasks["crashed"].State; got != "interrupted" {
 		t.Fatalf("got %s after restart", got)
 	}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/buildinfo"
+	"github.com/koltyakov/control/internal/processutil"
 )
 
 func Verify(path string, asset Asset) error {
@@ -22,7 +23,7 @@ func Verify(path string, asset Asset) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		return err
@@ -49,8 +50,8 @@ func SaveBinary(reader io.Reader, path string, asset Asset) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
-	defer f.Close()
+	defer func() { _ = os.Remove(f.Name()) }()
+	defer func() { _ = f.Close() }()
 	hash := sha256.New()
 	size, err := io.Copy(io.MultiWriter(f, hash), io.LimitReader(reader, asset.Size+1))
 	if err != nil {
@@ -87,7 +88,7 @@ func Download(ctx context.Context, client *http.Client, url, token, path string,
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download update: %s", resp.Status)
 	}
@@ -112,6 +113,7 @@ func InspectExecutable(ctx context.Context, path string) (buildinfo.Info, error)
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, "version", "--json")
+	processutil.HideWindow(cmd)
 	cmd.WaitDelay = time.Second
 	var output limitedOutput
 	cmd.Stdout = &output

@@ -11,12 +11,14 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/client"
+	"github.com/koltyakov/control/internal/clipboard"
 	"github.com/koltyakov/control/internal/dashboard"
+	"github.com/koltyakov/control/internal/enrollment"
 	"github.com/koltyakov/control/internal/model"
 	"golang.org/x/term"
 )
 
-func dashboardCLI(ctx context.Context, c client.Client, args []string) error {
+func dashboardCLI(ctx context.Context, c client.Client, remote client.Admin, args []string) error {
 	f := flag.NewFlagSet("dashboard", flag.ContinueOnError)
 	once := f.Bool("once", false, "print a single snapshot")
 	jsonOutput := f.Bool("json", false, "print one JSON snapshot")
@@ -33,6 +35,12 @@ func dashboardCLI(ctx context.Context, c client.Client, args []string) error {
 	if *interval < 250*time.Millisecond || *timeout <= 0 || *recent < 0 || *recent > 64 {
 		return errors.New("interval must be at least 250ms, timeout positive, and recent 0..64")
 	}
+	if remote.URL == "" {
+		return errors.New("gateway is not configured; run control login --gateway URL")
+	}
+	if remote.Key == "" {
+		return errors.New("gateway credential is not configured; run control login --gateway URL")
+	}
 	query := model.PoolActivityQuery{Recent: *recent}
 	if *nodes != "" {
 		for _, name := range strings.Split(*nodes, ",") {
@@ -41,7 +49,7 @@ func dashboardCLI(ctx context.Context, c client.Client, args []string) error {
 			}
 		}
 	}
-	fetch := func(ctx context.Context) (model.PoolActivitySnapshot, error) { return c.Activities(ctx, query) }
+	fetch := func(ctx context.Context) (model.PoolActivitySnapshot, error) { return c.Dashboard(ctx, remote, query) }
 	if *once || *jsonOutput || !term.IsTerminal(int(os.Stdout.Fd())) || !term.IsTerminal(int(os.Stdin.Fd())) {
 		ctx, cancel := context.WithTimeout(ctx, *timeout)
 		defer cancel()
@@ -57,5 +65,13 @@ func dashboardCLI(ctx context.Context, c client.Client, args []string) error {
 		_, err = fmt.Fprintln(os.Stdout, dashboard.Render(snapshot, time.Now()))
 		return err
 	}
-	return dashboard.Run(ctx, fetch, dashboard.Options{Interval: *interval, Timeout: *timeout, Output: os.Stdout})
+	options := dashboard.Options{Interval: *interval, Timeout: *timeout, Output: os.Stdout, GatewayURL: remote.URL}
+	if role := remote.Role(ctx); role == "user" || role == "superuser" {
+		options.Invite = func(ctx context.Context, name, platform string) (enrollment.Link, error) {
+			return remote.Invite(ctx, enrollment.Request{Name: name, OS: platform})
+		}
+		options.Copy = clipboard.Copy
+		options.Manage = remote.ManageMachine
+	}
+	return dashboard.Run(ctx, fetch, options)
 }

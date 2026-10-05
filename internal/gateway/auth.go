@@ -92,12 +92,13 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		p := g.authenticate(bearer(r))
 		w.Header().Set("Content-Type", "application/json")
 		capabilities := []string{}
-		if p.Role == "superuser" {
-			capabilities = []string{"updates.manage", "users.manage", "keys.manage", "installations.manage"}
-		} else if p.Role == "user" {
-			capabilities = []string{"keys.manage", "installations.manage"}
+		switch p.Role {
+		case "superuser":
+			capabilities = []string{"updates.manage", "users.manage", "keys.manage", "installations.manage", "machines.manage"}
+		case "user":
+			capabilities = []string{"keys.manage", "installations.manage", "machines.manage"}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"role": p.Role, "userId": p.UserID, "capabilities": capabilities})
+		_ = json.NewEncoder(w).Encode(map[string]any{"role": p.Role, "userId": p.UserID, "capabilities": capabilities, "nodeHealth": true})
 	}))
 	create := func(w http.ResponseWriter, r *http.Request) {
 		p := g.authenticate(bearer(r))

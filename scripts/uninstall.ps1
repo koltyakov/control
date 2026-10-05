@@ -13,4 +13,4 @@ if (Test-Path -LiteralPath $exe) {
     }
   }
 }
-Write-Host 'Control executable and user startup removed. Configuration, identities, and work files are retained.'
+Write-Host 'Control executable and Windows service removed. Configuration, identities, and work files are retained.'

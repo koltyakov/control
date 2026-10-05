@@ -55,7 +55,7 @@ func (g *Gateway) fetchRelease(ctx context.Context) (*update.Deployment, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GitHub release lookup: %s", resp.Status)
 	}
@@ -85,7 +85,7 @@ func (g *Gateway) fetchRelease(ctx context.Context) (*update.Deployment, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("release manifest: %s", response.Status)
 	}

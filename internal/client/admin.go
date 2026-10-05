@@ -32,7 +32,7 @@ func (c Admin) request(ctx context.Context, method, path string, body io.Reader,
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		text, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("gateway %s: %s", resp.Status, strings.TrimSpace(string(text)))
@@ -48,15 +48,25 @@ func (c Admin) IsSuperuser(ctx context.Context) bool {
 }
 
 func (c Admin) Role(ctx context.Context) string {
+	role, _ := c.AuthRole(ctx)
+	return role
+}
+
+// AuthRole preserves authentication and connection errors for explicit commands.
+// Role is used by help, where unavailable credentials simply hide management.
+func (c Admin) AuthRole(ctx context.Context) (string, error) {
+	if c.Key == "" {
+		return "", fmt.Errorf("gateway credential is not configured; run control login --gateway URL")
+	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	var info struct {
 		Role string `json:"role"`
 	}
-	if c.Key != "" && c.request(ctx, http.MethodGet, "/v1/auth", nil, 0, &info) == nil {
-		return info.Role
+	if err := c.request(ctx, http.MethodGet, "/v1/auth", nil, 0, &info); err != nil {
+		return "", fmt.Errorf("authenticate with gateway %s: %w", c.URL, err)
 	}
-	return ""
+	return info.Role, nil
 }
 
 func (c Admin) JSON(ctx context.Context, method, path string, params, result any) error {

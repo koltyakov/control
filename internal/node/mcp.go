@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -31,7 +32,7 @@ func (n *Node) mcpSession(ctx context.Context, name string) (*mcp.ClientSession,
 		cmd.Stderr = os.Stderr
 		transport = &mcp.CommandTransport{Command: cmd, TerminateDuration: time.Second}
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "control", Version: "0.1.0"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "control", Version: buildinfo.Version}, nil)
 	initCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	session, err := client.Connect(initCtx, transport, nil)

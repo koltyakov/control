@@ -230,7 +230,7 @@ func TestInstallationPersistsAndEnforcesSignedRegistration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer ws.CloseNow()
+		defer func() { _ = ws.CloseNow() }()
 		_, challenge, err := ws.Read(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -266,5 +266,144 @@ func TestInstallationPersistsAndEnforcesSignedRegistration(t *testing.T) {
 	connect(n, true)
 	if role, _ := g.role(credential); role != "" {
 		t.Fatal("revoked machine credential still authenticates")
+	}
+}
+
+func TestReenrollmentReplacesRegistrationAndCredential(t *testing.T) {
+	g, server := installationFixture(t)
+	id, err := identity.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := rawPeer(t, server.URL, commonKey, "original", legacyUser, id)
+	if ws == nil {
+		t.Fatal("initial registration failed")
+	}
+	var previousLink enrollment.Link
+	var previousProof enrollment.Redemption
+	previousCredential := ""
+	for _, name := range []string{"original", "renamed", "renamed"} {
+		link := invite(t, server, name)
+		if name != "renamed" || previousLink.Name == name {
+			if link.ReplaceID != id.ID {
+				t.Fatal("same-name invitation did not reserve existing identity")
+			}
+			foreign, _ := redeemRequest(t, link)
+			if err := (testAdmin{URL: link.URL}).JSON(context.Background(), "POST", "/redeem", foreign, nil); err == nil {
+				t.Fatal("another identity replaced a registered name")
+			}
+		}
+		credential := "new-credential-" + identity.NewID()
+		proof := enrollment.Redemption{PublicKey: id.Public, CredentialHash: enrollment.Hash(credential)}
+		ticket := link.URL[strings.LastIndex(link.URL, "/")+1:]
+		proof.Signature = ed25519.Sign(id.Private, enrollment.Message(ticket, proof))
+		if previousCredential != "" {
+			// A failed SQLite commit must preserve both the old registration and
+			// credential, in memory and on disk.
+			if _, err := g.db.Exec(`CREATE TRIGGER reject_enrollment BEFORE INSERT ON invitations BEGIN SELECT RAISE(FAIL, 'test failure'); END`); err != nil {
+				t.Fatal(err)
+			}
+			if err := (testAdmin{URL: link.URL}).JSON(context.Background(), "POST", "/redeem", proof, nil); err == nil {
+				t.Fatal("replacement acknowledged failed persistence")
+			}
+			if _, err := g.db.Exec(`DROP TRIGGER reject_enrollment`); err != nil {
+				t.Fatal(err)
+			}
+			if role, _ := g.role(previousCredential); role != "common" {
+				t.Fatal("failed replacement revoked previous credential")
+			}
+			if role, _ := g.role(credential); role != "" {
+				t.Fatal("failed replacement issued new credential")
+			}
+			var savedName string
+			if err := g.db.QueryRow(`SELECT name FROM nodes WHERE id = ?`, id.ID).Scan(&savedName); err != nil || savedName != previousLink.Name {
+				t.Fatal("failed replacement changed persisted registration", savedName, err)
+			}
+			g.mu.Lock()
+			if g.nodes[id.ID].Name != previousLink.Name {
+				t.Error("failed replacement changed cached registration")
+			}
+			g.mu.Unlock()
+		}
+		for range 2 {
+			if err := (testAdmin{URL: link.URL}).JSON(context.Background(), "POST", "/redeem", proof, nil); err != nil {
+				t.Fatal("replacement or response recovery failed", err)
+			}
+		}
+		if previousCredential != "" {
+			if role, _ := g.role(previousCredential); role != "" {
+				t.Fatal("old installation credential still authenticates")
+			}
+			if err := (testAdmin{URL: previousLink.URL}).JSON(context.Background(), "POST", "/redeem", previousProof, nil); err == nil {
+				t.Fatal("superseded enrollment can be recovered")
+			}
+		}
+		g.mu.Lock()
+		if len(g.nodes) != 1 || g.nodes[id.ID].Name != name {
+			t.Error("registration was duplicated or not renamed", g.nodes)
+		}
+		n := model.Node{UserID: legacyUser, ID: id.ID, Name: name, OS: "linux"}
+		n.Software.Arch = "amd64"
+		if !g.allowInstallation("install:"+link.ID, n) || g.allowInstallation("bootstrap", n) {
+			t.Error("replacement identity credential binding failed")
+		}
+		g.mu.Unlock()
+		previousLink, previousProof, previousCredential = link, proof, credential
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, _, err := ws.Read(ctx); err == nil {
+		t.Fatal("old connection survived replacement")
+	}
+	server.Close()
+	if err = g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := New(filepath.Dir(g.path), commonKey, Options{SuperuserKey: superKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = restored.Close() }()
+	if len(restored.nodes) != 1 || restored.nodes[id.ID].Name != "renamed" {
+		t.Fatal("replacement did not survive gateway restart")
+	}
+	if role, _ := restored.role(previousCredential); role != "common" {
+		t.Fatal("replacement credential did not survive gateway restart")
+	}
+}
+
+func TestReenrollmentRejectsForeignAndRetiredIdentities(t *testing.T) {
+	g, server := installationFixture(t)
+	alice, a := createTestUser(t, server, "alice")
+	id, err := identity.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := rawPeer(t, server.URL, a.Key, "alice-node", alice.ID, id)
+	if ws == nil {
+		t.Fatal("initial registration failed")
+	}
+	link := invite(t, server, "foreign-replacement")
+	proof := enrollment.Redemption{PublicKey: id.Public, CredentialHash: enrollment.Hash("replacement")}
+	ticket := link.URL[strings.LastIndex(link.URL, "/")+1:]
+	proof.Signature = ed25519.Sign(id.Private, enrollment.Message(ticket, proof))
+	if err := (testAdmin{URL: link.URL}).JSON(context.Background(), "POST", "/redeem", proof, nil); err == nil {
+		t.Fatal("replacement moved an identity between fleets")
+	}
+	retired, err := identity.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.mu.Lock()
+	g.owners[retired.ID] = legacyUser
+	g.machineStates[retired.ID] = model.MachineState{Revision: 1, Unregistered: true, Disabled: true}
+	if err = g.persist(); err != nil {
+		t.Error(err)
+	}
+	g.mu.Unlock()
+	proof.PublicKey = retired.Public
+	proof.Signature = ed25519.Sign(retired.Private, enrollment.Message(ticket, proof))
+	if err := (testAdmin{URL: link.URL}).JSON(context.Background(), "POST", "/redeem", proof, nil); err == nil {
+		t.Fatal("replacement reused a retired identity")
 	}
 }

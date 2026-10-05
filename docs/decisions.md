@@ -12,6 +12,8 @@ This supports worker-to-worker requests and transfers without introducing separa
 
 ## D002: Persistent local node with thin CLI and MCP clients
 
+The local-node requirement for gateway observation is superseded by [D018](#d018-direct-gateway-observation-with-optional-peer-activity). Execution and peer observation retain this design.
+
 CLI and AI-facing MCP processes use an authenticated local HTTP API on a persistent node. Their shared implementation lives in `internal/client`.
 
 The node owns its identity, gateway connection, peer sessions, and accepted work. Multiple local tools can operate concurrently without competing to register the same machine. Users must start the local node before using these clients. The local API acts with that node's authority and defaults to loopback.
@@ -90,6 +92,8 @@ Application-dependent tests use the `compose` build tag. The core Go suite remai
 
 ## D012: Node-owned activity snapshots and a local CLI dashboard
 
+The dashboard's gateway connection and directory fallback are superseded by [D018](#d018-direct-gateway-observation-with-optional-peer-activity). Node-owned activity and authorization remain unchanged.
+
 Track tasks, synchronous operations, transfers, and tunnels on the node performing them. Expose read-only node-wide metadata through `activities.list`, independently of owner-scoped task control and results. Aggregate through a local-only `activities.pool` request using the orchestrator node's identity and bounded concurrent peer calls.
 
 This makes delegated and peer-to-peer work visible without sending execution telemetry through the gateway or requiring every task to originate on the observer. Offline directory entries remain visible, while denied or failed snapshots are labeled unavailable. A failed pool refresh leaves the previous terminal view marked stale.
@@ -114,13 +118,21 @@ The gateway can fetch stable GitHub releases from a configured repository or acc
 
 Persist installation participants and reservations across service restarts. Update nodes first and wait for their version acknowledgments, then restart the gateway. Expiring reservations release admissions if coordination is lost. Offline nodes catch up on reconnection. This introduces short maintenance pauses and lets a busy pool postpone an update indefinitely.
 
-Use a stable supervisor and versioned executables in the state directory rather than replacing running Windows binaries. The original binary remains the launcher, and standalone CLI/MCP installations retain their own version. Selection is durable, shutdown is graceful, and the previous selection is retained for manual recovery. Startup failure does not automatically replay work or roll back state. See [managed updates](updates.md).
+Use a stable supervisor and versioned executables in the state directory rather than replacing running Windows binaries. The original binary remains the launcher, and standalone CLI/MCP installations retain their own version. [D025](#d025-local-cli-self-updates) adds explicit updates for that installation. Selection is durable, shutdown is graceful, and the previous selection is retained for manual recovery. Startup failure does not automatically replay work or roll back state. See [managed updates](updates.md).
 
 ## D015: Single-machine invitations and per-user host setup
+
+The Windows login-startup choice is superseded by [D021](#d021-automatic-windows-node-service).
+
+The refusal to replace existing invitation-based installations is superseded by [D026](#d026-replace-enrollment-within-the-existing-machine-profile).
 
 Extend D004 and D014 with superuser-created installation invitations. A hashed, expiring ticket reserves a name and pins a platform binary. The target generates its private identity and credential locally, then signs a redemption that binds the credential hash to its identity, name, OS, and architecture. Downloading the script does not consume the ticket. Atomic redemption permits one identity, with repeat requests from the same persisted identity and credential to recover a lost response.
 
 [D016](#d016-sqlite-backed-users-and-isolated-fleets) supersedes the invitation permission and global name reservation: owners create invitations within their fleet, and SQLite persists ownership and redemption.
+
+[D020](#d020-target-selected-installation-architecture) supersedes selecting a single architecture at invitation creation for the default flow.
+
+[D023](#d023-durable-owner-controlled-machine-lifecycle) supersedes metadata-only removal for the new unregister command with a durable stop policy and a retired identity.
 
 This avoids distributing a shared pool token in installation scripts. Revocation blocks future authentication and disconnects gateway sessions, but does not terminate established direct peer connections. Forgotten offline registrations retain their local state. Hash-only ticket storage means the gateway cannot reconstruct a lost installation URL.
 
@@ -135,3 +147,77 @@ Scope discovery, offline events, name uniqueness, enrollment management, and eve
 Persist accounts, credential hashes, invitations, registrations, and identity ownership in SQLite with foreign keys, per-user name uniqueness, WAL, and full synchronous commits. Use the pure-Go driver to retain all supported CGO-free builds. Protected in-memory maps cache the database; commit mutations before acknowledging them. Preserve the existing filesystem storage for node-owned work and global executable assets/rollout state.
 
 Import existing JSON registration state into one legacy fleet transactionally, retaining the source files without reading them again after migration. There is no evidence for assigning old shared-pool nodes to separate people, so migrating them into new accounts requires fresh identities. Upgrade the gateway before new nodes because peers now require fleet-aware authentication. This decision supersedes the shared-pool and gateway JSON assumptions in D004/D009 and the fleet-management permissions in D014/D015. See [users and private fleets](users.md).
+
+## D017: Git-tag-based software versions
+
+Use `git describe --tags --always --dirty` for local binaries and update bundles, matching expose. Release builds use the pushed `v*.*.*` tag explicitly. Untagged repositories report a short commit hash; builds without Git metadata report `dev`. Make's `VERSION` and the builder's `--version` flag allow explicit overrides.
+
+This ties version labels to source history rather than build time. Repeated builds of one checkout can share a version label; UTC build timestamps and executable checksums still identify individual builds. CLI, node, gateway, and MCP software identification share the embedded version. Protocol versions remain independent. See [managed updates](updates.md).
+
+## D018: Direct gateway observation with optional peer activity
+
+Read gateway identity, uptime, cached host metrics, and the user's directory directly through authenticated `GET /v1/status`. Any valid fleet credential may read gateway capacity; the directory remains scoped to that credential's user. The gateway samples its host independently of polling and conceals private disk paths and raw collection errors.
+
+This lets the dashboard identify and monitor the remote gateway even when the observer has no local node. Live execution metadata still comes from authorized peer observation through the local API. Merge it only for IDs in the directly authenticated directory. Missing peer observations remain unknown, while gateway failures retain a stale prior view. No execution telemetry or task control moves into the gateway. This partially supersedes D002 and D012. See [dashboard and system metrics](dashboard.md).
+
+[D022](#d022-owner-visible-machine-health-without-a-local-node) supersedes the directory-only machine observation limitation with owner-scoped aggregate health.
+
+## D019: Persistent CLI login independent of node setup
+
+`control login` validates an API key against the selected gateway and saves both in the existing private `admin.json` profile. Later gateway commands load that credential automatically. Explicit credentials override saved ones; saved keys are never reused for another gateway URL. Failed validation leaves the previous login intact. This follows expose's saved server/key model while adding validation before saving.
+
+Directory listing, invitations, and gateway observation need no local node. `setup` reuses the login to issue a separate node credential and start the host for peer execution. This extends D015 and D018 without putting account keys in node configuration or MCP entries. See [installation](installation.md).
+
+## D020: Target-selected installation architecture
+
+Default invitations select an OS and pin its amd64 and arm64 assets from one published manifest. Bash or PowerShell detects the target architecture, downloads that candidate, and verifies its pinned checksum. Signed redemption includes the chosen architecture and persists it with the identity and credential. Recovery cannot change that binding. Existing explicitly pinned invitations keep their original proof format.
+
+This removes architecture and lifetime questions from the dashboard wizard while retaining reproducible downloads and platform-bound registration. It requires both architecture binaries in the published bundle and compatible gateway/installer versions. The wizard uses the shared invitation client and native clipboard tools, displays the command on copy failure, and never retries an uncertain invitation request automatically. See [installation](installation.md) and [dashboard](dashboard.md).
+
+## D021: Automatic Windows node service
+
+Install Windows nodes as automatic Service Control Manager services instead of per-user Run entries. Each absolute profile path identifies one service. The service wraps the existing versioned supervisor, starts before login, handles stop/shutdown through context cancellation, and uses SCM recovery after failures. Background child processes suppress console creation, including executable validation and provider commands.
+
+Installation requires Administrator PowerShell and checks elevation before issuing setup credentials or redeeming an invitation. Automatic mode never falls back to a detached process on Windows. LocalService runs the node with explicit access to its runtime files rather than LocalSystem privileges or an interactive user's credentials. Providers therefore need service-account paths and credentials. An explicit process mode remains available for development. Existing profiles and identities survive migration; service start stops the old supervisor and removes its matching login entry. Linux and macOS retain per-user startup. See [installation](installation.md).
+
+## D022: Owner-visible machine health without a local node
+
+Nodes publish aggregate active-work count, lease presence, and cached system metrics over their existing authenticated gateway connection every five seconds. The gateway retains one report per connection, expires it after 20 seconds, and returns it only to that fleet's account key. The superuser sees reports only for its legacy fleet. Common keys still require authorized peer observation.
+
+This lets a logged-in dashboard show machine CPU, idle/busy state, and work counts without a local node. Reports contain no operation records, owner IDs, arguments, credentials, or private filesystem paths. Task control and detailed activity remain on the peer API. Sampling runs independently of reporting and dashboard polling. Feature negotiation through `/v1/auth` prevents reports from disconnecting older gateways during nodes-first updates. This extends D018 and preserves fleet isolation and task ownership. See [dashboard](dashboard.md) and [protocol](protocol.md).
+
+## D023: Durable owner-controlled machine lifecycle
+
+The lifecycle-support requirement for offline unregistration is superseded by [D024](#d024-offline-unregistration-without-lifecycle-support).
+
+Store disabled state and permanent unregistration tombstones by immutable identity in SQLite. Expose fleet-scoped enable/disable/unregister commands through the shared client and dashboard. Nodes fetch their own policy at startup and every two seconds using timestamped Ed25519 proofs, persist it, and acknowledge the revision. Proof-based reads remain possible after the machine credential is revoked, without granting directory access or policy mutation.
+
+Disable excludes a node from selection and rejects new execution at its work-admission gate. Existing accepted work can finish and remain observable and cancellable. This gate is independent of managed-update reservations. Unregister removes the directory entry, cancels work, stops the service cleanly, and prevents that identity from returning. Offline agents apply the stop when connectivity returns; service entries and local files are retained. Older agents must demonstrate support before the gateway accepts remote-stop commands. This supersedes D015's metadata-only removal contract for the new unregister command. See [installation](installation.md#manage-registrations) and [protocol](protocol.md#machine-lifecycle).
+
+## D024: Offline unregistration without lifecycle support
+
+The remaining online support requirement is superseded by [D027](#d027-unregister-older-agents-and-reinstall-retired-profiles).
+
+Allow fleet owners to unregister any offline registration, even when the agent never demonstrated lifecycle support. Requiring an upgrade and reconnection prevents removal of machines that are no longer accessible. Keep the same durable identity tombstone and installation-credential revocation as online unregistration.
+
+Online unregister still requires lifecycle support. Compatible offline agents receive the stop policy when they next contact the gateway. Older agents cannot rejoin with the retired identity, but require a local stop if still running. This supersedes only D023's support requirement for offline unregistration. See [registration management](installation.md#manage-registrations).
+
+## D025: Local CLI self-updates
+
+Bare `control update` replaces the invoked CLI with a verified public GitHub release; `upgrade` is an alias. No gateway role is required because this operation uses local filesystem authority and the same release publisher trusted by the installers. Keep `update push`, `status`, and `check` as superuser-only fleet administration. This supersedes D014's restriction on the bare update command and its help, while retaining gateway publication and rollout authorization.
+
+Validate the manifest, pin the download to its version, check size and checksum, and execute `version --json` before replacing the CLI. Serialize updates with a local lock. Use atomic replacement on Unix and rename the old executable aside on Windows, preserving permissions and restoring the old path if installation fails. A locked Windows backup remains until removed after its processes exit. Running services retain their existing process and managed runtime selection, so a local CLI update does not bypass idle reservations or change an active rollout. See [CLI updates](updates.md#update-the-local-cli).
+
+## D026: Replace enrollment within the existing machine profile
+
+[D027](#d027-unregister-older-agents-and-reinstall-retired-profiles) extends this flow to profiles whose identities were already retired.
+
+Running a new invitation against an existing local profile replaces its registration, including when the name changes. Reuse the profile's Ed25519 identity and execution settings. Stop the existing service before replacing its executable or profile, and retain pending enrollment for recovery. The gateway atomically renames the directory entry, binds the new credential, and revokes previous invitation credentials. This supersedes D015's refusal to replace existing installations.
+
+The local identity identifies the machine, rather than its display name or a hardware fingerprint. An invitation for an already registered name reserves that identity; another machine cannot claim it. Replacement preserves immutable fleet ownership, disabled policy, and retired-identity rejection. Installed identities use their current bound credential, so an older common-key configuration cannot restore the previous name. Users keep their workspace and task history, but running work is interrupted by the explicit re-registration. Separate profiles remain separate installations. See [installation and enrollment](installation.md#add-a-machine).
+
+## D027: Unregister older agents and reinstall retired profiles
+
+Allow owners to unregister online agents without requiring lifecycle support. Registration removal and identity retirement are gateway operations; requiring a remote-stop implementation prevents owners from removing old agents. Commit the tombstone and credential revocation before closing the gateway connection. Compatible agents stop through their policy channel. Older agents need a local stop, and existing direct sessions can continue until then. This supersedes D023/D024's remaining online-unregistration restriction.
+
+When a new invitation runs against a retired local profile, create a fresh identity in a separate state directory. Preserve the workspace, profile settings, and old state files, and persist the chosen identity for recovery. This extends D026 without reviving retired identities or reassigning their fleet ownership. Inspect retirement through a signed `inspectOnly` policy query so an installer cannot accidentally advertise lifecycle support for an old running agent. Upgrade the gateway before using this installer proof format. See [installation](installation.md#add-a-machine).

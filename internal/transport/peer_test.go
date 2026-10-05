@@ -47,7 +47,7 @@ func TestGatewayRestartAndDirectSessionContinuity(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer stream.Close()
+				defer func() { _ = stream.Close() }()
 				_ = stream.SetDeadline(time.Now().Add(3 * time.Second))
 				if _, err = stream.Write([]byte("ping")); err != nil {
 					t.Fatal(err)

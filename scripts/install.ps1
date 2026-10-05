@@ -26,6 +26,6 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Installation failed' }
   $installDir = if ($env:CONTROL_INSTALL_DIR) { [IO.Path]::GetFullPath($env:CONTROL_INSTALL_DIR) } else { Join-Path $env:LOCALAPPDATA 'Programs\control' }
   if (($env:Path -split ';') -notcontains $installDir) { $env:Path = "$installDir;$env:Path" }
-  Write-Host 'Next: control setup --gateway https://YOUR_GATEWAY --name main --client opencode'
+  Write-Host 'Next, in Administrator PowerShell: control setup --gateway https://YOUR_GATEWAY --name main --client opencode'
   Write-Host 'Control is on PATH in this session. Other applications may need a new login session to pick up the saved user PATH.'
 } finally { Remove-Item -LiteralPath $tmp -Recurse -Force }

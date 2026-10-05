@@ -3,14 +3,16 @@ package workgate
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
 type Gate struct {
-	mu      sync.Mutex
-	active  int
-	paused  bool
-	changed chan struct{}
+	mu       sync.Mutex
+	active   int
+	paused   bool
+	disabled bool
+	changed  chan struct{}
 }
 
 func New() *Gate { return &Gate{changed: make(chan struct{})} }
@@ -23,6 +25,10 @@ func (g *Gate) Enter(ctx context.Context) (func(), error) {
 		if err := ctx.Err(); err != nil {
 			g.mu.Unlock()
 			return nil, err
+		}
+		if g.disabled {
+			g.mu.Unlock()
+			return nil, errors.New("machine is disabled by its fleet owner")
 		}
 		if !g.paused {
 			g.active++
@@ -55,6 +61,18 @@ func (g *Gate) Resume() {
 	defer g.mu.Unlock()
 	if g.paused {
 		g.paused = false
+		close(g.changed)
+		g.changed = make(chan struct{})
+	}
+}
+
+// SetDisabled changes admission without cancelling already accepted work or
+// disturbing an independent managed-update reservation.
+func (g *Gate) SetDisabled(disabled bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.disabled != disabled {
+		g.disabled = disabled
 		close(g.changed)
 		g.changed = make(chan struct{})
 	}

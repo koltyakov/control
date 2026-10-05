@@ -15,17 +15,20 @@ type Capability struct {
 }
 
 type Node struct {
-	UserID       string            `json:"userId,omitempty"`
-	ID           string            `json:"id"`
-	Name         string            `json:"name"`
-	PublicKey    []byte            `json:"publicKey"`
-	OS           string            `json:"os"`
-	Labels       map[string]string `json:"labels,omitempty"`
-	Capabilities []Capability      `json:"capabilities"`
-	Online       bool              `json:"online"`
-	LastSeen     time.Time         `json:"lastSeen"`
-	System       *SystemInfo       `json:"system,omitempty"`
-	Software     buildinfo.Info    `json:"software"`
+	UserID         string            `json:"userId,omitempty"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	PublicKey      []byte            `json:"publicKey"`
+	OS             string            `json:"os"`
+	Labels         map[string]string `json:"labels,omitempty"`
+	Capabilities   []Capability      `json:"capabilities"`
+	Online         bool              `json:"online"`
+	LastSeen       time.Time         `json:"lastSeen"`
+	System         *SystemInfo       `json:"system,omitempty"`
+	Software       buildinfo.Info    `json:"software"`
+	Disabled       bool              `json:"disabled,omitempty"`
+	ControlPending bool              `json:"controlPending,omitempty"`
+	Managed        bool              `json:"managed,omitempty"`
 }
 
 type Artifact struct {

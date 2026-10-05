@@ -18,7 +18,17 @@ local authenticated API
 
 ## Components
 
-`internal/installation` manages saved host profiles, user startup, and MCP/skill configuration. `internal/enrollment` defines invitation messages and platform scripts. The gateway persists hashed, expiring tickets and binds each redeemed credential to its signed machine identity. See [installation and enrollment](installation.md) for the setup flow.
+`internal/installation` manages saved host profiles, background startup, and MCP/skill configuration. Windows uses an automatic SCM service under LocalService, with a native service handler around the update supervisor. Stop and shutdown controls cancel the supervisor and wait for its child to exit. Linux and macOS use per-user service managers. `internal/enrollment` defines invitation messages and platform scripts. The gateway persists hashed, expiring tickets and binds each redeemed credential to its signed machine identity. See [installation and enrollment](installation.md) for the setup flow.
+
+OS-only invitations pin both architecture assets from a single deployment manifest. The target script detects the native architecture and verifies the selected binary's checksum. Signed redemption fixes that architecture in the persisted registration credential. The dashboard creates invitations through the shared client and delegates local clipboard access to platform-specific helpers in `internal/clipboard`.
+
+Re-enrollment replaces the selected local profile's registration using its existing identity. The installer persists a pending replacement profile, stops the old service, redeems the new invitation, then writes the profile and restarts. SQLite commits the directory rename and invitation-credential rotation together. Same-name invitations reserve the existing identity; new-name invitations can rename a signing identity only within its immutable fleet. See [D026](decisions.md#d026-replace-enrollment-within-the-existing-machine-profile).
+
+Unregistration also accepts connected agents without lifecycle support. The gateway removes their registrations and closes their connections; local shutdown still requires agent support or a local stop. Installers inspect policy without acknowledging it or claiming runtime support. When replacing a retired profile, they persist a new identity in a separate state directory and preserve the old files. See [D027](decisions.md#d027-unregister-older-agents-and-reinstall-retired-profiles).
+
+`control login` validates and persists a gateway credential independently of node setup. Directory and fleet-management commands use that saved login directly. Setup reuses the account key to issue a separate node key; execution and peer activity still use the local node API.
+
+Fleet owners manage machine admission through gateway policy. SQLite stores monotonic disabled/unregistered state per immutable identity. Nodes read only their own policy using short-lived Ed25519 proofs, persist it locally, and acknowledge its revision. This channel survives revocation of installation credentials so an unregistered agent can still receive its stop instruction. Disabled admission is separate from updater reservations, and both must permit new execution. Directory selection excludes disabled and policy-pending machines. Unregistration tombstones prevent an old process from recreating a removed registration.
 
 `cmd/control` provides gateway, node, CLI, MCP, and tunnel entry points. `internal/client` is shared by CLI and MCP. A persistent node owns the connection and identity so concurrent local tools do not re-enroll or compete for the same connection.
 
@@ -28,9 +38,11 @@ local authenticated API
 
 `internal/node` owns capabilities, local MCP sessions, subprocesses, tasks, artifacts, workflow execution, and access checks. Providers know nothing about the connection transport.
 
-`internal/system` samples and caches host resources on startup, periodically, on heavy-task completion, or on request. `internal/dashboard` renders a scrollable terminal view using Bubble Tea. Its client fetches bounded pool snapshots from the local node, including every registered machine's availability and authorized node-wide activity metadata. Dashboard polls read the resource cache rather than collecting metrics themselves. See [dashboard and system metrics](dashboard.md).
+`internal/system` samples and caches host resources. Nodes collect on startup, periodically, on heavy-task completion, or on request. The gateway collects on startup and every 15 seconds, and stops its collector on shutdown. `internal/dashboard` renders a scrollable terminal view using Bubble Tea. Its shared client reads `/v1/status` directly from the gateway for service identity, cached gateway metrics, and the authenticated user's directory. Every five seconds nodes send aggregate work/lease state and cached resources over their authenticated gateway connection. The gateway retains one report per connection for up to 20 seconds and exposes it only to the fleet owner. An available local node enriches directory entries with bounded, authorized peer activity snapshots. Dashboard polls and health reports read resource caches rather than collecting metrics themselves. See [dashboard and system metrics](dashboard.md).
 
 `internal/update` validates and stages executable bundles, persists deployment state, and handles node update commands. The gateway coordinates an idle rollout over its existing authenticated connections. `internal/workgate` makes work admission and maintenance reservation mutually exclusive. A built-in service supervisor selects versioned executables from the state directory and preserves the outer process across updates. See [managed updates](updates.md).
+
+`control update`, also available as `control upgrade`, uses `internal/installation` to replace the invoked CLI from a public GitHub release without gateway authentication. It reuses manifest and executable validation from `internal/update`, serializes replacement with a local file lock, and preserves executable permissions. Windows renames a running executable aside before replacement. This does not change the supervisor's persisted runtime selection.
 
 ## Connection lifecycle
 

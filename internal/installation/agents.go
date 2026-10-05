@@ -161,7 +161,7 @@ func mergeMCP(paths AgentPaths, entry map[string]any) error {
 	if !held {
 		return errors.New("client configuration is being edited")
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	original, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err

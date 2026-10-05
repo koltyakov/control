@@ -408,6 +408,9 @@ func TestDashboardObservesPoolWorkAndSampledResources(t *testing.T) {
 	if err = json.Unmarshal(cli(t, ctx, "dashboard", "--once", "--json", "--recent", "0"), &snapshot); err != nil {
 		t.Fatal(err)
 	}
+	if g := snapshot.Gateway; g == nil || g.URL != os.Getenv("CONTROL_GATEWAY") || g.Software.Version == "" || g.System == nil || g.System.SampledAt.IsZero() || g.System.MemoryTotalBytes == 0 {
+		t.Fatalf("missing remote gateway status: %+v", g)
+	}
 	found := map[string]bool{}
 	for _, node := range snapshot.Nodes {
 		if node.Status != "ready" || !node.Online || node.System == nil || node.System.MemoryTotalBytes == 0 || len(node.System.Disks) == 0 {
@@ -435,7 +438,7 @@ func TestDashboardObservesPoolWorkAndSampledResources(t *testing.T) {
 		}
 	}
 	text := string(cli(t, ctx, "dashboard", "--once", "--recent", "0"))
-	for _, label := range []string{"MACHINES", "IN-FLIGHT ACTIVITIES", "CPU USED", "RAM AVAILABLE", "DISK FREE", "source", "worker", "consumer"} {
+	for _, label := range []string{"Gateway", os.Getenv("CONTROL_GATEWAY"), "Machines", "Activity", "CPU", "RAM", "Disk free", "source", "worker", "consumer"} {
 		if !strings.Contains(text, label) {
 			t.Fatalf("dashboard text missing %q", label)
 		}
@@ -447,6 +450,29 @@ func TestDashboardObservesPoolWorkAndSampledResources(t *testing.T) {
 	if metrics.SampledAt.IsZero() || metrics.CPUUsagePercent == nil || metrics.LogicalCPUs == 0 || metrics.MemoryTotalBytes == 0 {
 		t.Fatalf("requested resource sample incomplete: %+v", metrics)
 	}
+	// A logged-in owner also gets machine health without a local observer.
+	admin := client.Admin{URL: os.Getenv("CONTROL_GATEWAY"), Key: os.Getenv("CONTROL_SUPERUSER_KEY")}
+	healthCtx, cancelHealth := context.WithTimeout(ctx, 12*time.Second)
+	defer cancelHealth()
+	waitUpdate(t, healthCtx, func() bool {
+		owner, err := (client.Client{}).Dashboard(healthCtx, admin, model.PoolActivityQuery{Nodes: []string{"worker"}})
+		if err != nil || len(owner.Nodes) != 1 {
+			return false
+		}
+		n := owner.Nodes[0]
+		if n.Status != "summary" || n.ActiveCount < 4 || n.System == nil || n.System.CPUUsagePercent == nil {
+			return false
+		}
+		if len(n.Active) != 0 || len(n.Recent) != 0 || owner.Notice != "" {
+			t.Fatal("owner health exposed peer records or lost availability")
+		}
+		for _, id := range ids {
+			if strings.Contains(string(model.JSON(owner)), id) {
+				t.Fatal("owner summary exposed task IDs")
+			}
+		}
+		return true
+	})
 	t.Log("observed foreign-owner tasks, queue, HTTP call, transfer progress, tunnel counters, and host resources")
 }
 

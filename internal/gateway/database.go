@@ -39,7 +39,7 @@ func (g *Gateway) openDatabase(dir string) error {
 	if err = g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 1 {
+	if version > 2 {
 		return errors.New("gateway database is newer than this executable")
 	}
 	if version == 0 {
@@ -50,7 +50,7 @@ func (g *Gateway) openDatabase(dir string) error {
 		if err != nil {
 			return err
 		}
-		defer tx.Rollback()
+		defer func() { _ = tx.Rollback() }()
 		if _, err = tx.Exec(`
 CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, data BLOB NOT NULL);
 CREATE TABLE identities (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), UNIQUE(id,user_id));
@@ -59,7 +59,8 @@ CREATE TABLE nodes (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(
 CREATE TABLE invitations (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL);
 CREATE INDEX credentials_user ON credentials(user_id);
 CREATE INDEX invitations_user ON invitations(user_id);
-PRAGMA user_version=1;`); err != nil {
+CREATE TABLE machine_states (id TEXT PRIMARY KEY REFERENCES identities(id), data BLOB NOT NULL);
+PRAGMA user_version=2;`); err != nil {
 			return err
 		}
 		if err = g.writeState(tx); err != nil {
@@ -67,11 +68,28 @@ PRAGMA user_version=1;`); err != nil {
 		}
 		return tx.Commit()
 	}
+	if version == 1 {
+		tx, err := g.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(`CREATE TABLE machine_states (id TEXT PRIMARY KEY REFERENCES identities(id), data BLOB NOT NULL); PRAGMA user_version=2;`); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
 	g.users = map[string]User{}
 	g.owners = map[string]string{}
 	g.keys = map[string]keyRecord{}
 	g.nodes = map[string]model.Node{}
 	g.installations = map[string]installation{}
+	g.machineStates = map[string]model.MachineState{}
+	if err = readRecords(g.db, "machine_states", "id", g.machineStates); err != nil {
+		return err
+	}
 	if err = readRecords(g.db, "users", "id", g.users); err != nil {
 		return err
 	}
@@ -88,7 +106,7 @@ PRAGMA user_version=1;`); err != nil {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var id, user string
 		if err = rows.Scan(&id, &user); err != nil {
@@ -104,7 +122,7 @@ func readRecords[T any](db *sql.DB, table, key string, dst map[string]T) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var id string
 		var data []byte
@@ -121,6 +139,7 @@ func readRecords[T any](db *sql.DB, table, key string, dst map[string]T) error {
 }
 
 func (g *Gateway) importLegacy(dir string) error {
+	g.machineStates = map[string]model.MachineState{}
 	g.users = map[string]User{legacyUser: {ID: legacyUser, Name: "legacy", CreatedAt: time.Now().UTC()}}
 	g.owners = map[string]string{}
 	g.keys = map[string]keyRecord{}
@@ -156,7 +175,7 @@ func (g *Gateway) persist() error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err = g.writeState(tx); err != nil {
 		return err
 	}
@@ -196,6 +215,11 @@ func (g *Gateway) writeState(tx *sql.Tx) error {
 	}
 	for hash, i := range g.installations {
 		if _, err := tx.Exec(`INSERT INTO invitations(hash,user_id,data) VALUES(?,?,?)`, hash, i.UserID, model.JSON(i)); err != nil {
+			return err
+		}
+	}
+	for id, state := range g.machineStates {
+		if _, err := tx.Exec(`INSERT INTO machine_states(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`, id, model.JSON(state)); err != nil {
 			return err
 		}
 	}

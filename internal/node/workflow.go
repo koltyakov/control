@@ -98,7 +98,7 @@ func (n *Node) workflowRun(ctx context.Context, args json.RawMessage, e Executio
 		if step.Task.ID == "" {
 			step.Task.ID = identity.NewID()
 		}
-		fmt.Fprintf(e.Log, "step %s: target=%s task=%s\n", step.Name, step.Target, step.Task.ID)
+		_, _ = fmt.Fprintf(e.Log, "step %s: target=%s task=%s\n", step.Name, step.Target, step.Task.ID)
 		var task model.Task
 		if err := n.Call(ctx, step.Target, "tasks.start", step.Task, &task); err != nil {
 			return results, fmt.Errorf("submit %s: %w", step.Name, err)

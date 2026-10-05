@@ -76,12 +76,12 @@ func (n *Node) Handler() http.Handler {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
-		defer peer.Close()
+		defer func() { _ = peer.Close() }()
 		ws, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			return
 		}
-		defer ws.CloseNow()
+		defer func() { _ = ws.CloseNow() }()
 		stream := websocket.NetConn(r.Context(), ws, websocket.MessageBinary)
 		Bridge(r.Context(), peer, stream)
 	})

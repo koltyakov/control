@@ -73,7 +73,7 @@ func (g *Gateway) installationAsset(r *http.Request, osName, arch string) (updat
 		if err != nil {
 			return update.Asset{}, "", err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		stat, err := f.Stat()
 		if err != nil {
 			return update.Asset{}, "", err
@@ -100,8 +100,8 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	p := g.authenticate(bearer(r))
 	r.Body = http.MaxBytesReader(w, r.Body, 8192)
 	var q enrollment.Request
-	if json.NewDecoder(r.Body).Decode(&q) != nil || !validName.MatchString(q.Name) || (q.OS != "linux" && q.OS != "darwin" && q.OS != "windows") || (q.Arch != "amd64" && q.Arch != "arm64") {
-		http.Error(w, "name and supported os/arch are required", 400)
+	if json.NewDecoder(r.Body).Decode(&q) != nil || !validName.MatchString(q.Name) || (q.OS != "linux" && q.OS != "darwin" && q.OS != "windows") || (q.Arch != "" && q.Arch != "amd64" && q.Arch != "arm64") {
+		http.Error(w, "name and supported OS are required; arch may be amd64, arm64, or omitted", 400)
 		return
 	}
 	if q.TTLSeconds == 0 {
@@ -120,9 +120,30 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	asset, version, err := g.installationAsset(r, q.OS, q.Arch)
+	var asset update.Asset
+	var assets []update.Asset
+	var version string
+	if q.Arch == "" {
+		// Pin both architectures from one manifest, never a moving release target.
+		deployment := g.updates.Current()
+		for _, arch := range []string{"amd64", "arm64"} {
+			var candidate update.Asset
+			var found bool
+			if deployment != nil {
+				candidate, found = deployment.Manifest.Asset(q.OS, arch)
+			}
+			if !found || update.Verify(g.updates.Blob(candidate.SHA256), candidate) != nil {
+				http.Error(w, "publish a bundle containing both amd64 and arm64 installers for "+q.OS, http.StatusConflict)
+				return
+			}
+			assets = append(assets, candidate)
+		}
+		asset, version = assets[0], deployment.Manifest.Version
+	} else {
+		asset, version, err = g.installationAsset(r, q.OS, q.Arch)
+	}
 	if err != nil {
-		http.Error(w, err.Error(), 409)
+		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	var secret [32]byte
@@ -132,13 +153,12 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	ticket := base64.RawURLEncoding.EncodeToString(secret[:])
 	now := time.Now().UTC()
-	i := installation{Invitation: enrollment.Invitation{UserID: p.UserID, ID: identity.NewID(), Name: q.Name, Gateway: base, Asset: asset, Version: version, CreatedAt: now, ExpiresAt: now.Add(time.Duration(q.TTLSeconds) * time.Second)}}
+	i := installation{Invitation: enrollment.Invitation{UserID: p.UserID, ID: identity.NewID(), Name: q.Name, Gateway: base, Asset: asset, Assets: assets, Version: version, CreatedAt: now, ExpiresAt: now.Add(time.Duration(q.TTLSeconds) * time.Second)}}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for _, n := range g.nodes {
 		if n.UserID == p.UserID && n.Name == q.Name {
-			http.Error(w, "name is already registered", 409)
-			return
+			i.ReplaceID = n.ID
 		}
 	}
 	count := 0
@@ -150,14 +170,17 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 			delete(g.installations, hash)
 			continue
 		}
-		if old.Name == q.Name && !old.Revoked {
-			http.Error(w, "name has an existing invitation", 409)
+		if old.Name == q.Name && !old.Revoked && old.RedeemedID == "" {
+			http.Error(w, "name has an existing invitation", http.StatusConflict)
 			return
+		}
+		if old.Name == q.Name && !old.Revoked && old.RedeemedID != "" {
+			i.ReplaceID = old.RedeemedID
 		}
 		count++
 	}
 	if count >= 4096 {
-		http.Error(w, "installation registry limit reached", 409)
+		http.Error(w, "installation registry limit reached", http.StatusConflict)
 		return
 	}
 	hash := enrollment.Hash(ticket)
@@ -210,6 +233,14 @@ func (g *Gateway) installInfo(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if arch := r.URL.Query().Get("arch"); arch != "" {
+		asset, found := i.Select(arch)
+		if !found {
+			http.Error(w, "unsupported invitation architecture", http.StatusBadRequest)
+			return
+		}
+		i.Asset = asset
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(i.Invitation)
 }
@@ -217,6 +248,15 @@ func (g *Gateway) installBinary(w http.ResponseWriter, r *http.Request) {
 	i, ok := g.pendingInstallation(w, r)
 	if !ok {
 		return
+	}
+	arch := r.URL.Query().Get("arch")
+	if arch != "" || len(i.Assets) > 0 {
+		asset, found := i.Select(arch)
+		if !found {
+			http.Error(w, "select a supported architecture with ?arch=amd64 or ?arch=arm64", http.StatusBadRequest)
+			return
+		}
+		i.Asset = asset
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeFile(w, r, g.updates.Blob(i.Asset.SHA256))
@@ -237,12 +277,12 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 	i, ok := g.installations[hash]
 	u, userOK := g.users[i.UserID]
 	if !ok || !userOK || u.Disabled || i.Revoked {
-		http.Error(w, "invitation unavailable", 410)
+		http.Error(w, "invitation unavailable", http.StatusGone)
 		return
 	}
 	if i.RedeemedID != "" {
-		if i.RedeemedID != id || i.CredentialHash != q.CredentialHash {
-			http.Error(w, "invitation already redeemed", 410)
+		if i.RedeemedID != id || i.CredentialHash != q.CredentialHash || (q.Arch != "" && q.Arch != i.Asset.Arch) || (len(i.Assets) > 0 && q.Arch == "") {
+			http.Error(w, "invitation already redeemed", http.StatusGone)
 			return
 		}
 		// The same locally persisted identity can recover a lost HTTP response.
@@ -250,31 +290,68 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !time.Now().Before(i.ExpiresAt) {
-		http.Error(w, "invitation expired", 410)
+		http.Error(w, "invitation expired", http.StatusGone)
 		return
 	}
 	if owner := g.owners[id]; owner != "" && owner != i.UserID {
-		http.Error(w, "identity cannot be enrolled", 409)
+		http.Error(w, "identity cannot be enrolled", http.StatusConflict)
+		return
+	}
+	if g.machineStates[id].Unregistered || (i.ReplaceID != "" && i.ReplaceID != id) {
+		http.Error(w, "invitation requires an eligible local identity", http.StatusConflict)
 		return
 	}
 	for _, n := range g.nodes {
 		if n.UserID == i.UserID && n.Name == i.Name && n.ID != id {
-			http.Error(w, "name is already registered", 409)
+			http.Error(w, "name is already registered", http.StatusConflict)
 			return
 		}
 	}
 	old := i
+	if q.Arch != "" || len(i.Assets) > 0 {
+		asset, found := i.Select(q.Arch)
+		if !found {
+			http.Error(w, "unsupported invitation architecture", http.StatusBadRequest)
+			return
+		}
+		i.Asset = asset
+	}
 	oldOwner := g.owners[id]
+	// A signed redemption replaces this identity's previous installation, even
+	// when its name changes. Commit the rename and credential revocation together.
+	previousNode, registered := g.nodes[id]
+	if registered {
+		n := previousNode
+		n.Name = i.Name
+		g.nodes[id] = n
+	}
+	previousInstallations := map[string]installation{}
+	for h, previous := range g.installations {
+		if h != hash && previous.RedeemedID == id && !previous.Revoked {
+			previousInstallations[h] = previous
+			previous.Revoked = true
+			g.installations[h] = previous
+		}
+	}
 	g.owners[id] = i.UserID
 	i.RedeemedID, i.CredentialHash = id, q.CredentialHash
 	g.installations[hash] = i
 	if err := g.persist(); err != nil {
+		if registered {
+			g.nodes[id] = previousNode
+		}
+		for h, previous := range previousInstallations {
+			g.installations[h] = previous
+		}
 		if oldOwner == "" {
 			delete(g.owners, id)
 		}
 		g.installations[hash] = old
 		http.Error(w, "could not persist enrollment", 500)
 		return
+	}
+	if peer := g.peers[id]; peer != nil {
+		_ = peer.ws.CloseNow()
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -317,32 +394,42 @@ func (g *Gateway) revokeInstallation(w http.ResponseWriter, r *http.Request) {
 // Called under g.mu after checking the registration signature.
 func (g *Gateway) allowInstallation(keyID string, n model.Node) bool {
 	bound := strings.HasPrefix(keyID, "install:")
+	allowed := !bound
 	for _, i := range g.installations {
 		if i.UserID != n.UserID {
 			continue
 		}
 		if keyID == "install:"+i.ID {
-			return !i.Revoked && i.RedeemedID == n.ID && i.Name == n.Name && i.Asset.OS == n.OS && i.Asset.Arch == n.Software.Arch
+			if i.Revoked || i.RedeemedID != n.ID || i.Name != n.Name || i.Asset.OS != n.OS || i.Asset.Arch != n.Software.Arch {
+				return false
+			}
+			allowed = true
+			continue
 		}
-		if i.Name == n.Name && !i.Revoked && (i.RedeemedID != "" || time.Now().Before(i.ExpiresAt)) {
+		if !i.Revoked && i.RedeemedID == n.ID {
+			return false
+		}
+		if i.Name == n.Name && !i.Revoked && i.ReplaceID != n.ID && (i.RedeemedID != "" || time.Now().Before(i.ExpiresAt)) {
 			return false
 		}
 	}
-	return !bound
+	return allowed
 }
 
 func (g *Gateway) forgetMachine(w http.ResponseWriter, r *http.Request) {
 	p := g.authenticate(bearer(r))
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	id := r.PathValue("id")
 	n, ok := g.nodes[id]
 	if !ok || n.UserID != p.UserID {
+		g.mu.Unlock()
 		http.NotFound(w, r)
 		return
 	}
-	if g.peers[id] != nil {
-		http.Error(w, "stop the machine before forgetting its registration", 409)
+	peer := g.peers[id]
+	if peer != nil && r.URL.Query().Get("stop") != "true" {
+		g.mu.Unlock()
+		http.Error(w, "stop the machine before forgetting its registration", http.StatusConflict)
 		return
 	}
 	old := map[string]installation{}
@@ -354,14 +441,22 @@ func (g *Gateway) forgetMachine(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	delete(g.nodes, id)
+	previous := g.machineStates[id]
+	g.machineStates[id] = model.MachineState{Revision: previous.Revision + 1, Disabled: true, Unregistered: true}
 	if err := g.persist(); err != nil {
+		g.machineStates[id] = previous
 		g.nodes[id] = n
 		for hash, i := range old {
 			g.installations[hash] = i
 		}
+		g.mu.Unlock()
 		http.Error(w, "could not remove registration", 500)
 		return
 	}
 	delete(g.updateStatus, id)
+	g.mu.Unlock()
+	if peer != nil {
+		_ = peer.ws.CloseNow()
+	}
 	w.WriteHeader(http.StatusNoContent)
 }

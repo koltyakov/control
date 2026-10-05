@@ -11,7 +11,7 @@ import (
 )
 
 // Build metadata is set by the release/development builder using -ldflags.
-var Version = "0.1.0"
+var Version = "dev"
 var ReleaseRepo = "koltyakov/control"
 var BuildTime string
 
@@ -38,7 +38,7 @@ func Current() Info {
 		if err != nil {
 			return
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		hash := sha256.New()
 		if _, err = io.Copy(hash, f); err == nil {
 			current.SHA256 = hex.EncodeToString(hash.Sum(nil))

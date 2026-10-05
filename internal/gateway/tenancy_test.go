@@ -262,7 +262,7 @@ func TestSQLiteLegacyMigrationAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer g.Close()
+	defer func() { _ = g.Close() }()
 	if g.authenticate(a.Key).UserID != u.ID || g.owners[n.ID] != legacyUser {
 		t.Fatal("SQLite lost account or permanent identity ownership")
 	}

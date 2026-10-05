@@ -16,22 +16,24 @@ import (
 type Request struct {
 	Name       string `json:"name"`
 	OS         string `json:"os"`
-	Arch       string `json:"arch"`
+	Arch       string `json:"arch,omitempty"`
 	TTLSeconds int    `json:"ttlSeconds,omitempty"`
 	Gateway    string `json:"gateway"`
 }
 
 type Invitation struct {
-	UserID     string       `json:"userId,omitempty"`
-	ID         string       `json:"id"`
-	Name       string       `json:"name"`
-	Gateway    string       `json:"gateway"`
-	Asset      update.Asset `json:"asset"`
-	Version    string       `json:"version"`
-	ExpiresAt  time.Time    `json:"expiresAt"`
-	CreatedAt  time.Time    `json:"createdAt"`
-	RedeemedID string       `json:"redeemedId,omitempty"`
-	Revoked    bool         `json:"revoked"`
+	UserID     string         `json:"userId,omitempty"`
+	ID         string         `json:"id"`
+	Name       string         `json:"name"`
+	Gateway    string         `json:"gateway"`
+	Asset      update.Asset   `json:"asset"`            // Selected binary; first candidate until architecture selection.
+	Assets     []update.Asset `json:"assets,omitempty"` // Pinned candidates for architecture-detecting installers.
+	Version    string         `json:"version"`
+	ExpiresAt  time.Time      `json:"expiresAt"`
+	CreatedAt  time.Time      `json:"createdAt"`
+	RedeemedID string         `json:"redeemedId,omitempty"`
+	ReplaceID  string         `json:"replaceId,omitempty"` // Existing identity reserved by a same-name invitation.
+	Revoked    bool           `json:"revoked"`
 }
 
 type Link struct {
@@ -41,6 +43,7 @@ type Link struct {
 }
 
 type Redemption struct {
+	Arch           string `json:"arch,omitempty"`
 	PublicKey      []byte `json:"publicKey"`
 	CredentialHash string `json:"credentialHash"`
 	Signature      []byte `json:"signature"`
@@ -55,8 +58,25 @@ func Message(ticket string, r Redemption) []byte {
 	b, _ := json.Marshal(struct {
 		Purpose, Ticket, Credential string
 		PublicKey                   []byte
-	}{"control-enrollment-v1", Hash(ticket), r.CredentialHash, r.PublicKey})
+		Arch                        string `json:"arch,omitempty"`
+	}{"control-enrollment-v1", Hash(ticket), r.CredentialHash, r.PublicKey, r.Arch})
 	return b
+}
+
+func (i Invitation) Candidates() []update.Asset {
+	if len(i.Assets) > 0 {
+		return i.Assets
+	}
+	return []update.Asset{i.Asset}
+}
+
+func (i Invitation) Select(arch string) (update.Asset, bool) {
+	for _, asset := range i.Candidates() {
+		if asset.Arch == arch {
+			return asset, true
+		}
+	}
+	return update.Asset{}, false
 }
 
 func GatewayURL(value string) (string, error) {

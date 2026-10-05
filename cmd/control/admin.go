@@ -17,22 +17,40 @@ import (
 	"github.com/koltyakov/control/internal/installation"
 )
 
-func adminClient() client.Admin {
-	saved, _ := installation.ReadAdmin()
-	if saved.Gateway == "" {
-		if cfg, err := installation.ReadConfig(installation.ConfigPath()); err == nil {
-			saved.Gateway = cfg.Gateway
+func adminClient(profile string) client.Admin {
+	c, _ := gatewayClient(profile, nil)
+	if c.URL == "" {
+		c.URL = "http://127.0.0.1:7330"
+	}
+	return c
+}
+
+func gatewayClient(profile string, tokenOverride *string) (client.Admin, error) {
+	cfg, err := installation.ReadConfig(profile)
+	if err != nil {
+		return client.Admin{}, err
+	}
+	saved, err := installation.ReadAdmin()
+	if err != nil {
+		return client.Admin{}, err
+	}
+	base := env("CONTROL_GATEWAY", cfg.Gateway)
+	if base == "" {
+		base = saved.Gateway
+	}
+	base = strings.TrimRight(base, "/")
+	key := env("CONTROL_USER_KEY", env("CONTROL_SUPERUSER_KEY", os.Getenv("CONTROL_TOKEN")))
+	if tokenOverride != nil {
+		key = *tokenOverride
+	} else if key == "" {
+		if base == strings.TrimRight(saved.Gateway, "/") {
+			key = saved.Key
+		}
+		if key == "" && base == strings.TrimRight(cfg.Gateway, "/") {
+			key = cfg.Token
 		}
 	}
-	if saved.Gateway == "" {
-		saved.Gateway = "http://127.0.0.1:7330"
-	}
-	base := env("CONTROL_GATEWAY", saved.Gateway)
-	key := env("CONTROL_USER_KEY", env("CONTROL_SUPERUSER_KEY", os.Getenv("CONTROL_TOKEN")))
-	if key == "" && strings.TrimRight(base, "/") == strings.TrimRight(saved.Gateway, "/") {
-		key = saved.Key
-	}
-	return client.Admin{URL: base, Key: key}
+	return client.Admin{URL: base, Key: key}, nil
 }
 
 func commandHelp(ctx context.Context, c client.Admin) string {
@@ -58,10 +76,11 @@ Environment: CONTROL_GATEWAY, CONTROL_SUPERUSER_KEY
 
 const fleetUsage = `
 Your fleet:
-  machines add NAME --platform OS/ARCH [--ttl 15m]  Create one-time install command
+  machines add NAME --platform macos|windows|linux  Create one-time install command
   machines invites                     List installation status
   machines revoke ID                   Revoke an invitation and its machine key
-  machines forget NODE_ID              Remove an offline registration and its invitation key
+  machines enable|disable NAME          Enable or disable new work on a machine
+  machines unregister NAME              Unregister a machine and stop its agent
   keys create NAME                     Issue a common key, shown once
   keys list                            List common keys
   keys revoke ID                       Revoke a common key
@@ -70,7 +89,7 @@ Environment: CONTROL_GATEWAY, CONTROL_USER_KEY
 
 func adminCLI(ctx context.Context, c client.Admin, args []string) error {
 	role := c.Role(ctx)
-	if role != "superuser" && !(role == "user" && args[0] == "keys") {
+	if role != "superuser" && (role != "user" || args[0] != "keys") {
 		return fmt.Errorf("unknown command %q", args[0])
 	}
 	if len(args) < 2 || args[1] == "--help" || args[1] == "help" {
@@ -140,9 +159,12 @@ func adminCLI(ctx context.Context, c client.Admin, args []string) error {
 }
 
 func machineCLI(ctx context.Context, c client.Admin, args []string) error {
-	role := c.Role(ctx)
+	role, err := c.AuthRole(ctx)
+	if err != nil {
+		return err
+	}
 	if role != "user" && role != "superuser" {
-		return errors.New("unknown machines command")
+		return errors.New("machine management requires a user account key; run control login with your account key")
 	}
 	if args[0] == "invites" {
 		var list any
@@ -155,24 +177,42 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 	if args[0] == "revoke" && len(args) == 2 {
 		return c.JSON(ctx, "DELETE", "/v1/fleet/installations/"+url.PathEscape(args[1]), nil, nil)
 	}
-	if args[0] == "forget" && len(args) == 2 {
-		return c.JSON(ctx, "DELETE", "/v1/fleet/nodes/"+url.PathEscape(args[1]), nil, nil)
+	if (args[0] == "forget" || args[0] == "unregister" || args[0] == "enable" || args[0] == "disable") && len(args) == 2 {
+		n, err := c.ResolveMachine(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		action := args[0]
+		if action == "forget" {
+			return c.JSON(ctx, "DELETE", "/v1/fleet/nodes/"+url.PathEscape(n.ID), nil, nil)
+		}
+		return c.ManageMachine(ctx, n.ID, action)
 	}
 	if args[0] != "add" || len(args) < 2 {
-		return errors.New("usage: control machines add NAME --platform linux/amd64 [--ttl 15m]")
+		return errors.New("usage: control machines add NAME --platform macos|windows|linux")
 	}
 	f := flag.NewFlagSet("machines add", flag.ContinueOnError)
-	platform := f.String("platform", "", "linux, darwin, or windows with /amd64 or /arm64")
+	platform := f.String("platform", "", "macos, windows, or linux; architecture is detected by the installer")
 	ttl := f.Duration("ttl", 15*time.Minute, "installation link lifetime")
 	asJSON := f.Bool("json", false, "print installation JSON")
 	if err := f.Parse(args[2:]); err != nil {
 		return err
 	}
-	parts := strings.Split(*platform, "/")
-	if len(parts) != 2 || *ttl < time.Minute || *ttl > 24*time.Hour {
-		return errors.New("provide --platform OS/ARCH and a TTL between 1m and 24h")
+	parts := strings.Split(strings.ToLower(*platform), "/")
+	if len(parts) > 2 || *ttl < time.Minute || *ttl > 24*time.Hour {
+		return errors.New("provide --platform macos|windows|linux and a TTL between 1m and 24h")
 	}
-	link, err := c.Invite(ctx, enrollment.Request{Name: args[1], OS: parts[0], Arch: parts[1], TTLSeconds: int(ttl.Seconds())})
+	if parts[0] == "macos" {
+		parts[0] = "darwin"
+	}
+	if parts[0] != "darwin" && parts[0] != "windows" && parts[0] != "linux" {
+		return errors.New("platform must be macos, windows, or linux")
+	}
+	arch := ""
+	if len(parts) == 2 {
+		arch = parts[1]
+	}
+	link, err := c.Invite(ctx, enrollment.Request{Name: args[1], OS: parts[0], Arch: arch, TTLSeconds: int(ttl.Seconds())})
 	if err != nil {
 		return err
 	}

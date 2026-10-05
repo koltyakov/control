@@ -39,7 +39,7 @@ func (c Client) Call(ctx context.Context, target, method string, params any, res
 	if err != nil {
 		return fmt.Errorf("local node API: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("local node API: %s", resp.Status)
 	}
@@ -80,7 +80,7 @@ func (c Client) Download(ctx context.Context, a model.Artifact, offset int64, w 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download: %s", resp.Status)
 	}

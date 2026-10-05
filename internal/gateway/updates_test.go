@@ -37,7 +37,7 @@ func (c testAdmin) JSON(ctx context.Context, method, path string, params, result
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
@@ -130,7 +130,7 @@ func TestReleaseFetchChecksManifestAndDoesNotReplaceNewerDevelopment(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer g.Close()
+	defer func() { _ = g.Close() }()
 	d, err := g.fetchRelease(context.Background())
 	if err != nil {
 		t.Fatal(err)

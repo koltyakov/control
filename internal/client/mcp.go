@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func (c Client) MCPServer() *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "control", Version: "0.1.0"}, &mcp.ServerOptions{Instructions: "Use control_nodes to resolve machine names. Inspect capabilities and their input schemas with control_describe. Execute long work with control_task_start, then inspect status and logs. Machines can fetch artifact inputs directly from peers. Use control_mcp_discover before calling installed MCP tools. Every node argument accepts a machine name or stable ID; an empty node selects the local machine."})
+	server := mcp.NewServer(&mcp.Implementation{Name: "control", Version: buildinfo.Version}, &mcp.ServerOptions{Instructions: "Use control_nodes to resolve machine names. Do not schedule work on disabled machines or machines with controlPending set; control_select excludes them. Inspect capabilities and their input schemas with control_describe. Execute long work with control_task_start, then inspect status and logs. Machines can fetch artifact inputs directly from peers. Use control_mcp_discover before calling installed MCP tools. Every node argument accepts a machine name or stable ID; an empty node selects the local machine."})
 	add := func(name, description, method string, properties map[string]any, required []string, transform func(map[string]json.RawMessage) (string, any, error)) {
 		input := map[string]any{"type": "object", "properties": properties}
 		if len(required) > 0 {
@@ -65,11 +66,11 @@ func (c Client) MCPServer() *mcp.Server {
 			return target, params, err
 		}
 	}
-	add("control_nodes", "List enrolled machines, online status, labels, and capabilities.", "nodes.list", map[string]any{}, nil, normal)
+	add("control_nodes", "List enrolled machines, software versions, online/disabled status, pending policy, labels, and capabilities.", "nodes.list", map[string]any{}, nil, normal)
 	add("control_activities", "Read a pool-wide activity snapshot, including all registered machines, availability, tasks from all owners, transfers, tunnels, and cached system metrics. Unavailable nodes are reported individually. Requires activities.list permission on the observed nodes.", "activities.pool", map[string]any{"nodes": map[string]any{"type": "array", "items": text}, "recent": map[string]any{"type": "integer", "minimum": 0, "maximum": 64}}, nil, normal)
 	add("control_system", "Read OS, CPU, RAM, and disk usage from a node's cached system sample. Set refresh to request a new sample.", "system.info", map[string]any{"node": text, "refresh": map[string]any{"type": "boolean"}}, []string{"node"}, normal)
 	add("control_describe", "Inspect a node and discover capability input schemas.", "node.describe", map[string]any{"node": text}, []string{"node"}, normal)
-	add("control_select", "Find an online machine matching labels and a capability.", "nodes.select", map[string]any{"labels": object, "capability": text}, nil, normal)
+	add("control_select", "Find an online, enabled machine matching labels and a capability. Machines awaiting a policy acknowledgement are excluded.", "nodes.select", map[string]any{"labels": object, "capability": text}, nil, normal)
 	add("control_call", "Call a node method or capability with structured params. Discover capabilities first. Also supports artifacts.list, artifacts.pull, artifacts.grant, tasks.list, and mcp.request.", "", map[string]any{"node": text, "method": text, "params": object}, []string{"method"}, nested("params"))
 	add("control_task_start", "Submit a tracked task. task has capability, args, optional id, timeoutSeconds, inputs [{artifact,path}], and outputs [relative paths]. Reuse the task ID to reconcile an uncertain submission.", "tasks.start", map[string]any{"node": text, "task": object}, []string{"node", "task"}, nested("task"))
 	add("control_task_get", "Read task status, result, and artifact references.", "tasks.get", map[string]any{"node": text, "id": text}, []string{"node", "id"}, normal)

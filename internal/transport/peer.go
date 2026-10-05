@@ -50,21 +50,22 @@ type link struct {
 }
 
 type Peer struct {
-	userID   string
-	members  map[string]bool
-	cfg      Config
-	ctx      context.Context
-	cancel   context.CancelFunc
-	mu       sync.Mutex
-	ws       *websocket.Conn
-	links    map[string]*link
-	sessions map[string]*yamux.Session
-	resolved map[string]string
-	dialMu   sync.Mutex
-	handler  func(string, net.Conn)
-	log      *slog.Logger
-	wg       sync.WaitGroup
-	control  func(string, []byte)
+	userID     string
+	members    map[string]bool
+	cfg        Config
+	ctx        context.Context
+	cancel     context.CancelFunc
+	mu         sync.Mutex
+	ws         *websocket.Conn
+	links      map[string]*link
+	sessions   map[string]*yamux.Session
+	resolved   map[string]string
+	dialMu     sync.Mutex
+	handler    func(string, net.Conn)
+	log        *slog.Logger
+	wg         sync.WaitGroup
+	control    func(string, []byte)
+	nodeHealth bool
 }
 
 func New(cfg Config, handler func(string, net.Conn)) *Peer {
@@ -94,6 +95,13 @@ func (p *Peer) SendControl(ctx context.Context, kind string, data []byte) error 
 	return p.send(ctx, &protocol.Packet{Kind: kind, Data: data})
 }
 
+// SupportsNodeHealth prevents new reports from disconnecting older gateways.
+func (p *Peer) SupportsNodeHealth() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.nodeHealth
+}
+
 func (p *Peer) Start(ctx context.Context) error {
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	ws, err := p.connect(p.ctx)
@@ -121,7 +129,8 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		return nil, err
 	}
 	var scope struct {
-		UserID string `json:"userId"`
+		UserID     string `json:"userId"`
+		NodeHealth bool   `json:"nodeHealth"`
 	}
 	err = json.NewDecoder(io.LimitReader(resp.Body, 8192)).Decode(&scope)
 	_ = resp.Body.Close()
@@ -134,6 +143,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		return nil, errors.New("node fleet cannot change")
 	}
 	p.userID = scope.UserID
+	p.nodeHealth = scope.NodeHealth
 	p.mu.Unlock()
 	p.cfg.Node.UserID = scope.UserID
 	u := gateway.URL(p.cfg.Gateway, "/v1/connect")
@@ -245,7 +255,7 @@ func (p *Peer) receive(msg *protocol.Packet) {
 		}
 		p.mu.Unlock()
 		for _, c := range connections {
-			go c.Close()
+			go func() { _ = c.Close() }()
 		}
 		return
 	}
@@ -270,7 +280,7 @@ func (p *Peer) receive(msg *protocol.Packet) {
 	switch msg.Kind {
 	case "data":
 		if l.mode == "relay" && !l.conn.push(msg.Data) {
-			go l.conn.Close()
+			go func() { _ = l.conn.Close() }()
 		}
 	case "answer":
 		if l.mode == "relay" {
@@ -285,7 +295,7 @@ func (p *Peer) receive(msg *protocol.Packet) {
 			}
 		}
 	case "close":
-		go l.conn.Close()
+		go func() { _ = l.conn.Close() }()
 	}
 }
 
@@ -298,7 +308,7 @@ func (p *Peer) newLink(id, remote, mode string) (*link, error) {
 		delete(p.links, id)
 		p.mu.Unlock()
 		if l.pc != nil {
-			go l.pc.Close()
+			go func() { _ = l.pc.Close() }()
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -312,7 +322,7 @@ func (p *Peer) newLink(id, remote, mode string) (*link, error) {
 		l.pc = pc
 		pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 			if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
-				go l.conn.Close()
+				go func() { _ = l.conn.Close() }()
 			}
 		})
 	}
@@ -357,10 +367,10 @@ func bindDataChannel(l *link, dc *webrtc.DataChannel) {
 	}
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 		if !l.conn.push(msg.Data) {
-			go l.conn.Close()
+			go func() { _ = l.conn.Close() }()
 		}
 	})
-	dc.OnClose(func() { go l.conn.Close() })
+	dc.OnClose(func() { go func() { _ = l.conn.Close() }() })
 	dc.OnOpen(func() { l.readyOnce.Do(func() { close(l.ready) }) })
 }
 
@@ -384,7 +394,7 @@ func (p *Peer) accept(msg *protocol.Packet) {
 	if err != nil {
 		return
 	}
-	defer l.conn.Close()
+	defer func() { _ = l.conn.Close() }()
 	if mode == "webrtc" {
 		l.pc.OnDataChannel(func(dc *webrtc.DataChannel) { bindDataChannel(l, dc) })
 		var offer webrtc.SessionDescription
@@ -432,7 +442,7 @@ func (p *Peer) accept(msg *protocol.Packet) {
 	if err != nil {
 		return
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	p.serve(session, msg.From)
 }
 
@@ -453,7 +463,7 @@ func (p *Peer) serve(session *yamux.Session, remote string) {
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
-			defer stream.Close()
+			defer func() { _ = stream.Close() }()
 			if p.handler != nil {
 				p.handler(remote, stream)
 			}
@@ -471,7 +481,7 @@ func (p *Peer) Nodes(ctx context.Context) ([]model.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("directory: %s", resp.Status)
 	}

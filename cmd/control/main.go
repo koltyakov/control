@@ -32,6 +32,13 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	args := os.Args[1:]
+	if handled, err := runPlatformService(ctx, args); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "control:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(args) > 0 && args[0] == "__managed" {
 		managedChild = true
 		args = args[1:]
@@ -44,13 +51,14 @@ func main() {
 }
 
 func run(ctx context.Context, args []string) error {
+	commandArgs := append([]string(nil), args...)
 	flags := flag.NewFlagSet("control", flag.ContinueOnError)
 	profile := flags.String("config", installation.ConfigPath(), "saved local node configuration for CLI/MCP")
 	api := flags.String("api", env("CONTROL_API", "http://127.0.0.1:7331"), "local node API URL")
 	token := flags.String("token", os.Getenv("CONTROL_TOKEN"), "gateway/local API token")
 	debug := flags.Bool("debug", false, "debug logs to stderr")
 	admin := func() client.Admin {
-		c := adminClient()
+		c := adminClient(*profile)
 		flags.Visit(func(f *flag.Flag) {
 			if f.Name == "token" {
 				c.Key = *token
@@ -76,7 +84,7 @@ func run(ctx context.Context, args []string) error {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 	c := client.Client{URL: *api, Token: *token}
-	if args[0] != "node" && args[0] != "gateway" && args[0] != "version" {
+	if args[0] != "node" && args[0] != "gateway" && args[0] != "version" && args[0] != "update" && args[0] != "upgrade" {
 		cfg, err := installation.ReadConfig(*profile)
 		if err != nil {
 			return err
@@ -98,6 +106,8 @@ func run(ctx context.Context, args []string) error {
 		}
 	}
 	switch args[0] {
+	case "login":
+		return loginCLI(ctx, args[1:])
 	case "install-self":
 		path, err := installation.InstallSelf(ctx)
 		if err != nil {
@@ -126,7 +136,14 @@ func run(ctx context.Context, args []string) error {
 			}
 		}
 		return nil
-	case "update", "keys", "users":
+	case "update":
+		if len(args) > 1 && (args[1] == "push" || args[1] == "status" || args[1] == "check") {
+			return adminCLI(ctx, admin(), args)
+		}
+		return selfUpdateCLI(ctx, args[1:])
+	case "upgrade":
+		return selfUpdateCLI(ctx, args[1:])
+	case "keys", "users":
 		return adminCLI(ctx, admin(), args)
 	case "gateway":
 		f := flag.NewFlagSet("gateway", flag.ContinueOnError)
@@ -137,7 +154,7 @@ func run(ctx context.Context, args []string) error {
 		if err := f.Parse(args[1:]); err != nil {
 			return err
 		}
-		return managed(ctx, *data, func(ctx context.Context, apply func(string) error) error {
+		return managed(ctx, *data, commandArgs, func(ctx context.Context, apply func(string) error) error {
 			interval := 15 * time.Minute
 			if value := os.Getenv("CONTROL_RELEASE_INTERVAL"); value != "" {
 				var err error
@@ -150,7 +167,7 @@ func run(ctx context.Context, args []string) error {
 			if err != nil {
 				return err
 			}
-			defer g.Close()
+			defer func() { _ = g.Close() }()
 			g.StartUpdates(ctx)
 			return serve(ctx, node.HTTPServer(*listen, g.Handler()), *cert, *key)
 		})
@@ -170,19 +187,23 @@ func run(ctx context.Context, args []string) error {
 		if *token != "" {
 			cfg.Token = *token
 		}
-		return managed(ctx, cfg.DataDir, func(ctx context.Context, apply func(string) error) error {
+		return managed(ctx, cfg.DataDir, commandArgs, func(ctx context.Context, apply func(string) error) error {
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			n, err := node.New(cfg)
 			if err != nil {
 				return err
 			}
-			defer n.Close()
+			defer func() { _ = n.Close() }()
 			n.SetShutdown(cancel)
 			if err = n.ConfigureUpdates(buildinfo.Current(), apply); err != nil {
 				return err
 			}
 			if err = n.Start(ctx); err != nil {
+				if errors.Is(err, node.ErrUnregistered) {
+					slog.Info("machine unregistered; service stopped")
+					return nil
+				}
 				return err
 			}
 			slog.Info("node online", "name", n.Config.Name, "id", n.Identity.ID, "api", n.Config.Listen)
@@ -194,9 +215,24 @@ func run(ctx context.Context, args []string) error {
 		if len(args) > 1 {
 			return machineCLI(ctx, admin(), args[1:])
 		}
-		return callPrint(ctx, c, "", "nodes.list", map[string]any{})
+		var machines []model.Node
+		if err := admin().JSON(ctx, http.MethodGet, "/v1/nodes", nil, &machines); err != nil {
+			return err
+		}
+		printJSON(machines)
+		return nil
 	case "dashboard":
-		return dashboardCLI(ctx, c, args[1:])
+		var override *string
+		flags.Visit(func(f *flag.Flag) {
+			if f.Name == "token" {
+				override = token
+			}
+		})
+		remote, err := gatewayClient(*profile, override)
+		if err != nil {
+			return err
+		}
+		return dashboardCLI(ctx, c, remote, args[1:])
 	case "system":
 		if len(args) < 2 {
 			return errors.New("usage: control system NODE [--refresh]")
@@ -290,7 +326,7 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer listener.Close()
+		defer func() { _ = listener.Close() }()
 		stop := context.AfterFunc(ctx, func() { _ = listener.Close() })
 		defer stop()
 		fmt.Fprintln(os.Stderr, "listening on", listener.Addr())
@@ -303,7 +339,7 @@ func run(ctx context.Context, args []string) error {
 				return err
 			}
 			go func() {
-				defer conn.Close()
+				defer func() { _ = conn.Close() }()
 				remote, err := c.Tunnel(ctx, args[1], args[2])
 				if err != nil {
 					slog.Error("tunnel", "error", err)
@@ -376,7 +412,7 @@ func artifactCLI(ctx context.Context, c client.Client, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		offset, err := f.Seek(0, io.SeekEnd)
 		if err != nil {
 			return err
@@ -478,13 +514,15 @@ Environment: CONTROL_API, CONTROL_TOKEN
 
   gateway [--listen ADDRESS] [--data DIR] [--tls-cert PEM --tls-key PEM]
   node --config control.json
-  setup --gateway URL --name NAME [--client opencode]  Configure and start this host
-  service start|stop|status|uninstall    Manage the installed user node
+  login --gateway URL [--key-stdin]      Save an API key for future commands
+  update [--version TAG]                Update this CLI from GitHub Releases; alias: upgrade
+  setup [--gateway URL] --name NAME [--client opencode]  Configure and start this host
+  service start|stop|status|uninstall    Manage the installed background node
   install-mcp CLIENT [--project DIR]    Configure an AI client's MCP server
   install-skill CLIENT [--project DIR]  Install the Control CLI skill
   mcp                                  Serve MCP over stdio using a local node
-  machines                             List the shared machine pool
-  dashboard [--once] [--json] [--node NAME,...]  Live pool activity and resources
+  machines                             List your fleet directly from the gateway
+  dashboard [--once] [--json] [--node NAME,...]  Gateway status, fleet activity and resources
   system NODE [--refresh]               Cached or requested system sample
   call NODE METHOD [JSON|@file]         Invoke any operation
   exec NODE [--] COMMAND [ARG...]       Submit a command and wait for its result

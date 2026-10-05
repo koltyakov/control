@@ -1,32 +1,129 @@
-name: Go
+name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
+  schedule:
+    # Weekly vulnerability scan between commits.
+    - cron: "0 6 * * 1"
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
+env:
+  GOLANGCI_LINT_VERSION: "v2.14.0"
+  GOVULNCHECK_VERSION: "v1.8.0"
+
 jobs:
   test:
+    if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Use Intel macOS runners to avoid ARM64 capacity queues.
+        os: [ubuntu-24.04, macos-15-intel, windows-2025]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          go-version: '1.25.x'
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
           cache: true
-      - run: go vet ./...
-      - run: go test -race ./... -timeout=180s
-      - run: go run ./cmd/control-bundle --binary bin/control
+          cache-dependency-path: go.sum
+      - name: Verify dependencies
+        run: go mod verify
+      - name: Run tests with race detector
+        run: go test -race ./... -timeout=180s
+      - name: Build native binary
+        shell: bash
+        run: |
+          binary=bin/control
+          if [ "$RUNNER_OS" = Windows ]; then binary=bin/control.exe; fi
+          go run ./cmd/control-bundle --binary "$binary"
+          "$binary" version --json
 
-  compose:
-    runs-on: ubuntu-latest
+  lint:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Check formatting
+        run: |
+          files=$(gofmt -s -l .)
+          if [ -n "$files" ]; then
+            printf 'The following files are not properly formatted:\n%s\n' "$files"
+            exit 1
+          fi
+      - name: Run go vet
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          install-mode: goinstall
+
+  build:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - run: make test-compose
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Build all release platforms
+        run: make bundle
+      - name: Verify bundle checksums
+        run: make release-check
+
+  compose:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Test WebRTC and relay deployments
+        run: make test-compose
+
+  vulnerabilities:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}
+      - name: Scan dependencies
+        run: govulncheck ./...

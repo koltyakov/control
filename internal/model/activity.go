@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"github.com/koltyakov/control/internal/buildinfo"
+)
 
 // Activity contains operational metadata, never command arguments, prompts,
 // environment variables, credentials, results, or log contents.
@@ -32,14 +36,17 @@ type PoolActivityQuery struct {
 }
 
 type NodeActivitySnapshot struct {
-	ID       string            `json:"id"`
-	Name     string            `json:"name"`
-	OS       string            `json:"os"`
-	Labels   map[string]string `json:"labels,omitempty"`
-	Online   bool              `json:"online"`
-	LastSeen time.Time         `json:"lastSeen"`
-	// Status is ready, offline, or unavailable. Unavailable includes denied
-	// access, timeouts, and peers that do not implement activities.list.
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	OS             string            `json:"os"`
+	Labels         map[string]string `json:"labels,omitempty"`
+	Online         bool              `json:"online"`
+	LastSeen       time.Time         `json:"lastSeen"`
+	Software       buildinfo.Info    `json:"software"`
+	Disabled       bool              `json:"disabled,omitempty"`
+	ControlPending bool              `json:"controlPending,omitempty"`
+	// Status is ready for peer activity, summary for fresh owner health,
+	// online for directory-only presence, offline, or unavailable.
 	Status         string      `json:"status"`
 	Error          string      `json:"error,omitempty"`
 	ObservedAt     time.Time   `json:"observedAt,omitempty"`
@@ -51,10 +58,21 @@ type NodeActivitySnapshot struct {
 	RelaySessions  int         `json:"relaySessions"`
 	LeaseOwner     string      `json:"leaseOwner,omitempty"`
 	LeaseExpires   time.Time   `json:"leaseExpires,omitempty"`
+	Leased         bool        `json:"leased,omitempty"`
 	System         *SystemInfo `json:"system,omitempty"`
 }
 
 type PoolActivitySnapshot struct {
 	ObservedAt time.Time              `json:"observedAt"`
 	Nodes      []NodeActivitySnapshot `json:"nodes"`
+	Gateway    *GatewaySnapshot       `json:"gateway,omitempty"`
+	Notice     string                 `json:"notice,omitempty"`
+}
+
+// GatewaySnapshot describes the gateway service, independently of fleet nodes.
+type GatewaySnapshot struct {
+	URL       string         `json:"url"`
+	Software  buildinfo.Info `json:"software"`
+	StartedAt time.Time      `json:"startedAt"`
+	System    *SystemInfo    `json:"system,omitempty"`
 }

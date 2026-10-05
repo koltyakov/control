@@ -6,7 +6,7 @@ Use Docker Compose for repeatable integration testing. Docker supplies Go, FFmpe
 
 ## Run the tests
 
-The suite also runs generated Bash installers in the test container, verifies online registration and remote execution, rejects reuse and common-key invitation creation, and checks host setup with saved credentials plus MCP/skill installation. Unit tests cover concurrent redemption, expiry, revocation, name reservations, and configuration preservation. These Linux container tests do not exercise native launchd or Windows login startup.
+The suite also runs generated Bash installers in the test container, verifies online registration and remote execution, rejects reuse and common-key invitation creation, and checks login followed by host setup without credential environment variables, plus MCP/skill installation. Unit tests cover saved login reuse, private credential files, failed-login preservation, concurrent redemption, expiry, revocation, name reservations, and configuration preservation. These Linux container tests do not exercise native launchd or Windows SCM startup.
 
 Private-fleet tests create two user accounts with duplicate machine names, multiple host agents, and a worker installed through a user-owned invitation. They verify saved account credentials, same-fleet execution over the required transport, and rejection of cross-user discovery, execution, tasks, artifacts, observation, and invitation revocation. Native tests also send forged signaling/relay packets directly to the gateway, check receiver membership and cross-user artifact grants, reject identity reassignment, and verify transactional JSON-to-SQLite migration and account persistence.
 
@@ -63,11 +63,17 @@ Gateway and node health checks gate test startup. The [relay override](../compos
 - HTTP requests and TCP tunnels opened by a remote node to a service on the internal network.
 - Actual peer transport selection for source/worker and worker/consumer connections.
 - Dashboard snapshots and CLI rendering while another owner has running and queued tasks, a synchronous HTTP call is blocked, a transfer is in progress, and a TCP tunnel carries traffic.
+- Direct gateway identity and resource metrics in dashboard output, plus owner-visible work counts and sampled CPU without a local observer. Core tests cover unavailable local nodes, fleet-scoped status, forged health sender IDs, report expiry, common-key restrictions, credential selection, and cached sampling without poll-triggered collection.
 - Cached system capabilities and explicit resource refreshes. The core suite also checks periodic/completion-request collection, denied/offline machine states, metadata privacy, and stale-view behavior.
 - A development bundle pushed to the gateway, deferred by a running task and lease, then applied by real process restarts on all three nodes and the gateway. Identities, task state, and issued keys survive the rollout.
 - Rejection of common-key update uploads and omission of administrative commands from common-key CLI help. Core tests also check release retrieval, corrupted binaries, persisted maintenance reservations, and key revocation.
+- One-time enrollment and Bash installer architecture selection with checksum rejection for Linux/macOS amd64 and arm64. The architecture tests simulate target detection; they do not execute foreign-platform binaries. Core tests cover architecture-bound redemption, pinned downloads across deployment changes, restart recovery, and wizard clipboard failures without duplicate invitations.
+- Re-running generated installers on an existing agent with the same name and a new name, retaining one identity and restoring remote execution while rejecting old credentials. After unregistration, a new installer uses fresh identity state and restores execution through the same profile. Core tests cover same-name identity reservations, profile/access-rule preservation, response recovery, persistence, and foreign or retired identity rejection.
+- Enable/disable/unregister through the installed CLI: admission changes on the remote node, unregister revokes its credential, and its actual supervisor exits. Core tests cover existing WebRTC/relay sessions, selector exclusion, accepted-task recovery and completion while disabled, independent update reservations, fleet isolation, signed acknowledgements, durable policy, online/offline unregistration without lifecycle support, inspection without lifecycle acknowledgement, retired identities, and dashboard action selection.
 
 These tests live in [tests/compose/e2e_test.go](../tests/compose/e2e_test.go) and [tests/compose/updates_test.go](../tests/compose/updates_test.go) behind the `compose` build tag. The ordinary Go suite remains independent of Docker and FFmpeg. Its existing tests cover cancellation, leases, grants, MCP, identity ownership, gateway restarts, and task reconciliation.
+
+Native CLI self-update tests use a local release server and a real running executable to check replacement, pinned downloads, checksum and version rejection, cancellation, and repeated updates. Windows CI exercises replacement while the previous executable is running. These tests require no published release or gateway credential.
 
 The Dockerfile downloads Go dependencies while building the image. The running test network does not need internet access. The initial image build does need access to container registries, Go modules, and Debian package repositories.
 
@@ -104,4 +110,50 @@ Start with fresh volumes when switching transport modes. The automated Make targ
 
 ## CI and platform coverage
 
-The Linux Compose job in [CI](../.github/workflows/ci.yml) runs both transport modes. The existing native Go matrix still tests Windows, macOS, and Linux. Linux containers on Docker Desktop do not verify Windows process handling or macOS filesystem behavior, so container testing complements that matrix.
+The [CI workflow](../.github/workflows/ci.yml) runs on pushes and pull requests to `main`. It cancels superseded runs, pins actions to commit SHAs, and reads the Go toolchain version from `go.mod`.
+
+Runner labels are pinned to `ubuntu-24.04`, `macos-15-intel`, and `windows-2025` to avoid automatic OS migrations. macOS uses Intel runners to avoid ARM64 capacity queues. The [release workflow](../.github/workflows/release.yml) also uses `ubuntu-24.04`.
+
+Separate jobs cover:
+
+- Dependency verification, race tests, and native executable builds on Windows, macOS, and Linux.
+- Formatting, vet, and golangci-lint.
+- All six CGO-free release binaries and manifest/checksum verification.
+- Both Compose transport modes.
+- govulncheck, also run by itself every Monday at 06:00 UTC.
+
+Linux containers on Docker Desktop do not verify Windows process handling or macOS filesystem behavior, so container testing complements the native matrix. The Compose image uses Go 1.27.1. Keep its version synchronized with `go.mod` when updating Go.
+
+## Local development commands
+
+Windows-native tests cover SCM stop/shutdown cancellation, failure reporting, and console-free background children. To exercise an actual service, run from Administrator PowerShell:
+
+```powershell
+$env:CONTROL_TEST_WINDOWS_SERVICE = '1'
+go test ./cmd/control -run '^TestWindowsServiceLifecycle$' -timeout 180s
+```
+
+This opt-in test builds a temporary executable, migrates a live detached node to SCM, verifies automatic startup settings and LocalService permissions, kills the supervisor to check SCM recovery and identity preservation, then stops, restarts, and removes the service. It uses a local gateway and paths containing spaces. Boot and logout persistence still need a Windows machine smoke test.
+
+`make` and `make help` list available targets. Make recipes use a POSIX shell; Windows developers can use Git Bash with Make or run the corresponding Go commands directly.
+
+| Target | Purpose |
+| --- | --- |
+| `deps`, `tidy` | Download/tidy dependencies, or just tidy module files |
+| `deps-update`, `deps-check` | Update current-major dependencies, or list available versions |
+| `go-update` | Update the Go requirement to the latest stable version |
+| `fmt`, `fmt-check` | Apply formatting or fail on unformatted Go files |
+| `lint` | Run pinned golangci-lint through `go run` |
+| `lint-hint`, `lint-hint-all` | Run installed gopls hints on changed or all Go files |
+| `test`, `test-race`, `check` | Native tests, race tests, or vet plus race tests |
+| `cov`, `test-coverage` | Generate `tmp/coverage.out` and `tmp/coverage.html` |
+| `test-cov-check` | Regenerate coverage and enforce `COVERAGE_MIN`, default 50% |
+| `bench` | Run available Go benchmarks without ordinary tests |
+| `build-all`, `bundle` | Build release binaries for all six platforms |
+| `release-local` | Build a bundle and check its manifest, files, and checksums |
+| `release-check` | Validate the existing bundle without rebuilding it |
+| `vuln` | Run pinned govulncheck |
+| `ci`, `ci-compose` | Run local CI checks, optionally followed by both Compose modes |
+| `clean` | Remove build, bundle, and coverage output |
+
+`GO`, `BIN_DIR`, `DIST_DIR`, `COVER_PROFILE`, and `COVER_HTML` can override the local tool/output paths. `PLATFORMS` narrows a local bundle. `make check` retains the existing vet and race-enabled checks.

@@ -34,27 +34,40 @@ set -euo pipefail
 umask 077
 case "$(uname -s)" in Linux) os=linux;; Darwin) os=darwin;; *) echo 'Unsupported OS' >&2; exit 1;; esac
 case "$(uname -m)" in x86_64|amd64) arch=amd64;; arm64|aarch64) arch=arm64;; *) echo 'Unsupported architecture' >&2; exit 1;; esac
-if [ "$os/$arch" != {{q (printf "%s/%s" .Asset.OS .Asset.Arch)}} ]; then echo 'Invitation platform does not match this machine' >&2; exit 1; fi
+if [ "$os" = darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then arch=arm64; fi
+if [ "$os" != {{q .Asset.OS}} ]; then echo 'Invitation OS does not match this machine' >&2; exit 1; fi
+case "$arch" in
+{{range .Candidates}}{{.Arch}}) checksum={{q .SHA256}};;
+{{end}}*) echo 'No installer for this architecture' >&2; exit 1;;
+esac
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-curl -fsSL {{q .Binary}} -o "$tmp/control"
+curl -fsSL {{q .Binary}}"?arch=$arch" -o "$tmp/control"
 if command -v sha256sum >/dev/null; then actual="$(sha256sum "$tmp/control" | awk '{print $1}')"; else actual="$(shasum -a 256 "$tmp/control" | awk '{print $1}')"; fi
-if [ "$actual" != {{q .Asset.SHA256}} ]; then echo 'Binary checksum mismatch' >&2; exit 1; fi
+if [ "$actual" != "$checksum" ]; then echo 'Binary checksum mismatch' >&2; exit 1; fi
 chmod 700 "$tmp/control"
 "$tmp/control" enroll --url {{q .Link}}
 `
 
 const powershellScript = `#Requires -Version 5.1
 $ErrorActionPreference = 'Stop'
+if ($env:CONTROL_SERVICE_MODE -ne 'process') {
+  $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+  if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run this installation command in Administrator PowerShell to install the automatic Windows service.' }
+}
 $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
-$arch = switch ($arch) { 'AMD64' {'amd64'} 'ARM64' {'arm64'} default {throw 'Unsupported architecture'} }
-if ($arch -ne {{q .Asset.Arch}}) { throw 'Invitation platform does not match this machine' }
+try { $arch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } catch { }
+$arch = switch ($arch) { 'AMD64' {'amd64'} 'X64' {'amd64'} 'ARM64' {'arm64'} default {throw 'Unsupported architecture'} }
+$checksum = switch ($arch) {
+{{range .Candidates}}  {{q .Arch}} { {{q .SHA256}} }
+{{end}}  default { throw 'No installer for this architecture' }
+}
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
   $exe = Join-Path $tmp 'control.exe'
-  Invoke-WebRequest -UseBasicParsing -Uri {{q .Binary}} -OutFile $exe
-  if ((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -ne {{q .Asset.SHA256}}) { throw 'Binary checksum mismatch' }
+  Invoke-WebRequest -UseBasicParsing -Uri ({{q .Binary}} + '?arch=' + $arch) -OutFile $exe
+  if ((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -ne $checksum) { throw 'Binary checksum mismatch' }
   & $exe enroll --url {{q .Link}}
   if ($LASTEXITCODE -ne 0) { throw 'Control enrollment failed' }
 } finally { Remove-Item -LiteralPath $tmp -Recurse -Force }

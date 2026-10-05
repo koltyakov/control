@@ -197,7 +197,7 @@ func (n *Node) httpRequest(ctx context.Context, args json.RawMessage, e Executio
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, (2<<20)+1))
 	if err != nil {
 		return nil, err
@@ -222,7 +222,7 @@ func (n *Node) filesList(ctx context.Context, args json.RawMessage, e Execution)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	entries, err := f.ReadDir(10001)
 	if err != nil && err != io.EOF {
 		return nil, err
@@ -260,7 +260,7 @@ func (n *Node) filesRead(ctx context.Context, args json.RawMessage, e Execution)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -306,7 +306,7 @@ func (n *Node) filesWrite(ctx context.Context, args json.RawMessage, e Execution
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err = f.Seek(q.Offset, io.SeekStart); err != nil {
 		return nil, err
 	}

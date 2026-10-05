@@ -24,7 +24,7 @@ func Bytes(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	tmp := f.Name()
-	defer os.Remove(tmp)
+	defer func() { _ = os.Remove(tmp) }()
 	if err = f.Chmod(mode); err == nil {
 		_, err = f.Write(data)
 	}

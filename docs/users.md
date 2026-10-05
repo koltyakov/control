@@ -20,13 +20,14 @@ Each command returns a user record and a random account key, shown once. Give ea
 On each of Alice's host machines:
 
 ```sh
-control setup --gateway https://control.example.com --name alice-laptop --client opencode
+control login --gateway https://control.example.com
+control setup --name alice-laptop --client opencode
 ```
 
-Enter Alice's account key at the prompt, or supply it through `CONTROL_USER_KEY`. Use a different machine name for her second host. Setup saves the account key separately and issues a common key for that host's node. Both hosts join Alice's fleet and can manage its installations:
+Enter Alice's account key at the login prompt, or supply it through `CONTROL_USER_KEY`. Login persists it for future commands; setup reuses it and issues a common key for that host's node. Use a different machine name for her second host. Both hosts join Alice's fleet and can manage its installations:
 
 ```sh
-control machines add render --platform windows/amd64 --ttl 15m
+control machines add render --platform windows
 control machines
 control dashboard
 ```
@@ -65,6 +66,8 @@ The gateway stores accounts, credential hashes, node registrations, permanent id
 
 The first startup imports existing `nodes.json`, `keys.json`, and `installations.json` into a single `legacy` fleet in one transaction. Old records cannot identify separate users, so migration never guesses ownership. Legacy files are retained but ignored after the database migration commits. Failed migration leaves them intact and can be retried.
 
+Schema version 2 adds `machine_states` for disabled policies and unregistration tombstones, referencing the existing permanent identities. Upgrading schema version 1 creates this table transactionally. Older gateways reject the newer schema; do not point them at the upgraded database. Node policy changes and directory removal commit together, and disconnect cleanup never recreates a removed node.
+
 `CONTROL_TOKEN` on the gateway is an optional bootstrap common key for the legacy fleet only. For a new shared gateway, omit it and configure `CONTROL_SUPERUSER_KEY`, then create separate accounts. Do not give unrelated users the same account key or legacy bootstrap token.
 
 **Upgrade the gateway before upgrading nodes from the pre-isolation version.** New nodes require fleet-aware authentication and refuse an older gateway. Pause automated release polling during this one-time gateway-first upgrade. Subsequent fleet-aware updates use the usual nodes-first managed rollout. SQLite migration cannot be reversed by starting the old executable against stale JSON files.
@@ -80,10 +83,13 @@ To split an old shared pool into new accounts, enroll fresh node identities unde
 | `DELETE /v1/admin/users/{id}` | Superuser | Disable that account and its credentials |
 | `GET /v1/auth` | Authenticated | `role`, `userId`, and management capabilities |
 | `GET /v1/nodes` | Authenticated | Only the credential owner's fleet |
+| `GET /v1/status` | Authenticated | Gateway version, URL, resources, and own directory; account keys also receive fresh aggregate health for their fleet |
 | `POST /v1/fleet/keys` | Fleet owner | JSON `name`; returns common key metadata and one-time `token` |
 | `GET /v1/fleet/keys` | Fleet owner | Own credential metadata |
 | `DELETE /v1/fleet/keys/{id}` | Fleet owner | Revoke own credential |
 | `/v1/fleet/installations` | Fleet owner | Scoped installation management, detailed in [installation](installation.md) |
 | `DELETE /v1/fleet/nodes/{id}` | Fleet owner | Forget own offline registration |
+| `PATCH /v1/fleet/nodes/{id}` | Fleet owner | Enable/disable own machine with JSON `disabled` |
+| `DELETE /v1/fleet/nodes/{id}?stop=true` | Fleet owner | Unregister own machine regardless of online state or lifecycle support |
 
 The older `/v1/admin/keys`, `/v1/admin/installations`, and `/v1/admin/nodes/{id}` aliases remain superuser-only and operate on the legacy fleet. They do not provide a cross-user route. Account IDs cannot be reassigned or deleted; `users revoke` disables the account. The legacy operator fleet cannot be disabled through this endpoint.

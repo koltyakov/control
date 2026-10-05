@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 )
@@ -156,6 +157,7 @@ func taskActivity(t *model.Task) model.Activity {
 
 func (n *Node) activitySnapshot(query model.ActivityQuery) model.NodeActivitySnapshot {
 	s := model.NodeActivitySnapshot{ID: n.Identity.ID, Name: n.Config.Name, OS: runtime.GOOS, Online: true, Status: "ready", ObservedAt: time.Now().UTC(), Active: []model.Activity{}, Recent: []model.Activity{}}
+	s.Software, s.Disabled = buildinfo.Current(), n.currentMachineState().Disabled
 	n.activityMu.Lock()
 	for _, h := range n.activities {
 		s.Active = append(s.Active, h.snapshot())
@@ -245,7 +247,7 @@ func (n *Node) poolActivities(ctx context.Context, caller string, args json.RawM
 		if byName {
 			selected[peer.Name] = true
 		}
-		pool.Nodes = append(pool.Nodes, model.NodeActivitySnapshot{ID: peer.ID, Name: peer.Name, OS: peer.OS, Labels: peer.Labels, Online: peer.Online, LastSeen: peer.LastSeen, Status: "offline", Active: []model.Activity{}, Recent: []model.Activity{}, System: peer.System})
+		pool.Nodes = append(pool.Nodes, model.NodeActivitySnapshot{ID: peer.ID, Name: peer.Name, OS: peer.OS, Labels: peer.Labels, Online: peer.Online, LastSeen: peer.LastSeen, Software: peer.Software, Disabled: peer.Disabled, ControlPending: peer.ControlPending, Status: "offline", Active: []model.Activity{}, Recent: []model.Activity{}, System: peer.System})
 	}
 	for name, found := range selected {
 		if !found {

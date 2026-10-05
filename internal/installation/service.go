@@ -16,9 +16,13 @@ import (
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/node"
+	"github.com/koltyakov/control/internal/processutil"
 )
 
 func Service(ctx context.Context, operation, binary, config, mode string) error {
+	if err := ValidateServiceMode(mode); err != nil {
+		return err
+	}
 	var err error
 	config, err = filepath.Abs(config)
 	if err != nil {
@@ -30,12 +34,23 @@ func Service(ctx context.Context, operation, binary, config, mode string) error 
 	}
 	cfg, err := node.LoadConfig(config)
 	if err != nil {
+		if (operation == "stop" || operation == "uninstall") && os.IsNotExist(err) {
+			if handled, serviceErr := platformService(ctx, operation, binary, config, mode, node.Config{}); handled {
+				return serviceErr
+			}
+		}
 		if operation == "uninstall" && os.IsNotExist(err) {
 			return nil
 		}
 		return err
 	}
 	c := client.Client{URL: API(cfg), Token: cfg.Token}
+	if handled, err := platformService(ctx, operation, binary, config, mode, cfg); handled {
+		if err == nil && operation == "start" {
+			return waitReady(ctx, c, cfg)
+		}
+		return err
+	}
 	switch operation {
 	case "stop", "uninstall":
 		if operation == "uninstall" {
@@ -57,7 +72,7 @@ func Service(ctx context.Context, operation, binary, config, mode string) error 
 			}
 			return fmt.Errorf("stop local node: %w", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusNoContent {
 			return fmt.Errorf("stop local node: %s", resp.Status)
 		}
@@ -80,9 +95,6 @@ func Service(ctx context.Context, operation, binary, config, mode string) error 
 		if mode == "" {
 			mode = "auto"
 		}
-		if mode != "auto" && mode != "user" && mode != "process" {
-			return errors.New("service mode must be auto, user, or process")
-		}
 		if mode != "process" {
 			err = installService(ctx, binary, config)
 			if err == nil {
@@ -102,9 +114,17 @@ func Service(ctx context.Context, operation, binary, config, mode string) error 
 	}
 }
 
+// ValidateServiceMode rejects unknown startup modes on every platform.
+func ValidateServiceMode(mode string) error {
+	if mode != "" && mode != "auto" && mode != "user" && mode != "process" {
+		return errors.New("service mode must be auto, user, or process")
+	}
+	return nil
+}
+
 func waitStopped(ctx context.Context, cfg node.Config) error {
 	lock := flock.New(filepath.Join(cfg.DataDir, "runtime.lock"))
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -174,7 +194,7 @@ func startDetached(binary, config string) error {
 	if err != nil {
 		return err
 	}
-	defer log.Close()
+	defer func() { _ = log.Close() }()
 	cmd := exec.Command(binary, "--token", "", "node", "--config", config)
 	cmd.Env = cleanEnvironment()
 	cmd.Stdout, cmd.Stderr = log, log
@@ -197,6 +217,7 @@ func cleanEnvironment() []string {
 }
 func run(ctx context.Context, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
+	processutil.HideWindow(cmd)
 	cmd.Env = cleanEnvironment()
 	output, err := cmd.CombinedOutput()
 	if err != nil {

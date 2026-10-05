@@ -34,29 +34,44 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/koltyakov/control/main/scripts/install.ps1 | iex
 ```
 
-Configure the main machine and AI client:
+Log in once with the account key supplied by your gateway operator:
 
 ```sh
-control setup --gateway https://control.example.com --name main --client opencode
+control login --gateway https://control.example.com
 ```
 
-Setup prompts for your user account key, saves configuration, starts the local node, and installs MCP plus the Control skill. The gateway operator creates your account with `control users create NAME`. Supported clients include OpenCode, Claude Code, Cursor, Copilot, Codex, Windsurf, Antigravity, and generic agents.
+The prompt hides your key. Control validates it and saves the gateway URL and key in your user configuration directory. Future commands load them automatically:
+
+```sh
+control machines
+control dashboard
+```
+
+To execute work from this machine and configure an AI client, start a host node using that saved login. On Windows, run setup in Administrator PowerShell:
+
+```sh
+control setup --name main --client opencode
+```
+
+Setup reuses the saved account key, starts the local node, and installs MCP plus the Control skill. Without a saved login, provide `--gateway` and enter the key when prompted. The gateway operator creates your account with `control users create NAME`. Supported clients include OpenCode, Claude Code, Cursor, Copilot, Codex, Windsurf, Antigravity, and generic agents.
 
 Using your saved account credentials, create an installation command for another machine in your fleet:
 
 ```sh
-control machines add render-01 --platform windows/amd64 --ttl 15m
+control machines add render-01 --platform windows
 ```
 
-Copy the printed PowerShell command onto the target and run it. Linux and macOS invitations print a Bash command. All three platforms support amd64 and arm64. The installer verifies the binary, creates an identity, redeems the single-use ticket, and starts the node. Success means the machine is registered and available.
+Copy the printed PowerShell command onto the target and run it in Administrator PowerShell. Windows nodes run as automatic system services, without a console window, including before login and after logout. Or press `a` in the dashboard to enter a name, select a platform, and copy the command automatically. Linux and macOS invitations use Bash. The installer detects amd64 or arm64, verifies the selected binary, creates an identity, redeems the single-use ticket, and starts the node. Invitations expire after 15 minutes by default. Success means the machine is registered and available.
 
 See [installation and enrollment](docs/installation.md) for prerequisites, saved profiles, startup, and invitation management. Public installers require published release assets. From a checkout, use `make build` followed by `bin/control setup`.
+
+Running a new invitation on an already registered machine replaces its enrollment in the current local profile. A different name renames the same machine instead of adding a duplicate. Its identity, workspace, and settings are retained.
 
 One account can have multiple host agents and collaborating workers. Other users cannot see or connect to its machines, even when they know a machine ID. See [users and private fleets](docs/users.md) for account provisioning, permissions, SQLite persistence, and upgrading an existing gateway.
 
 ## Build
 
-Go 1.25 or newer is required. The binary has no CGO dependency.
+Go 1.27.1 or newer is required. The binary has no CGO dependency. CI reads the Go version from `go.mod`; the Compose test image uses Go 1.27.1.
 
 ```sh
 make build
@@ -64,6 +79,18 @@ go test -race ./... -timeout=120s
 ```
 
 Without Make, run `go run ./cmd/control-bundle --binary bin/control`. On Windows, use `--binary bin/control.exe`. The builder embeds the source GitHub repository and UTC build time. Run `control help` for the CLI reference.
+
+Build versions come from `git describe --tags --always --dirty`, matching expose: a tagged checkout reports `v0.2.0`, later commits report `v0.2.0-3-gabc1234`, and tracked local changes append `-dirty`. Before the first tag, the version is the short commit hash. Without Git metadata it is `dev`. Override it with `make build VERSION=v0.2.0` or the builder's `--version` flag. Pushing a `v*.*.*` tag triggers the [release workflow](.github/workflows/release.yml).
+
+Install the CLI from the checkout:
+
+```sh
+make install
+```
+
+This builds and installs `control` to `~/.local/bin` on Linux/macOS or `%LOCALAPPDATA%\Programs\control` on Windows. Set `CONTROL_INSTALL_DIR` to choose another directory, for example `make install CONTROL_INSTALL_DIR=/your/bin`. On Linux/macOS, ensure the installation directory is on PATH.
+
+Run `make help` for development targets. `make deps-update` upgrades dependencies within their current major versions and tidies the module files; `make go-update` updates the Go requirement to the latest stable release. Major-version migrations need import/API changes. After updating Go, keep `tests/compose/Dockerfile` on the same version. `make ci` runs formatting, lint, vet, race tests, vulnerability scanning, native and six-platform builds, bundle verification, and workflow validation. `make ci-compose` adds WebRTC and relay integration tests. See [testing](docs/testing.md) for coverage and focused commands.
 
 ## Test with Docker Compose
 
@@ -114,15 +141,21 @@ For an internet gateway, use `https://` in node configs. Terminate HTTPS/WSS at 
 
 ## Monitor the machine pool
 
-Run this on the machine hosting your orchestrator, with its local node running:
+Use your saved host profile to open the dashboard:
 
 ```sh
 bin/control dashboard
 ```
 
-The dashboard lists all registered machines, including idle and offline ones. It shows running and queued tasks from every owner, synchronous operations, artifact transfer progress, TCP tunnel traffic, and recent completions. It also reports OS, CPU, RAM, and disk capacity and usage.
+The dashboard connects directly to the configured gateway and shows its URL, running version, service uptime, CPU, RAM, and disk usage. With an account key, it also shows each machine's current resources, idle/busy state, and work count without a local node. Nodes report health every five seconds from their independently sampled resource cache. Set `CONTROL_GATEWAY` and `CONTROL_USER_KEY` to use it without a saved profile.
 
-Use the arrow keys or Page Up/Page Down to scroll, `r` to refresh activity, and `q` to quit. For scripts or a single view:
+With a local node running, the dashboard also shows running and queued tasks from every owner, synchronous operations, artifact transfer progress, TCP tunnel traffic, and recent completions. It lists idle and offline machines and reports their OS, CPU, RAM, and disk capacity and usage.
+
+Tables adapt to terminal width. Use `d` for full details, arrow keys or Page Up/Page Down to scroll, `r` to refresh activity, and `q` to quit. Refreshes use steady text with no blinking indicators.
+
+The machine table includes running versions. Press `m` to enable, disable, or unregister a selected machine. Disabling keeps it registered and blocks new work. Unregistering removes it and retires its identity, including while offline; lifecycle-capable agents stop on their next gateway contact. CLI equivalents are `control machines disable NAME`, `enable NAME`, and `unregister NAME`. See [registration management](docs/installation.md#manage-registrations).
+
+For scripts or a single view:
 
 ```sh
 bin/control dashboard --once
@@ -131,9 +164,19 @@ bin/control system worker
 bin/control system worker --refresh
 ```
 
-System metrics are sampled every 15 seconds by default, after heavy tasks finish, or on explicit request. Dashboard refreshes use those cached samples and show their age. Set `metricsIntervalSeconds` in a node config to change the sampling interval, or `-1` to disable periodic sampling while retaining completion-triggered and explicit refreshes.
+System metrics are sampled every 15 seconds by default, after heavy tasks finish, or on explicit request. Dashboard refreshes use those cached samples; JSON output retains sampling timestamps. Set `metricsIntervalSeconds` in a node config to change the sampling interval, or `-1` to disable periodic sampling while retaining completion-triggered and explicit refreshes.
 
 See [dashboard and system metrics](docs/dashboard.md) for availability states, permissions, and sampling behavior.
+
+## Update the CLI
+
+```sh
+control update
+```
+
+This downloads the latest stable GitHub release, verifies it, and replaces the CLI you invoked. `control upgrade` is an alias. No gateway login is required. Use `control update --version v0.2.0` to select a release. Existing binaries without this command need a current build or a one-time reinstall using the installation script above.
+
+Running nodes receive their updates through the gateway's managed rollout, described below. See [CLI updates](docs/updates.md#update-the-local-cli) for repository settings and Windows behavior.
 
 ## Update the pool
 
@@ -258,4 +301,4 @@ Connect your local database client to `127.0.0.1:15432`. The worker opens the co
 - [Users and private fleets](docs/users.md): account registration, isolation, SQLite persistence, and migration.
 - [Contributor and agent guide](AGENTS.md): repository layout, coding instructions, and verification.
 
-The gateway supports multiple isolated user fleets with SQLite-backed registration and credential storage. It is a single-gateway deployment, without gateway clustering, public self-service signup, billing, or execution sandboxing. Node task and artifact metadata use locked local directories and atomic JSON writes. User startup is supported on Windows, Linux, and macOS. Desktop and application integrations can be attached through MCP or custom providers; GUI tools need a provider running in the user's desktop session.
+The gateway supports multiple isolated user fleets with SQLite-backed registration and credential storage. It is a single-gateway deployment, without gateway clustering, public self-service signup, billing, or execution sandboxing. Node task and artifact metadata use locked local directories and atomic JSON writes. Windows uses an automatic LocalService service; Linux and macOS support user startup. Desktop and application integrations can be attached through MCP or custom providers; GUI tools need a provider running in the user's desktop session.

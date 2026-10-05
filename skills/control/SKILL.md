@@ -17,7 +17,7 @@ Commands operate only within the authenticated user's private fleet. Machine nam
 2. Run `control call NAME node.describe` to inspect supported operations and schemas.
 3. Read `control system NAME` for cached resources. Use `--refresh` only when a new sample is needed.
 
-An offline or unavailable node is not an idle node. Report connection failures rather than choosing a different execution machine without the user's instruction.
+An offline or unavailable node is not an idle node. Do not schedule work on machines with `disabled` or `controlPending` set. `control_select` excludes those machines. Report connection failures rather than choosing a different execution machine without the user's instruction.
 
 ## Submit durable work
 
@@ -45,6 +45,6 @@ control artifact get worker ARTIFACT_ID ./result.bin
 
 ## Setup and administration
 
-Use `control service status` to check the local node. `control service start` starts its saved configuration. A fleet owner can create a machine installation command with `control machines add NAME --platform OS/ARCH --ttl 15m`. Treat the resulting URL as a short-lived bearer secret and share it only with the intended installer. Common keys cannot manage invitations. User provisioning and global software updates require the gateway superuser.
+Use `control service status` to check the local node. `control service start` starts its saved configuration. A fleet owner can create an installation command with `control machines add NAME --platform macos|windows|linux`. The installer detects architecture and uses the default invitation lifetime. Treat the URL as a short-lived bearer secret and share it only with the intended installer. Account keys can use `control machines disable|enable|unregister NAME`; unregister removes even offline registrations and retires their identities. Lifecycle-capable agents stop on their next gateway contact; older offline agents require a local stop if still running. Use these lifecycle commands only when the user requests the change. Common keys cannot manage invitations or machine policy. User provisioning and global software updates require the gateway superuser.
 
 Prefer MCP tools when already available. The MCP server is self-contained and does not need this skill to expose its tool schemas.
