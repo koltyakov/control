@@ -32,6 +32,25 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	args := os.Args[1:]
+	if len(args) == 2 && args[0] == "__tunnels" {
+		logFile, err := os.OpenFile(filepath.Join(args[1], "service.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err == nil {
+			defer func() { _ = logFile.Close() }()
+			os.Stderr = logFile
+		}
+		if err = client.RunTunnelService(ctx, args[1]); err != nil {
+			fmt.Fprintln(os.Stderr, "control tunnels:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(args) > 0 && args[0] == "__uninstall" {
+		if err := retiredUninstallCLI(ctx, args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "control uninstall:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if handled, err := runPlatformService(ctx, args); handled {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "control:", err)
@@ -121,6 +140,13 @@ func run(ctx context.Context, args []string) error {
 			}
 		}
 	}
+	c = c.WithPersistentTunnels(filepath.Join(installation.Home(), "tunnels"), func(ctx context.Context, dir string) error {
+		binary, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		return installation.StartTunnelService(ctx, binary, dir)
+	})
 	switch args[0] {
 	case "login":
 		return loginCLI(ctx, args[1:])
@@ -218,21 +244,29 @@ func run(ctx context.Context, args []string) error {
 		if *token != "" {
 			cfg.Token = *token
 		}
-		return managed(ctx, cfg.DataDir, commandArgs, func(ctx context.Context, apply func(string) error) error {
+		return managed(ctx, cfg.DataDir, commandArgs, func(ctx context.Context, apply func(string) error) (err error) {
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			n, err := node.New(cfg)
 			if err != nil {
 				return err
 			}
-			defer func() { _ = n.Close() }()
+			defer func() {
+				_ = n.Close()
+				if n.Unregistered() {
+					if uninstallErr := installation.ScheduleRetiredUninstall(*path, n.Identity.ID); uninstallErr != nil {
+						err = errors.Join(err, uninstallErr)
+						slog.Error("uninstall retired node", "error", uninstallErr)
+					}
+				}
+			}()
 			n.SetShutdown(cancel)
 			if err = n.ConfigureUpdates(buildinfo.Current(), apply); err != nil {
 				return err
 			}
 			if err = n.Start(ctx); err != nil {
 				if errors.Is(err, node.ErrUnregistered) {
-					slog.Info("machine unregistered; service stopped")
+					slog.Info("machine unregistered; stopping service")
 					return nil
 				}
 				return err
@@ -540,6 +574,9 @@ Environment: CONTROL_API, CONTROL_TOKEN
   artifact deliver NODE ID DEST_NODE   Peer-to-peer transfer
   artifact get NODE ID LOCAL_PATH      Resumable, checksum-verified download
   tunnel NODE HOST:PORT [--reverse] [--listen ADDRESS]
+  tunnel start NODE HOST:PORT --listen ADDRESS [--reverse] [--id ID] [--ttl DURATION]
+  tunnel list
+  tunnel dispose ID
   clipboard paste NODE [--reverse] [--dir PATH] [--timeout DURATION]
   session                              Inspect this process's client identity and connections
 

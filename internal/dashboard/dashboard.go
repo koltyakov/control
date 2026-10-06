@@ -49,6 +49,7 @@ type view struct {
 	xOffset               int
 	generation            int
 	details, color        bool
+	recent                bool
 	wizard                *registration
 	wizardGeneration      int
 	manager               *machineManager
@@ -151,6 +152,8 @@ func (m view) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "d":
 			m.details = !m.details
 			m.xOffset = 0
+		case "R":
+			m.recent = !m.recent
 		case "up", "k":
 			m.offset--
 		case "down", "j":
@@ -230,6 +233,11 @@ func (m view) contentView() tea.View {
 		detailLabel = "compact"
 	}
 	footer := hint("q", "quit") + separator + hint("r", "refresh") + separator + hint("d", detailLabel)
+	recentLabel := "show recent"
+	if m.recent {
+		recentLabel = "hide recent"
+	}
+	footer += separator + hint("R", recentLabel)
 	if m.options.Invite != nil {
 		footer += separator + hint("a", "add machine")
 	}
@@ -266,13 +274,13 @@ func (m view) body(now time.Time) string {
 		}
 		return ansi.Truncate(status, max(1, m.width), "…")
 	}
-	return render(m.snapshot, now, renderOptions{width: max(1, m.width), details: m.details, color: m.color, stale: m.err != nil})
+	return render(m.snapshot, now, renderOptions{width: max(1, m.width), details: m.details, recent: m.recent, color: m.color, stale: m.err != nil})
 }
 
 // Render is also used for plain-text snapshots and keeps remote text out of
 // terminal control sequences. JSON output retains the original metadata.
 func Render(snapshot model.PoolActivitySnapshot, now time.Time) string {
-	return render(snapshot, now, renderOptions{details: true})
+	return render(snapshot, now, renderOptions{details: true, recent: true})
 }
 
 func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOptions) string {
@@ -332,9 +340,6 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 	}
 	if len(snapshot.Nodes) == 0 {
 		options.line(&b, "No machines registered.")
-		if snapshot.Notice != "" {
-			options.line(&b, clean(snapshot.Notice))
-		}
 		return strings.TrimRight(b.String(), "\n")
 	}
 	summary := fmt.Sprintf("Machines  %d nodes · %d online", len(snapshot.Nodes), online)
@@ -345,9 +350,6 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 		summary += fmt.Sprintf(" · %d active", active)
 	}
 	options.line(&b, paint(summary, "1", options.color))
-	if snapshot.Notice != "" {
-		options.line(&b, clean(snapshot.Notice))
-	}
 	if omitted > 0 {
 		options.line(&b, fmt.Sprintf("%d active records omitted. Filter with --node.", omitted))
 	}
@@ -372,11 +374,14 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 				status = "disabling"
 			}
 		}
+		if n.Status == "update" {
+			status = "update"
+		}
 		count := fmt.Sprint(n.ActiveCount)
 		if n.Status != "ready" && n.Status != "summary" {
 			count = "?"
 		}
-		if n.Status == "online" || !n.Online {
+		if n.Status == "online" || n.Status == "update" || !n.Online {
 			count = "-"
 		}
 		osName, cpuUsed, ram, free := n.OS, "-", "-", "-"
@@ -407,7 +412,15 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 		} else if !n.LastSeen.IsZero() {
 			seen = seenAge(now.Sub(n.LastSeen))
 		}
-		rows = append(rows, []string{n.Name, status, seen, count, osName, version, cpuUsed, ram, free, connections})
+		tunnels := "-"
+		if n.Tunnels != nil {
+			tunnels = fmt.Sprintf("↑%d ↓%d", n.Tunnels.Forward, n.Tunnels.Reverse)
+		}
+		saved := "-"
+		if n.RetainedTunnels != nil {
+			saved = fmt.Sprintf("↑%d ↓%d", n.RetainedTunnels.Forward, n.RetainedTunnels.Reverse)
+		}
+		rows = append(rows, []string{n.Name, status, seen, count, connections, tunnels, cpuUsed, ram, free, saved, osName, version})
 	}
 	b.WriteByte('\n')
 	options.table(&b, machineColumns, rows)
@@ -453,7 +466,7 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 			recent = append(recent, completion{n.Name, a})
 		}
 	}
-	if len(recent) > 0 {
+	if options.recent && len(recent) > 0 {
 		sort.Slice(recent, func(i, j int) bool { return recent[i].activity.Finished.After(recent[j].activity.Finished) })
 		options.heading(&b, "Recent")
 		rows = nil

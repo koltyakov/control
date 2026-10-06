@@ -11,23 +11,21 @@ import (
 type renderOptions struct {
 	width   int
 	details bool
+	recent  bool
 	color   bool
 	stale   bool
 }
 
-// Higher priorities disappear first. Priority zero columns remain visible,
-// with truncated cells when even the essential columns cannot fit.
+// Compact tables hide columns from right to left, keeping a visible prefix.
 type column struct {
-	label    string
-	priority int
-	width    int
+	label string
+	width int
 }
 
 var machineColumns = []column{
-	{"Node", 0, 18}, {"State", 0, len("busy/leased")}, {"Seen", 1, 6}, {"Work", 3, 4}, {"OS", 6, len("windows")},
-	{"Version", 1, len("v10.2.3*")},
-	{"CPU", 1, len("100.0%")}, {"RAM", 2, len("1023.9GiB/1023.9GiB")}, {"Disk free", 4, len("1023.9GiB")},
-	{"D/R", 8, 5},
+	{"Node", 18}, {"State", 8}, {"Seen", 6}, {"Work", 4}, {"D/R", 5}, {"Tunnels", 9},
+	{"CPU", len("100.0%")}, {"RAM", len("1023.9GiB/1023.9GiB")}, {"Disk free", len("1023.9GiB")},
+	{"Saved", 9}, {"OS", len("windows")}, {"Version", len("v10.2.3*")},
 }
 
 var versionPrefix = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+`)
@@ -42,13 +40,13 @@ func (o renderOptions) version(version string) string {
 }
 
 var activityColumns = []column{
-	{"Node", 0, 18}, {"Kind", 5, 10}, {"Op", 0, 22}, {"State", 0, 18},
-	{"Age", 1, 9}, {"Progress", 2, 26}, {"Owner", 6, 18}, {"Peer", 7, 18}, {"ID", 8, 16},
+	{"Node", 18}, {"Kind", 10}, {"Op", 22}, {"State", 18},
+	{"Age", 9}, {"Progress", 26}, {"Owner", 18}, {"Peer", 18}, {"ID", 16},
 }
 
 var recentColumns = []column{
-	{"Node", 0, 18}, {"Kind", 5, 10}, {"Op", 0, 22},
-	{"Result", 0, 12}, {"Took", 1, 9}, {"ID", 8, 16},
+	{"Node", 18}, {"Kind", 10}, {"Op", 22},
+	{"Result", 12}, {"Took", 9}, {"ID", 16},
 }
 
 func (o renderOptions) line(b *strings.Builder, text string) {
@@ -91,17 +89,8 @@ func (o renderOptions) table(b *strings.Builder, columns []column, rows [][]stri
 		return width
 	}
 	if o.width > 0 && !o.details {
-		for total() > o.width {
-			drop, priority := -1, 0
-			for index, i := range selected {
-				if columns[i].priority > priority {
-					drop, priority = index, columns[i].priority
-				}
-			}
-			if drop < 0 {
-				break
-			}
-			selected = append(selected[:drop], selected[drop+1:]...)
+		for total() > o.width && len(selected) > 1 {
+			selected = selected[:len(selected)-1]
 		}
 		// Tiny terminals still get a bounded view, including wide Unicode text.
 		for total() > o.width && len(selected) > 0 {
@@ -135,7 +124,7 @@ func (o renderOptions) table(b *strings.Builder, columns []column, rows [][]stri
 				switch strings.Split(row[i], "/")[0] {
 				case "idle", "succeeded":
 					style = "32"
-				case "busy", "running":
+				case "busy", "running", "update":
 					style = "36"
 				case "failed", "unavailable", "queued", "disabling", "enabling":
 					style = "33"

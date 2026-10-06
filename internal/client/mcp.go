@@ -12,7 +12,7 @@ import (
 )
 
 func (c Client) MCPServer() *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "control", Version: buildinfo.Version}, &mcp.ServerOptions{Instructions: "An account-authenticated orchestrator client initiates execution; a worker is an enrolled node executing requested work. Fleet membership and worker/common credentials permit discovery, not independent peer commands. The gateway handles enrollment, discovery, signaling, relay, and fleet administration, not execution. Agent refers to AI software. Default account routing uses this client's stable owner even when a local node is running. Use control_nodes to resolve machine names and control_describe for capability schemas. Do not schedule disabled or controlPending machines. Use control_delegate to execute a specific instruction on one worker through another; the client prepares instruction-bound destination grants. Workflow tasks and artifact delivery prepare grants too. Grants are not ambient worker permissions or inherited by arbitrary worker scripts. Inspect grants with control_access_list and revoke them with control_access_revoke at each destination. Revocation cancels associated tasks and streams but cannot undo effects. Grants expire after one hour idle and are lost on destination restart; accepted tasks keep them active. Synchronous delegated instructions are single-use. Use control_task_start with explicit IDs for long work and reconciliation; accepted tasks survive this process exiting. Concurrent account clients sharing the saved owner can query or cancel them. Use control_forward_start/list/stop for process-owned forwards, with reverse: true for an orchestrator-local dev server. Closing a forward does not stop its destination service. control_session inspects this client without enrolling a machine. Artifacts move directly between producers and consumers. Discover MCP tools before invoking them. Use named execution targets; nodes.list, nodes.select, and activities.pool accept an empty target. Explicit local API routing permits local work and peer discovery, not independent peer execution. Never replay uncertain side effects."})
+	server := mcp.NewServer(&mcp.Implementation{Name: "control", Version: buildinfo.Version}, &mcp.ServerOptions{Instructions: "An account-authenticated orchestrator client initiates execution; a worker is an enrolled node executing requested work. Fleet membership and worker/common credentials permit discovery, not independent peer commands. The gateway handles enrollment, discovery, signaling, relay, and fleet administration, not execution. Agent refers to AI software. Default account routing uses this client's stable owner even when a local node is running. Use control_nodes to resolve machine names and control_describe for capability schemas. Do not schedule disabled or controlPending machines. Use control_delegate to execute a specific instruction on one worker through another; the client prepares instruction-bound destination grants. Workflow tasks and artifact delivery prepare grants too. Grants are not ambient worker permissions or inherited by arbitrary worker scripts. Inspect grants with control_access_list and revoke them with control_access_revoke at each destination. Revocation cancels associated tasks and streams but cannot undo effects. Grants expire after one hour idle and are lost on destination restart; accepted tasks keep them active. Synchronous delegated instructions are single-use. Use control_task_start with explicit IDs for long work and reconciliation; accepted tasks survive this process exiting. Concurrent account clients sharing the saved owner can query or cancel them. Use control_forward_start/list/stop for process-owned forwards, with reverse: true for an orchestrator-local dev server. Use control_tunnel_start/list/dispose for retained host-owned tunnels that survive this process exiting and restore listeners after restart. Persistent tunnels need an explicit ID, a fixed listen port, and optional ttlSeconds; omitted TTL means until disposed. Starting accepts desired state, so list to check active/retrying state and reconcile uncertain requests. Never replay interrupted TCP traffic or create replacement IDs automatically. Closing a forward does not stop its destination service. control_session inspects this client without enrolling a machine. Artifacts move directly between producers and consumers. Discover MCP tools before invoking them. Use named execution targets; nodes.list, nodes.select, and activities.pool accept an empty target. Explicit local API routing permits local work and peer discovery, not independent peer execution. Never replay uncertain side effects."})
 	add := func(name, description, method string, properties map[string]any, required []string, transform func(map[string]json.RawMessage) (string, any, error)) {
 		input := map[string]any{"type": "object", "properties": properties}
 		if len(required) > 0 {
@@ -139,6 +139,28 @@ func (c Client) MCPServer() *mcp.Server {
 			return nil, err
 		}
 		return map[string]bool{"stopped": true}, nil
+	})
+	local("control_tunnel_start", "Retain a forward or reverse TCP tunnel in this host's user tunnel service. Returns after durable acceptance, initially starting. Survives CLI/MCP exits and restores listeners after disconnects or restarts; never replays interrupted sockets. Requires an account login, fixed listen HOST:PORT, and an explicit id for reconciliation. ttlSeconds is optional; omitted or zero keeps it until disposed. Run control_tunnel_list to check active/retrying state. Never expose a non-loopback listener without the user's request.", map[string]any{"id": text, "node": text, "address": text, "listen": text, "reverse": map[string]any{"type": "boolean"}, "ttlSeconds": map[string]any{"type": "integer", "minimum": 0, "maximum": 31536000}}, []string{"id", "node", "address", "listen"}, func(ctx context.Context, args json.RawMessage) (any, error) {
+		var spec PersistentTunnelSpec
+		if err := json.Unmarshal(args, &spec); err != nil {
+			return nil, err
+		}
+		return c.StartPersistentTunnel(ctx, spec)
+	})
+	local("control_tunnel_list", "List this host login's retained tunnels, including forward/reverse listeners, active/retrying state, absolute expiry, socket counts, and errors. Does not list another login's tunnels.", map[string]any{}, nil, func(ctx context.Context, _ json.RawMessage) (any, error) {
+		return c.PersistentTunnels(ctx)
+	})
+	local("control_tunnel_dispose", "Durably remove a retained tunnel by ID, then close its listener and sockets. Prevents restoration after restart. Idempotent if absent. Does not stop destination services.", map[string]any{"id": text}, []string{"id"}, func(ctx context.Context, args json.RawMessage) (any, error) {
+		var q struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(args, &q); err != nil {
+			return nil, err
+		}
+		if err := c.DisposePersistentTunnel(ctx, q.ID); err != nil {
+			return nil, err
+		}
+		return map[string]bool{"disposed": true}, nil
 	})
 	return server
 }

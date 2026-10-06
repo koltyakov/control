@@ -11,7 +11,9 @@ import (
 
 func InstallCommand(link string, windows bool, mode string) string {
 	if windows {
-		script := "irm " + PowerShellQuote(link) + " | iex"
+		// Invoke-RestMethod returns a plain-text response as one string, preserving
+		// multi-line scripts when piped to Invoke-Expression.
+		script := "irm " + PowerShellQuote(link) + "|iex"
 		// Keep unusual URLs literal in CMD, Bash, and the caller's PowerShell.
 		if strings.ContainsAny(link, "\"$`\\%!\r\n") {
 			units := utf16.Encode([]rune(script))
@@ -19,9 +21,9 @@ func InstallCommand(link string, windows bool, mode string) string {
 			for i, unit := range units {
 				binary.LittleEndian.PutUint16(encoded[i*2:], unit)
 			}
-			return "powershell -NoProfile -EncodedCommand " + base64.StdEncoding.EncodeToString(encoded)
+			return "powershell.exe -NoProfile -EncodedCommand " + base64.StdEncoding.EncodeToString(encoded)
 		}
-		return `powershell -NoProfile -c "` + script + `"`
+		return `powershell.exe -NoProfile -c "` + script + `"`
 	}
 	if mode == "system" {
 		return "curl -fsSL " + ShellQuote(link) + " | sudo bash"

@@ -48,6 +48,17 @@ func TestOfflineMachineStateIsRed(t *testing.T) {
 	}
 }
 
+func TestUpdateStateDoesNotImplyOnline(t *testing.T) {
+	now := time.Now()
+	snapshot := model.PoolActivitySnapshot{ObservedAt: now, Nodes: []model.NodeActivitySnapshot{{Name: "worker", Status: "update", LastSeen: now.Add(-10 * time.Second)}}}
+	for _, details := range []bool{false, true} {
+		text := render(snapshot, now, renderOptions{width: 100, details: details, color: true})
+		if !strings.Contains(text, "0 online") || !strings.Contains(text, "\x1b[36mupdate") || strings.Contains(text, "offline") {
+			t.Fatalf("incorrect update display:\n%s", text)
+		}
+	}
+}
+
 func TestMachineSummarySeparatedFromTable(t *testing.T) {
 	now := time.Now()
 	snapshot := model.PoolActivitySnapshot{ObservedAt: now, Nodes: []model.NodeActivitySnapshot{{Name: "worker", Status: "offline"}}}
@@ -55,6 +66,64 @@ func TestMachineSummarySeparatedFromTable(t *testing.T) {
 		text := ansi.Strip(render(snapshot, now, options))
 		if !strings.Contains(text, "Machines  1 nodes · 0 online\n\nNode") {
 			t.Fatalf("missing blank line before machine table:\n%s", text)
+		}
+	}
+}
+
+func TestRecentShownOnDemand(t *testing.T) {
+	now := time.Now()
+	snapshot := model.PoolActivitySnapshot{ObservedAt: now, Nodes: []model.NodeActivitySnapshot{{
+		Name: "worker", Online: true, Status: "ready", ActiveCount: 1,
+		Active: []model.Activity{{ID: "active-job", Kind: "task", Operation: "exec.run", State: "running", Started: now}},
+		Recent: []model.Activity{{ID: "finished-job", Kind: "task", Operation: "exec.run", State: "succeeded", Started: now.Add(-time.Second), Finished: now}},
+	}}}
+	m := view{width: 240, height: 30, snapshot: snapshot, options: Options{Interval: time.Second}}
+	for _, details := range []bool{false, true} {
+		m.details = details
+		text := m.body(now)
+		if strings.Contains(text, "Recent") || strings.Contains(text, "succeeded") || !strings.Contains(text, "running") {
+			t.Fatalf("default view must show only active work:\n%s", text)
+		}
+	}
+	if !strings.Contains(m.View().Content, "R show recent") {
+		t.Fatal("missing recent toggle hint")
+	}
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
+	m = updated.(view)
+	if cmd != nil || !m.recent || !strings.Contains(m.body(now), "finished-job") || !strings.Contains(m.View().Content, "R hide recent") {
+		t.Fatal("recent toggle did not reveal retained completions")
+	}
+	updated, _ = m.Update(result{snapshot: snapshot})
+	m = updated.(view)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
+	m = updated.(view)
+	if !m.recent || !strings.Contains(m.body(now), "Recent") {
+		t.Fatal("refresh or details toggle hid recent completions")
+	}
+	m.height = 6
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
+	m = updated.(view)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'R', Text: "R"})
+	m = updated.(view)
+	if m.recent || strings.Contains(m.body(now), "Recent") || m.offset > len(strings.Split(m.body(now), "\n"))-m.pageSize() {
+		t.Fatal("hiding recent did not restore the active-only view and scroll bounds")
+	}
+	if !strings.Contains(Render(snapshot, now), "finished-job") {
+		t.Fatal("plain-text snapshots lost recent completions")
+	}
+}
+
+func TestRenderOmitsHealthNotice(t *testing.T) {
+	now := time.Now()
+	for _, nodes := range [][]model.NodeActivitySnapshot{nil, {{Name: "worker", Online: true, Status: "online"}}} {
+		snapshot := model.PoolActivitySnapshot{ObservedAt: now, Nodes: nodes}
+		for _, options := range []renderOptions{{}, {width: 80, color: true}, {width: 80, details: true}} {
+			want := render(snapshot, now, options)
+			snapshot.Notice = "Live machine health unavailable; showing gateway presence and cached metrics."
+			if got := render(snapshot, now, options); got != want {
+				t.Fatalf("health notice changed dashboard output:\n%s", got)
+			}
+			snapshot.Notice = ""
 		}
 	}
 }
@@ -221,7 +290,7 @@ func TestResponsiveTablesKeepImportantColumnsAndDetails(t *testing.T) {
 				t.Fatalf("width %d overflow: %q", width, line)
 			}
 		}
-		if width >= 40 && (!strings.Contains(text, "running") || !strings.Contains(text, "exec.run")) {
+		if width >= 80 && (!strings.Contains(text, "running") || !strings.Contains(text, "exec.run")) {
 			t.Fatalf("width %d hid essential activity: %s", width, text)
 		}
 	}
@@ -230,13 +299,13 @@ func TestResponsiveTablesKeepImportantColumnsAndDetails(t *testing.T) {
 	if strings.Contains(narrow, "RAM free") || strings.Contains(wide, "RAM free") || !strings.Contains(wide, "2.0GiB/8.0GiB") {
 		t.Fatal("machine RAM should appear once as used/total")
 	}
-	if !strings.Contains(narrow, "CPU") || !strings.Contains(narrow, "Version") {
-		t.Fatal("compact machine table lost CPU or version")
+	if !strings.Contains(narrow, "CPU") || strings.Contains(narrow, "Version") {
+		t.Fatal("compact machine table should keep CPU and hide the trailing version")
 	}
 	var short, long strings.Builder
 	opts := renderOptions{width: 80}
-	opts.table(&short, machineColumns, [][]string{{"node", "idle", "now", "0", "linux", "v1", "0.1%", "1/2", "2", "0/0"}})
-	opts.table(&long, machineColumns, [][]string{{"node", "busy/leased", "100d", "1000", "linux", "v1.2.3-4-gabcd-dirty", "100.0%", "100.0GiB/120.0GiB", "10.0GiB", "10/1"}})
+	opts.table(&short, machineColumns, [][]string{{"node", "idle", "now", "0", "0/0", "↑0 ↓0", "0.1%", "1/2", "2", "↑0 ↓0", "linux", "v1"}})
+	opts.table(&long, machineColumns, [][]string{{"node", "busy/leased", "100d", "1000", "10/1", "↑32 ↓32", "100.0%", "100.0GiB/120.0GiB", "10.0GiB", "↑32 ↓32", "linux", "v1.2.3-4-gabcd-dirty"}})
 	if strings.Split(short.String(), "\n")[0] != strings.Split(long.String(), "\n")[0] {
 		t.Fatal("changing values moved or hid table columns")
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/client"
+	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 )
 
@@ -48,6 +49,12 @@ func logsCLI(ctx context.Context, c client.Client, target string, args []string)
 }
 
 func tunnelCLI(ctx context.Context, c client.Client, args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "start", "list", "dispose", "stop":
+			return persistentTunnelCLI(ctx, c, args)
+		}
+	}
 	if len(args) < 2 {
 		return errors.New("usage: control tunnel NODE HOST:PORT [--reverse] [--listen 127.0.0.1:PORT]")
 	}
@@ -78,5 +85,56 @@ func tunnelCLI(ctx context.Context, c client.Client, args []string) error {
 			return errors.New(err)
 		}
 		return nil
+	}
+}
+
+func persistentTunnelCLI(ctx context.Context, c client.Client, args []string) error {
+	switch args[0] {
+	case "list":
+		if len(args) != 1 {
+			return errors.New("usage: control tunnel list")
+		}
+		infos, err := c.PersistentTunnels(ctx)
+		if err != nil {
+			return err
+		}
+		printJSON(infos)
+		return nil
+	case "dispose", "stop":
+		if len(args) != 2 {
+			return errors.New("usage: control tunnel dispose ID")
+		}
+		if err := c.DisposePersistentTunnel(ctx, args[1]); err != nil {
+			return err
+		}
+		printJSON(map[string]any{"id": args[1], "disposed": true})
+		return nil
+	case "start":
+		if len(args) < 3 {
+			return errors.New("usage: control tunnel start NODE HOST:PORT --listen HOST:PORT [--reverse] [--id ID] [--ttl DURATION]")
+		}
+		f := flag.NewFlagSet("tunnel start", flag.ContinueOnError)
+		listen := f.String("listen", "", "fixed listener address, on the remote machine with --reverse")
+		reverse := f.Bool("reverse", false, "forward a remote listener to HOST:PORT on this machine")
+		id := f.String("id", "", "stable tunnel ID for reconciliation")
+		ttl := f.Duration("ttl", 0, "expire after this duration; zero keeps the tunnel until disposed")
+		if err := f.Parse(args[3:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 || *ttl < 0 || (*ttl != 0 && (*ttl < time.Second || *ttl%time.Second != 0)) {
+			return errors.New("unexpected arguments or TTL; use whole seconds, or zero for no expiry")
+		}
+		if *id == "" {
+			*id = identity.NewID()
+		}
+		fmt.Fprintln(os.Stderr, "tunnel", *id)
+		info, err := c.StartPersistentTunnel(ctx, client.PersistentTunnelSpec{ID: *id, TTLSeconds: int64(*ttl / time.Second), ForwardSpec: client.ForwardSpec{Node: args[1], Address: args[2], Listen: *listen, Reverse: *reverse}})
+		if err != nil {
+			return fmt.Errorf("start tunnel %s; list tunnels to reconcile before retrying: %w", *id, err)
+		}
+		printJSON(info)
+		return nil
+	default:
+		return errors.New("unknown persistent tunnel command")
 	}
 }

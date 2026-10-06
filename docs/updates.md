@@ -16,7 +16,7 @@ control update --version v0.2.0
 
 Bare `update` downloads the latest stable GitHub release and replaces the invoked executable. `upgrade` is an alias. It requires write access to the executable's directory, but no gateway credential or node profile. `--version TAG` selects a specific release, including an older version; `CONTROL_VERSION` supplies the default tag. `CONTROL_RELEASE_REPO=owner/repository` overrides the embedded repository. An empty repository produces a configuration error. CLI self-updates use public GitHub release downloads.
 
-The command validates the release manifest, selects the current OS and architecture, downloads the tag-pinned binary, verifies its size and SHA-256, and checks its `version --json` response before replacement. An identical installed checksum reports that the release is already installed. Failed downloads or validation leave the executable intact. Symlinks resolve to their target, and concurrent updates to the same executable are rejected.
+The command validates the release manifest and selects the current OS and architecture. If the running CLI already has that version, it reports that the release is already installed without downloading or replacing the binary, even if the release checksum differs. An identical installed checksum also skips replacement. Otherwise, it downloads the tag-pinned binary, verifies its size and SHA-256, and checks its `version --json` response before replacement. Failed downloads or validation leave the executable intact. Symlinks resolve to their target, and concurrent updates to the same executable are rejected.
 
 On Windows, the updater preserves the executable's access grants and renames the old executable before installing the new one, allowing running CLI and service-launcher processes to finish. A locked old executable can remain as `previous.exe` in a `.control-update-*` directory beside the CLI. Remove that directory after those processes exit. On Linux and macOS, replacement uses an atomic rename and preserves executable permissions.
 
@@ -72,6 +72,8 @@ make update PLATFORMS=linux/amd64,linux/arm64
 
 The bundle must include the gateway platform and every registered node's platform, including offline nodes. Versions follow `git describe --tags --always --dirty`: an exact tag such as `v0.2.0`, a post-tag version such as `v0.2.0-3-gabc1234`, or a short commit hash before the first tag. Tracked local changes append `-dirty`; unavailable Git metadata falls back to `dev`. This applies to Make targets and direct `go run ./cmd/control-bundle` builds. Set `VERSION=dev-my-change` or pass `--version` to name one explicitly. Build timestamps remain separate metadata, so rebuilding the same checkout keeps its version label while producing new build metadata and checksums.
 
+Publishing the currently selected version returns the existing deployment without starting another rollout or changing its pinned assets, timestamps, phase, or participants. Each node and the gateway also skip binary staging and restart when their running version matches the selected version, regardless of checksum differences. Older nodes still receive the selected bundle. To deploy changed code under a reused `-dirty` or `dev` label, select a new version explicitly. Build and upload steps can still run for an unchanged version; installation and restart are skipped.
+
 The equivalent commands are:
 
 ```sh
@@ -82,6 +84,8 @@ bin/control update push dist
 bin/control update status
 bin/control update check
 ```
+
+`update push DIR` prints a short summary with the gateway's accepted version, platform count, deployment ID, and current phase. It does not wait for rollout completion. Use `control update push DIR --json` for the full deployment JSON, including the manifest and asset checksums. A repeated same-version push summarizes the retained deployment returned by the gateway.
 
 `update check` fetches the latest release from the repository configured on the gateway. It uses the same validation and rollout as periodic release checks.
 
@@ -138,7 +142,9 @@ Nodes stage downloads while work continues. Before restarting, the gateway requi
 
 Once reserved, the node waits before admitting new work. Observation remains available. Accepted work finishes normally; updates do not cancel it. If work appears during reservation, the gateway releases partial reservations and waits again. A reservation expires after two minutes without renewal, allowing the pool to recover from a lost coordinator.
 
-The gateway persists installation participants. A disconnected participant is not treated as successfully updated. The gateway waits for each participant to reconnect and report the expected checksum before restarting itself. The reservation survives a node restart, keeping new admissions closed until the gateway resumes the pool.
+The gateway persists installation participants. A disconnected participant is not treated as successfully updated. The gateway waits for each participant to reconnect and report the selected version or expected checksum before restarting itself. Same-version participants still require idle reservations when another node or the gateway needs a restart. If every online participant and the gateway already match, the deployment completes without reserving idle time. The reservation survives a node restart, keeping new admissions closed until the gateway resumes the pool.
+
+The dashboard shows `update` while nodes report progress for the selected deployment or remain paused for its maintenance. Before an actual restart, the gateway persists a one-minute display grace in that machine's directory record and extends it to one minute after the restart disconnect. Reconnection alone does not clear the grace. A fresh report confirming the selected version or checksum and released maintenance clears it durably, restoring normal idle/busy observation without waiting for the minute to expire. The deadline otherwise survives gateway restart and never counts a disconnected node as online or successfully updated. After expiry, normal availability returns. Older-deployment progress is ignored for display, and same-version skips do not start a restart grace.
 
 `gateway` and `node` run under a small built-in supervisor. The supervisor launches a verified, versioned executable from the writable state directory. It waits for the old service to shut down and release its directory lock before starting the new one with the same arguments and environment. This works without overwriting a running Windows executable and keeps the outer process alive in a container or service manager.
 

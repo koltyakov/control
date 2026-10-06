@@ -23,10 +23,11 @@ import (
 
 // Client submits and observes work on nodes without defining a fixed machine role.
 type Client struct {
-	URL       string
-	Token     string
-	routing   *routing
-	resources *resources
+	URL        string
+	Token      string
+	routing    *routing
+	resources  *resources
+	persistent *persistentAccess
 }
 
 // WithLifetime owns local listeners and streams until Close or cancellation.

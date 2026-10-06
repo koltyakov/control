@@ -77,5 +77,5 @@ func (n *Node) OpenTCPListener(ctx context.Context, target, listen string) (net.
 		return nil, "", err
 	}
 	activity.phase("listening")
-	return &workConn{Conn: &activityConn{Conn: conn, activity: activity}, release: release}, address, nil
+	return &workConn{Conn: &activityConn{Conn: conn, activity: activity, finishOnClose: true}, release: release}, address, nil
 }

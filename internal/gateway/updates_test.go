@@ -15,6 +15,7 @@ import (
 
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/protocol"
 	"github.com/koltyakov/control/internal/update"
 )
 
@@ -181,5 +182,63 @@ func TestGatewayRestartRequiresCurrentReservedMembership(t *testing.T) {
 	g.updateStatus["worker"] = status
 	if !g.reserveRestart(d, peers) || !g.restarting {
 		t.Fatal("idle acknowledged membership did not reserve restart")
+	}
+	d.Manifest.Version, status.Software.Version = "v1", "v1"
+	status.Software.SHA256 = strings.Repeat("b", 64)
+	g.updateStatus["worker"] = status
+	if !g.reserveRestart(d, peers) {
+		t.Fatal("same-version participant blocked gateway restart despite a live idle reservation")
+	}
+}
+
+func TestRolloutSkipsSameVersionWhileBusy(t *testing.T) {
+	data := []byte("rebuilt binary")
+	sum := sha256.Sum256(data)
+	asset := update.Asset{OS: "linux", Arch: "amd64", File: update.AssetName("linux", "amd64"), Size: int64(len(data)), SHA256: hex.EncodeToString(sum[:])}
+	info := buildinfo.Info{Version: "v1", OS: asset.OS, Arch: asset.Arch, SHA256: strings.Repeat("a", 64)}
+	g, err := New(t.TempDir(), commonKey, Options{SuperuserKey: superKey, Software: info, Apply: func(string) error {
+		t.Error("same-version rollout restarted gateway")
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		delete(g.peers, "worker") // The rollout fixture has no WebSocket to close.
+		_ = g.Close()
+	}()
+	if err = g.updates.Upload(bytes.NewReader(data), asset); err != nil {
+		t.Fatal(err)
+	}
+	d, err := g.updates.Publish(update.Manifest{Version: info.Version, Assets: []update.Asset{asset}}, "development")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.nodes["worker"] = model.Node{ID: "worker", OS: info.OS, Software: info}
+	out := make(chan *protocol.Packet, 8)
+	g.peers["worker"] = &connection{out: out}
+	g.updateStatus["worker"] = update.Status{ID: d.ID, Software: info, Busy: true, State: "applied", SeenAt: time.Now()}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); g.rolloutLoop(ctx) }()
+	defer func() { cancel(); <-done }()
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatal("same-version rollout did not complete")
+		case packet := <-out:
+			switch packet.Kind {
+			case "update.prepare", "update.commit":
+				t.Fatalf("same-version rollout requested maintenance: %s", packet.Kind)
+			case "update.resume":
+				cancel()
+				<-done
+				if current := g.updates.Current(); current.Phase != "complete" || g.restarting {
+					t.Fatalf("same-version rollout was not skipped: %+v", current)
+				}
+				return
+			}
+		}
 	}
 }

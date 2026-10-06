@@ -93,7 +93,7 @@ Superuser gateway commands:
   users list                           List registered users
   users revoke ID                      Disable a user and its credentials
   update authorize [--key-stdin|--check] Save gateway update authorization or verify it without prompting
-  update push DIR                      Upload a development/release bundle
+  update push DIR [--json]              Upload a bundle; print a summary or full deployment JSON
   update status                        Show rollout and node versions
   update check                         Fetch the latest configured GitHub release
 Environment: CONTROL_GATEWAY, CONTROL_SUPERUSER_KEY
@@ -107,7 +107,7 @@ Your fleet:
   machines revoke ID                   Revoke an invitation and its machine key
   machines enable|disable NAME          Enable or disable new work on a machine
   machines rename NAME NEW_NAME         Change a machine's routing alias
-  machines unregister NAME              Unregister a machine and stop its node
+  machines unregister NAME              Unregister a machine and request node uninstall
   keys create NAME                     Issue a common key, shown once
   keys list                            List common keys
   keys revoke ID                       Revoke a common key
@@ -135,15 +135,7 @@ func adminCLI(ctx context.Context, c client.Admin, args []string) error {
 		return nil
 	}
 	if args[0] == "update" && args[1] == "push" {
-		if len(args) != 3 {
-			return errors.New("usage: control update push DIR")
-		}
-		deployment, err := c.Push(ctx, args[2])
-		if err != nil {
-			return err
-		}
-		printJSON(deployment)
-		return nil
+		return pushUpdateCLI(ctx, c, args[2:])
 	}
 	var result json.RawMessage
 	var err error

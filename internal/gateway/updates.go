@@ -28,6 +28,71 @@ type Options struct {
 	ReleaseInterval time.Duration
 }
 
+func (g *Gateway) receiveUpdateStatus(n model.Node, c *connection, data []byte) bool {
+	var status update.Status
+	if len(data) > 8192 || json.Unmarshal(data, &status) != nil {
+		return false
+	}
+	d := g.updates.Current()
+	status.SeenAt = time.Now().UTC()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.peers[n.ID] != c || c.client {
+		return false
+	}
+	previous := g.updateStatus[n.ID]
+	latest := g.nodes[n.ID]
+	before := latest
+	if d != nil && status.ID == d.ID && status.State == "restarting" && (previous.ID != status.ID || previous.State != "restarting") {
+		if asset, ok := d.Manifest.Asset(latest.Software.OS, latest.Software.Arch); ok && !update.IsCurrent(latest.Software, d.Manifest.Version, asset) {
+			latest.UpdateUntil = status.SeenAt.Add(time.Minute)
+		}
+	}
+	if updateAppliedAndResumed(d, status) {
+		latest.UpdateUntil = time.Time{}
+	}
+	if !latest.UpdateUntil.Equal(before.UpdateUntil) {
+		g.nodes[n.ID] = latest
+		if err := g.persist(); err != nil {
+			g.nodes[n.ID] = before
+			return false
+		}
+	}
+	g.updateStatus[n.ID] = status
+	return true
+}
+
+func updateAppliedAndResumed(d *update.Deployment, status update.Status) bool {
+	if d == nil || status.ID != d.ID || status.Paused {
+		return false
+	}
+	asset, ok := d.Manifest.Asset(status.Software.OS, status.Software.Arch)
+	return ok && update.IsCurrent(status.Software, d.Manifest.Version, asset)
+}
+
+// Called under g.mu. Display grace never changes routing or rollout readiness.
+func (g *Gateway) nodeUpdating(n model.Node, now time.Time) bool {
+	status := g.updateStatus[n.ID]
+	d := g.updates.Current()
+	fresh := n.Online && now.Sub(status.SeenAt) < 8*time.Second
+	if fresh && updateAppliedAndResumed(d, status) {
+		return false
+	}
+	if now.Before(n.UpdateUntil) {
+		return true
+	}
+	if !fresh || d == nil || status.ID != d.ID {
+		return false
+	}
+	switch status.State {
+	case "downloading", "staged", "busy", "ready", "restarting":
+		return true
+	case "applied":
+		return status.Paused
+	}
+	return false
+}
+
 func (g *Gateway) updateRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/updates/blobs/{hash}", g.auth(func(w http.ResponseWriter, r *http.Request) {
 		hash := r.PathValue("hash")
@@ -200,7 +265,7 @@ func (g *Gateway) stageGateway(ctx context.Context, d *update.Deployment) (strin
 	if !ok {
 		return "", errors.New("gateway platform missing")
 	}
-	if update.Matches(g.options.Software, asset) {
+	if update.IsCurrent(g.options.Software, d.Manifest.Version, asset) {
 		return "", nil
 	}
 	path := filepath.Join(filepath.Dir(g.path), "updates", "staged", asset.SHA256, asset.File)
@@ -264,7 +329,7 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 				command := update.Command{ID: d.ID, Version: d.Manifest.Version, Asset: asset}
 				g.control(peer.node.ID, "update.offer", command)
 				matching := peer.fresh && peer.status.ID == d.ID
-				applied := matching && update.Matches(peer.status.Software, asset)
+				applied := matching && update.IsCurrent(peer.status.Software, d.Manifest.Version, asset)
 				staged := matching && (applied || peer.status.State == "staged" || peer.status.State == "ready" || peer.status.State == "busy" || peer.status.State == "restarting")
 				allStaged = allStaged && staged
 				allIdle = allIdle && matching && !peer.status.Busy
@@ -315,7 +380,7 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 				g.control(peer.node.ID, "update.commit", update.Command{ID: d.ID})
 			}
 			// Keep the gateway available until every participating node has restarted
-			// and reported the new checksum. Disconnections are never acknowledgments.
+			// and reported the target version or checksum. Disconnections are never acknowledgments.
 			if peersApplied && stagedPath != "" && !requestedRestart && g.reserveRestart(d, peers) {
 				requestedRestart = true
 				if err := g.options.Apply(stagedPath); err != nil {
@@ -347,7 +412,7 @@ func (g *Gateway) reserveRestart(d *update.Deployment, peers []rolloutPeer) bool
 	for _, peer := range peers {
 		status := g.updateStatus[peer.node.ID]
 		asset, ok := d.Manifest.Asset(status.Software.OS, status.Software.Arch)
-		if !ok || g.peers[peer.node.ID] == nil || status.ID != d.ID || !update.Matches(status.Software, asset) || !status.Paused || status.Busy || time.Since(status.SeenAt) >= 8*time.Second || time.Until(status.LeaseUntil) <= 30*time.Second {
+		if !ok || g.peers[peer.node.ID] == nil || status.ID != d.ID || !update.IsCurrent(status.Software, d.Manifest.Version, asset) || !status.Paused || status.Busy || time.Since(status.SeenAt) >= 8*time.Second || time.Until(status.LeaseUntil) <= 30*time.Second {
 			return false
 		}
 	}

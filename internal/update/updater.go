@@ -54,7 +54,7 @@ func NewUpdater(options UpdaterOptions) (*Updater, error) {
 		a.staged = a.stagePath(saved.Asset)
 		a.status.ID, a.status.State, a.status.Paused = saved.ID, "ready", true
 		a.status.LeaseUntil = saved.LeaseUntil
-		if Matches(options.Software, saved.Asset) {
+		if IsCurrent(options.Software, saved.Version, saved.Asset) {
 			a.status.State = "applied"
 		}
 	}
@@ -121,7 +121,7 @@ func (a *Updater) resume() {
 	a.status.Paused = false
 	a.status.LeaseUntil = time.Time{}
 	a.mu.Unlock()
-	if Matches(a.options.Software, a.target.Asset) {
+	if IsCurrent(a.options.Software, a.target.Version, a.target.Asset) {
 		a.set("applied", nil)
 	} else if a.staged != "" {
 		a.set("staged", nil)
@@ -146,7 +146,7 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 		}
 		a.resume()
 		a.target, a.staged = command, ""
-		if Matches(a.options.Software, command.Asset) {
+		if IsCurrent(a.options.Software, command.Version, command.Asset) {
 			a.set("applied", nil)
 			return
 		}
@@ -165,7 +165,7 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 		a.staged = path
 		a.set("staged", nil)
 	case "update.prepare":
-		if command.ID != a.target.ID || (a.staged == "" && !Matches(a.options.Software, a.target.Asset)) {
+		if command.ID != a.target.ID || (a.staged == "" && !IsCurrent(a.options.Software, a.target.Version, a.target.Asset)) {
 			return
 		}
 		if command.LeaseUntil.Before(time.Now()) || command.LeaseUntil.After(time.Now().Add(5*time.Minute)) {
@@ -186,7 +186,7 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 		a.status.Paused = true
 		a.status.LeaseUntil = a.lease
 		a.mu.Unlock()
-		if Matches(a.options.Software, a.target.Asset) {
+		if IsCurrent(a.options.Software, a.target.Version, a.target.Asset) {
 			a.set("applied", nil)
 		} else {
 			a.set("ready", nil)
@@ -199,7 +199,7 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 		if command.ID != a.target.ID {
 			return
 		}
-		if Matches(a.options.Software, a.target.Asset) {
+		if IsCurrent(a.options.Software, a.target.Version, a.target.Asset) {
 			a.set("applied", nil)
 			return
 		}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/update"
 )
 
@@ -45,10 +46,10 @@ func UpdateSelf(ctx context.Context, repository, version string) (UpdateResult, 
 	if err != nil {
 		return UpdateResult{}, err
 	}
-	return updateSelf(ctx, path, "https://github.com/"+repository+"/releases", version, &http.Client{Timeout: 2 * time.Minute})
+	return updateSelf(ctx, path, "https://github.com/"+repository+"/releases", version, buildinfo.Version, &http.Client{Timeout: 2 * time.Minute})
 }
 
-func updateSelf(ctx context.Context, path, releases, version string, client *http.Client) (UpdateResult, error) {
+func updateSelf(ctx context.Context, path, releases, version, currentVersion string, client *http.Client) (UpdateResult, error) {
 	result := UpdateResult{Path: path}
 	if version != "" && !releaseTagPattern.MatchString(version) {
 		return result, errors.New("invalid release tag")
@@ -100,7 +101,7 @@ func updateSelf(ctx context.Context, path, releases, version string, client *htt
 		return result, fmt.Errorf("release has no binary for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 	result.Version = manifest.Version
-	if update.Verify(path, asset) == nil {
+	if currentVersion == manifest.Version || update.Verify(path, asset) == nil {
 		return result, nil
 	}
 	// Stage beside the destination so replacement stays on the same filesystem.

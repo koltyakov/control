@@ -16,6 +16,44 @@ import (
 
 var errUpdatePermission = errors.New("managed updates require the gateway superuser key; the selected login lacks update permission")
 
+func pushUpdateCLI(ctx context.Context, c client.Admin, args []string) error {
+	dir := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		dir, args = args[0], args[1:]
+	}
+	f := flag.NewFlagSet("update push", flag.ContinueOnError)
+	asJSON := f.Bool("json", false, "print full deployment JSON")
+	f.Usage = func() {
+		_, _ = fmt.Fprintln(f.Output(), "Usage: control update push DIR [--json]")
+		f.PrintDefaults()
+	}
+	if err := f.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if dir == "" && f.NArg() == 1 {
+		dir = f.Arg(0)
+	} else if dir == "" || f.NArg() != 0 {
+		return errors.New("usage: control update push DIR [--json]")
+	}
+	deployment, err := c.Push(ctx, dir)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		printJSON(deployment)
+		return nil
+	}
+	fmt.Printf("Control %s accepted by gateway.\nDeployment %s, phase %s, %d-platform bundle.\n", deployment.Manifest.Version, deployment.ID, deployment.Phase, len(deployment.Manifest.Assets))
+	if deployment.Error != "" {
+		fmt.Printf("Rollout error: %s\n", deployment.Error)
+	}
+	fmt.Println("Follow rollout with: control update status")
+	return nil
+}
+
 func authorizeUpdateCLI(ctx context.Context, c client.Admin, args []string, allowPrompt bool) error {
 	f := flag.NewFlagSet("update authorize", flag.ContinueOnError)
 	f.Usage = func() {}

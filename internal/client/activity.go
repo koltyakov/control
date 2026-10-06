@@ -17,7 +17,7 @@ func (c Client) Activities(ctx context.Context, query model.PoolActivityQuery) (
 }
 
 // Dashboard observes the gateway directly. Peer activity is optional enrichment;
-// an unavailable local node does not hide a reachable gateway or its directory.
+// an unavailable execution backend does not hide a reachable gateway or directory.
 func (c Client) Dashboard(ctx context.Context, gateway Admin, query model.PoolActivityQuery) (model.PoolActivitySnapshot, error) {
 	var pool model.PoolActivitySnapshot
 	if err := gateway.JSON(ctx, http.MethodGet, "/v1/status", nil, &pool); err != nil {
@@ -47,6 +47,7 @@ func (c Client) Dashboard(ctx context.Context, gateway Admin, query model.PoolAc
 		filtered = append(filtered, n)
 	}
 	pool.Nodes = filtered
+	c.addTunnelCounts(&pool)
 	for name, found := range selected {
 		if !found {
 			return pool, fmt.Errorf("unknown node %q", name)
@@ -56,12 +57,12 @@ func (c Client) Dashboard(ctx context.Context, gateway Admin, query model.PoolAc
 		return pool, nil
 	}
 	for _, n := range pool.Nodes {
-		if n.Online && n.Status != "summary" {
+		if n.Online && n.Status != "summary" && n.Status != "update" {
 			pool.Notice = "Live machine health unavailable; showing gateway presence and cached metrics."
 			break
 		}
 	}
-	if c.URL == "" || c.Token == "" {
+	if c.routing == nil && (c.URL == "" || c.Token == "") {
 		return pool, nil
 	}
 	peerCtx, cancel := context.WithTimeout(ctx, 11*time.Second)
@@ -76,11 +77,18 @@ func (c Client) Dashboard(ctx context.Context, gateway Admin, query model.PoolAc
 	}
 	missing := false
 	for i, n := range pool.Nodes {
+		if n.Status == "update" {
+			continue // Peer observations must not replace gateway update status.
+		}
 		if live, ok := byID[n.ID]; ok && n.Online && live.Online && (live.Status == "ready" || n.Status != "summary") {
 			// The directly authenticated directory defines fleet membership and
 			// identity metadata, even if this CLI targets another node's API.
 			live.Name, live.OS, live.Labels, live.LastSeen = n.Name, n.OS, n.Labels, n.LastSeen
 			live.Software, live.Disabled, live.ControlPending = n.Software, n.Disabled, n.ControlPending
+			live.RetainedTunnels = n.RetainedTunnels
+			if live.Status == "ready" && live.Tunnels == nil {
+				live.Tunnels = model.ActiveTunnelCounts(live.Active)
+			}
 			pool.Nodes[i] = live
 		} else if n.Online && n.Status != "summary" {
 			missing = true

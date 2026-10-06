@@ -162,6 +162,7 @@ func platformService(ctx context.Context, operation, binary, config, mode string
 				Description:      "Control peer execution node",
 				StartType:        mgr.StartAutomatic,
 				ServiceStartName: `NT AUTHORITY\LocalService`,
+				SidType:          windows.SERVICE_SID_TYPE_UNRESTRICTED,
 			}, "__service", config)
 			if err != nil {
 				return true, err
@@ -172,11 +173,15 @@ func platformService(ctx context.Context, operation, binary, config, mode string
 		if err != nil {
 			return true, err
 		}
-		if serviceConfig.StartType != mgr.StartAutomatic {
+		if serviceConfig.StartType != mgr.StartAutomatic || serviceConfig.SidType != windows.SERVICE_SID_TYPE_UNRESTRICTED {
 			serviceConfig.StartType = mgr.StartAutomatic
+			serviceConfig.SidType = windows.SERVICE_SID_TYPE_UNRESTRICTED
 			if err = s.UpdateConfig(serviceConfig); err != nil {
 				return true, err
 			}
+		}
+		if err = grantServiceSelfRemoval(ctx, s, binary, config); err != nil {
+			return true, err
 		}
 		if err = s.SetRecoveryActions([]mgr.RecoveryAction{
 			{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
@@ -305,6 +310,17 @@ func prepareServiceFiles(ctx context.Context, binary, config string, cfg node.Co
 		if err = run(ctx, "icacls.exe", path, "/grant", "*S-1-5-19:(RX)", "/Q"); err != nil {
 			return err
 		}
+	}
+	lockPath := config + ".install.lock"
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	if err = lock.Close(); err != nil {
+		return err
+	}
+	if err = run(ctx, "icacls.exe", lockPath, "/grant", "*S-1-5-19:(M)", "/Q"); err != nil {
+		return err
 	}
 	if err = run(ctx, "icacls.exe", log, "/grant", "*S-1-5-19:(M)", "/Q"); err != nil {
 		return err

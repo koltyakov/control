@@ -115,7 +115,8 @@ func (w activityWriter) Write(b []byte) (int, error) {
 
 type activityConn struct {
 	net.Conn
-	activity *activityHandle
+	activity      *activityHandle
+	finishOnClose bool // Only a connection owning the activity ends its lifetime.
 }
 
 func (c *activityConn) Read(b []byte) (int, error) {
@@ -128,7 +129,13 @@ func (c *activityConn) Write(b []byte) (int, error) {
 	c.activity.sent.Add(int64(n))
 	return n, err
 }
-func (c *activityConn) Close() error { err := c.Conn.Close(); c.activity.finish(err); return err }
+func (c *activityConn) Close() error {
+	err := c.Conn.Close()
+	if c.finishOnClose {
+		c.activity.finish(err)
+	}
+	return err
+}
 
 func (c *activityConn) CloseWrite() error { return transport.CloseWrite(c.Conn) }
 
@@ -170,6 +177,7 @@ func (n *Node) activitySnapshot(query model.ActivityQuery) model.NodeActivitySna
 		s.Recent = append(s.Recent, n.recentActivities...)
 	}
 	n.activityMu.Unlock()
+	s.Tunnels = model.ActiveTunnelCounts(s.Active)
 	n.mu.Lock()
 	for _, task := range n.tasks {
 		if !task.Terminal() {
@@ -282,6 +290,10 @@ func (n *Node) poolActivities(ctx context.Context, caller string, args json.RawM
 				s.Status, s.ObservedAt, s.Active, s.Recent = "ready", remote.ObservedAt, remote.Active, remote.Recent
 				s.ActiveCount, s.Omitted = remote.ActiveCount, remote.Omitted
 				s.DirectSessions, s.RelaySessions = remote.DirectSessions, remote.RelaySessions
+				s.Tunnels = remote.Tunnels
+				if s.Tunnels == nil {
+					s.Tunnels = model.ActiveTunnelCounts(remote.Active)
+				}
 				s.LeaseOwner, s.LeaseExpires = remote.LeaseOwner, remote.LeaseExpires
 				s.System = remote.System
 			}

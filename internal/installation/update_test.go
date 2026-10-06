@@ -54,9 +54,12 @@ func main() {
 	for _, tc := range []struct {
 		name, version, requested, wantError string
 		corrupt, missing, cancelled         bool
+		unchanged                           bool
 	}{
 		{name: "latest", version: "v2"},
 		{name: "pinned", version: "v2", requested: "v2"},
+		{name: "same version different checksum", version: "v2", unchanged: true},
+		{name: "same pinned version different checksum", version: "v2", requested: "v2", unchanged: true},
 		{name: "corrupt", version: "v2", corrupt: true, wantError: "checksum mismatch"},
 		{name: "wrong executable version", version: "v3", wantError: "does not match"},
 		{name: "wrong release tag", version: "v2", requested: "v3", wantError: "tag and manifest"},
@@ -119,7 +122,11 @@ func main() {
 			if tc.cancelled {
 				cancel()
 			}
-			result, err := updateSelf(ctx, path, server.URL, tc.requested, server.Client())
+			currentVersion := "v1"
+			if tc.unchanged {
+				currentVersion = "v2"
+			}
+			result, err := updateSelf(ctx, path, server.URL, tc.requested, currentVersion, server.Client())
 			if tc.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
 					t.Fatalf("got %v, want %s", err, tc.wantError)
@@ -130,13 +137,23 @@ func main() {
 				}
 				return
 			}
+			if tc.unchanged {
+				if err != nil || result.Changed || result.Version != "v2" || downloads.Load() != 0 {
+					t.Fatalf("same-version update: %+v, %v; downloads=%d", result, err, downloads.Load())
+				}
+				got, readErr := os.ReadFile(path)
+				if readErr != nil || string(got) != string(old) {
+					t.Fatal("same-version update replaced executable", readErr)
+				}
+				return
+			}
 			if err != nil || !result.Changed || result.Version != "v2" || result.Path != path {
 				t.Fatalf("update: %+v, %v", result, err)
 			}
 			if err = update.ValidateExecutable(ctx, path, "v2", asset); err != nil {
 				t.Fatal(err)
 			}
-			result, err = updateSelf(ctx, path, server.URL, tc.requested, server.Client())
+			result, err = updateSelf(ctx, path, server.URL, tc.requested, "v2", server.Client())
 			if err != nil || result.Changed || downloads.Load() != 1 {
 				t.Fatalf("repeat update: %+v, %v; downloads=%d", result, err, downloads.Load())
 			}
@@ -159,7 +176,7 @@ func TestUpdateSelfRejectsConcurrentUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = lock.Close() }()
-	_, err := updateSelf(t.Context(), path, "http://unused.invalid", "", http.DefaultClient)
+	_, err := updateSelf(t.Context(), path, "http://unused.invalid", "", "v1", http.DefaultClient)
 	if err == nil || !strings.Contains(err.Error(), "another CLI update") {
 		t.Fatalf("concurrent update: %v", err)
 	}

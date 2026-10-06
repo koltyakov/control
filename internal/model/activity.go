@@ -46,20 +46,47 @@ type NodeActivitySnapshot struct {
 	Disabled       bool              `json:"disabled,omitempty"`
 	ControlPending bool              `json:"controlPending,omitempty"`
 	// Status is ready for peer activity, summary for fresh owner health,
-	// online for directory-only presence, offline, or unavailable.
-	Status         string      `json:"status"`
-	Error          string      `json:"error,omitempty"`
-	ObservedAt     time.Time   `json:"observedAt,omitempty"`
-	Active         []Activity  `json:"active"`
-	Recent         []Activity  `json:"recent"`
-	ActiveCount    int         `json:"activeCount"`
-	Omitted        int         `json:"omitted,omitempty"`
-	DirectSessions int         `json:"directSessions"`
-	RelaySessions  int         `json:"relaySessions"`
-	LeaseOwner     string      `json:"leaseOwner,omitempty"`
-	LeaseExpires   time.Time   `json:"leaseExpires,omitempty"`
-	Leased         bool        `json:"leased,omitempty"`
-	System         *SystemInfo `json:"system,omitempty"`
+	// online for directory-only presence, update during managed updates,
+	// offline, or unavailable.
+	Status          string        `json:"status"`
+	Error           string        `json:"error,omitempty"`
+	ObservedAt      time.Time     `json:"observedAt,omitempty"`
+	Active          []Activity    `json:"active"`
+	Recent          []Activity    `json:"recent"`
+	ActiveCount     int           `json:"activeCount"`
+	Omitted         int           `json:"omitted,omitempty"`
+	DirectSessions  int           `json:"directSessions"`
+	RelaySessions   int           `json:"relaySessions"`
+	Tunnels         *TunnelCounts `json:"tunnels,omitempty"`
+	RetainedTunnels *TunnelCounts `json:"retainedTunnels,omitempty"`
+	LeaseOwner      string        `json:"leaseOwner,omitempty"`
+	LeaseExpires    time.Time     `json:"leaseExpires,omitempty"`
+	Leased          bool          `json:"leased,omitempty"`
+	System          *SystemInfo   `json:"system,omitempty"`
+}
+
+// TunnelCounts separates forward connections from reverse listeners for live
+// activity, or forward/reverse definitions when used for RetainedTunnels.
+type TunnelCounts struct {
+	Forward int `json:"forward"`
+	Reverse int `json:"reverse"`
+}
+
+// ActiveTunnelCounts excludes recent completions and non-tunnel operations.
+func ActiveTunnelCounts(active []Activity) *TunnelCounts {
+	counts := &TunnelCounts{}
+	for _, a := range active {
+		if a.Kind != "tunnel" {
+			continue
+		}
+		switch a.Operation {
+		case "tcp.open", "tcp.accept":
+			counts.Forward++
+		case "tcp.listen":
+			counts.Reverse++
+		}
+	}
+	return counts
 }
 
 type PoolActivitySnapshot struct {

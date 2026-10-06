@@ -48,13 +48,13 @@ func TestOneTimeInstallerRegistersAvailableMachine(t *testing.T) {
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 15*time.Second)
 		defer stop()
+		if unregistered {
+			return
+		}
 		cmd := exec.CommandContext(cleanup, installed, "--config", cfg, "service", "uninstall")
 		cmd.Env = environment
 		if b, err := cmd.CombinedOutput(); err != nil {
 			t.Errorf("cleanup installed node: %v %s", err, b)
-			return
-		}
-		if unregistered {
 			return
 		}
 		for cleanup.Err() == nil {
@@ -197,6 +197,13 @@ func TestOneTimeInstallerRegistersAvailableMachine(t *testing.T) {
 	if _, err := admin.ResolveMachine(ctx, link.Name); err == nil {
 		t.Fatal("unregistered process returned to the fleet")
 	}
+	waitUpdate(t, ctx, func() bool {
+		_, err := os.Stat(installed)
+		return os.IsNotExist(err)
+	})
+	if _, err := os.Stat(cfg); err != nil {
+		t.Fatal("unregistration removed the retained profile", err)
+	}
 	previousID, previousDataDir := installedID, config.DataDir
 	link, err = admin.Invite(ctx, enrollment.Request{Name: link.Name, OS: runtime.GOOS, Arch: runtime.GOARCH})
 	if err != nil {
@@ -226,7 +233,7 @@ func TestOneTimeInstallerRegistersAvailableMachine(t *testing.T) {
 		t.Fatal("installer removed previous state", err)
 	}
 	call(t, ctx, c, link.Name, "exec.run", map[string]any{"command": "printf", "args": []string{"reinstalled"}}, nil)
-	t.Log("disable blocked execution, enable restored admission, and unregister stopped the installed supervisor")
+	t.Log("disable blocked execution, enable restored admission, and unregister stopped the supervisor and removed its executable")
 	t.Log("a new invitation reinstalled the retired node using fresh identity state and the existing profile")
 	t.Log("copied Bash command installed a verified binary, redeemed one identity, started its node, and made it available for remote work")
 }

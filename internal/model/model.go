@@ -36,6 +36,8 @@ type Node struct {
 	// ExecutionAuthority is assigned by the gateway, never by enrollment metadata.
 	ExecutionAuthority    bool `json:"executionAuthority,omitempty"`
 	InstructionDelegation bool `json:"instructionDelegation,omitempty"`
+	// UpdateUntil is gateway-owned display grace, not connection presence.
+	UpdateUntil time.Time `json:"updateUntil,omitzero"`
 }
 
 type Artifact struct {

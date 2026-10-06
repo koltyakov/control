@@ -198,9 +198,18 @@ func (g *Gateway) list(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	g.mu.Unlock()
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
+	sort.Slice(nodes, func(i, j int) bool { return nodeNameLess(nodes[i].Name, nodes[j].Name) })
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(nodes)
+}
+
+// nodeNameLess keeps machine lists alphabetical regardless of name casing.
+// Original spelling breaks case-only ties without changing routing names.
+func nodeNameLess(a, b string) bool {
+	if lowerA, lowerB := strings.ToLower(a), strings.ToLower(b); lowerA != lowerB {
+		return lowerA < lowerB
+	}
+	return a < b
 }
 
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
@@ -336,6 +345,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	n.Online = true
 	n.LastSeen = time.Now().UTC()
 	previous, existed := g.nodes[n.ID]
+	n.UpdateUntil = previous.UpdateUntil // Never trust enrollment's display grace.
 	previousOwner := g.owners[ownerID]
 	g.owners[ownerID] = n.UserID
 	previousClient := g.clientOwners[ownerID]
@@ -393,6 +403,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		if latest, exists := g.nodes[n.ID]; exists {
 			latest.Online = false
 			latest.LastSeen = time.Now().UTC()
+			if status := g.updateStatus[n.ID]; status.State == "restarting" && !latest.UpdateUntil.IsZero() {
+				latest.UpdateUntil = latest.LastSeen.Add(time.Minute)
+			}
 			g.nodes[n.ID] = latest
 		}
 		if !client {
@@ -452,14 +465,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			if client {
 				return
 			}
-			var status update.Status
-			if len(p.Data) > 8192 || json.Unmarshal(p.Data, &status) != nil {
+			if !g.receiveUpdateStatus(n, c, p.Data) {
 				return
 			}
-			status.SeenAt = time.Now().UTC()
-			g.mu.Lock()
-			g.updateStatus[n.ID] = status
-			g.mu.Unlock()
 			continue
 		}
 		switch p.Kind {

@@ -184,7 +184,7 @@ func (m view) managerView() tea.View {
 		} else {
 			lines = append(lines, "The offline registration will be removed immediately.", "This identity cannot rejoin the fleet.")
 		}
-		lines = append(lines, "Lifecycle-capable nodes stop on their next gateway contact.", "Older nodes must be stopped locally or replaced by an installer.")
+		lines = append(lines, "Current installations uninstall on their next gateway contact.", "Configuration and work files are retained; older nodes may need local cleanup.")
 		footer = hint("Enter", "unregister") + sep + hint("Esc", "back")
 	case "pending":
 		lines = append(lines, paint("Requesting "+w.action+" for "+clean(n.Name)+"…", "36", m.color))

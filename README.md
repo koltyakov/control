@@ -31,6 +31,7 @@ Orchestrator and worker are roles, not fixed machine types. A node can perform b
 - Label-based selection, exclusive execution leases, bounded task concurrency, and dependency-ordered workflows.
 - A local MCP server exposing routing tools for AI clients.
 - Independent control/bulk/interactive traffic lanes, shared WebRTC carriers, streamed task logs, and negotiated TCP half-close.
+- Persistent forward and reverse TCP tunnels with non-blocking creation, listing, disposal, optional TTL, and user-service listener recovery. See [persistent tunnels](docs/tunnels.md).
 - A live CLI dashboard with registered machines, availability, in-flight work, and sampled system resources.
 - Superuser-only development pushes and GitHub Release updates, applied when the pool is idle.
 - Host setup with MCP and skills, plus expiring one-time installation commands for new machines.
@@ -46,7 +47,7 @@ curl -fsSL https://raw.githubusercontent.com/koltyakov/control/main/scripts/inst
 Windows, from PowerShell, CMD, or Bash:
 
 ```powershell
-powershell -NoProfile -c "irm https://raw.githubusercontent.com/koltyakov/control/main/scripts/install.ps1 | iex"
+powershell.exe -NoProfile -c "irm https://raw.githubusercontent.com/koltyakov/control/main/scripts/install.ps1|iex"
 ```
 
 On Windows, open a new terminal after installation to pick up the saved user PATH.
@@ -184,9 +185,9 @@ The dashboard connects directly to the configured gateway and shows its URL, run
 
 With an account login and authorized peer observation, the dashboard also shows running and queued tasks from every owner, synchronous operations, artifact transfer progress, TCP tunnel traffic, and recent completions. It lists idle and offline machines and reports their OS, CPU, RAM, and disk capacity and usage.
 
-Tables adapt to terminal width. Use `d` for full details, arrow keys or Page Up/Page Down to scroll, `r` to refresh activity, and `q` to quit. Drag across text to select it; releasing the mouse copies only that selection to the local clipboard. The display stays fixed during the drag and resumes on release. Press `c` to copy the last selection again. Refreshes use steady text with no blinking indicators.
+Tables adapt to terminal width. Recent completions are hidden by default; press uppercase `R` to show or hide them. Use `d` for full details, arrow keys or Page Up/Page Down to scroll, `r` to refresh activity, and `q` to quit. Drag across text to select it; releasing the mouse copies only that selection to the local clipboard. The display stays fixed during the drag and resumes on release. Press `c` to copy the last selection again. Refreshes use steady text with no blinking indicators.
 
-The machine table includes running versions. Press `m` to rename, enable, disable, or unregister a selected machine. Renaming sets its routing alias without restarting it or interrupting work. Disabling keeps it registered and blocks new work. Unregistering removes it and retires its identity, including while offline; lifecycle-capable nodes stop on their next gateway contact. CLI equivalents are `control machines rename NAME NEW_NAME`, `disable NAME`, `enable NAME`, and `unregister NAME`. See [registration management](docs/installation.md#manage-registrations).
+The machine table includes running versions. Press `m` to rename, enable, disable, or unregister a selected machine. Renaming sets its routing alias without restarting it or interrupting work. Disabling keeps it registered and blocks new work. Unregistering removes it and retires its identity, including while offline. Current installations cancel work and uninstall their startup registration and executable on their next gateway contact, retaining configuration and work files. CLI equivalents are `control machines rename NAME NEW_NAME`, `disable NAME`, `enable NAME`, and `unregister NAME`. See [registration management](docs/installation.md#manage-registrations) for older installations.
 
 For scripts or a single view:
 
@@ -207,7 +208,7 @@ See [dashboard and system metrics](docs/dashboard.md) for availability states, p
 control update
 ```
 
-This downloads the latest stable GitHub release, verifies it, and replaces the CLI you invoked. `control upgrade` is an alias. No gateway login is required. Use `control update --version v0.2.0` to select a release. Existing binaries without this command need a current build or a one-time reinstall using the installation script above.
+This downloads the latest stable GitHub release, verifies it, and replaces the CLI you invoked. If the version is unchanged, download and replacement are skipped. `control upgrade` is an alias. No gateway login is required. Use `control update --version v0.2.0` to select a release. Existing binaries without this command need a current build or a one-time reinstall using the installation script above.
 
 Running nodes receive their updates through the gateway's managed rollout, described below. See [CLI updates](docs/updates.md#update-the-local-cli) for repository settings and Windows behavior.
 
@@ -225,6 +226,8 @@ make update-status
 `control login` persists a validated superuser key for update administration as well as the regular login. Switching back to a normal fleet login retains that update authorization. `make update` checks saved credentials before building the platform bundle and never asks for a key. A login without superuser authorization produces a permission error instead. No environment variables or repeated key entry are needed once authorized.
 
 This pushes the local checkout's build, not a GitHub release. The gateway stages platform-specific binaries, waits for idle reservations, updates every enrolled node across user fleets, then restarts itself. That includes nodes on orchestrator machines and all workers; offline nodes catch up when they reconnect. Standalone CLI/MCP installations are not enrolled nodes and need a separate CLI update. Common keys cannot publish updates or see administrative CLI help. Create common keys with `control keys create NAME` using your superuser credentials.
+
+An unchanged version skips installation and restart, even if rebuilding changes checksums. Repeating a push retains the selected deployment. Use a new `VERSION` to deploy changed code under a reused `dev` or `-dirty` label.
 
 See [managed updates](docs/updates.md) for initial setup, release assets, key permissions, and the versioned service launcher.
 

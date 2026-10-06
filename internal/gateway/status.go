@@ -60,10 +60,13 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 			snapshot.ActiveCount, snapshot.Leased = c.health.ActiveCount, c.health.Leased
 			snapshot.System = &c.health.System
 		}
+		if g.nodeUpdating(n, result.ObservedAt) {
+			snapshot.Status = "update"
+		}
 		result.Nodes = append(result.Nodes, snapshot)
 	}
 	g.mu.Unlock()
-	sort.Slice(result.Nodes, func(i, j int) bool { return result.Nodes[i].Name < result.Nodes[j].Name })
+	sort.Slice(result.Nodes, func(i, j int) bool { return nodeNameLess(result.Nodes[i].Name, result.Nodes[j].Name) })
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(result)

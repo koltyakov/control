@@ -72,7 +72,7 @@ func (n *Node) OpenTCP(ctx context.Context, target, address string) (net.Conn, e
 		return nil, err
 	}
 	activity.phase("connected")
-	return &workConn{Conn: &activityConn{Conn: conn, activity: activity}, release: release}, nil
+	return &workConn{Conn: &activityConn{Conn: conn, activity: activity, finishOnClose: true}, release: release}, nil
 }
 
 // Bridge preserves TCP half-close when supported and joins both copy directions.

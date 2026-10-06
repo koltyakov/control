@@ -2,8 +2,10 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,6 +13,53 @@ import (
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 )
+
+func TestMachineListsSortNamesIgnoringCase(t *testing.T) {
+	g, err := New(t.TempDir(), commonKey, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = g.Close() })
+	for i, name := range []string{"WinArmVM", "ser5", "tallinn", "vm-win11-02", "worker", "Worker", "WORKER"} {
+		g.nodes[name] = model.Node{ID: name, UserID: legacyUser, Name: name, Online: i%2 == 0}
+	}
+	want := []string{"ser5", "tallinn", "vm-win11-02", "WinArmVM", "WORKER", "Worker", "worker"}
+	for _, path := range []string{"/v1/nodes", "/v1/status"} {
+		t.Run(path, func(t *testing.T) {
+			// Repeated reads must break case-only ties consistently despite map iteration.
+			for range 10 {
+				req := httptest.NewRequest(http.MethodGet, path, nil)
+				req.Header.Set("Authorization", "Bearer "+commonKey)
+				r := httptest.NewRecorder()
+				g.Handler().ServeHTTP(r, req)
+				if r.Code != http.StatusOK {
+					t.Fatalf("status %d: %s", r.Code, r.Body.String())
+				}
+				var names []string
+				if path == "/v1/nodes" {
+					var nodes []model.Node
+					if err := json.NewDecoder(r.Body).Decode(&nodes); err != nil {
+						t.Fatal(err)
+					}
+					for _, n := range nodes {
+						names = append(names, n.Name)
+					}
+				} else {
+					var pool model.PoolActivitySnapshot
+					if err := json.NewDecoder(r.Body).Decode(&pool); err != nil {
+						t.Fatal(err)
+					}
+					for _, n := range pool.Nodes {
+						names = append(names, n.Name)
+					}
+				}
+				if !slices.Equal(names, want) {
+					t.Fatalf("machine order = %v, want %v", names, want)
+				}
+			}
+		})
+	}
+}
 
 func TestStatusScopesFleetAndReadsCachedGatewayMetrics(t *testing.T) {
 	dir := t.TempDir()

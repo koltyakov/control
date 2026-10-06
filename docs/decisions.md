@@ -120,6 +120,8 @@ These metrics describe host-visible capacity and usage. They do not implement ta
 
 ## D014: Superuser-authorized gateway updates and idle reservations
 
+Same-version update selection and acknowledgements are refined by [D047](#d047-skip-updates-for-unchanged-versions). Authorization and idle reservations remain unchanged.
+
 Extend D004's enrollment model with hashed, revocable common keys and a separately configured superuser key. Only the superuser can issue common keys, upload executable bundles, publish deployments, or trigger release checks. CLI administration help requires a verified superuser response; server-side authorization enforces the permission independently.
 
 [D016](#d016-sqlite-backed-users-and-isolated-fleets) supersedes the common-key issuance restriction: account owners can issue keys for their own fleet. Executable publication and global rollout administration remain superuser-only.
@@ -208,6 +210,8 @@ This lets a logged-in dashboard show machine CPU, idle/busy state, and work coun
 
 The lifecycle-support requirement for offline unregistration is superseded by [D024](#d024-offline-unregistration-without-lifecycle-support).
 
+Retention of startup registration and the installed executable after unregistration is superseded by [D049](#d049-self-uninstall-after-durable-machine-unregistration).
+
 Store disabled state and permanent unregistration tombstones by immutable identity in SQLite. Expose fleet-scoped enable/disable/unregister commands through the shared client and dashboard. Nodes fetch their own policy at startup and every two seconds using timestamped Ed25519 proofs, persist it, and acknowledge the revision. Proof-based reads remain possible after the machine credential is revoked, without granting directory access or policy mutation.
 
 Disable excludes a node from selection and rejects new execution at its work-admission gate. Existing accepted work can finish and remain observable and cancellable. This gate is independent of managed-update reservations. Unregister removes the directory entry, cancels work, stops the service cleanly, and prevents that identity from returning. Offline agents apply the stop when connectivity returns; service entries and local files are retained. Older agents must demonstrate support before the gateway accepts remote-stop commands. This supersedes D015's metadata-only removal contract for the new unregister command. See [installation](installation.md#manage-registrations) and [protocol](protocol.md#machine-lifecycle).
@@ -221,6 +225,8 @@ Allow fleet owners to unregister any offline registration, even when the agent n
 Online unregister still requires lifecycle support. Compatible offline agents receive the stop policy when they next contact the gateway. Older agents cannot rejoin with the retired identity, but require a local stop if still running. This supersedes only D023's support requirement for offline unregistration. See [registration management](installation.md#manage-registrations).
 
 ## D025: Local CLI self-updates
+
+[D047](#d047-skip-updates-for-unchanged-versions) adds a version-based skip before binary download and replacement.
 
 Bare `control update` replaces the invoked CLI with a verified public GitHub release; `upgrade` is an alias. No gateway role is required because this operation uses local filesystem authority and the same release publisher trusted by the installers. Keep `update push`, `status`, and `check` as superuser-only fleet administration. This supersedes D014's restriction on the bare update command and its help, while retaining gateway publication and rollout authorization.
 
@@ -237,6 +243,8 @@ Running a new invitation against an existing local profile replaces its registra
 The local identity identifies the machine, rather than its display name or a hardware fingerprint. An invitation for an already registered name reserves that identity; another machine cannot claim it. Replacement preserves immutable fleet ownership, disabled policy, and retired-identity rejection. Installed identities use their current bound credential, so an older common-key configuration cannot restore the previous name. Users keep their workspace and task history, but running work is interrupted by the explicit re-registration. Separate profiles remain separate installations. See [installation and enrollment](installation.md#add-a-machine).
 
 ## D027: Unregister older agents and reinstall retired profiles
+
+The compatible-node stop-only behavior is extended to self-uninstall by [D049](#d049-self-uninstall-after-durable-machine-unregistration). Older-node retirement and fresh-identity replacement remain unchanged.
 
 Allow owners to unregister online agents without requiring lifecycle support. Registration removal and identity retirement are gateway operations; requiring a remote-stop implementation prevents owners from removing old agents. Commit the tombstone and credential revocation before closing the gateway connection. Compatible agents stop through their policy channel. Older agents need a local stop, and existing direct sessions can continue until then. This supersedes D023/D024's remaining online-unregistration restriction.
 
@@ -411,3 +419,53 @@ Generated Windows worker installers request scoped firewall setup explicitly thr
 Allow inbound/outbound UDP for WebRTC and outbound TCP to the gateway port for the launcher and one profile-specific stable runtime path, on all Windows network profiles. Do not open inbound TCP, disable firewall protection, or change unrelated rules. Rule names and ownership metadata are deterministic per profile; repeated setup refreshes only owned rules. Keep rules after service uninstall for profile restoration, with explicit removal documented.
 
 Windows firewall application filters use exact executable paths. Versioned update paths would need new privileged rules for every deployment, while a machine-wide UDP port rule would authorize unrelated processes. Instead, the Windows supervisor copies each checksum-verified selection to `<dataDir>\runtime\control.exe` before launch and only after the previous child exits. Preserve versioned source binaries and selection/rollback records; never replace a running child or automatically roll back an uncertain update. Unix execution paths stay unchanged. This extends D014's supervisor implementation and D038's worker-installation flow without changing identity, execution authority, startup context, or idle reservations. Older supervisors need one installed-CLI update and restart. See [firewall behavior](installation.md#windows-firewall).
+
+## D047: Skip updates for unchanged versions
+
+Treat the software version as the update boundary. Publishing the selected version returns its existing deployment unchanged, even when build timestamps or asset checksums differ. Nodes and the gateway skip staging and restart if their running version matches the target on the same platform. The CLI self-updater skips binary download and replacement after validating a same-version release manifest. Exact checksum matches retain their existing skip behavior.
+
+Rebuilding one checkout must not restart a fleet merely because build metadata changed. This refines D014's checksum-based rollout acknowledgements and extends D025's CLI skip behavior. Keep checksum matching strict for binary validation, and preserve fresh deployment acknowledgements, participant tracking, and idle reservations whenever any service actually needs a restart. Offline nodes still catch up using the retained manifest.
+
+Version labels must change to deploy new code. Reused `dev` and `-dirty` labels are skipped too; use an explicit new `VERSION` for another development rollout. Build and upload steps may still run, but same-version publication does not replace pinned assets. See [managed updates](updates.md).
+
+## D048: Managed-update display grace
+
+The minimum display delay after confirmed resumption is superseded by [D050](#d050-end-update-display-on-confirmed-resumption). Disconnect grace and persistence remain unchanged.
+
+Show `update` during managed-update progress and retain it for at least one minute across an actual restart disconnect. Persist a gateway-owned deadline in the machine's directory record, retain it on reconnection, and ignore enrollment-supplied deadlines. Start restart grace only for the selected deployment when the running software needs replacement. Same-version skips do not start it.
+
+This prevents expected update restarts from appearing as ordinary outages, including across gateway restart. Display grace does not change the online flag, routing, scheduling, last-seen time, or rollout acknowledgements. Peer activity enrichment cannot overwrite `update`. Once grace expires, a disconnected machine shows `offline` again. This extends D014/D022's observation behavior without changing their admission or authority rules. See [dashboard availability](dashboard.md#availability-is-separate-from-observability).
+
+## D049: Self-uninstall after durable machine unregistration
+
+Treat the existing identity-bound unregistration policy as an uninstall instruction for current installations. Keep the gateway's transactional tombstone, credential revocation, fleet isolation, and signed policy channel unchanged. Online nodes apply it on their next query; offline nodes receive it when connectivity returns. Persist retirement before cancelling work. A saved tombstone also triggers cleanup at startup without gateway access.
+
+Record each installed profile's identity, launcher, and startup mode. Copy a cleanup executable into retained state and launch it independently of the node's service-manager process group. The helper takes enrollment, runtime, and node locks, verifies the retired identity again, removes only that profile's startup registration, and deletes the launcher only when no other installed profile shares it. Retain configuration, identities, workspaces, task/artifact and runtime state, MCP entries, skills, and firewall rules. Never recursively delete profile or workspace directories. These choices preserve reinstall recovery and avoid deleting a new enrollment through a delayed instruction.
+
+On Linux use a transient systemd service; on macOS use a separate one-shot launchd job. Windows helpers inherit the node token. Installation enables a profile-specific service SID and grants only that SID access to delete/query its own service and delete the launcher and its binary-registration file. It does not elevate the node or grant general service administration. Existing Windows system installations need a current installed CLI and an elevated stop/start to acquire those permissions. Installations without a launcher record and older nodes retain stop-only behavior. Cleanup failures remain visible in node logs and durable retirement survives a later retry.
+
+This supersedes D023's retained-startup/launcher contract and extends D027's compatible-node shutdown, without changing identity retirement or data-preserving reinstallation. See [registration management](installation.md#manage-registrations).
+
+## D050: End update display on confirmed resumption
+
+Clear a machine's restart display deadline when its authenticated connection reports the selected deployment, matching software version or checksum, and released maintenance. Persist the cleared deadline before accepting the report so a gateway restart cannot restore stale update display. Return to actual health or peer observation rather than forcing idle when work is running.
+
+Keep the one-minute grace for disconnected or unconfirmed nodes. Ignore older-deployment progress for active update display, and keep current-version nodes labeled `update` while maintenance remains paused. This supersedes D048's minimum display delay after resumption without relaxing fresh rollout acknowledgements, idle reservations, fleet isolation, or actual presence tracking. See [dashboard availability](dashboard.md#availability-is-separate-from-observability).
+
+## D051: Host-owned persistent tunnel definitions
+
+The dashboard counter naming is superseded by [D052](#d052-separate-live-tunnel-activity-from-retained-definitions). Definition ownership and persistence remain unchanged.
+
+Retain forward and reverse listener definitions in a separate orchestrator-host user client service. CLI and MCP submit/list/dispose through an authenticated loopback API, with private atomically written desired state and a single-runtime lock. Pin the destination's immutable ID and preserve an absolute optional TTL. Commit creation and removal before acknowledgement; identical IDs/specifications reconcile, while conflicting reuse fails. Keep the original foreground and process-owned APIs unchanged.
+
+Restart or reconnect restores only listeners for new connections. Never replay, resume, or automatically resubmit interrupted TCP traffic. Reverse bind attempts can fail while an earlier listener is closing; bounded backoff retries the explicit retained intent without bypassing normal authorization. Every definition owns cancellable forwarding resources, and service shutdown joins them. Expiry closes listeners even if its state cleanup write fails, and persisted expiry prevents restoration later.
+
+User startup restores definitions after login or user-manager startup without enrolling the host or requiring a node. Explicit process-only startup has no reboot/crash guarantee. Gateway URL and credential scope isolate services, permitting local listing/disposal during a gateway outage without borrowing another account's authority. This copies the selected account credential into protected client configuration; keep it outside worker-accessible state. Credential rotation does not migrate definitions implicitly. Native startup and permission behavior require OS runtime smoke tests.
+
+Dashboard `Tunnels` counts this host login's retained forward/reverse definitions by machine ID, including retrying definitions but excluding expired ones. Count definitions rather than sockets, and do not copy addresses or credentials into fleet telemetry. Other hosts' definitions are intentionally not aggregated. This extends D031/D042's forwarding lifetimes without changing their process-owned contracts, fleet membership, task ownership, or peer transport. See [persistent tunnels](tunnels.md).
+
+## D052: Separate live tunnel activity from retained definitions
+
+Use dashboard `Tunnels` and peer snapshot `tunnels` for tracked live forward connections and reverse listeners across owners. Count `tcp.open` and `tcp.accept` as forward connections and `tcp.listen` as reverse listeners, once per listener regardless of socket count. Compute counts before aggregate detail truncation; older-node fallback counts use only returned active records. Unknown peer observation stays unknown rather than displaying zero.
+
+Keep this host login's unexpired persistent definitions in dashboard `retainedTunnels` and a separate lower-priority `Saved` column. Retrying definitions are not live connections, and foreground or detached tunnel processes have no persistent definitions. Mixing the two made established listeners display zero. Idle local forward listeners are not observable on workers, so forward activity counts describe connected sockets, not local listener definitions. This supersedes D051's dashboard field and column naming without changing tunnel lifetimes, restoration, authorization, gateway health reports, or telemetry privacy. See [dashboard counts](dashboard.md).

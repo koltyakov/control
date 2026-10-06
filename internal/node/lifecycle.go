@@ -14,6 +14,9 @@ import (
 
 var ErrUnregistered = errors.New("machine was unregistered by its fleet owner")
 
+// Unregistered reports whether the node durably received identity retirement.
+func (n *Node) Unregistered() bool { return n.currentMachineState().Unregistered }
+
 func (n *Node) loadMachineState() error {
 	err := store.Read(filepath.Join(n.Config.DataDir, "machine-state.json"), &n.machineState)
 	if err != nil && !os.IsNotExist(err) {

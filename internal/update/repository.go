@@ -58,7 +58,7 @@ func (r *Repository) Publish(manifest Manifest, source string) (*Deployment, err
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	id := manifest.ID()
-	if r.current != nil && r.current.ID == id {
+	if r.current != nil && (r.current.ID == id || r.current.Manifest.Version == manifest.Version) {
 		copy := *r.current
 		return &copy, nil
 	}

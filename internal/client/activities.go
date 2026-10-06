@@ -79,6 +79,10 @@ func peerActivities(ctx context.Context, p *transport.Peer, args json.RawMessage
 				s.Status, s.ObservedAt, s.Active, s.Recent = "ready", remote.ObservedAt, remote.Active, remote.Recent
 				s.ActiveCount, s.Omitted = remote.ActiveCount, remote.Omitted
 				s.DirectSessions, s.RelaySessions = remote.DirectSessions, remote.RelaySessions
+				s.Tunnels = remote.Tunnels
+				if s.Tunnels == nil {
+					s.Tunnels = model.ActiveTunnelCounts(remote.Active)
+				}
 				s.LeaseOwner, s.LeaseExpires = remote.LeaseOwner, remote.LeaseExpires
 				s.System = remote.System
 			}

@@ -75,6 +75,14 @@ func Service(ctx context.Context, operation, binary, config, mode string) error 
 		return err
 	}
 	c := client.Client{URL: API(cfg), Token: cfg.Token}
+	if operation == "start" {
+		if err = CheckServiceProfile(config, mode); err != nil {
+			return err
+		}
+		if err = rememberInstallation(ctx, binary, config, mode, cfg); err != nil {
+			return err
+		}
+	}
 	if operation == "firewall" {
 		return configureFirewall(ctx, binary, config, cfg)
 	}

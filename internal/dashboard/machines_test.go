@@ -31,7 +31,7 @@ func TestMachineManagementTargetsSelectedIdentityOnce(t *testing.T) {
 	if m.manager.phase != "confirm" || calls != 0 {
 		t.Fatal("unregister ran before selection confirmation")
 	}
-	if text := m.View().Content; !strings.Contains(text, "offline registration will be removed immediately") || !strings.Contains(text, "Lifecycle-capable nodes stop") {
+	if text := m.View().Content; !strings.Contains(text, "offline registration will be removed immediately") || !strings.Contains(text, "uninstall on their next gateway contact") || !strings.Contains(text, "work files are retained") {
 		t.Fatal("offline confirmation does not explain removal", text)
 	}
 	for _, width := range []int{4, 30, 90} {
@@ -64,7 +64,10 @@ func TestNodeVersionAndDisabledStatus(t *testing.T) {
 		t.Fatal(text)
 	}
 	snapshot.Nodes[0].ControlPending = true
-	if text = render(snapshot, now, renderOptions{width: 140}); !strings.Contains(text, "disabling") {
+	if text = render(snapshot, now, renderOptions{width: 140}); !strings.Contains(text, "disabli…") {
+		t.Fatal(text)
+	}
+	if text = render(snapshot, now, renderOptions{width: 80, details: true}); !strings.Contains(text, "disabling") {
 		t.Fatal(text)
 	}
 }

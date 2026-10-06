@@ -158,6 +158,34 @@ func TestStandalonePeerOperations(t *testing.T) {
 			if _, err := io.ReadFull(conn, reply[:]); err != nil || string(reply[:]) != "ping" {
 				t.Fatal("tunnel", reply, err)
 			}
+			// A dashboard using only an account login must observe another process's
+			// open socket and idle reverse listener without a local API or token.
+			reverse, err := c.StartForward(ctx, ForwardSpec{Node: "worker", Address: echo.Addr().String(), Reverse: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reverse.Close()
+			observerCfg := cfg
+			observerCfg.AccountRouting = true
+			observer := (Client{}).WithStandalone(ctx, observerCfg)
+			t.Cleanup(func() { _ = observer.Close() })
+			observed, err := observer.Dashboard(ctx, accounts[0], model.PoolActivityQuery{Recent: 5})
+			if err != nil || len(observed.Nodes) != 1 || observed.Nodes[0].Status != "ready" || observed.Nodes[0].ActiveCount != 2 {
+				t.Fatalf("standalone dashboard lost tunnel activity: %+v %v", observed, err)
+			}
+			if observed.Nodes[0].Tunnels == nil || *observed.Nodes[0].Tunnels != (model.TunnelCounts{Forward: 1, Reverse: 1}) {
+				t.Fatalf("standalone dashboard lost live tunnel counts: %+v", observed.Nodes[0])
+			}
+			operations := map[string]model.Activity{}
+			for _, activity := range observed.Nodes[0].Active {
+				operations[activity.Operation] = activity
+			}
+			if socket, listener := operations["tcp.accept"], operations["tcp.listen"]; socket.Kind != "tunnel" || socket.BytesSent != 4 || socket.BytesReceived != 4 || listener.Kind != "tunnel" || listener.Phase != "listening" {
+				t.Fatalf("missing tunnel traffic or idle listener: %+v", operations)
+			}
+			if err := c.StopForward(reverse.Info().ID); err != nil {
+				t.Fatal(err)
+			}
 			stopTunnel()
 			_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 			if _, err := conn.Read(reply[:]); err == nil {
