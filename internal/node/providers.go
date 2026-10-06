@@ -49,6 +49,9 @@ func (n *Node) registerProviders() error {
 			return err
 		}
 	}
+	if err := n.registerRPA(); err != nil {
+		return err
+	}
 	for name, cfg := range n.Config.Providers {
 		if cfg.Command == "" {
 			return fmt.Errorf("provider %s requires a command", name)

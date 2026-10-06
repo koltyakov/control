@@ -105,3 +105,5 @@ Exclusive leases coordinate tracked execution on one node. They are acquired ato
 A Go `Provider` exposes a capability description/schema and a context-aware `Run` method. Configured subprocess providers implement the same behavior using versioned JSON stdin/stdout. Files and large outputs should be artifacts, rather than embedded control messages.
 
 The agent provider wraps an installed CLI, while the MCP provider maintains local sessions through the official Go MCP SDK. Application-specific features, GPU schedulers, desktop helpers, and richer interactive agent adapters can be added as providers without changing the peer transport.
+
+An explicitly configured `rpa` helper registers `rpa.run`. The Go adapter validates batches, serializes them with a per-OS-user file lock, caps execution at two minutes, and imports bounded PNG screenshots as artifacts. The supplied Python helper uses Windows UI Automation, macOS AX, or Linux AT-SPI for exact element targeting, with explicitly requested PyAutoGUI input as a fallback. GUI execution retains existing task durability, authorization, lease checks, and maintenance admission. See [GUI automation](rpa.md).

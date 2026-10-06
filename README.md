@@ -22,6 +22,7 @@ Orchestrator and worker are roles, not fixed machine types. A node can perform b
 - Mutually authenticated TLS 1.3 sessions over both transports. The relay forwards encrypted execution traffic.
 - Durable task acceptance, idempotent submission IDs, cancellation, offset-based logs, results, and restart reconciliation.
 - Commands, scripts, configured AI CLIs, versioned subprocess providers, and local MCP servers.
+- Opt-in GUI automation through a desktop helper, with native accessibility selectors, mouse/keyboard actions, and screenshot artifacts. See [requirements and limitations](docs/rpa.md).
 - Filesystem reads/writes, private-network HTTP requests, and TCP forwarding for database or other protocols.
 - Immutable SHA-256 artifacts, resumable transfers, worker-to-worker delivery, and subject-bound artifact grants.
 - Label-based selection, exclusive execution leases, bounded task concurrency, and dependency-ordered workflows.
@@ -339,6 +340,7 @@ MCP clients use `control_forward_start` with `node`, `address`, and optional `li
 - [Managed updates](docs/updates.md): release polling, development pushes, idle rollout, and superuser keys.
 - [Installation and enrollment](docs/installation.md): host setup, MCP/skills, user startup, and one-time machine links.
 - [Users and private fleets](docs/users.md): account registration, isolation, SQLite persistence, and migration.
+- [GUI automation](docs/rpa.md): desktop helper setup, accessibility selectors, input actions, screenshot artifacts, and safety limits.
 - [Contributor and agent guide](AGENTS.md): repository layout, coding instructions, and verification.
 
 The gateway supports multiple isolated user fleets with SQLite-backed registration and credential storage. It is a single-gateway deployment, without gateway clustering, public self-service signup, billing, or execution sandboxing. Node task and artifact metadata use locked local directories and atomic JSON writes. Windows invitation scripts default to user-login startup; direct `control setup` defaults to an automatic LocalService service. Linux and macOS support user startup. Desktop and application integrations can be attached through MCP or custom providers; GUI tools need a provider running in the user's desktop session.

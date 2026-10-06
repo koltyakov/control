@@ -37,6 +37,8 @@ type Config struct {
 	Providers map[string]Command  `json:"providers,omitempty"`
 	Agents    map[string]Command  `json:"agents,omitempty"`
 	MCP       map[string]Command  `json:"mcp,omitempty"`
+	// RPA opts into desktop access through a configured version-1 helper.
+	RPA *Command `json:"rpa,omitempty"`
 }
 
 func LoadConfig(path string) (Config, error) {

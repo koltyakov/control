@@ -86,6 +86,7 @@ type Node struct {
 	shutdown            func()
 	lifecycleMu         sync.Mutex
 	machineState        model.MachineState
+	rpaLockPath         string
 }
 
 func New(cfg Config) (*Node, error) {

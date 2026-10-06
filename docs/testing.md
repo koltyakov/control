@@ -14,6 +14,8 @@ Standalone client tests exercise named calls, owner-scoped task recovery across 
 
 Streaming tests also verify concurrent traffic lanes, one WebRTC carrier across lane channels, control traffic during blocked bulk writes, sibling multiplexer closure, independently cancelled slow-peer setup, stream-capacity cancellation, receive-packet bounds and buffer ownership, changing write deadlines, TCP EOF-driven responses through standalone and local API forwards, malformed duplex records, legacy raw/polling fallback, and binary log offsets with cancellation and owner checks. Adapter microbenchmarks and measured allocation changes are documented in [fleet streaming](streaming.md#verification-and-measurements).
 
+RPA tests use a fake helper to verify opt-in, whole-batch validation, authorization, leases, durable task idempotency, per-user serialization across profiles, cancellation, partial failures, screenshot path confinement, and PNG artifacts. Peer tests cover both transports without GUI dependencies. Dependency-free Python tests cover exact selector uniqueness, traversal bounds, backend validation, Wayland rejection, and key/button cleanup. Run them with `python3 -m unittest discover -s examples/rpa -p 'test_*.py'`. Live desktop behavior and permissions require native smoke tests; see [GUI automation](rpa.md#verification-and-limits).
+
 From the repository root:
 
 ```sh

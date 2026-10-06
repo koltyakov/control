@@ -7,6 +7,7 @@ import (
 
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/rpa"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -78,6 +79,13 @@ func (c Client) MCPServer() *mcp.Server {
 	add("control_task_logs", "Read task logs from a byte offset. Returns the next offset.", "tasks.logs", map[string]any{"node": text, "id": text, "offset": map[string]any{"type": "integer"}}, []string{"node", "id"}, normal)
 	add("control_mcp_discover", "List configured MCP servers, or discover a server's tools and input schemas.", "mcp.discover", map[string]any{"node": text, "server": text}, []string{"node"}, normal)
 	add("control_mcp_call", "Invoke an installed MCP tool on the selected node.", "mcp.call", map[string]any{"node": text, "server": text, "tool": text, "arguments": object}, []string{"node", "server", "tool"}, normal)
+	add("control_rpa", "Run an opt-in GUI action batch on a worker's logged-in desktop. Discover rpa.run first. Inspect accessibility elements before selector actions. Screenshots return PNG artifacts. Batches are serialized per OS user; use leased tasks for multi-batch workflows. A failed call may have changed the desktop; never replay automatically.", "rpa.run", map[string]any{"node": text, "actions": rpa.Schema()["properties"].(map[string]any)["actions"]}, []string{"node", "actions"}, func(args map[string]json.RawMessage) (string, any, error) {
+		target, params, err := normal(args)
+		if err != nil {
+			return "", nil, err
+		}
+		return target, params, rpa.Validate(model.JSON(params))
+	})
 	add("control_artifact_export", "Publish a file from a node's filesystem root as an immutable downloadable artifact.", "artifacts.export", map[string]any{"node": text, "path": text}, []string{"node", "path"}, normal)
 	add("control_artifact_deliver", "Tell the source node to deliver an artifact directly to another node, without passing bytes through the orchestrator.", "artifacts.deliver", map[string]any{"node": text, "id": text, "target": text}, []string{"node", "id", "target"}, normal)
 	local := func(name, description string, properties map[string]any, required []string, call func(context.Context, json.RawMessage) (any, error)) {

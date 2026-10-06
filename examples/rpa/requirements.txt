@@ -1,0 +1,6 @@
+PyAutoGUI==0.9.54
+Pillow>=11,<13
+pywinauto==0.6.9; sys_platform == 'win32'
+pyobjc-framework-ApplicationServices>=11,<13; sys_platform == 'darwin'
+pyobjc-framework-Cocoa>=11,<13; sys_platform == 'darwin'
+pyobjc-framework-Quartz>=11,<13; sys_platform == 'darwin'

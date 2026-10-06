@@ -130,6 +130,7 @@ Authenticate with `Authorization: Bearer TOKEN`. Responses contain `result` or `
 | `files.read` | `path`, optional byte `offset`, `limit` |
 | `files.write` | `path`, base64 `data`, optional byte `offset`, `truncate` |
 | `workflow.run` | `steps`; see `examples/workflow-task.json` |
+| `rpa.run` | Opt-in `actions` array, 1..100 GUI actions; serialized per OS user, two-minute invocation limit; see [GUI automation](rpa.md) |
 
 `artifacts.open` and `tcp.open` are streaming peer methods, not JSON API calls. Use the CLI's `artifact get` and `tunnel` commands, or the local API's `POST /v1/download` and WebSocket `GET /v1/tunnel?target=NODE&address=HOST:PORT`.
 
@@ -188,6 +189,8 @@ control call worker leases.release '{"id":"LEASE_ID"}'
 Selection is advisory; lease acquisition is the atomic reservation. Retry selection if another orchestrator acquires the chosen node first. Acquire fails if tasks or synchronous provider invocations are active. Synchronous capability calls are disabled while a lease exists; use a tracked task with the lease ID. Leases do not automatically cancel a task on expiry, and an expired lease with running tasks continues to block a new owner until those tasks terminate.
 
 ## Subprocess providers
+
+The optional `rpa` command configuration registers the built-in `rpa.run` adapter. Its helper receives the same version-1 request envelope below, with a private temporary `workspace` for screenshots. It returns `{"results":[...]}` and optional `error`; completed screenshot results use a basename `image` which the node replaces with an immutable PNG `artifact` reference. The helper must stop at the first action error and must not retry side effects. Control validates all arguments against the shared capability/MCP schema before execution. The supplied Python helper adds OS-specific validation and native accessibility backends. See [GUI automation](rpa.md) for the complete action contract, dependencies, permissions, serialization, and failure semantics.
 
 Add a capability to `providers`:
 

@@ -1,0 +1,11 @@
+{
+  "id": "inspect-desktop-001",
+  "capability": "rpa.run",
+  "timeoutSeconds": 120,
+  "args": {
+    "actions": [
+      { "type": "inspect", "limit": 100 },
+      { "type": "screenshot" }
+    ]
+  }
+}
