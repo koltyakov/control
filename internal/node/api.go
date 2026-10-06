@@ -24,6 +24,7 @@ type APICall struct {
 // to loopback; it carries the local node's authority, not a remote caller's.
 func (n *Node) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/clipboard", n.clipboardAPI)
 	mux.HandleFunc("POST /v1/service/stop", func(w http.ResponseWriter, r *http.Request) {
 		if n.shutdown == nil {
 			http.Error(w, "service control unavailable", http.StatusNotImplemented)
@@ -94,6 +95,22 @@ func (n *Node) Handler() http.Handler {
 			stream = transport.NewDuplexConn(stream)
 		}
 		Bridge(r.Context(), peer, stream)
+	})
+	mux.HandleFunc("GET /v1/listener", func(w http.ResponseWriter, r *http.Request) {
+		peer, address, err := n.OpenTCPListener(r.Context(), r.URL.Query().Get("target"), r.URL.Query().Get("listen"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = peer.Close() }()
+		w.Header().Set("Control-Tunnel-Listen", address)
+		w.Header().Set("Control-Tunnel-Protocol", transport.TCPListenerProtocol)
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = ws.CloseNow() }()
+		Bridge(r.Context(), peer, websocket.NetConn(r.Context(), ws, websocket.MessageBinary))
 	})
 	mux.HandleFunc("GET /v1/logs", func(w http.ResponseWriter, r *http.Request) {
 		offset, err := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)

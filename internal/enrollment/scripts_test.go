@@ -48,6 +48,37 @@ func TestWindowsInstallerDefaultsToUserMode(t *testing.T) {
 	}
 }
 
+func TestInstallerExplicitStartupContext(t *testing.T) {
+	for _, platform := range []string{"linux", "darwin", "windows"} {
+		for _, mode := range []string{"user", "system"} {
+			i := Invitation{ServiceMode: mode, Asset: update.Asset{OS: platform, Arch: "amd64", SHA256: strings.Repeat("a", 64)}}
+			script, err := Script(i, "https://gateway.example/install/token")
+			if err != nil {
+				t.Fatal(err)
+			}
+			command := InstallCommand("https://gateway.example/install/token", platform == "windows", mode)
+			if strings.Contains(command, "sudo bash") != (platform != "windows" && mode == "system") {
+				t.Fatalf("wrong elevation: %s", command)
+			}
+			if platform == "windows" {
+				if !strings.Contains(script, "$serviceMode = '"+mode+"'") || strings.Contains(script, "$env:CONTROL_SERVICE_MODE) {") || !strings.Contains(script, "if ($serviceMode -eq 'system') { $serviceMode = 'auto' }") {
+					t.Fatal("explicit Windows context must override environment and map system to SCM")
+				}
+			} else {
+				if !strings.Contains(script, "service_mode='"+mode+"'") || strings.Contains(script, "${CONTROL_SERVICE_MODE:-}") {
+					t.Fatal("explicit Unix context must override environment")
+				}
+				if strings.Index(script, "System startup requires root") > strings.Index(script, "mktemp -d") {
+					t.Fatal("system elevation must be checked before downloads and enrollment")
+				}
+				if !strings.Contains(script, "/var/lib/control") || !strings.Contains(script, "/usr/local/bin") || !strings.Contains(script, `set -- --service "$service_mode"`) {
+					t.Fatal("Unix script omitted system paths or enrollment context")
+				}
+			}
+		}
+	}
+}
+
 func TestAutoNameInstallerRejectsOlderBinariesBeforeEnrollment(t *testing.T) {
 	for _, platform := range []string{"linux", "darwin", "windows"} {
 		for _, auto := range []bool{false, true} {
@@ -59,8 +90,8 @@ func TestAutoNameInstallerRejectsOlderBinariesBeforeEnrollment(t *testing.T) {
 			if strings.Contains(script, " --auto-name") != auto {
 				t.Fatal("automatic installer must require the new enrollment flag; fixed-name scripts must remain compatible")
 			}
-			if strings.Contains(script, " --service $serviceMode") != (platform == "windows") {
-				t.Fatal("only Windows scripts should override the saved startup mode")
+			if platform == "windows" && !strings.Contains(script, " --service $serviceMode") || platform != "windows" && !strings.Contains(script, `"$@"`) {
+				t.Fatal("scripts must pass the selected startup mode")
 			}
 		}
 	}

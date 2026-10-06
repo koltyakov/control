@@ -21,6 +21,9 @@ type startupProfile struct {
 }
 
 func resolveServiceMode(config, mode string) (string, error) {
+	if mode == "system" {
+		return "auto", nil
+	}
 	if mode != "" {
 		return mode, nil
 	}

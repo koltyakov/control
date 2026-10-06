@@ -82,6 +82,7 @@ func TestLocalAPIAndMCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	verifyEOFForward(t, ctx, c)
+	verifyReverseForward(t, ctx, c)
 	echo, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -140,6 +141,26 @@ func TestLocalAPIAndMCP(t *testing.T) {
 	call("control_forward_list", map[string]any{}, &forwards)
 	if len(forwards) != 0 {
 		t.Fatal("stopped forward retained", forwards)
+	}
+	call("control_forward_start", map[string]any{"node": "worker", "address": echo.Addr().String(), "reverse": true}, &f)
+	if !f.Reverse {
+		t.Fatal("MCP reverse flag lost", f)
+	}
+	reverseConn, err := net.DialTimeout("tcp", f.Listen, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reverseConn.Close() }()
+	_ = reverseConn.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := reverseConn.Write([]byte("mcp")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(reverseConn, reply[:]); err != nil || string(reply[:]) != "mcp" {
+		t.Fatal("MCP reverse forwarding", reply, err)
+	}
+	call("control_forward_stop", map[string]any{"id": f.ID}, nil)
+	if _, err := reverseConn.Read(reply[:]); err == nil {
+		t.Fatal("MCP reverse stop left socket open")
 	}
 	direct, err := c.Tunnel(ctx, "worker", echo.Addr().String())
 	if err != nil {

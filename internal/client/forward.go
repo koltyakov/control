@@ -7,6 +7,7 @@ import (
 	"net"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/node"
@@ -19,6 +20,7 @@ type ForwardSpec struct {
 	Node    string `json:"node"`
 	Address string `json:"address"`
 	Listen  string `json:"listen,omitempty"`
+	Reverse bool   `json:"reverse,omitempty"`
 }
 
 type ForwardInfo struct {
@@ -26,6 +28,7 @@ type ForwardInfo struct {
 	Node      string `json:"node"`
 	Address   string `json:"address"`
 	Listen    string `json:"listen"`
+	Reverse   bool   `json:"reverse,omitempty"`
 	Active    int    `json:"activeConnections"`
 	LastError string `json:"lastError,omitempty"`
 }
@@ -36,6 +39,8 @@ type resources struct {
 	mu       sync.Mutex
 	closed   bool
 	forwards map[string]*Forward
+	starting int
+	starts   sync.WaitGroup
 	done     chan struct{}
 }
 
@@ -63,6 +68,7 @@ func (r *resources) close() {
 	for _, f := range fs {
 		f.Close()
 	}
+	r.starts.Wait()
 	close(r.done)
 }
 
@@ -121,7 +127,7 @@ func (c Client) StartForward(ctx context.Context, spec ForwardSpec) (*Forward, e
 		return nil, errors.New("forwarding requires a target machine")
 	}
 	if _, _, err := net.SplitHostPort(spec.Address); err != nil {
-		return nil, fmt.Errorf("remote address: %w", err)
+		return nil, fmt.Errorf("destination address: %w", err)
 	}
 	// Select the backend before publishing a local port. Never create a dummy
 	// remote TCP connection just to probe readiness or replay a failed stream.
@@ -133,20 +139,48 @@ func (c Client) StartForward(ctx context.Context, spec ForwardSpec) (*Forward, e
 	}
 	r := c.resources
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.closed || r.ctx.Err() != nil {
+		r.mu.Unlock()
 		return nil, errors.New("client is closed")
 	}
-	if len(r.forwards) >= maxForwards {
+	if len(r.forwards)+r.starting >= maxForwards {
+		r.mu.Unlock()
 		return nil, errors.New("port forward limit reached")
 	}
-	listener, err := net.Listen("tcp", spec.Listen)
+	r.starting++
+	r.starts.Add(1)
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		r.starting--
+		r.mu.Unlock()
+		r.starts.Done()
+	}()
+	forwardCtx, cancel := context.WithCancel(r.ctx)
+	var listener net.Listener
+	var err error
+	if spec.Reverse {
+		// Request cancellation may abort setup, but not the established forward.
+		// The remote listener receives only the process lifetime's deadline.
+		stop := context.AfterFunc(ctx, cancel)
+		listener, err = c.reverseListener(forwardCtx, spec.Node, spec.Listen)
+		stop()
+	} else {
+		listener, err = net.Listen("tcp", spec.Listen)
+	}
 	if err != nil {
+		cancel()
 		return nil, err
 	}
-	forwardCtx, cancel := context.WithCancel(r.ctx)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || forwardCtx.Err() != nil {
+		_ = listener.Close()
+		cancel()
+		return nil, errors.New("client closed during forward setup")
+	}
 	f := &Forward{ctx: forwardCtx, cancel: cancel, listener: listener, connections: map[net.Conn]net.Conn{}, done: make(chan struct{}),
-		info: ForwardInfo{ID: identity.NewID(), Node: spec.Node, Address: spec.Address, Listen: listener.Addr().String()}}
+		info: ForwardInfo{ID: identity.NewID(), Node: spec.Node, Address: spec.Address, Listen: listener.Addr().String(), Reverse: spec.Reverse}}
 	r.forwards[f.info.ID] = f
 	f.wg.Add(1)
 	go f.serve(c)
@@ -191,7 +225,13 @@ func (f *Forward) bridge(c Client, local net.Conn) {
 		delete(f.connections, local)
 		f.mu.Unlock()
 	}()
-	remote, err := c.Tunnel(f.ctx, f.info.Node, f.info.Address)
+	var remote net.Conn
+	var err error
+	if f.info.Reverse {
+		remote, err = (&net.Dialer{Timeout: 10 * time.Second}).DialContext(f.ctx, "tcp", f.info.Address)
+	} else {
+		remote, err = c.Tunnel(f.ctx, f.info.Node, f.info.Address)
+	}
 	if err != nil {
 		f.mu.Lock()
 		message := err.Error()

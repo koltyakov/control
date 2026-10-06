@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/secrets"
 )
 
 func schema(properties map[string]any, required ...string) json.RawMessage {
@@ -36,7 +37,7 @@ func (n *Node) registerProviders() error {
 	builtins := []provider{
 		{model.Capability{Name: "exec.run", Description: "Run an executable with arguments, environment, and working directory. Use a task for long-running work.", InputSchema: schema(map[string]any{"command": text, "args": map[string]any{"type": "array", "items": text}, "env": object, "dir": text, "stdin": text}, "command")}, n.execRun},
 		{model.Capability{Name: "agent.run", Description: "Run a configured AI CLI with a prompt on stdin; collect its output.", InputSchema: schema(map[string]any{"agent": text, "prompt": text}, "agent", "prompt")}, n.agentRun},
-		{model.Capability{Name: "http.request", Description: "Make an HTTP request using this machine's network and DNS.", InputSchema: schema(map[string]any{"url": text, "method": text, "headers": object, "body": text}, "url")}, n.httpRequest},
+		{model.Capability{Name: "http.request", Description: "Make an HTTP request using this machine's network and DNS. headerSecrets maps header names to {secret, prefix}; references resolve only on this worker. Secret-bearing requests never follow redirects. Returned text masks configured secret values.", InputSchema: schema(map[string]any{"url": text, "method": text, "headers": object, "headerSecrets": map[string]any{"type": "object", "maxProperties": 32, "additionalProperties": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"secret"}, "properties": map[string]any{"secret": map[string]any{"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"}, "prefix": text}}}, "body": text}, "url")}, n.httpRequest},
 		{model.Capability{Name: "files.list", Description: "List a directory relative to the configured filesystem root.", InputSchema: schema(map[string]any{"path": text})}, n.filesList},
 		{model.Capability{Name: "files.read", Description: "Read up to 1 MiB at an offset; returns base64 bytes.", InputSchema: schema(map[string]any{"path": text, "offset": map[string]any{"type": "integer"}, "limit": map[string]any{"type": "integer"}}, "path")}, n.filesRead},
 		{model.Capability{Name: "files.write", Description: "Write base64 bytes at an offset. Set truncate for replacement.", InputSchema: schema(map[string]any{"path": text, "data": text, "offset": map[string]any{"type": "integer"}, "truncate": map[string]any{"type": "boolean"}}, "path", "data")}, n.filesWrite},
@@ -173,16 +174,33 @@ func (n *Node) agentRun(ctx context.Context, args json.RawMessage, e Execution) 
 	return runCommand(ctx, cfg, e, input.Prompt)
 }
 
-func (n *Node) httpRequest(ctx context.Context, args json.RawMessage, e Execution) (any, error) {
+func (n *Node) httpRequest(ctx context.Context, args json.RawMessage, e Execution) (_ any, runErr error) {
 	var input struct {
-		URL     string            `json:"url"`
-		Method  string            `json:"method"`
-		Headers map[string]string `json:"headers"`
-		Body    string            `json:"body"`
+		URL           string            `json:"url"`
+		Method        string            `json:"method"`
+		Headers       map[string]string `json:"headers"`
+		Body          string            `json:"body"`
+		HeaderSecrets map[string]struct {
+			Secret string `json:"secret"`
+			Prefix string `json:"prefix"`
+		} `json:"headerSecrets"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
 		return nil, err
 	}
+	if len(input.HeaderSecrets) > 32 {
+		return nil, errors.New("at most 32 secret headers are allowed")
+	}
+	values, err := n.secretValues()
+	if err != nil {
+		return nil, err
+	}
+	redactor := secrets.NewRedactor(values)
+	defer func() {
+		if runErr != nil && redactor.Text(runErr.Error()) != runErr.Error() {
+			runErr = errors.New(redactor.Text(runErr.Error()))
+		}
+	}()
 	if input.Method == "" {
 		input.Method = http.MethodGet
 	}
@@ -196,7 +214,21 @@ func (n *Node) httpRequest(ctx context.Context, args json.RawMessage, e Executio
 	for k, v := range input.Headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := (&http.Client{Timeout: 5 * time.Minute}).Do(req)
+	for k, ref := range input.HeaderSecrets {
+		if req.Header.Values(k) != nil {
+			return nil, errors.New("header cannot have both a literal value and a secret reference")
+		}
+		value, err := resolveSecret(values, ref.Secret)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set(k, ref.Prefix+value)
+	}
+	httpClient := &http.Client{Timeout: 5 * time.Minute}
+	if len(input.HeaderSecrets) != 0 {
+		httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +240,22 @@ func (n *Node) httpRequest(ctx context.Context, args json.RawMessage, e Executio
 	if len(b) > 2<<20 {
 		return nil, errors.New("HTTP response exceeds 2 MiB; use a task and artifact for large responses")
 	}
-	return map[string]any{"status": resp.StatusCode, "headers": resp.Header, "body": base64.StdEncoding.EncodeToString(b), "encoding": "base64"}, nil
+	cleanHeaders := http.Header{}
+	for k, items := range resp.Header {
+		for _, v := range items {
+			cleanHeaders[redactor.Text(k)] = append(cleanHeaders[redactor.Text(k)], redactor.Text(v))
+		}
+	}
+	if len(values) != 0 && json.Valid(b) {
+		// An API may JSON-escape Unicode credentials when echoing input.
+		b, err = redactor.JSON(b)
+		if err != nil {
+			return nil, errors.New("cannot sanitize HTTP response")
+		}
+	} else {
+		b = []byte(redactor.Text(string(b)))
+	}
+	return map[string]any{"status": resp.StatusCode, "headers": cleanHeaders, "body": base64.StdEncoding.EncodeToString(b), "encoding": "base64"}, nil
 }
 
 func (n *Node) filesList(ctx context.Context, args json.RawMessage, e Execution) (any, error) {

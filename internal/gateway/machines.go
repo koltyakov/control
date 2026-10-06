@@ -8,6 +8,8 @@ import (
 
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/protocol"
+	"github.com/koltyakov/control/internal/update"
 )
 
 func (g *Gateway) machineRoutes(mux *http.ServeMux) {
@@ -65,10 +67,15 @@ func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 	p := g.authenticate(bearer(r))
 	r.Body = http.MaxBytesReader(w, r.Body, 1024)
 	var q struct {
-		Disabled *bool `json:"disabled"`
+		Disabled *bool   `json:"disabled"`
+		Name     *string `json:"name"`
 	}
-	if json.NewDecoder(r.Body).Decode(&q) != nil || q.Disabled == nil {
-		http.Error(w, "disabled is required", 400)
+	if json.NewDecoder(r.Body).Decode(&q) != nil || (q.Disabled == nil) == (q.Name == nil) {
+		http.Error(w, "provide either disabled or name", 400)
+		return
+	}
+	if q.Name != nil && !validName.MatchString(*q.Name) {
+		http.Error(w, "name must start with a letter or digit and contain 1..63 letters, digits, dots, hyphens or underscores", 400)
 		return
 	}
 	id := r.PathValue("id")
@@ -77,6 +84,10 @@ func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 	n, ok := g.nodes[id]
 	if !ok || n.UserID != p.UserID {
 		http.NotFound(w, r)
+		return
+	}
+	if q.Name != nil {
+		g.renameMachine(w, n, *q.Name)
 		return
 	}
 	if !n.Managed {
@@ -97,6 +108,50 @@ func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 			g.machineStates[id] = old
 			http.Error(w, "could not persist machine state", 500)
 			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(state)
+}
+
+// Called under g.mu. Renaming changes only gateway routing metadata, not work
+// admission or the signed installation proof retained for response recovery.
+func (g *Gateway) renameMachine(w http.ResponseWriter, n model.Node, name string) {
+	if g.clientNameReserved(n.UserID, name) {
+		http.Error(w, "name is reserved for a client identity", http.StatusConflict)
+		return
+	}
+	for id, other := range g.nodes {
+		if id != n.ID && other.UserID == n.UserID && other.Name == name {
+			http.Error(w, "name is already registered", http.StatusConflict)
+			return
+		}
+	}
+	for _, i := range g.installations {
+		if i.UserID == n.UserID && g.installationName(i) == name && !i.Revoked && i.RedeemedID != n.ID && (i.RedeemedID != "" || time.Now().Before(i.ExpiresAt)) {
+			http.Error(w, "name has an existing invitation or enrollment", http.StatusConflict)
+			return
+		}
+	}
+	old := g.machineStates[n.ID]
+	state := old
+	state.Name = name
+	updated := n
+	updated.Name = name
+	g.nodes[n.ID], g.machineStates[n.ID] = updated, state
+	if err := g.persist(); err != nil {
+		g.nodes[n.ID], g.machineStates[n.ID] = n, old
+		http.Error(w, "could not persist machine name", 500)
+		return
+	}
+	for _, peer := range g.peers {
+		if peer.userID != n.UserID {
+			continue
+		}
+		select {
+		case peer.out <- &protocol.Packet{Kind: "directory.changed", From: update.GatewaySender}:
+		default:
+			_ = peer.ws.CloseNow()
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")

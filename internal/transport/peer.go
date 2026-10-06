@@ -57,35 +57,36 @@ type link struct {
 }
 
 type Peer struct {
-	userID         string
-	members        map[string]bool
-	owners         map[string]string
-	channels       map[string]bool
-	carriers       map[string]*rtcCarrier
-	cfg            Config
-	ctx            context.Context
-	cancel         context.CancelFunc
-	mu             sync.Mutex
-	ws             *websocket.Conn
-	writes         chan *gatewayWrite
-	links          map[string]*link
-	sessions       map[sessionKey]*peerSession
-	allSessions    map[string]*peerSession
-	pending        map[sessionKey]*sessionDial
-	pendingSlots   map[Lane]chan struct{}
-	incomingSetups map[string]*incomingSetup
-	resolved       map[string]string
-	setups         chan struct{}
-	streamSlots    chan struct{}
-	outgoingSlots  map[Lane]chan struct{}
-	closed         bool
-	closeOnce      sync.Once
-	handler        func(string, net.Conn)
-	log            *slog.Logger
-	wg             sync.WaitGroup
-	control        func(string, []byte)
-	nodeHealth     bool
-	clientSessions bool
+	userID              string
+	members             map[string]bool
+	owners              map[string]string
+	channels            map[string]bool
+	carriers            map[string]*rtcCarrier
+	cfg                 Config
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	mu                  sync.Mutex
+	ws                  *websocket.Conn
+	writes              chan *gatewayWrite
+	links               map[string]*link
+	sessions            map[sessionKey]*peerSession
+	allSessions         map[string]*peerSession
+	pending             map[sessionKey]*sessionDial
+	pendingSlots        map[Lane]chan struct{}
+	incomingSetups      map[string]*incomingSetup
+	resolved            map[string]string
+	directoryGeneration uint64
+	setups              chan struct{}
+	streamSlots         chan struct{}
+	outgoingSlots       map[Lane]chan struct{}
+	closed              bool
+	closeOnce           sync.Once
+	handler             func(string, net.Conn)
+	log                 *slog.Logger
+	wg                  sync.WaitGroup
+	control             func(string, []byte)
+	nodeHealth          bool
+	clientSessions      bool
 }
 
 func New(cfg Config, handler func(string, net.Conn)) *Peer {
@@ -248,6 +249,10 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	}
 	p.mu.Lock()
 	p.ws = ws
+	// A reconnect may have missed an owner rename. Keep identity-bound sessions,
+	// but resolve names again before opening new streams through them.
+	p.resolved = map[string]string{}
+	p.directoryGeneration++
 	if p.closed || p.ctx.Err() != nil {
 		p.ws = nil
 		p.mu.Unlock()
@@ -335,6 +340,15 @@ func (p *Peer) send(ctx context.Context, msg *protocol.Packet) error {
 }
 
 func (p *Peer) receive(msg *protocol.Packet) {
+	if msg.Kind == "directory.changed" {
+		if msg.From == update.GatewaySender {
+			p.mu.Lock()
+			p.resolved = map[string]string{}
+			p.directoryGeneration++
+			p.mu.Unlock()
+		}
+		return
+	}
 	if strings.HasPrefix(msg.Kind, "update.") {
 		if msg.From == update.GatewaySender && p.control != nil {
 			p.control(msg.Kind, msg.Data)

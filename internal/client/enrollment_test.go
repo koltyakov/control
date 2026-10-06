@@ -63,3 +63,24 @@ func TestInvitationStatusMatchesIDInAuthenticatedRegistry(t *testing.T) {
 		t.Fatal("failed lookup was treated as redeemed")
 	}
 }
+
+func TestInviteRequiresStartupContextConfirmation(t *testing.T) {
+	for _, confirmed := range []bool{false, true} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var q enrollment.Request
+			if err := json.NewDecoder(r.Body).Decode(&q); err != nil || q.ServiceMode != "system" {
+				t.Error("startup context missing from request", err)
+			}
+			mode := ""
+			if confirmed {
+				mode = q.ServiceMode
+			}
+			_ = json.NewEncoder(w).Encode(enrollment.Link{Invitation: enrollment.Invitation{ServiceMode: mode}})
+		}))
+		_, err := (Admin{URL: server.URL, Key: "key"}).Invite(context.Background(), enrollment.Request{Name: "worker", OS: "linux", ServiceMode: "system"})
+		server.Close()
+		if (err == nil) != confirmed {
+			t.Fatalf("context confirmation %v: %v", confirmed, err)
+		}
+	}
+}

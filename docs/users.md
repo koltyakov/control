@@ -99,7 +99,7 @@ To split an old shared pool into new accounts, enroll fresh node identities unde
 | `DELETE /v1/fleet/keys/{id}` | Fleet owner | Revoke own credential |
 | `/v1/fleet/installations` | Fleet owner | Scoped installation management, detailed in [installation](installation.md) |
 | `DELETE /v1/fleet/nodes/{id}` | Fleet owner | Forget own offline registration |
-| `PATCH /v1/fleet/nodes/{id}` | Fleet owner | Enable/disable own machine with JSON `disabled` |
+| `PATCH /v1/fleet/nodes/{id}` | Fleet owner | Enable/disable with JSON `disabled`, or rename with JSON `name` |
 | `DELETE /v1/fleet/nodes/{id}?stop=true` | Fleet owner | Unregister own machine regardless of online state or lifecycle support |
 
 The older `/v1/admin/keys`, `/v1/admin/installations`, and `/v1/admin/nodes/{id}` aliases remain superuser-only and operate on the legacy fleet. They do not provide a cross-user route. Account IDs cannot be reassigned or deleted; `users revoke` disables the account. The legacy operator fleet cannot be disabled through this endpoint.

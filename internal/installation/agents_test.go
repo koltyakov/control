@@ -1,15 +1,46 @@
 package installation
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/koltyakov/control/skills"
 	"github.com/pelletier/go-toml/v2"
 	"github.com/tailscale/hujson"
 )
+
+func TestOpenCodeSkillInstall(t *testing.T) {
+	for _, xdg := range []bool{false, true} {
+		t.Run(map[bool]string{false: "default", true: "xdg"}[xdg], func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("XDG_CONFIG_HOME", "")
+			base := filepath.Join(home, ".config")
+			if xdg {
+				base = filepath.Join(home, "custom-config")
+				t.Setenv("XDG_CONFIG_HOME", base)
+			}
+			path := filepath.Join(base, "opencode", "skills", "control", "SKILL.md")
+			for range 2 {
+				if err := InstallAgent(t.Context(), "opencode", "", "control", "node.json", false, true); err != nil {
+					t.Fatal(err)
+				}
+				content, err := os.ReadFile(path)
+				if err != nil || !bytes.Equal(content, skills.Control) {
+					t.Fatalf("skill content: %q, error: %v", content, err)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(base, "opencode", "opencode.json")); !os.IsNotExist(err) {
+				t.Fatal("skill-only installation created MCP configuration", err)
+			}
+		})
+	}
+}
 
 func TestMCPInstallPreservesUnrelatedConfiguration(t *testing.T) {
 	for _, agent := range []string{"opencode", "claude", "cursor", "copilot", "codex", "windsurf", "antigravity", "agents"} {

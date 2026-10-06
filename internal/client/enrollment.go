@@ -16,6 +16,9 @@ func (c Admin) Invite(ctx context.Context, q enrollment.Request) (enrollment.Lin
 	}
 	var link enrollment.Link
 	err := c.JSON(ctx, "POST", "/v1/fleet/installations", q, &link)
+	if err == nil && q.ServiceMode != "" && link.ServiceMode != q.ServiceMode {
+		return link, errors.New("gateway did not confirm the requested startup context; upgrade the gateway and check control machines invites before creating another invitation")
+	}
 	return link, err
 }
 

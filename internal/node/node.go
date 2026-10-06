@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	"github.com/koltyakov/control/internal/clipboard"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/system"
@@ -87,6 +88,10 @@ type Node struct {
 	lifecycleMu         sync.Mutex
 	machineState        model.MachineState
 	rpaLockPath         string
+	tcpListeners        chan struct{}
+	readClipboard       func(context.Context) (clipboard.Value, error)
+	copyClipboard       func(context.Context, string) error
+	clipboardSlots      chan struct{}
 }
 
 func New(cfg Config) (*Node, error) {
@@ -119,12 +124,21 @@ func New(cfg Config) (*Node, error) {
 	n.lock = lock
 	n.taskChanges = map[string]chan struct{}{}
 	n.work = workgate.New()
+	n.tcpListeners = make(chan struct{}, 32)
+	n.readClipboard, n.copyClipboard = clipboard.Read, clipboard.Copy
+	n.clipboardSlots = make(chan struct{}, 8)
 	if err = n.loadMachineState(); err != nil {
 		_ = root.Close()
 		return nil, err
 	}
 	n.activities = map[string]*activityHandle{}
 	n.system = system.New([]string{cfg.WorkDir, cfg.DataDir}, time.Duration(cfg.MetricsIntervalSeconds)*time.Second)
+	// Refuse a profile change that would expose existing credentials through
+	// the filesystem API. Empty installations do not need secret storage.
+	if _, err = n.secretValues(); err != nil {
+		_ = root.Close()
+		return nil, err
+	}
 	if err = n.registerProviders(); err != nil {
 		_ = root.Close()
 		return nil, err
@@ -285,8 +299,16 @@ func (n *Node) handle(caller string, conn net.Conn) {
 		n.serveArtifact(ctx, caller, conn, request.Params)
 		return
 	}
+	if request.Method == clipboard.OpenMethod || request.Method == clipboard.PasteMethod {
+		n.serveClipboard(ctx, caller, conn, request.Method, request.Params)
+		return
+	}
 	if request.Method == "tcp.open" {
 		n.serveTCP(ctx, caller, conn, request.Params)
+		return
+	}
+	if request.Method == "tcp.listen" {
+		n.serveTCPListener(ctx, caller, conn, request.Params)
 		return
 	}
 	if request.Method == "tasks.logs" {
@@ -412,7 +434,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		}
 		sort.Strings(agents)
 		sort.Strings(servers)
-		return map[string]any{"id": n.Identity.ID, "name": n.Config.Name, "capabilities": n.Capabilities(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot()}, nil
+		return map[string]any{"id": n.Identity.ID, "name": n.Config.Name, "capabilities": n.Capabilities(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot(), "clipboard": map[string]any{"protocol": clipboard.Protocol, "methods": []string{clipboard.OpenMethod, clipboard.PasteMethod}}}, nil
 	case "capabilities.list":
 		return n.Capabilities(), nil
 	case "tasks.start":

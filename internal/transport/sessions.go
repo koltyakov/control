@@ -208,6 +208,9 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 		close(d.done)
 		p.mu.Unlock()
 	}()
+	p.mu.Lock()
+	directoryGeneration := p.directoryGeneration
+	p.mu.Unlock()
 	node, resolveErr := p.Resolve(ctx, target)
 	if resolveErr != nil {
 		err = resolveErr
@@ -295,7 +298,9 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 	}
 	p.mu.Lock()
 	p.sessions[actualKey] = s
-	p.resolved[target], p.resolved[node.Name] = node.ID, node.ID
+	if directoryGeneration == p.directoryGeneration {
+		p.resolved[target], p.resolved[node.Name] = node.ID, node.ID
+	}
 	p.mu.Unlock()
 	if !p.worker(func() { p.serve(s) }) {
 		_ = s.mux.Close()

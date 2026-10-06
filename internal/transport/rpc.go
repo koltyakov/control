@@ -15,10 +15,10 @@ import (
 // It never replays a request after writing application bytes.
 func (p *Peer) OpenRPC(ctx context.Context, target, method string, params any) (net.Conn, json.RawMessage, error) {
 	lane := ControlLane
-	if method == "artifacts.open" {
+	if method == "artifacts.open" || method == "clipboard.open" || method == "clipboard.paste" {
 		lane = BulkLane
 	}
-	if method == "tcp.open" {
+	if method == "tcp.open" || method == "tcp.listen" {
 		lane = InteractiveLane
 	}
 	if method == "tasks.logs" {

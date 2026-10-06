@@ -85,7 +85,7 @@ func run(ctx context.Context, args []string) error {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 	c := (client.Client{URL: *api, Token: *token}).WithLifetime(ctx)
 	defer func() { _ = c.Close() }()
-	if args[0] != "node" && args[0] != "gateway" && args[0] != "version" && args[0] != "update" && args[0] != "upgrade" {
+	if args[0] != "node" && args[0] != "gateway" && args[0] != "version" && args[0] != "update" && args[0] != "upgrade" && args[0] != "install-self" {
 		cfg, err := installation.ReadConfig(*profile)
 		if err != nil {
 			return err
@@ -106,7 +106,7 @@ func run(ctx context.Context, args []string) error {
 			c.Token = cfg.Token
 		}
 		switch args[0] {
-		case "mcp", "system", "call", "exec", "task", "artifact", "tunnel", "session":
+		case "mcp", "system", "call", "exec", "task", "artifact", "tunnel", "session", "clipboard":
 			if !explicitAPI && os.Getenv("CONTROL_API") == "" {
 				var override *string
 				if explicitToken {
@@ -124,13 +124,15 @@ func run(ctx context.Context, args []string) error {
 	switch args[0] {
 	case "login":
 		return loginCLI(ctx, args[1:])
+	case "secrets":
+		return secretsCLI(ctx, args[1:], *profile)
 	case "install-self":
 		path, err := installation.InstallSelf(ctx)
 		if err != nil {
 			return err
 		}
 		fmt.Println("Installed", path)
-		return nil
+		return installAgent(ctx, "opencode", "", path, *profile, false, true)
 	case "setup":
 		return setupCLI(ctx, args[1:], *profile)
 	case "enroll":
@@ -300,6 +302,8 @@ func run(ctx context.Context, args []string) error {
 		}
 		printJSON(info)
 		return nil
+	case "clipboard":
+		return clipboardCLI(ctx, c, args[1:])
 	case "task":
 		if len(args) < 3 {
 			return errors.New("usage: control task start|get|wait|cancel|logs|list NODE [ID|@spec.json]")
@@ -513,6 +517,8 @@ Environment: CONTROL_API, CONTROL_TOKEN
   gateway [--listen ADDRESS] [--data DIR] [--tls-cert PEM --tls-key PEM]
   node --config control.json
   login --gateway URL [--key-stdin]      Save an API key for future commands
+  secrets set NAME [--stdin]            Enter a worker-local secret outside chat
+  secrets list|delete [NAME]            List names or delete a local secret; no read command
   update [--version TAG]                Update this CLI from GitHub Releases; alias: upgrade
   setup [--gateway URL] --name NAME [--client opencode]  Configure and start this host
   service start|stop|status|uninstall    Manage the installed background node
@@ -532,7 +538,8 @@ Environment: CONTROL_API, CONTROL_TOKEN
   artifact export NODE PATH
   artifact deliver NODE ID DEST_NODE   Peer-to-peer transfer
   artifact get NODE ID LOCAL_PATH      Resumable, checksum-verified download
-  tunnel NODE HOST:PORT [--listen ADDRESS]
+  tunnel NODE HOST:PORT [--reverse] [--listen ADDRESS]
+  clipboard paste NODE [--reverse] [--dir PATH] [--timeout DURATION]
   session                              Inspect this process's client identity and connections
 
 Global flags precede the command. Remote CLI/MCP calls use a local node when

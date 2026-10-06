@@ -207,6 +207,10 @@ func TestStandalonePeerOperations(t *testing.T) {
 				t.Fatal("account credential impersonated a different task owner")
 			}
 			_ = independent.Close()
+			verifyReverseForward(t, ctx, c)
+			if _, err := c.StartForward(ctx, ForwardSpec{Node: workers[1].Identity.ID, Address: "127.0.0.1:3000", Reverse: true}); err == nil {
+				t.Fatal("cross-fleet reverse listener accepted")
+			}
 			verifyForwardAndLongTask(t, ctx, c, busy)
 			if err := c.Close(); err != nil {
 				t.Fatal(err)
@@ -239,6 +243,9 @@ func TestStandalonePeerOperations(t *testing.T) {
 			}
 			if err := other.Call(ctx, "worker", "test.owner", map[string]any{}, nil); err == nil {
 				t.Fatal("standalone account key bypassed worker access rules")
+			}
+			if _, err := other.StartForward(ctx, ForwardSpec{Node: "worker", Address: "127.0.0.1:3000", Reverse: true}); err == nil {
+				t.Fatal("reverse listener bypassed tcp.listen permission")
 			}
 			if err := accounts[0].ManageMachine(ctx, workers[0].Identity.ID, "disable"); err != nil {
 				t.Fatal(err)

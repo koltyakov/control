@@ -53,6 +53,10 @@ func verifyForwardAndLongTask(t *testing.T, ctx context.Context, c, monitor Clie
 	if len(c.Forwards()) != 1 || len(monitor.Forwards()) != 0 {
 		t.Fatal("forward ownership")
 	}
+	idleReverse, err := c.StartForward(ctx, ForwardSpec{Node: "worker", Address: echo.Addr().String(), Reverse: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	conn, err := net.DialTimeout("tcp", f.Info().Listen, time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -103,6 +107,18 @@ func verifyForwardAndLongTask(t *testing.T, ctx context.Context, c, monitor Clie
 	}
 	if _, err := net.DialTimeout("tcp", f.Info().Listen, time.Second); err == nil {
 		t.Fatal("client close retained listener")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		conn, err := net.DialTimeout("tcp", idleReverse.Info().Listen, time.Second)
+		if err != nil {
+			break
+		}
+		_ = conn.Close()
+		if time.Now().After(deadline) {
+			t.Fatal("client close retained idle reverse listener")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if err := monitor.Call(ctx, "worker", "tasks.get", map[string]any{"id": spec.ID}, &task); err != nil || task.Terminal() {
 		t.Fatal("task stopped with submitter", task, err)

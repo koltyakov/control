@@ -149,8 +149,8 @@ func Service(ctx context.Context, operation, binary, config, mode string) error 
 
 // ValidateServiceMode rejects unknown startup modes on every platform.
 func ValidateServiceMode(mode string) error {
-	if mode != "" && mode != "auto" && mode != "user" && mode != "process" {
-		return errors.New("service mode must be auto, user, or process")
+	if mode != "" && mode != "auto" && mode != "user" && mode != "system" && mode != "process" {
+		return errors.New("service mode must be auto, user, system, or process")
 	}
 	return nil
 }

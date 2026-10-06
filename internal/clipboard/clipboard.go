@@ -1,4 +1,4 @@
-// Package clipboard copies text through the host's clipboard tool.
+// Package clipboard accesses the user's desktop clipboard and streams explicit file pastes.
 package clipboard
 
 import (

@@ -24,7 +24,9 @@ Orchestrator and worker are roles, not fixed machine types. A node can perform b
 - Commands, scripts, configured AI CLIs, versioned subprocess providers, and local MCP servers.
 - Opt-in GUI automation through a desktop helper, with native accessibility selectors, mouse/keyboard actions, and screenshot artifacts. See [requirements and limitations](docs/rpa.md).
 - Filesystem reads/writes, private-network HTTP requests, and TCP forwarding for database or other protocols.
+- Worker-local secret references for GUI credential entry and HTTP authentication, without a secret-value read API. See [secrets and their limits](docs/secrets.md).
 - Immutable SHA-256 artifacts, resumable transfers, worker-to-worker delivery, and subject-bound artifact grants.
+- Explicit bidirectional clipboard pastes through CLI/MCP, with regular files streamed only when paste is requested. See [clipboard requirements and limits](docs/clipboard.md).
 - Label-based selection, exclusive execution leases, bounded task concurrency, and dependency-ordered workflows.
 - A local MCP server exposing routing tools for AI clients.
 - Independent control/bulk/interactive traffic lanes, shared WebRTC carriers, streamed task logs, and negotiated TCP half-close.
@@ -85,6 +87,8 @@ control machines add auto --platform windows
 
 Use `auto`, or omit the name, to register the target under its own hostname when it runs the installer. In the dashboard's Add machine form, a blank name also selects automatic naming.
 
+The wizard also asks for User context or System context. User context runs with your files and credentials but can stop after logout. System context starts at boot and survives logout. It requires sudo on Linux/macOS and Administrator PowerShell on Windows. Linux/macOS system nodes run as root; Windows uses LocalService. The CLI equivalent is `control machines add auto --platform linux --service system`. See [startup contexts](docs/installation.md#choose-a-startup-context) before switching an existing installation.
+
 Copy the printed PowerShell command onto the target and run it as the intended Windows user. Windows invitation scripts default to user-login startup, allowing access to that user's files and application credentials. The node is available only while that user is logged in. Set `$env:CONTROL_SERVICE_MODE = 'auto'` before running the command in Administrator PowerShell to select a boot-time LocalService system service instead. Switching an existing system service to user startup also requires Administrator PowerShell under the intended user. See [user-login startup](docs/installation.md#switch-windows-to-user-login-startup). Or press `a` in the dashboard to enter a name, select a platform, and copy the command automatically. Linux and macOS invitations use Bash. The installer detects amd64 or arm64, verifies the selected binary, creates an identity, redeems the single-use ticket, and starts the node. Invitations expire after 15 minutes by default. Success means the machine is registered and available.
 
 See [installation and enrollment](docs/installation.md) for prerequisites, saved profiles, startup, and invitation management. Public installers require published release assets. From a checkout, use `make build` followed by `bin/control setup`.
@@ -112,7 +116,7 @@ Install the CLI from the checkout:
 make install
 ```
 
-This builds and installs `control` to `~/.local/bin` on Linux/macOS or `%LOCALAPPDATA%\Programs\control` on Windows. Set `CONTROL_INSTALL_DIR` to choose another directory, for example `make install CONTROL_INSTALL_DIR=/your/bin`. On Linux/macOS, ensure the installation directory is on PATH.
+This builds and installs `control` to `~/.local/bin` on Linux/macOS or `%LOCALAPPDATA%\Programs\control` on Windows. It also installs the Control skill globally for OpenCode, just like the release installers. MCP configuration remains opt-in through `control install-mcp opencode` or `setup --client opencode`. Set `CONTROL_INSTALL_DIR` to choose another executable directory, for example `make install CONTROL_INSTALL_DIR=/your/bin`. On Linux/macOS, ensure the installation directory is on PATH.
 
 Run `make help` for development targets. `make deps-update` upgrades dependencies within their current major versions and tidies the module files; `make go-update` updates the Go requirement to the latest stable release. Major-version migrations need import/API changes. After updating Go, keep `tests/compose/Dockerfile` on the same version. `make ci` runs formatting, lint, vet, race tests, vulnerability scanning, native and six-platform builds, bundle verification, and workflow validation. `make ci-compose` adds WebRTC and relay integration tests. See [testing](docs/testing.md) for coverage and focused commands.
 
@@ -177,7 +181,7 @@ With a local node running, the dashboard also shows running and queued tasks fro
 
 Tables adapt to terminal width. Use `d` for full details, arrow keys or Page Up/Page Down to scroll, `r` to refresh activity, and `q` to quit. Drag across text to select it; releasing the mouse copies only that selection to the local clipboard. The display stays fixed during the drag and resumes on release. Press `c` to copy the last selection again. Refreshes use steady text with no blinking indicators.
 
-The machine table includes running versions. Press `m` to enable, disable, or unregister a selected machine. Disabling keeps it registered and blocks new work. Unregistering removes it and retires its identity, including while offline; lifecycle-capable nodes stop on their next gateway contact. CLI equivalents are `control machines disable NAME`, `enable NAME`, and `unregister NAME`. See [registration management](docs/installation.md#manage-registrations).
+The machine table includes running versions. Press `m` to rename, enable, disable, or unregister a selected machine. Renaming sets its routing alias without restarting it or interrupting work. Disabling keeps it registered and blocks new work. Unregistering removes it and retires its identity, including while offline; lifecycle-capable nodes stop on their next gateway contact. CLI equivalents are `control machines rename NAME NEW_NAME`, `disable NAME`, `enable NAME`, and `unregister NAME`. See [registration management](docs/installation.md#manage-registrations).
 
 For scripts or a single view:
 
@@ -246,6 +250,17 @@ bin/control artifact export source input.mp4
 Copy the returned artifact reference, including its actual size, into `examples/encode-task.json`, then submit it to the worker. Use a new task ID for new work. Reusing an ID with the same specification returns the existing task; reusing it with different arguments fails.
 
 The orchestrator receives metadata and results. Source-to-worker and worker-to-consumer transfers do not pass through its storage. The public gateway carries the bytes only when those peers need a relay.
+
+## Paste a clipboard
+
+Paste local clipboard text onto a worker, or stream copied files into an existing workspace directory. Add `--reverse` to paste the worker's clipboard onto this machine:
+
+```sh
+control clipboard paste worker --dir incoming
+control clipboard paste worker --reverse --dir ./downloads
+```
+
+Text replaces the destination OS clipboard; files go into the destination directory without overwriting existing entries. MCP exposes `control_clipboard_paste` with `node`, optional `reverse`, and `dir`. There is no background synchronization or native desktop paste hook. See [clipboard pastes](docs/clipboard.md) for desktop requirements and supported file types.
 
 ## Use an AI client
 
@@ -325,7 +340,17 @@ bin/control tunnel worker db.internal:5432 --listen 127.0.0.1:15432
 
 Connect your local database client to `127.0.0.1:15432`. The worker opens the connection to `db.internal:5432`.
 
-MCP clients use `control_forward_start` with `node`, `address`, and optional `listen`. It returns a forward ID and local address without holding the tool call open. `control_forward_list` reports active sockets and errors; `control_forward_stop` closes the listener and sockets. These forwards belong to the MCP process, default to loopback, and close when it exits. They require remote `tcp.open` permission. See [orchestrator sessions and forwards](docs/protocol.md#orchestrator-sessions-and-forwards) for limits.
+To open your local dev server from a remote machine, start the application locally, then run this in another terminal:
+
+```sh
+npm run dev
+# In another terminal, assuming the dev server uses port 3000:
+control tunnel worker 127.0.0.1:3000 --reverse --listen 127.0.0.1:3000
+```
+
+On `worker`, open `http://localhost:3000`. Requests reach the dev server on your orchestrator machine, including WebSocket connections for hot reload. The two ports can differ if the remote port is occupied. Keep the tunnel command running; Ctrl+C closes the remote listener without stopping your dev server. No local node or public dev-server binding is required. Restricted workers need `tcp.listen` permission.
+
+MCP clients use `control_forward_start` with `node`, `address`, and optional `listen`. Add `reverse: true` to bind `listen` on the remote machine and dial `address` on the orchestrator. It returns a forward ID and bound address without holding the tool call open. `control_forward_list` reports active sockets and errors; `control_forward_stop` closes the listener and sockets. These forwards belong to the MCP process, default to loopback, and close when it exits. They require remote `tcp.open` permission, or `tcp.listen` for reverse forwarding. See [orchestrator sessions and forwards](docs/protocol.md#orchestrator-sessions-and-forwards) for limits.
 
 ## Configuration and extension
 
@@ -341,6 +366,8 @@ MCP clients use `control_forward_start` with `node`, `address`, and optional `li
 - [Installation and enrollment](docs/installation.md): host setup, MCP/skills, user startup, and one-time machine links.
 - [Users and private fleets](docs/users.md): account registration, isolation, SQLite persistence, and migration.
 - [GUI automation](docs/rpa.md): desktop helper setup, accessibility selectors, input actions, screenshot artifacts, and safety limits.
+- [Worker-local secrets](docs/secrets.md): hidden credential entry, GUI/HTTP references, text masking, and security limits.
+- [Clipboard pastes](docs/clipboard.md): explicit local/remote text transfer and streamed regular-file pastes through CLI/MCP.
 - [Contributor and agent guide](AGENTS.md): repository layout, coding instructions, and verification.
 
 The gateway supports multiple isolated user fleets with SQLite-backed registration and credential storage. It is a single-gateway deployment, without gateway clustering, public self-service signup, billing, or execution sandboxing. Node task and artifact metadata use locked local directories and atomic JSON writes. Windows invitation scripts default to user-login startup; direct `control setup` defaults to an automatic LocalService service. Linux and macOS support user startup. Desktop and application integrations can be attached through MCP or custom providers; GUI tools need a provider running in the user's desktop session.

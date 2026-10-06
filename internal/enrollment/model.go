@@ -16,28 +16,30 @@ import (
 )
 
 type Request struct {
-	Name       string `json:"name"`
-	AutoName   bool   `json:"autoName,omitempty"`
-	OS         string `json:"os"`
-	Arch       string `json:"arch,omitempty"`
-	TTLSeconds int    `json:"ttlSeconds,omitempty"`
-	Gateway    string `json:"gateway"`
+	Name        string `json:"name"`
+	AutoName    bool   `json:"autoName,omitempty"`
+	OS          string `json:"os"`
+	Arch        string `json:"arch,omitempty"`
+	TTLSeconds  int    `json:"ttlSeconds,omitempty"`
+	Gateway     string `json:"gateway"`
+	ServiceMode string `json:"serviceMode,omitempty"`
 }
 
 type Invitation struct {
-	UserID     string         `json:"userId,omitempty"`
-	ID         string         `json:"id"`
-	Name       string         `json:"name"`
-	AutoName   bool           `json:"autoName,omitempty"` // Hostname selected and signed by the target installer.
-	Gateway    string         `json:"gateway"`
-	Asset      update.Asset   `json:"asset"`            // Selected binary; first candidate until architecture selection.
-	Assets     []update.Asset `json:"assets,omitempty"` // Pinned candidates for architecture-detecting installers.
-	Version    string         `json:"version"`
-	ExpiresAt  time.Time      `json:"expiresAt"`
-	CreatedAt  time.Time      `json:"createdAt"`
-	RedeemedID string         `json:"redeemedId,omitempty"`
-	ReplaceID  string         `json:"replaceId,omitempty"` // Existing identity reserved by a same-name invitation.
-	Revoked    bool           `json:"revoked"`
+	UserID      string         `json:"userId,omitempty"`
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	AutoName    bool           `json:"autoName,omitempty"` // Hostname selected and signed by the target installer.
+	Gateway     string         `json:"gateway"`
+	ServiceMode string         `json:"serviceMode,omitempty"`
+	Asset       update.Asset   `json:"asset"`            // Selected binary; first candidate until architecture selection.
+	Assets      []update.Asset `json:"assets,omitempty"` // Pinned candidates for architecture-detecting installers.
+	Version     string         `json:"version"`
+	ExpiresAt   time.Time      `json:"expiresAt"`
+	CreatedAt   time.Time      `json:"createdAt"`
+	RedeemedID  string         `json:"redeemedId,omitempty"`
+	ReplaceID   string         `json:"replaceId,omitempty"` // Existing identity reserved by a same-name invitation.
+	Revoked     bool           `json:"revoked"`
 }
 
 type Link struct {

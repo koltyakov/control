@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/koltyakov/control/internal/node"
 )
 
 func detach(cmd *exec.Cmd)                      { cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
@@ -52,4 +54,37 @@ func uninstallService(ctx context.Context, config string) error {
 		return err
 	}
 	return run(ctx, "systemctl", "--user", "daemon-reload")
+}
+
+func systemdSystemUnit(binary, config string) string {
+	return fmt.Sprintf("# Managed by control\n[Unit]\nDescription=Control peer node\nWants=network-online.target\nAfter=network-online.target\n[Service]\nExecStart=%s node --config %s\nEnvironment=CONTROL_TOKEN=\nRestart=on-failure\nRestartSec=3\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n", systemdQuote(binary), systemdQuote(config))
+}
+
+func systemService(ctx context.Context, operation, binary, config string, _ node.Config) error {
+	name := "control-node-" + systemServiceID(config) + ".service"
+	path := filepath.Join("/etc/systemd/system", name)
+	if operation == "start" {
+		if err := writeManaged(path, []byte(systemdSystemUnit(binary, config))); err != nil {
+			return err
+		}
+		if err := run(ctx, "systemctl", "daemon-reload"); err != nil {
+			return err
+		}
+		return run(ctx, "systemctl", "enable", "--now", name)
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if operation == "stop" {
+		return run(ctx, "systemctl", "stop", name)
+	}
+	if err := run(ctx, "systemctl", "disable", "--now", name); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return run(ctx, "systemctl", "daemon-reload")
 }

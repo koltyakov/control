@@ -36,6 +36,20 @@ func TestRPAHelperProcess(t *testing.T) {
 	results := []map[string]any{}
 	for i, action := range request.Arguments.Actions {
 		item := map[string]any{"type": action["type"], "completed": true}
+		if mode == "secret-echo" || mode == "secret-fail" {
+			text, _ := action["text"].(string)
+			if _, exists := action["secret"]; exists {
+				os.Exit(5)
+			}
+			if text != "" {
+				item["echo"] = text
+				fmt.Fprint(os.Stderr, text[:len(text)/2])
+				fmt.Fprint(os.Stderr, text[len(text)/2:])
+				if mode == "secret-fail" {
+					os.Exit(6)
+				}
+			}
+		}
 		if action["type"] == "screenshot" {
 			name := fmt.Sprintf("screen-%d.png", i)
 			f, err := os.Create(filepath.Join(request.Workspace, name))

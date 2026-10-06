@@ -16,6 +16,12 @@ Streaming tests also verify concurrent traffic lanes, one WebRTC carrier across 
 
 RPA tests use a fake helper to verify opt-in, whole-batch validation, authorization, leases, durable task idempotency, per-user serialization across profiles, cancellation, partial failures, screenshot path confinement, and PNG artifacts. Peer tests cover both transports without GUI dependencies. Dependency-free Python tests cover exact selector uniqueness, traversal bounds, backend validation, Wayland rejection, and key/button cleanup. Run them with `python3 -m unittest discover -s examples/rpa -p 'test_*.py'`. Live desktop behavior and permissions require native smoke tests; see [GUI automation](rpa.md#verification-and-limits).
 
+Secret tests cover local argument/stdin contracts, private atomic storage, concurrent changes, workspace rejection, reference validation, helper-side injection, chunked diagnostic suppression, masked GUI/HTTP outputs, missing references, literal-header conflicts, and redirect refusal. Peer tests over WebRTC and relay verify reference-only durable task metadata, masked retained results, empty helper logs, idempotent reconciliation, and absence of secret management RPCs. Text masking does not verify screenshot privacy or native credential fields. See [limits](secrets.md#what-this-protects).
+
+Clipboard tests use fake desktop reads/writes without touching the host clipboard. They cover files larger than the control-frame limit, metadata-only source snapshots, delayed streaming until paste acceptance, checksums, empty files, source changes, collision refusal, portable names, URI parsing, cancellation cleanup, workspace confinement, method authorization, admission, local API relay, standalone clients over both transports, and reverse MCP file paste. Native Finder/Explorer/Linux file-manager integration, Unicode desktop text, user-session access, and clipboard tool availability require platform smoke tests. See [clipboard requirements](clipboard.md#desktop-requirements).
+
+On macOS, `CONTROL_TEST_MACOS_CLIPBOARD=1 go test -race ./internal/clipboard -run '^TestClipboardDarwinPrivatePasteboard$' -count=1` verifies native Foundation/JXA reads with Unicode text, empty text, multiple file URLs, and unsupported formats. It uses a private pasteboard, never the user's current clipboard. Real Finder copy and destination text writes still require a desktop smoke test.
+
 From the repository root:
 
 ```sh
@@ -69,6 +75,7 @@ Gateway and node health checks gate test startup. The [relay override](../compos
 - Absence of the encoded artifact in the orchestrator's artifact store.
 - Multi-megabyte artifact delivery across all three nodes with byte-for-byte verification.
 - HTTP requests and TCP tunnels opened by a remote node to a service on the internal network.
+- Reverse forwarding from a worker's loopback port to a dev server bound only to the test runner's loopback. Core tests cover HTTP, WebSocket hot-reload traffic, TCP half-close, remote-port conflicts, MCP reverse start/stop, idle-listener cleanup, authorization, and fleet isolation over both peer transports.
 - Actual peer transport selection for source/worker and worker/consumer connections.
 - Dashboard snapshots and CLI rendering while another owner has running and queued tasks, a synchronous HTTP call is blocked, a transfer is in progress, and a TCP tunnel carries traffic.
 - Direct gateway identity and resource metrics in dashboard output, plus owner-visible work counts and sampled CPU without a local observer. Core tests cover unavailable local nodes, fleet-scoped status, forged health sender IDs, report expiry, common-key restrictions, credential selection, and cached sampling without poll-triggered collection.
@@ -82,6 +89,10 @@ Gateway and node health checks gate test startup. The [relay override](../compos
 These tests live in [tests/compose/e2e_test.go](../tests/compose/e2e_test.go) and [tests/compose/updates_test.go](../tests/compose/updates_test.go) behind the `compose` build tag. The ordinary Go suite remains independent of Docker and FFmpeg. Its existing tests cover cancellation, leases, grants, MCP, identity ownership, gateway restarts, and task reconciliation.
 
 Core automatic-name tests cover CLI omitted/`auto` names, blank dashboard input, target-hostname validation, signed name binding, legacy proof compatibility, concurrent hostname claims, explicit reservations, persistence rollback, response recovery across restart, and rejection of foreign or retired identities.
+
+Startup-context tests cover the wizard's user/system choice on all three platforms, back navigation, one-time creation, script elevation and explicit-context precedence, gateway persistence and invalid-mode rejection, and older-gateway confirmation failure. Unix tests verify saved system-mode reuse, root checks, profile-scoped service identifiers, systemd boot targets, and valid LaunchDaemon XML with escaped paths. These tests do not install system services. Linux systemd and macOS launchd startup, reboot/logout persistence, service permissions, and root-context provider behavior require native runtime smoke tests.
+
+Rename tests cover dashboard prefill, editing, paste, cancellation, validation, single submission, CLI name/ID resolution, fleet authorization, invitation/client reservations, persistence rollback, gateway restart and old-config reconnection, signed enrollment recovery, and replacement enrollment. Self-contained peer tests over WebRTC and relay verify new and reused aliases without interrupting an active TCP stream.
 
 Native CLI self-update tests use a local release server and a real running executable to check replacement, pinned downloads, checksum and version rejection, cancellation, and repeated updates. Windows CI exercises replacement while the previous executable is running. These tests require no published release or gateway credential.
 

@@ -7,6 +7,7 @@ type MachineState struct {
 	Revision     uint64 `json:"revision"`
 	Disabled     bool   `json:"disabled"`
 	Unregistered bool   `json:"unregistered"`
+	Name         string `json:"name,omitempty"` // Owner-selected routing name, overriding node configuration.
 }
 
 // MachineStateProof permits a node to learn that it was unregistered even

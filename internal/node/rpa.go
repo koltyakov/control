@@ -14,6 +14,7 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/rpa"
+	"github.com/koltyakov/control/internal/secrets"
 )
 
 func (n *Node) registerRPA() error {
@@ -30,7 +31,7 @@ func (n *Node) registerRPA() error {
 	n.rpaLockPath = filepath.Join(dir, "control", "rpa.lock")
 	return n.Register(provider{cap: model.Capability{
 		Name: "rpa.run", InputSchema: model.JSON(rpa.Schema()),
-		Description: "Run a serialized GUI action batch in this node user's desktop session. Inspect accessibility elements before exact selector actions; screenshots return PNG artifacts. Coordinate input requires X11 on Linux. Use leased tasks across multiple batches. Never automatically replay failed actions.",
+		Description: "Run a serialized GUI action batch in this node user's desktop session. Use secret instead of text on setValue/type to enter a worker-local credential without exposing its value. Inspect accessibility elements before exact selector actions; screenshots return PNG artifacts and are not secret-masked. Coordinate input requires X11 on Linux. Use leased tasks across multiple batches. Never automatically replay failed actions.",
 	}, run: n.rpaRun})
 }
 
@@ -39,9 +40,27 @@ type rpaResponse struct {
 	Error   string                       `json:"error,omitempty"`
 }
 
-func (n *Node) rpaRun(ctx context.Context, args json.RawMessage, e Execution) (any, error) {
+func (n *Node) rpaRun(ctx context.Context, args json.RawMessage, e Execution) (_ any, runErr error) {
 	if err := rpa.Validate(args); err != nil {
 		return nil, err
+	}
+	values, err := n.secretValues()
+	if err != nil {
+		return nil, err
+	}
+	redactor := secrets.NewRedactor(values)
+	defer func() {
+		if runErr != nil && redactor.Text(runErr.Error()) != runErr.Error() {
+			runErr = errors.New(redactor.Text(runErr.Error()))
+		}
+	}()
+	resolvedArgs, err := resolveRPASecrets(args, values)
+	if err != nil {
+		return nil, err
+	}
+	// Validate the resolved batch too, without including credentials in errors.
+	if err := rpa.Validate(resolvedArgs); err != nil {
+		return nil, errors.New("resolved RPA credentials do not satisfy the action contract")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
@@ -64,9 +83,17 @@ func (n *Node) rpaRun(ctx context.Context, args json.RawMessage, e Execution) (a
 		return nil, err
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
-	input := string(model.JSON(map[string]any{"version": model.Version, "arguments": args, "workspace": dir})) + "\n"
+	input := string(model.JSON(map[string]any{"version": model.Version, "arguments": resolvedArgs, "workspace": dir})) + "\n"
+	if len(values) != 0 {
+		// Never stream helper output with credentials configured. Tokens can be
+		// split across writes or truncated before a redactor sees the full value.
+		e.Log = io.Discard
+	}
 	result, err := runCommand(ctx, *n.Config.RPA, e, input)
 	if err != nil {
+		if len(values) != 0 {
+			return nil, errors.New("RPA helper failed; desktop effects may already have occurred; helper diagnostics suppressed because secrets are configured")
+		}
 		return nil, fmt.Errorf("RPA helper failed; desktop effects may already have occurred: %w; %s", err, result.Stderr)
 	}
 	if result.Truncated {
@@ -75,6 +102,21 @@ func (n *Node) rpaRun(ctx context.Context, args json.RawMessage, e Execution) (a
 	var response rpaResponse
 	if err := json.Unmarshal([]byte(result.Stdout), &response); err != nil {
 		return nil, fmt.Errorf("invalid RPA helper response; desktop effects may already have occurred: %w", err)
+	}
+	response.Error = redactor.Text(response.Error)
+	for i, item := range response.Results {
+		if item == nil {
+			continue
+		}
+		cleanItem := make(map[string]json.RawMessage, len(item))
+		for key, raw := range item {
+			clean, err := redactor.JSON(raw)
+			if err != nil {
+				return nil, errors.New("cannot sanitize RPA helper response")
+			}
+			cleanItem[redactor.Text(key)] = clean
+		}
+		response.Results[i] = cleanItem
 	}
 	var request struct {
 		Actions []json.RawMessage `json:"actions"`

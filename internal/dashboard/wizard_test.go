@@ -16,9 +16,9 @@ import (
 func TestRegistrationWizardCopiesAndRetriesWithoutCreatingAnotherInvitation(t *testing.T) {
 	created, copied := 0, 0
 	m := view{ctx: context.Background(), width: 80, height: 24, options: Options{
-		Invite: func(_ context.Context, name, platform string) (enrollment.Link, error) {
+		Invite: func(_ context.Context, name, platform, mode string) (enrollment.Link, error) {
 			created++
-			if name != "render-01" || platform != "windows" {
+			if name != "render-01" || platform != "windows" || mode != "user" {
 				t.Fatalf("wrong registration: %s %s", name, platform)
 			}
 			return enrollment.Link{Command: "installation-command", Invitation: enrollment.Invitation{ExpiresAt: time.Now().Add(15 * time.Minute)}}, nil
@@ -40,6 +40,7 @@ func TestRegistrationWizardCopiesAndRetriesWithoutCreatingAnotherInvitation(t *t
 	apply(tea.PasteMsg{Content: "render-01"})
 	apply(tea.KeyPressMsg{Code: tea.KeyEnter})
 	key("2")
+	apply(tea.KeyPressMsg{Code: tea.KeyEnter})
 	cmd := apply(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if next := apply(tea.KeyPressMsg{Code: tea.KeyEnter}); next != nil {
 		t.Fatal("double enter issued a second request")
@@ -80,11 +81,53 @@ func TestRegistrationIsUnavailableWithoutFleetManagement(t *testing.T) {
 	}
 }
 
+func TestRegistrationSelectsStartupContextBeforeCreating(t *testing.T) {
+	for platform, osName := range platformOS {
+		for selection, mode := range startupModes {
+			t.Run(osName+"/"+mode, func(t *testing.T) {
+				created := 0
+				m := view{ctx: context.Background(), width: 80, height: 24,
+					wizard: &registration{id: 1, name: "worker", step: "platform", platform: platform},
+					options: Options{Invite: func(_ context.Context, name, os, gotMode string) (enrollment.Link, error) {
+						created++
+						if name != "worker" || os != osName || gotMode != mode {
+							t.Fatalf("wrong context: %s %s %s", name, os, gotMode)
+						}
+						return enrollment.Link{}, nil
+					}},
+				}
+				apply := func(key tea.KeyPressMsg) tea.Cmd {
+					next, cmd := m.updateRegistration(key)
+					m = next.(view)
+					return cmd
+				}
+				if cmd := apply(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil || created != 0 || m.wizard.step != "context" {
+					t.Fatal("created invitation before choosing startup context")
+				}
+				apply(tea.KeyPressMsg{Code: rune('1' + selection), Text: string(rune('1' + selection))})
+				text := ansi.Strip(m.registrationView().Content)
+				if !strings.Contains(text, "User context") || !strings.Contains(text, "System context") || !strings.Contains(text, "logout") {
+					t.Fatal("context selection omitted choices or logout warning")
+				}
+				apply(tea.KeyPressMsg{Code: tea.KeyEscape})
+				if m.wizard.step != "platform" || m.wizard.context != selection {
+					t.Fatal("back navigation lost context selection")
+				}
+				apply(tea.KeyPressMsg{Code: tea.KeyEnter})
+				cmd := apply(tea.KeyPressMsg{Code: tea.KeyEnter})
+				if cmd == nil || cmd().(invitationResult).err != nil || created != 1 {
+					t.Fatal("context selection did not create exactly one invitation")
+				}
+			})
+		}
+	}
+}
+
 func TestRegistrationEmptyNameUsesTargetHostname(t *testing.T) {
 	for _, name := range []string{"", "auto"} {
 		m := view{ctx: context.Background(), wizard: &registration{id: 1, step: "name", name: name}, options: Options{
-			Invite: func(_ context.Context, name, platform string) (enrollment.Link, error) {
-				if name != "auto" || platform != "darwin" {
+			Invite: func(_ context.Context, name, platform, mode string) (enrollment.Link, error) {
+				if name != "auto" || platform != "darwin" || mode != "user" {
 					t.Fatalf("wrong automatic naming: %q, %q", name, platform)
 				}
 				return enrollment.Link{}, nil
@@ -95,7 +138,12 @@ func TestRegistrationEmptyNameUsesTargetHostname(t *testing.T) {
 		if m.wizard.step != "platform" || m.wizard.name != "auto" {
 			t.Fatal("blank or auto name did not advance to platform selection")
 		}
-		_, cmd := m.updateRegistration(tea.KeyPressMsg{Code: tea.KeyEnter})
+		next, cmd := m.updateRegistration(tea.KeyPressMsg{Code: tea.KeyEnter})
+		m = next.(view)
+		if cmd != nil || m.wizard.step != "context" {
+			t.Fatal("platform selection skipped startup context")
+		}
+		_, cmd = m.updateRegistration(tea.KeyPressMsg{Code: tea.KeyEnter})
 		if cmd == nil {
 			t.Fatal("auto naming did not create an invitation")
 		}

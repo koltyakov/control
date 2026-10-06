@@ -10,6 +10,7 @@
 | Contact several workers while one is unreachable | A global dial lock serialized every destination | Coalesced setup per peer and lane, with independently cancellable waiters |
 | Run a database forward and collect artifacts over WebRTC | Independent lanes initially required repeated ICE handshakes | Compatible peers share one ICE/DTLS/SCTP carrier with independent ordered data channels and TLS/yamux sessions |
 | Send a request to a service that waits for EOF before responding | Forwarding closed the response direction too | Negotiated EOF records preserve the opposite direction across peer streams and the local WebSocket API |
+| Open an orchestrator-local dev server in a remote browser | Only local-to-remote forwarding existed | Process-owned reverse TCP listeners with HTTP, WebSocket, and duplex forwarding |
 | Follow several long-running jobs | Each follower queried logs four times a second | One offset-based stream per follower, awakened by log appends and completion |
 | Fetch files continuously from many workers | Receive packets allocated a new byte slice for every message | Sized buffer pools with copying, bounded queues, and explicit release on consumption and shutdown |
 | Diagnose connection pressure | Connection inspection reported only a transport per peer | Session inspection includes lanes and active incoming/outgoing stream counts |
@@ -76,7 +77,7 @@ These gaps are not implemented:
 | Capability | Useful scenario | Constraint before implementing |
 | --- | --- | --- |
 | Interactive process stdin and PTYs | Drive a persistent remote shell or REPL | Explicit process ownership, input framing, resize, reconnect, and OS-specific terminal lifecycle |
-| Reverse forwarding and UDP | Reach a local orchestrator service from a worker, or tunnel a UDP protocol | Listener authorization, resource limits, datagram semantics, and lifetime rules |
+| UDP forwarding | Tunnel a UDP protocol | Bounded datagrams, size limits, and explicit loss/lifetime semantics |
 | Parallel workflow steps and load-aware placement | Distribute independent rendering or test shards | Admission must remain destination-owned; resource samples are not reservations |
 | Stream scheduling on the relay | Protect control latency when a gateway link is saturated | A bounded, fair scheduler across users and sessions, not extra unbounded queues |
 | Transfer quotas and completed-task pruning | Keep a large, long-lived fleet within disk budgets | Retention policy must protect active inputs, output references, and owner-scoped recovery |

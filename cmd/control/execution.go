@@ -49,22 +49,27 @@ func logsCLI(ctx context.Context, c client.Client, target string, args []string)
 
 func tunnelCLI(ctx context.Context, c client.Client, args []string) error {
 	if len(args) < 2 {
-		return errors.New("usage: control tunnel NODE HOST:PORT [--listen 127.0.0.1:PORT]")
+		return errors.New("usage: control tunnel NODE HOST:PORT [--reverse] [--listen 127.0.0.1:PORT]")
 	}
 	f := flag.NewFlagSet("tunnel", flag.ContinueOnError)
-	listen := f.String("listen", "127.0.0.1:0", "local listen address")
+	listen := f.String("listen", "127.0.0.1:0", "listen address, on the remote machine with --reverse")
+	reverse := f.Bool("reverse", false, "forward a remote listener to HOST:PORT on this machine")
 	if err := f.Parse(args[2:]); err != nil {
 		return err
 	}
 	if f.NArg() != 0 {
 		return errors.New("unexpected tunnel arguments")
 	}
-	forward, err := c.StartForward(ctx, client.ForwardSpec{Node: args[0], Address: args[1], Listen: *listen})
+	forward, err := c.StartForward(ctx, client.ForwardSpec{Node: args[0], Address: args[1], Listen: *listen, Reverse: *reverse})
 	if err != nil {
 		return err
 	}
 	defer forward.Close()
-	fmt.Fprintln(os.Stderr, "listening on", forward.Info().Listen)
+	if *reverse {
+		fmt.Fprintln(os.Stderr, "listening on", args[0], forward.Info().Listen, "forwarding to local", args[1])
+	} else {
+		fmt.Fprintln(os.Stderr, "listening on", forward.Info().Listen)
+	}
 	select {
 	case <-ctx.Done():
 		return nil

@@ -107,6 +107,10 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	if q.TTLSeconds == 0 {
 		q.TTLSeconds = 900
 	}
+	if q.ServiceMode != "" && q.ServiceMode != "user" && q.ServiceMode != "system" {
+		http.Error(w, "serviceMode must be user, system, or omitted", http.StatusBadRequest)
+		return
+	}
 	if q.TTLSeconds < 60 || q.TTLSeconds > 86400 {
 		http.Error(w, "ttlSeconds must be 60..86400", 400)
 		return
@@ -153,7 +157,7 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	ticket := base64.RawURLEncoding.EncodeToString(secret[:])
 	now := time.Now().UTC()
-	i := installation{Invitation: enrollment.Invitation{UserID: p.UserID, ID: identity.NewID(), Name: q.Name, AutoName: q.AutoName, Gateway: base, Asset: asset, Assets: assets, Version: version, CreatedAt: now, ExpiresAt: now.Add(time.Duration(q.TTLSeconds) * time.Second)}}
+	i := installation{Invitation: enrollment.Invitation{UserID: p.UserID, ID: identity.NewID(), Name: q.Name, AutoName: q.AutoName, ServiceMode: q.ServiceMode, Gateway: base, Asset: asset, Assets: assets, Version: version, CreatedAt: now, ExpiresAt: now.Add(time.Duration(q.TTLSeconds) * time.Second)}}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.clientNameReserved(p.UserID, q.Name) {
@@ -174,11 +178,11 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 			delete(g.installations, hash)
 			continue
 		}
-		if !q.AutoName && old.Name == q.Name && !old.Revoked && old.RedeemedID == "" {
+		if !q.AutoName && g.installationName(old) == q.Name && !old.Revoked && old.RedeemedID == "" {
 			http.Error(w, "name has an existing invitation", http.StatusConflict)
 			return
 		}
-		if !q.AutoName && old.Name == q.Name && !old.Revoked && old.RedeemedID != "" {
+		if !q.AutoName && g.installationName(old) == q.Name && !old.Revoked && old.RedeemedID != "" {
 			i.ReplaceID = old.RedeemedID
 		}
 		count++
@@ -197,7 +201,7 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	link := base + "/install/" + ticket
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(enrollment.Link{Invitation: i.Invitation, URL: link, Command: enrollment.InstallCommand(link, q.OS == "windows")})
+	_ = json.NewEncoder(w).Encode(enrollment.Link{Invitation: i.Invitation, URL: link, Command: enrollment.InstallCommand(link, q.OS == "windows", q.ServiceMode)})
 }
 
 func (g *Gateway) pendingInstallation(w http.ResponseWriter, r *http.Request) (installation, bool) {
@@ -313,7 +317,7 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 		}
 		i.Name = q.Name
 		for h, previous := range g.installations {
-			if h != hash && previous.UserID == i.UserID && previous.Name == i.Name && !previous.Revoked && previous.RedeemedID != id && previous.ReplaceID != id && (previous.RedeemedID != "" || time.Now().Before(previous.ExpiresAt)) {
+			if h != hash && previous.UserID == i.UserID && g.installationName(previous) == i.Name && !previous.Revoked && previous.RedeemedID != id && previous.ReplaceID != id && (previous.RedeemedID != "" || time.Now().Before(previous.ExpiresAt)) {
 				http.Error(w, "name has an existing invitation or enrollment", http.StatusConflict)
 				return
 			}
@@ -344,6 +348,12 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 	// A signed redemption replaces this identity's previous installation, even
 	// when its name changes. Commit the rename and credential revocation together.
 	previousNode, registered := g.nodes[id]
+	previousState := g.machineStates[id]
+	if previousState.Name != "" {
+		state := previousState
+		state.Name = ""
+		g.machineStates[id] = state
+	}
 	if registered {
 		n := previousNode
 		n.Name = i.Name
@@ -361,6 +371,7 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 	i.RedeemedID, i.CredentialHash = id, q.CredentialHash
 	g.installations[hash] = i
 	if err := g.persist(); err != nil {
+		g.machineStates[id] = previousState
 		if registered {
 			g.nodes[id] = previousNode
 		}
@@ -415,6 +426,15 @@ func (g *Gateway) revokeInstallation(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// Called under g.mu. Keep the original signed invitation name unchanged while
+// applying owner-selected names to enrollment reservations and authorization.
+func (g *Gateway) installationName(i installation) string {
+	if name := g.machineStates[i.RedeemedID].Name; i.RedeemedID != "" && name != "" {
+		return name
+	}
+	return i.Name
+}
+
 // Called under g.mu after checking the registration signature.
 func (g *Gateway) allowInstallation(keyID string, n model.Node) bool {
 	bound := strings.HasPrefix(keyID, "install:")
@@ -424,7 +444,7 @@ func (g *Gateway) allowInstallation(keyID string, n model.Node) bool {
 			continue
 		}
 		if keyID == "install:"+i.ID {
-			if i.Revoked || i.RedeemedID != n.ID || i.Name != n.Name || i.Asset.OS != n.OS || i.Asset.Arch != n.Software.Arch {
+			if i.Revoked || i.RedeemedID != n.ID || g.installationName(i) != n.Name || i.Asset.OS != n.OS || i.Asset.Arch != n.Software.Arch {
 				return false
 			}
 			allowed = true
@@ -433,7 +453,7 @@ func (g *Gateway) allowInstallation(keyID string, n model.Node) bool {
 		if !i.Revoked && i.RedeemedID == n.ID {
 			return false
 		}
-		if i.Name == n.Name && !i.Revoked && i.ReplaceID != n.ID && (i.RedeemedID != "" || time.Now().Before(i.ExpiresAt)) {
+		if g.installationName(i) == n.Name && !i.Revoked && i.ReplaceID != n.ID && (i.RedeemedID != "" || time.Now().Before(i.ExpiresAt)) {
 			return false
 		}
 	}

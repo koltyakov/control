@@ -28,6 +28,7 @@ type Options struct {
 	InvitationStatus InvitationStatus
 	Copy             Copy
 	Manage           ManageMachine
+	Rename           RenameMachine
 }
 
 type result struct {
@@ -100,7 +101,12 @@ func (m view) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case machineActionResult:
 		return m.updateManager(msg)
-	case invitationResult, invitationStatusResult, clipboardResult, tea.PasteMsg:
+	case tea.PasteMsg:
+		if m.manager != nil {
+			return m.updateManager(msg)
+		}
+		return m.updateRegistration(msg)
+	case invitationResult, invitationStatusResult, clipboardResult:
 		return m.updateRegistration(msg)
 	case tea.WindowSizeMsg:
 		m.selection = nil

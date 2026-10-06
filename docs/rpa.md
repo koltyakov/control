@@ -82,17 +82,19 @@ Replace the example selector values with actual inspection results. Selector cli
 | `screenshot` | No arguments; returns a PNG `artifact` reference |
 | `click` | Exact `target`, or `x` and `y`; coordinates allow `button` left/right/middle and `count` 1..2. Selector clicks allow only one left activation. |
 | `focus` | Exact `target` |
-| `setValue` | Exact `target`, Unicode `text`, at most 4,096 characters. Replaces the editable value through accessibility, not keystrokes. |
+| `setValue` | Exact `target`, Unicode `text` or worker-local `secret` name, at most 4,096 characters after resolution. Replaces the editable value through accessibility, not keystrokes. |
 | `move` | `x`, `y` |
 | `drag` | `x`, `y`, optional `durationMs` 100..5000, default 500; drags from the current pointer position with the left button |
 | `scroll` | `clicks` -100..100; positive is up, negative is down, at the current pointer position |
-| `type` | `text`, at most 4,096 characters; printable ASCII, newline and tab only, at the current focus. Use `setValue` for Unicode. |
+| `type` | `text` or worker-local `secret` name, at most 4,096 characters after resolution; printable ASCII, newline and tab only, at the current focus. Use `setValue` for Unicode. |
 | `keys` | `keys` array of 1..8 PyAutoGUI key names; presses a chord and releases it. Examples: `["ctrl","s"]`, `["command","s"]`. |
 | `wait` | `milliseconds` 1..5000 |
 
 Coordinates refer to the primary display's logical coordinate space, with integral values on that display. Multi-monitor coordinate input is not supported by the supplied helper. Screenshot results include image `width`/`height`, logical `screenWidth`/`screenHeight`, and `scaleX`/`scaleY`. Divide image coordinates by those scales before pointer input, especially on Retina displays. PyAutoGUI's corner failsafe remains enabled for its input actions; moving the mouse to a screen corner can stop them. It does not stop native accessibility actions. Use task cancellation to stop a batch.
 
 Screenshots are imported into Control's immutable artifact store, not base64-encoded in control messages. Download with `control artifact get worker ARTIFACT_ID ./screen.png`, or deliver directly to another node. They are capped at 32 MiB and 64 million pixels. Helper workspaces are private temporary directories removed after each invocation. Artifacts remain until explicitly deleted.
+
+Use [worker-local secrets](secrets.md) for credentials, never literal values in AI tool inputs. GUI text results and errors mask configured secret values; raw helper task logs and failure diagnostics are suppressed while any secrets are configured. Screenshots remain unmasked, and unrestricted execution can still extract credentials.
 
 ## Coordination and failures
 

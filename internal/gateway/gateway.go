@@ -283,6 +283,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	n.Disabled, n.ControlPending = g.machineStates[n.ID].Disabled, false
 	registered := g.nodes[n.ID]
 	n.Managed = registered.Managed && n.Software.SHA256 != "" && registered.Software.SHA256 == n.Software.SHA256
+	if !client && g.machineStates[n.ID].Name != "" {
+		n.Name = g.machineStates[n.ID].Name
+	}
 	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, 256), keyID: p.KeyID, userID: p.UserID}
 	if !g.allowInstallation(p.KeyID, n) {
 		g.mu.Unlock()

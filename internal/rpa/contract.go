@@ -38,6 +38,17 @@ func Schema() map[string]any {
 		map[string]any{"required": []string{"target"}, "properties": map[string]any{"button": map[string]any{"const": "left"}, "count": map[string]any{"const": 1}}, "not": map[string]any{"anyOf": []any{map[string]any{"required": []string{"x"}}, map[string]any{"required": []string{"y"}}}}},
 		map[string]any{"required": []string{"x", "y"}, "not": map[string]any{"required": []string{"target"}}},
 	}
+	credential := func(kind string, targeted bool) map[string]any {
+		p := map[string]any{"text": text, "secret": map[string]any{"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"}}
+		required := []string{}
+		if targeted {
+			p["target"] = selector
+			required = append(required, "target")
+		}
+		s := action(kind, p, required...)
+		s["oneOf"] = []any{map[string]any{"required": []string{"text"}}, map[string]any{"required": []string{"secret"}}}
+		return s
+	}
 	return map[string]any{
 		"type": "object", "additionalProperties": false, "required": []string{"actions"},
 		"properties": map[string]any{"actions": map[string]any{
@@ -47,11 +58,11 @@ func Schema() map[string]any {
 				action("screenshot", nil),
 				click,
 				action("focus", map[string]any{"target": selector}, "target"),
-				action("setValue", map[string]any{"target": selector, "text": text}, "target", "text"),
+				credential("setValue", true),
 				action("move", position, "x", "y"),
 				action("drag", map[string]any{"x": position["x"], "y": position["y"], "durationMs": integer(100, 5000)}, "x", "y"),
 				action("scroll", map[string]any{"clicks": integer(-100, 100)}, "clicks"),
-				action("type", map[string]any{"text": text}, "text"),
+				credential("type", false),
 				action("keys", map[string]any{"keys": map[string]any{"type": "array", "minItems": 1, "maxItems": 8, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 32}}}, "keys"),
 				action("wait", map[string]any{"milliseconds": integer(1, 5000)}, "milliseconds"),
 			}},

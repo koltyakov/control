@@ -5,9 +5,12 @@ import (
 	"text/template"
 )
 
-func InstallCommand(link string, windows bool) string {
+func InstallCommand(link string, windows bool, mode string) string {
 	if windows {
 		return "& ([scriptblock]::Create((Invoke-RestMethod -Uri " + PowerShellQuote(link) + ")))"
+	}
+	if mode == "system" {
+		return "curl -fsSL " + ShellQuote(link) + " | sudo bash"
 	}
 	return "curl -fsSL " + ShellQuote(link) + " | bash"
 }
@@ -36,6 +39,16 @@ case "$(uname -s)" in Linux) os=linux;; Darwin) os=darwin;; *) echo 'Unsupported
 case "$(uname -m)" in x86_64|amd64) arch=amd64;; arm64|aarch64) arch=arm64;; *) echo 'Unsupported architecture' >&2; exit 1;; esac
 if [ "$os" = darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then arch=arm64; fi
 if [ "$os" != {{q .Asset.OS}} ]; then echo 'Invitation OS does not match this machine' >&2; exit 1; fi
+{{if .ServiceMode}}service_mode={{q .ServiceMode}}
+{{else}}service_mode="${CONTROL_SERVICE_MODE:-}"
+{{end}}set --
+if [ -n "$service_mode" ]; then set -- --service "$service_mode"; fi
+if [ "$service_mode" = system ]; then
+  if [ "$(id -u)" != 0 ]; then echo 'System startup requires root; run this installation command with sudo bash.' >&2; exit 1; fi
+  if [ "$os" = linux ]; then default_home=/var/lib/control; else default_home='/Library/Application Support/control'; fi
+  export CONTROL_HOME="${CONTROL_HOME:-$default_home}"
+  export CONTROL_INSTALL_DIR="${CONTROL_INSTALL_DIR:-/usr/local/bin}"
+fi
 case "$arch" in
 {{range .Candidates}}{{.Arch}}) checksum={{q .SHA256}};;
 {{end}}*) echo 'No installer for this architecture' >&2; exit 1;;
@@ -46,12 +59,14 @@ curl -fsSL {{q .Binary}}"?arch=$arch" -o "$tmp/control"
 if command -v sha256sum >/dev/null; then actual="$(sha256sum "$tmp/control" | awk '{print $1}')"; else actual="$(shasum -a 256 "$tmp/control" | awk '{print $1}')"; fi
 if [ "$actual" != "$checksum" ]; then echo 'Binary checksum mismatch' >&2; exit 1; fi
 chmod 700 "$tmp/control"
-"$tmp/control" enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}}
+"$tmp/control" enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}} "$@"
 `
 
 const powershellScript = `#Requires -Version 5.1
 $ErrorActionPreference = 'Stop'
-$serviceMode = if ($env:CONTROL_SERVICE_MODE) { $env:CONTROL_SERVICE_MODE } else { 'user' }
+{{if .ServiceMode}}$serviceMode = {{q .ServiceMode}}
+{{else}}$serviceMode = if ($env:CONTROL_SERVICE_MODE) { $env:CONTROL_SERVICE_MODE } else { 'user' }
+{{end}}if ($serviceMode -eq 'system') { $serviceMode = 'auto' }
 if ($serviceMode -ne 'process' -and $serviceMode -ne 'user') {
   $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
   if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run this installation command in Administrator PowerShell to install the automatic Windows service.' }

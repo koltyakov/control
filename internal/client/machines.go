@@ -21,6 +21,10 @@ func (c Admin) ManageMachine(ctx context.Context, id, action string) error {
 	}
 }
 
+func (c Admin) RenameMachine(ctx context.Context, id, name string) error {
+	return c.JSON(ctx, http.MethodPatch, "/v1/fleet/nodes/"+url.PathEscape(id), map[string]string{"name": name}, nil)
+}
+
 func (c Admin) ResolveMachine(ctx context.Context, name string) (model.Node, error) {
 	var nodes []model.Node
 	if err := c.JSON(ctx, http.MethodGet, "/v1/nodes", nil, &nodes); err != nil {

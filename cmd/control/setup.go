@@ -43,7 +43,7 @@ func setupCLI(ctx context.Context, args []string, config string) error {
 	name := f.String("name", "", "this machine's name")
 	agent := f.String("client", "", "install MCP and skill for this AI client")
 	listen := f.String("listen", "127.0.0.1:7331", "loopback local API address")
-	mode := f.String("service", env("CONTROL_SERVICE_MODE", "auto"), "auto (Windows system service), user (at login), or process")
+	mode := f.String("service", env("CONTROL_SERVICE_MODE", "auto"), "auto (platform default), user (at login), system (at boot), or process")
 	if err := f.Parse(args); err != nil {
 		return err
 	}
@@ -186,7 +186,7 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 	f := flag.NewFlagSet("enroll", flag.ContinueOnError)
 	link := f.String("url", "", "one-time installation URL")
 	requireAutoName := f.Bool("auto-name", false, "require an automatic-name invitation")
-	mode := f.String("service", os.Getenv("CONTROL_SERVICE_MODE"), "auto (Windows system service), user (at login), or process; defaults to saved mode")
+	mode := f.String("service", os.Getenv("CONTROL_SERVICE_MODE"), "auto, user (at login), system (at boot), or process; defaults to saved mode")
 	if err := f.Parse(args); err != nil {
 		return err
 	}

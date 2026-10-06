@@ -12,7 +12,7 @@ import (
 	"github.com/koltyakov/control/internal/enrollment"
 )
 
-type Invite func(context.Context, string, string) (enrollment.Link, error)
+type Invite func(context.Context, string, string, string) (enrollment.Link, error)
 type InvitationStatus func(context.Context, string) (enrollment.Invitation, error)
 type Copy func(context.Context, string) error
 
@@ -21,6 +21,7 @@ type registration struct {
 	step       string
 	name       string
 	platform   int
+	context    int
 	link       enrollment.Link
 	err        string
 	checking   bool
@@ -45,13 +46,14 @@ type invitationStatusResult struct {
 var registrationName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
 var platformNames = []string{"macOS", "Windows", "Linux"}
 var platformOS = []string{"darwin", "windows", "linux"}
+var startupModes = []string{"user", "system"}
 
 func (m view) createInvitation() tea.Cmd {
 	w := *m.wizard
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
 		defer cancel()
-		link, err := m.options.Invite(ctx, w.name, platformOS[w.platform])
+		link, err := m.options.Invite(ctx, w.name, platformOS[w.platform], startupModes[w.context])
 		return invitationResult{w.id, link, err}
 	}
 }
@@ -134,9 +136,12 @@ func (m view) updateRegistration(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		if key == "esc" && w.step != "creating" && w.step != "copying" {
-			if w.step == "platform" {
+			switch w.step {
+			case "context":
+				w.step, w.err = "platform", ""
+			case "platform":
 				w.step, w.err = "name", ""
-			} else {
+			default:
 				m.wizard = nil
 			}
 			return m, nil
@@ -168,6 +173,15 @@ func (m view) updateRegistration(msg tea.Msg) (tea.Model, tea.Cmd) {
 				w.platform = (w.platform + 1) % 3
 			case "1", "2", "3":
 				w.platform = int(key[0] - '1')
+			case "enter":
+				w.step, w.err = "context", ""
+			}
+		case "context":
+			switch key {
+			case "up", "down", "k", "j", "tab":
+				w.context = (w.context + 1) % len(startupModes)
+			case "1", "2":
+				w.context = int(key[0] - '1')
 			case "enter":
 				w.step, w.err = "creating", ""
 				return m, m.createInvitation()
@@ -226,6 +240,29 @@ func (m view) registrationView() tea.View {
 			}
 			add(prefix+paint(fmt.Sprintf("%d  %s", i+1, name), style, m.color), "")
 		}
+		footer = hint("↑↓", "select") + separator + hint("Enter", "next") + separator + hint("Esc", "back")
+	case "context":
+		add("Startup context for "+w.name+" on "+platformNames[w.platform], "37")
+		add("", "")
+		for i, name := range []string{"User context", "System context"} {
+			prefix, style := "  ", "37"
+			if i == w.context {
+				prefix, style = paint("❯ ", "1;35", m.color), "1;36"
+			}
+			add(prefix+paint(fmt.Sprintf("%d  %s", i+1, name), style, m.color), "")
+		}
+		add("", "")
+		if w.context == 0 {
+			add("Runs as your user, with access to your files and credentials.", "2")
+			add("May go offline after logout. Linux needs linger to stay online.", "33")
+		} else {
+			add("Starts at boot and stays online after logout.", "2")
+			if w.platform == 1 {
+				add("Requires Administrator PowerShell. Runs as LocalService.", "33")
+			} else {
+				add("Requires sudo. Runs as root, without your desktop session.", "33")
+			}
+		}
 		footer = hint("↑↓", "select") + separator + hint("Enter", "create and copy") + separator + hint("Esc", "back")
 	case "creating":
 		add("Creating invitation for "+w.name+"…", "36")
@@ -242,6 +279,9 @@ func (m view) registrationView() tea.View {
 		shell := "Bash"
 		if w.platform == 1 {
 			shell = "PowerShell as the intended user"
+			if w.context == 1 {
+				shell = "Administrator PowerShell"
+			}
 		}
 		add("Paste into "+shell+" on the target machine.", "2")
 		add("", "")

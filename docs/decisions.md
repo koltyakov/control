@@ -128,6 +128,8 @@ The requirement to reserve every invitation's name before installation is supers
 
 The Windows login-startup choice is superseded by [D021](#d021-automatic-windows-node-service).
 
+The Unix per-user-only startup choice is extended by [D043](#d043-explicit-installation-context-and-unix-system-startup).
+
 The refusal to replace existing invitation-based installations is superseded by [D026](#d026-replace-enrollment-within-the-existing-machine-profile).
 
 Extend D004 and D014 with superuser-created installation invitations. A hashed, expiring ticket reserves a name and pins a platform binary. The target generates its private identity and credential locally, then signs a redemption that binds the credential hash to its identity, name, OS, and architecture. Downloading the script does not consume the ticket. Atomic redemption permits one identity, with repeat requests from the same persisted identity and credential to recover a lost response.
@@ -254,7 +256,7 @@ This contract requires gateway and worker support. Advertise `clientSessions` in
 
 ## D030: Concurrent client connections with stable task owners
 
-The full-close forwarding and single outbound-session transport are extended by [D031](#d031-isolated-traffic-lanes-shared-webrtc-carriers-and-duplex-streams). Stable ownership and client/fleet separation remain unchanged.
+The full-close forwarding and single outbound-session transport are extended by [D031](#d031-isolated-traffic-lanes-shared-webrtc-carriers-and-duplex-streams). [D042](#d042-process-owned-reverse-tcp-forwarding) adds reverse listeners. Stable ownership and client/fleet separation remain unchanged.
 
 A long-lived tunnel or MCP process must not block another CLI process from querying logs or cancelling a task. Retain the gateway/account-scoped persistent client key as the task and lease owner, but generate a separate TLS identity per requesting process. Hold the local owner-key lock only during key loading or creation. The owner signs a purpose-separated challenge proof authorizing that transport identity and metadata. The transport identity also signs the existing client-session proof. An account credential alone cannot impersonate another task owner.
 
@@ -322,6 +324,8 @@ Preserve any replacement identity already selected by an unfinished attempt, sin
 
 ## D038: User-login startup by default in Windows invitation scripts
 
+Explicit invitation context takes precedence over this default under [D043](#d043-explicit-installation-context-and-unix-system-startup). Invitations without a context retain this decision.
+
 Generated Windows invitation scripts select `user` startup unless `CONTROL_SERVICE_MODE` explicitly selects another mode. Pass that selection as `enroll --service` rather than changing the caller's environment or inheriting saved system startup. This applies to both new installations and replacement enrollment. Direct `control setup`, direct enrollment without an override, and service commands keep their existing defaults and saved-mode behavior.
 
 Machines added for remote execution commonly need the installing user's Documents and application credentials. LocalService cannot read those files by default. User-login startup provides that user's normal permissions without a password or elevation on new installations, but also gives unrestricted providers that user's authority and makes the node unavailable outside their login session. Boot-time execution remains available through an explicit `auto` override. Migration from a system service still requires Administrator PowerShell under the intended user before enrollment side effects.
@@ -341,3 +345,41 @@ Expose GUI automation as `rpa.run` only when a node explicitly configures an `rp
 Validate the whole batch before execution, cap it at 100 actions and two minutes, and serialize it with a shared file lock under the OS user's Control configuration directory. Native selector actions must resolve exactly one element in a complete bounded scan and must not silently fall back to coordinates. Import screenshots as bounded PNG artifacts from an invocation-owned temporary directory. Retain existing fleet authorization, tracked-task ownership and idempotency, leases, and update admission.
 
 GUI batches are not atomic transactions. Earlier actions and even a failed action may have changed an application. Stop at the first error and retain partial results in tracked tasks; never replay automatically after failure, disconnect, or restart. A node lease coordinates multi-batch callers on that node, but neither it nor the desktop lock blocks humans or unrelated automation. External helper dependencies and permissions need native runtime verification. See [GUI automation](rpa.md).
+
+## D041: Worker-local secret references for credential entry
+
+Manage credentials only through local `control secrets set|list|delete`, with hidden terminal entry or explicit stdin outside AI conversations. Store private atomic files under the worker profile's data directory, outside `workDir`. Do not add a value-read command, peer operation, MCP tool, or resource. Resolve names only in GUI `setValue`/`type` input and HTTP `headerSecrets` at execution. Keep persisted task specifications and idempotent submission comparisons reference-only. The gateway never stores or synchronizes these credentials.
+
+Mask configured values and common textual encodings in supported GUI/HTTP results and errors. Suppress raw desktop-helper task logs while credentials exist to avoid chunk-boundary and truncation leaks. Never follow redirects on secret-bearing HTTP requests. Existing capability authorization permits credential use and existing task, lease, and admission semantics remain unchanged. Queued work uses the value present at execution, not acceptance.
+
+This prevents accidental prompt and tool-result exposure, not hostile extraction. Private files are not encrypted or OS-keychain-backed. Screenshots, unrestricted execution, application files, arbitrary transformations, historical values after rotation, and malicious destinations remain outside the protection. Stronger isolation would require an approved-destination credential broker and narrower provider authority. See [secrets and limits](secrets.md).
+
+## D042: Process-owned reverse TCP forwarding
+
+Add `control tunnel --reverse` and MCP `control_forward_start` with `reverse: true` to expose an orchestrator-local service on a remote machine's loopback port. Require separate `tcp.listen` authorization on that node. Preserve fleet checks and work admission, and default to loopback. An explicitly selected non-loopback listener exposes the service to the remote network without additional listener authentication.
+
+Carry accepted sockets through a bounded nested yamux session inside one authenticated interactive `tcp.listen` stream, with duplex EOF records per socket. The client dials only the destination chosen when creating its forward. This permits standalone clients without enrollment or general incoming execution authority and works through the local node API without moving local service access into that node. HTTP and WebSocket traffic remain ordinary TCP bytes.
+
+Listeners belong to the requesting process, not a task or durable worker service. Cap them at 32 per client and 32 per receiving node, with 128 active sockets per listener. Idle listeners still block node updates. Stop, shutdown, expiry, or transport failure closes listeners and sockets and joins their goroutines; never recreate a listener or replay a socket automatically. A lost start acknowledgement can leave a listener briefly bound until its stream closes. There is no automatic retry. This supersedes D030's reverse-listener exclusion, not its UDP, PTY, or detached-service limits. See [protocol](protocol.md#orchestrator-sessions-and-forwards).
+
+## D043: Explicit installation context and Unix system startup
+
+Ask for User context or System context after the dashboard's platform selection. Keep user as the wizard default and expose the same choice through `machines add --service user|system`. Persist optional `serviceMode` in invitation metadata, validate it before creating the ticket, and require client-side response confirmation. Scripts honor explicit invitation context ahead of environment defaults. Omitting the field keeps previous platform defaults. Identity, ownership, name reservation, checksums, and redemption proofs remain unchanged.
+
+Linux user services can stop when the last login session ends. System context provides boot-time startup that survives logout without requiring user-manager linger. Linux uses profile-scoped systemd units under `/etc/systemd/system`; macOS uses profile-scoped LaunchDaemons in launchd's system domain. Install both as root with separate system profile paths and retain the selected mode for later service commands. System installation requires elevation before enrollment and never silently falls back to a user service or detached process. Windows maps system context to the existing automatic LocalService service.
+
+Root execution on Unix gives unrestricted providers root authority and does not provide the installing user's desktop or application credentials. The wizard warns about this difference. User mode remains appropriate for personal files and desktop integrations; Linux linger can retain an existing user installation across logout without changing its identity or execution account. Unix user-to-system identity migration is not automatic. This extends D015's Unix startup choice and D038's invitation defaults without changing Windows migration behavior. Native boot/logout behavior still requires runtime verification. See [installation contexts](installation.md#choose-a-startup-context).
+
+## D043: Owner-selected machine routing aliases
+
+Permit fleet owners to rename online and offline registrations through the shared client, CLI, and dashboard, without restarting a node or replacing its credential. Store an optional routing-name override with the gateway's existing identity policy and commit it together with the directory name. Apply it after signed identity and fleet checks on reconnection. Preserve admission revisions, work, identity ownership, and original signed installation proof names. Use the override for enrollment reservations and bound-credential authorization; fresh replacement enrollment clears it transactionally.
+
+Names obey existing enrollment syntax and fleet uniqueness, invitation reservations, and client-name reservations. Notify only connected peers in that fleet with a gateway-only `directory.changed` packet. Compatible peers clear name caches without closing identity-bound sessions, and prevent lookups started before notification from reintroducing stale aliases. Reconnection clears caches when notifications were missed. Older peers can retain cached aliases until restarted. Name-based access rules and scripts need updating; stable IDs do not. This extends D023's owner controls and D026's replacement enrollment without changing their stop or credential-rotation contracts. See [registration management](installation.md#manage-registrations).
+
+## D044: Explicit clipboard pastes with streamed files
+
+Expose bidirectional clipboard transfer as an explicit CLI/MCP paste, not a background watcher or a native desktop paste hook. Keep source desktop access in platform-specific clipboard helpers and shared orchestration in `internal/client`. Text replaces the destination OS clipboard; file references become regular-file pastes into an existing directory. Standalone clients use the existing authenticated peer transport without enrollment or inbound execution handlers.
+
+Use separate `clipboard.open` and `clipboard.paste` permissions, with fleet checks, bounded bulk-lane streams, and maintenance admission. A source reads only OS-selected file references, never paths supplied by the caller. Send basenames and sizes first, wait for destination acceptance, then stream file bytes and SHA-256 trailers. Keep bytes out of control frames and avoid artifact staging or whole-file buffering. Receivers confine remote paths to `workDir` and publish verified files atomically without replacing existing entries.
+
+Clipboard transfer exposes the desktop user's data, including selected files outside the workspace, and is not secret-masked. Default trusted-fleet rules still apply; sensitive hosts should restrict the new permissions. Native clipboard access requires that user's desktop session. File transfers need hard-link support, support regular files only, and do not delete cut sources. Cancellation removes unfinished temporary files, but completed files and uncertain text side effects require explicit reconciliation. Never resume or replay automatically. This extends D005's streamed operations and D039's local clipboard helpers without changing gateway routing or durable task semantics. See [clipboard behavior and limits](clipboard.md).

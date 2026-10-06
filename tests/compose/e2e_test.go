@@ -298,6 +298,36 @@ func TestPrivateNetworkHTTPAndTCPTunnel(t *testing.T) {
 	}
 }
 
+func TestReverseDevServerTunnel(t *testing.T) {
+	ctx, c := environment(t)
+	c = c.WithLifetime(ctx)
+	defer c.Close()
+	const body = "dev server bound only to the orchestrator loopback"
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, body)
+	}))
+	defer app.Close()
+	f, err := c.StartForward(ctx, client.ForwardSpec{Node: "worker", Address: strings.TrimPrefix(app.URL, "http://"), Reverse: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var result struct {
+		Status int    `json:"status"`
+		Body   string `json:"body"`
+	}
+	// This localhost belongs to the worker container, not the test runner or
+	// the source node relaying the client's local API connection.
+	call(t, ctx, c, "worker", "http.request", map[string]any{"url": "http://" + f.Info().Listen}, &result)
+	decoded, err := base64.StdEncoding.DecodeString(result.Body)
+	if err != nil || result.Status != http.StatusOK || string(decoded) != body {
+		t.Fatalf("reverse HTTP response: %+v, %v", result, err)
+	}
+	if err := c.StopForward(f.Info().ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDashboardObservesPoolWorkAndSampledResources(t *testing.T) {
 	ctx, c := environment(t)
 	pool := nodes(t, ctx, c)

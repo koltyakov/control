@@ -47,9 +47,17 @@ Export files from their source with `control artifact export SOURCE PATH`. Pass 
 control artifact get worker ARTIFACT_ID ./result.bin
 ```
 
-## Forward ports on the orchestrator
+## Paste a clipboard
+
+Only transfer a clipboard when the user requests it. Use `control clipboard paste NAME` or MCP `control_clipboard_paste` with `node`. Text replaces the remote OS clipboard; copied regular files stream into the node's workspace when the call is made. `--dir incoming` chooses an existing directory relative to `workDir`. With `--reverse` or MCP `reverse: true`, the remote clipboard is the source and `dir` is an existing local directory. Results report only basenames and byte counts, never clipboard text. Do not inspect clipboard text through generic calls or use clipboard transfer to retrieve secrets.
+
+Both desktops need clipboard access for text; a file destination needs only filesystem access. Discover the `clipboard` protocol field in `node.describe`, and require `clipboard.paste` permission or `clipboard.open` for reverse. There is no background synchronization or native Finder/Explorer paste hook. Directories, symlinks, images, and rich formats are unsupported. Source files are not deleted, existing destinations are not overwritten, and completed files can remain after a later failure. An uncertain paste may already have succeeded; inspect destination metadata rather than retrying automatically. Use artifacts for durable, resumable transfers.
+
+## Forward ports
 
 Use `control tunnel NAME HOST:PORT --listen 127.0.0.1:PORT` for a foreground TCP forward. MCP `control_forward_start` accepts `node`, `address`, and optional `listen` and returns an ID and local address immediately. It survives tool-call completion until `control_forward_stop` or MCP process exit. Use `control_forward_list` for active connections and errors, and `control_session` or CLI `control session` for process identity, traffic lanes, and stream counts. Upgraded peers share a WebRTC carrier across independent control, bulk, and interactive channels, stream followed task logs, and preserve TCP write-side EOF. Older peers retain separate connections, log polling, or full-close semantics. Forwards require `tcp.open` permission on the worker, do not create fleet registrations, and do not stop remote services when closed. Default to loopback; use a non-loopback listener only when the user asks to expose it. Failed sockets and log streams are not automatically replayed. Resume log following explicitly by byte offset.
+
+For a dev server running on this orchestrator, use `control tunnel NAME 127.0.0.1:3000 --reverse --listen 127.0.0.1:3000`, then open `http://localhost:3000` on the remote machine. MCP `control_forward_start` uses `reverse: true`, with `address` as the orchestrator-local destination and `listen` as the remote bind address. HTTP and WebSocket hot reload work over TCP. This requires remote `tcp.listen` permission and updated receiver/API support, not enrollment of a standalone client. The remote listener closes when stopped, disconnected, or the requesting process exits. The dev server stays running.
 
 ## Manipulate a worker's GUI
 
@@ -58,6 +66,8 @@ Discover `rpa.run` before using MCP `control_rpa` or `control call NAME rpa.run`
 Batches are serialized per OS user. For a sequence of batches on one node, acquire a node lease and submit tracked `rpa.run` tasks with its `leaseId`. Local users and unrelated automation can still change the desktop. Failed actions may already have changed application state. Never automatically replay a batch after an error or uncertain response; inspect the current GUI and reconcile tracked submissions by task ID. Linux coordinate actions require X11; report missing dependencies or OS permissions rather than bypassing them.
 
 ## Setup and administration
+
+For credentials, use worker-local secret names supplied by the user. GUI `setValue`/`type` accepts `secret` instead of `text`; HTTP `headerSecrets` maps headers to `{secret, prefix}`. Ask the user to enter missing credentials themselves with `control secrets set NAME` on the worker, outside chat. Never request, retrieve, print, or paste credential values into prompts or tool inputs. There is no secret-value read operation. Secret-bearing HTTP requests do not follow redirects. Text results mask configured values, but screenshots and unrestricted execution can expose them. Do not reveal passwords or capture credential-bearing screens.
 
 Use `control machines add auto --platform OS`, or omit the name, to use the target machine's hostname. This name is resolved by the target installer, not by the orchestrator. Hostname collisions fail without replacing another machine; choose an explicit name rather than automatically retrying or adding a suffix. Automatic naming requires compatible gateway and installer binaries.
 

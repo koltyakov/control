@@ -12,11 +12,13 @@ import (
 )
 
 type ManageMachine func(context.Context, string, string) error
+type RenameMachine func(context.Context, string, string) error
 type machineManager struct {
 	id                     int
 	nodes                  []model.NodeActivitySnapshot
 	selected               int
 	phase, action, message string
+	name                   string
 }
 type machineActionResult struct {
 	id  int
@@ -25,9 +27,13 @@ type machineActionResult struct {
 
 func (m view) manageMachine() tea.Cmd {
 	id, action, generation := m.manager.nodes[m.manager.selected].ID, m.manager.action, m.manager.id
+	name := m.manager.name
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, 15*time.Second)
 		defer cancel()
+		if action == "rename" {
+			return machineActionResult{generation, m.options.Rename(ctx, id, name)}
+		}
 		return machineActionResult{generation, m.options.Manage(ctx, id, action)}
 	}
 }
@@ -38,6 +44,11 @@ func (m view) updateManager(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch msg := msg.(type) {
+	case tea.PasteMsg:
+		if w.phase == "rename" {
+			w.name = registrationInput(w.name, msg.Content)
+			w.message = ""
+		}
 	case machineActionResult:
 		if msg.id != w.id || w.phase != "pending" {
 			return m, nil
@@ -59,6 +70,8 @@ func (m view) updateManager(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch w.phase {
 			case "actions", "confirm":
 				w.phase = "list"
+			case "rename":
+				w.phase, w.message = "actions", ""
 			default:
 				m.manager = nil
 			}
@@ -76,6 +89,11 @@ func (m view) updateManager(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "actions":
 			switch key {
+			case "r":
+				if m.options.Rename != nil {
+					w.action, w.phase, w.name, w.message = "rename", "rename", w.nodes[w.selected].Name, ""
+				}
+				return m, nil
 			case "e":
 				w.action = "enable"
 			case "d":
@@ -88,6 +106,25 @@ func (m view) updateManager(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			w.phase = "pending"
 			return m, m.manageMachine()
+		case "rename":
+			switch key {
+			case "enter":
+				if !registrationName.MatchString(w.name) {
+					w.message = "Start with a letter or digit. Use 1..63 letters, digits, dots, hyphens or underscores."
+					return m, nil
+				}
+				w.phase = "pending"
+				return m, m.manageMachine()
+			case "backspace", "ctrl+h":
+				if len(w.name) > 0 {
+					w.name = w.name[:len(w.name)-1]
+				}
+			case "ctrl+u":
+				w.name = ""
+			default:
+				w.name = registrationInput(w.name, msg.Text)
+			}
+			w.message = ""
 		case "confirm":
 			if key == "enter" {
 				w.phase = "pending"
@@ -128,8 +165,18 @@ func (m view) managerView() tea.View {
 		}
 		footer = hint("↑↓", "select") + sep + hint("Enter", "actions") + sep + footer
 	case "actions":
-		lines = append(lines, paint(clean(n.Name), "1;36", m.color), paint(clean(n.Software.Version), "2", m.color), "", hint("e", "enable new work"), hint("d", "disable new work"), hint("u", "unregister machine"))
+		lines = append(lines, paint(clean(n.Name), "1;36", m.color), paint(clean(n.Software.Version), "2", m.color), "")
+		if m.options.Rename != nil {
+			lines = append(lines, hint("r", "rename machine"))
+		}
+		lines = append(lines, hint("e", "enable new work"), hint("d", "disable new work"), hint("u", "unregister machine"))
 		footer = hint("Esc", "back")
+	case "rename":
+		lines = append(lines, "New alias for "+clean(n.Name), "", paint("❯ "+w.name, "1;36", m.color), "", "The alias is used for routing. Running work is unchanged.")
+		if w.message != "" {
+			lines = append(lines, paint(w.message, "33", m.color))
+		}
+		footer = hint("Enter", "rename") + sep + hint("Ctrl+U", "clear") + sep + hint("Esc", "back")
 	case "confirm":
 		lines = append(lines, paint("Unregister "+clean(n.Name)+"?", "33", m.color))
 		if n.Online {
@@ -143,6 +190,11 @@ func (m view) managerView() tea.View {
 		lines = append(lines, paint("Requesting "+w.action+" for "+clean(n.Name)+"…", "36", m.color))
 		footer = ""
 	case "done":
+		if w.action == "rename" {
+			lines = append(lines, paint("Renamed "+clean(n.Name)+" to "+w.name+".", "32", m.color))
+			footer = hint("Enter / Esc", "close")
+			break
+		}
 		message := fmt.Sprintf("%s requested for %s.", strings.ToUpper(w.action[:1])+w.action[1:], clean(n.Name))
 		lines = append(lines, paint(message, "32", m.color), paint("Nodes apply changes when they contact the gateway.", "2", m.color))
 		footer = hint("Enter / Esc", "close")
