@@ -53,6 +53,30 @@ func gatewayClient(profile string, tokenOverride *string) (client.Admin, error) 
 	return client.Admin{URL: base, Key: key}, nil
 }
 
+func updateAdminClient(profile string, tokenOverride *string) (client.Admin, error) {
+	if key := os.Getenv("CONTROL_SUPERUSER_KEY"); tokenOverride == nil && key != "" {
+		tokenOverride = &key
+	}
+	c, err := gatewayClient(profile, tokenOverride)
+	if err != nil {
+		return client.Admin{}, err
+	}
+	saved, err := installation.ReadUpdateAdmin()
+	if err != nil {
+		return client.Admin{}, fmt.Errorf("read saved update authorization: %w", err)
+	}
+	if c.URL == "" {
+		c.URL = strings.TrimRight(saved.Gateway, "/")
+	}
+	if c.URL == "" {
+		return client.Admin{}, errors.New("gateway URL is not configured; set CONTROL_GATEWAY or run control login --gateway URL")
+	}
+	if tokenOverride == nil && c.URL == strings.TrimRight(saved.Gateway, "/") && saved.Key != "" {
+		c.Key = saved.Key
+	}
+	return c, nil
+}
+
 func commandHelp(ctx context.Context, c client.Admin) string {
 	switch c.Role(ctx) {
 	case "superuser":
@@ -68,6 +92,7 @@ Superuser gateway commands:
   users create NAME                    Register an isolated user; show its account key once
   users list                           List registered users
   users revoke ID                      Disable a user and its credentials
+  update authorize [--key-stdin|--check] Save gateway update authorization or verify it without prompting
   update push DIR                      Upload a development/release bundle
   update status                        Show rollout and node versions
   update check                         Fetch the latest configured GitHub release
@@ -76,11 +101,11 @@ Environment: CONTROL_GATEWAY, CONTROL_SUPERUSER_KEY
 
 const fleetUsage = `
 Your fleet:
-  machines add NAME --platform macos|windows|linux  Create one-time install command
+  machines add [NAME|auto] --platform macos|windows|linux  Create install command; default uses target hostname
   machines invites                     List installation status
   machines revoke ID                   Revoke an invitation and its machine key
   machines enable|disable NAME          Enable or disable new work on a machine
-  machines unregister NAME              Unregister a machine and stop its agent
+  machines unregister NAME              Unregister a machine and stop its node
   keys create NAME                     Issue a common key, shown once
   keys list                            List common keys
   keys revoke ID                       Revoke a common key
@@ -88,11 +113,18 @@ Environment: CONTROL_GATEWAY, CONTROL_USER_KEY
 `
 
 func adminCLI(ctx context.Context, c client.Admin, args []string) error {
-	role := c.Role(ctx)
+	help := len(args) < 2 || args[1] == "--help" || args[1] == "help"
+	role, authErr := c.AuthRole(ctx)
+	if authErr != nil && !help {
+		return authErr
+	}
 	if role != "superuser" && (role != "user" || args[0] != "keys") {
+		if !help && args[0] == "update" {
+			return errUpdatePermission
+		}
 		return fmt.Errorf("unknown command %q", args[0])
 	}
-	if len(args) < 2 || args[1] == "--help" || args[1] == "help" {
+	if help {
 		if args[0] == "keys" {
 			fmt.Print(fleetUsage)
 		} else {
@@ -188,15 +220,22 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 		}
 		return c.ManageMachine(ctx, n.ID, action)
 	}
-	if args[0] != "add" || len(args) < 2 {
-		return errors.New("usage: control machines add NAME --platform macos|windows|linux")
+	if args[0] != "add" {
+		return errors.New("usage: control machines add [NAME|auto] --platform macos|windows|linux")
+	}
+	name, options := "auto", args[1:]
+	if len(options) > 0 && !strings.HasPrefix(options[0], "-") {
+		name, options = options[0], options[1:]
 	}
 	f := flag.NewFlagSet("machines add", flag.ContinueOnError)
 	platform := f.String("platform", "", "macos, windows, or linux; architecture is detected by the installer")
 	ttl := f.Duration("ttl", 15*time.Minute, "installation link lifetime")
 	asJSON := f.Bool("json", false, "print installation JSON")
-	if err := f.Parse(args[2:]); err != nil {
+	if err := f.Parse(options); err != nil {
 		return err
+	}
+	if f.NArg() != 0 {
+		return errors.New("usage: control machines add [NAME|auto] --platform macos|windows|linux")
 	}
 	parts := strings.Split(strings.ToLower(*platform), "/")
 	if len(parts) > 2 || *ttl < time.Minute || *ttl > 24*time.Hour {
@@ -212,14 +251,18 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 	if len(parts) == 2 {
 		arch = parts[1]
 	}
-	link, err := c.Invite(ctx, enrollment.Request{Name: args[1], OS: parts[0], Arch: arch, TTLSeconds: int(ttl.Seconds())})
+	link, err := c.Invite(ctx, enrollment.Request{Name: name, OS: parts[0], Arch: arch, TTLSeconds: int(ttl.Seconds())})
 	if err != nil {
 		return err
 	}
 	if *asJSON {
 		printJSON(link)
 	} else {
-		fmt.Fprintf(os.Stderr, "Install %s. Link expires %s; redeemable by one machine.\n", link.Name, link.ExpiresAt.Local().Format(time.RFC3339))
+		displayName := link.Name
+		if link.AutoName {
+			displayName = "using the target machine's hostname"
+		}
+		fmt.Fprintf(os.Stderr, "Install %s. Link expires %s; redeemable by one machine.\n", displayName, link.ExpiresAt.Local().Format(time.RFC3339))
 		fmt.Println(link.Command)
 	}
 	return nil

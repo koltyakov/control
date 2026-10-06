@@ -4,6 +4,16 @@ A Go peer execution network for Windows, Linux, and macOS. Connect machines to a
 
 Every node can execute work and initiate connections to other nodes. An orchestrator can ask one worker to fetch input from another machine, run an installed tool, and deliver its output to a third machine. AI agents are optional providers.
 
+## Roles and components
+
+| Role | Responsibility | Component |
+| --- | --- | --- |
+| Orchestrator | Coordinates work and collects results | CLI or MCP client, optionally through a local node |
+| Gateway | Enrollment, discovery, signaling, encrypted relay fallback, and fleet administration | Gateway service |
+| Worker | Executes requested work and exchanges artifacts | Node service |
+
+Orchestrator and worker are roles, not fixed machine types. A node can perform both roles; an orchestrator can also use a standalone client without a local node. Reserve "agent" for AI software. See [terminology](docs/terminology.md) for the naming rules used in documentation and code.
+
 ## What works
 
 - Persistent machine identities, enrollment, names, labels, and online discovery.
@@ -16,6 +26,7 @@ Every node can execute work and initiate connections to other nodes. An orchestr
 - Immutable SHA-256 artifacts, resumable transfers, worker-to-worker delivery, and subject-bound artifact grants.
 - Label-based selection, exclusive execution leases, bounded task concurrency, and dependency-ordered workflows.
 - A local MCP server exposing routing tools for AI clients.
+- Independent control/bulk/interactive traffic lanes, shared WebRTC carriers, streamed task logs, and negotiated TCP half-close.
 - A live CLI dashboard with registered machines, availability, in-flight work, and sampled system resources.
 - Superuser-only development pushes and GitHub Release updates, applied when the pool is idle.
 - Host setup with MCP and skills, plus expiring one-time installation commands for new machines.
@@ -47,7 +58,16 @@ control machines
 control dashboard
 ```
 
-To execute work from this machine and configure an AI client, start a host node using that saved login. On Windows, run setup in Administrator PowerShell:
+Remote execution also works with just that login, without a local service:
+
+```sh
+control exec worker -- hostname
+control call worker node.describe
+```
+
+The CLI uses a running local node when available. Otherwise it opens an authenticated client session for the command's lifetime. Concurrent CLI/MCP processes use independent connections with a shared persistent task-owner identity, so a tunnel does not block task monitoring or cancellation. The client is not a fleet machine and never appears in the dashboard or managed rollouts. The gateway and target nodes must support client sessions and concurrent client owners. Explicit `--api` or `CONTROL_API` disables this fallback. See [standalone CLI and MCP](docs/installation.md#standalone-cli-and-mcp) for upgrade requirements and identity storage.
+
+To make this machine an execution host and configure an AI client, start a host node using that saved login. On Windows, run setup in Administrator PowerShell:
 
 ```sh
 control setup --name main --client opencode
@@ -59,15 +79,18 @@ Using your saved account credentials, create an installation command for another
 
 ```sh
 control machines add render-01 --platform windows
+control machines add auto --platform windows
 ```
 
-Copy the printed PowerShell command onto the target and run it in Administrator PowerShell. Windows nodes run as automatic system services, without a console window, including before login and after logout. Or press `a` in the dashboard to enter a name, select a platform, and copy the command automatically. Linux and macOS invitations use Bash. The installer detects amd64 or arm64, verifies the selected binary, creates an identity, redeems the single-use ticket, and starts the node. Invitations expire after 15 minutes by default. Success means the machine is registered and available.
+Use `auto`, or omit the name, to register the target under its own hostname when it runs the installer. In the dashboard's Add machine form, a blank name also selects automatic naming.
+
+Copy the printed PowerShell command onto the target and run it as the intended Windows user. Windows invitation scripts default to user-login startup, allowing access to that user's files and application credentials. The node is available only while that user is logged in. Set `$env:CONTROL_SERVICE_MODE = 'auto'` before running the command in Administrator PowerShell to select a boot-time LocalService system service instead. Switching an existing system service to user startup also requires Administrator PowerShell under the intended user. See [user-login startup](docs/installation.md#switch-windows-to-user-login-startup). Or press `a` in the dashboard to enter a name, select a platform, and copy the command automatically. Linux and macOS invitations use Bash. The installer detects amd64 or arm64, verifies the selected binary, creates an identity, redeems the single-use ticket, and starts the node. Invitations expire after 15 minutes by default. Success means the machine is registered and available.
 
 See [installation and enrollment](docs/installation.md) for prerequisites, saved profiles, startup, and invitation management. Public installers require published release assets. From a checkout, use `make build` followed by `bin/control setup`.
 
 Running a new invitation on an already registered machine replaces its enrollment in the current local profile. A different name renames the same machine instead of adding a duplicate. Its identity, workspace, and settings are retained.
 
-One account can have multiple host agents and collaborating workers. Other users cannot see or connect to its machines, even when they know a machine ID. See [users and private fleets](docs/users.md) for account provisioning, permissions, SQLite persistence, and upgrading an existing gateway.
+One account can have multiple orchestrator machines and collaborating worker nodes. Other users cannot see or connect to its machines, even when they know a machine ID. See [users and private fleets](docs/users.md) for account provisioning, permissions, SQLite persistence, and upgrading an existing gateway.
 
 ## Build
 
@@ -151,9 +174,9 @@ The dashboard connects directly to the configured gateway and shows its URL, run
 
 With a local node running, the dashboard also shows running and queued tasks from every owner, synchronous operations, artifact transfer progress, TCP tunnel traffic, and recent completions. It lists idle and offline machines and reports their OS, CPU, RAM, and disk capacity and usage.
 
-Tables adapt to terminal width. Use `d` for full details, arrow keys or Page Up/Page Down to scroll, `r` to refresh activity, and `q` to quit. Refreshes use steady text with no blinking indicators.
+Tables adapt to terminal width. Use `d` for full details, arrow keys or Page Up/Page Down to scroll, `r` to refresh activity, and `q` to quit. Drag across text to select it; releasing the mouse copies only that selection to the local clipboard. The display stays fixed during the drag and resumes on release. Press `c` to copy the last selection again. Refreshes use steady text with no blinking indicators.
 
-The machine table includes running versions. Press `m` to enable, disable, or unregister a selected machine. Disabling keeps it registered and blocks new work. Unregistering removes it and retires its identity, including while offline; lifecycle-capable agents stop on their next gateway contact. CLI equivalents are `control machines disable NAME`, `enable NAME`, and `unregister NAME`. See [registration management](docs/installation.md#manage-registrations).
+The machine table includes running versions. Press `m` to enable, disable, or unregister a selected machine. Disabling keeps it registered and blocks new work. Unregistering removes it and retires its identity, including while offline; lifecycle-capable nodes stop on their next gateway contact. CLI equivalents are `control machines disable NAME`, `enable NAME`, and `unregister NAME`. See [registration management](docs/installation.md#manage-registrations).
 
 For scripts or a single view:
 
@@ -182,16 +205,16 @@ Running nodes receive their updates through the gateway's managed rollout, descr
 
 Set a separate `CONTROL_SUPERUSER_KEY` on the gateway. Release checks use the repository embedded at build time, normally `koltyakov/control`. Set `CONTROL_RELEASE_REPO=owner/repository` to override it, or set it to an empty string to disable release polling. Nodes keep using common enrollment keys.
 
-On your development machine:
+On your development machine, using persisted gateway superuser authorization:
 
 ```sh
-export CONTROL_GATEWAY='https://control.example.com'
-export CONTROL_SUPERUSER_KEY='your-gateway-superuser-key'
 make update
 make update-status
 ```
 
-The gateway stages platform-specific binaries, waits for idle reservations, updates the nodes, then restarts itself. Common keys cannot publish updates or see administrative CLI help. Create common keys with `control keys create NAME` using your superuser credentials.
+`control login` persists a validated superuser key for update administration as well as the regular login. Switching back to a normal fleet login retains that update authorization. `make update` checks saved credentials before building the platform bundle and never asks for a key. A login without superuser authorization produces a permission error instead. No environment variables or repeated key entry are needed once authorized.
+
+This pushes the local checkout's build, not a GitHub release. The gateway stages platform-specific binaries, waits for idle reservations, updates every enrolled node across user fleets, then restarts itself. That includes nodes on orchestrator machines and all workers; offline nodes catch up when they reconnect. Standalone CLI/MCP installations are not enrolled nodes and need a separate CLI update. Common keys cannot publish updates or see administrative CLI help. Create common keys with `control keys create NAME` using your superuser credentials.
 
 See [managed updates](docs/updates.md) for initial setup, release assets, key permissions, and the versioned service launcher.
 
@@ -225,19 +248,32 @@ The orchestrator receives metadata and results. Source-to-worker and worker-to-c
 
 ## Use an AI client
 
-Start your local node, then configure your AI client's local/stdio MCP integration to run:
+Configure your AI client's stdio MCP integration to run:
 
 ```text
 /absolute/path/to/control mcp
 ```
 
-Supply `CONTROL_TOKEN` in its environment and, if needed, `CONTROL_API=http://127.0.0.1:7331`. Multiple CLI and MCP processes share the same local node and identity.
+The MCP process uses the saved gateway login without requiring a local node. With a running host node, multiple CLI and MCP processes share its connections and identity. Supply `CONTROL_TOKEN` and, if needed, `CONTROL_API=http://127.0.0.1:7331` to select a local API explicitly. Without a local node, use named targets for execution; pool activity aggregation still requires a local node. See [standalone CLI and MCP](docs/installation.md#standalone-cli-and-mcp).
 
 The MCP server exposes tools for finding machines, inspecting capability schemas, submitting and inspecting tasks, discovering remote MCP tools, invoking capabilities, and exporting/delivering artifacts. Its initialization instructions explain machine-name routing. You can then ask the AI to do work on a named machine.
 
 Long operations should use `control_task_start`, rather than an open-ended synchronous tool call. Accepted tasks survive the requesting AI client disconnecting.
 
-## Installed agents and MCP servers
+The CLI can return after task acceptance and follow its logs in another process:
+
+```sh
+control exec worker --detach --id job-001 --timeout 4h -- COMMAND ARG...
+control task logs worker job-001 --follow
+control task wait worker job-001
+control task cancel worker job-001
+```
+
+Stopping a wait or log follower does not cancel the task. Use `control session` to inspect the current process's owner identity and connections.
+
+Compatible workers stream followed logs instead of polling. Peer sessions separate control calls from bulk artifacts and long-lived TCP/log streams. Upgraded peers share one WebRTC carrier across independent lane channels; older peers use separate connections. See [fleet streaming](docs/streaming.md) for scenarios, compatibility, measured allocation improvements, and limits.
+
+## Installed AI agents and MCP servers
 
 Add providers to a node config:
 
@@ -288,12 +324,16 @@ bin/control tunnel worker db.internal:5432 --listen 127.0.0.1:15432
 
 Connect your local database client to `127.0.0.1:15432`. The worker opens the connection to `db.internal:5432`.
 
+MCP clients use `control_forward_start` with `node`, `address`, and optional `listen`. It returns a forward ID and local address without holding the tool call open. `control_forward_list` reports active sockets and errors; `control_forward_stop` closes the listener and sockets. These forwards belong to the MCP process, default to loopback, and close when it exits. They require remote `tcp.open` permission. See [orchestrator sessions and forwards](docs/protocol.md#orchestrator-sessions-and-forwards) for limits.
+
 ## Configuration and extension
 
+- [Terminology](docs/terminology.md): orchestrator, gateway, and worker roles; client and node components; naming rules.
 - [Configuration and protocol](docs/protocol.md): methods, leases, providers, task semantics, and limits.
 - [Architecture](docs/architecture.md): components, transport, identity, and recovery.
 - [Engineering principles](docs/principles.md): invariants to preserve as the system evolves.
 - [Design decisions](docs/decisions.md): implementation choices and their tradeoffs.
+- [Fleet streaming](docs/streaming.md): traffic lanes, multiplexers, duplex forwarding, followed logs, limits, and remaining gaps.
 - [Docker Compose testing](docs/testing.md): isolated multi-node checks and debugging.
 - [Dashboard and system metrics](docs/dashboard.md): pool-wide activity, availability, and sampled resources.
 - [Managed updates](docs/updates.md): release polling, development pushes, idle rollout, and superuser keys.
@@ -301,4 +341,4 @@ Connect your local database client to `127.0.0.1:15432`. The worker opens the co
 - [Users and private fleets](docs/users.md): account registration, isolation, SQLite persistence, and migration.
 - [Contributor and agent guide](AGENTS.md): repository layout, coding instructions, and verification.
 
-The gateway supports multiple isolated user fleets with SQLite-backed registration and credential storage. It is a single-gateway deployment, without gateway clustering, public self-service signup, billing, or execution sandboxing. Node task and artifact metadata use locked local directories and atomic JSON writes. Windows uses an automatic LocalService service; Linux and macOS support user startup. Desktop and application integrations can be attached through MCP or custom providers; GUI tools need a provider running in the user's desktop session.
+The gateway supports multiple isolated user fleets with SQLite-backed registration and credential storage. It is a single-gateway deployment, without gateway clustering, public self-service signup, billing, or execution sandboxing. Node task and artifact metadata use locked local directories and atomic JSON writes. Windows invitation scripts default to user-login startup; direct `control setup` defaults to an automatic LocalService service. Linux and macOS support user startup. Desktop and application integrations can be attached through MCP or custom providers; GUI tools need a provider running in the user's desktop session.

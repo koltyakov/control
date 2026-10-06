@@ -18,15 +18,19 @@ import (
 	"github.com/koltyakov/control/internal/client"
 	"github.com/koltyakov/control/internal/enrollment"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/store"
 )
 
 func TestOneTimeInstallerRegistersAvailableMachine(t *testing.T) {
 	ctx, c := environment(t)
 	admin := client.Admin{URL: os.Getenv("CONTROL_GATEWAY"), Key: os.Getenv("CONTROL_SUPERUSER_KEY")}
 	var link enrollment.Link
-	output := cli(t, ctx, "machines", "add", "installed-worker", "--platform", runtime.GOOS+"/"+runtime.GOARCH, "--ttl", "5m", "--json")
+	output := cli(t, ctx, "machines", "add", "auto", "--platform", runtime.GOOS+"/"+runtime.GOARCH, "--ttl", "5m", "--json")
 	if err := json.Unmarshal(output, &link); err != nil {
 		t.Fatal(err)
+	}
+	if !link.AutoName || link.Name != "" {
+		t.Fatal("automatic invitation was resolved by the orchestrator")
 	}
 	home := t.TempDir()
 	bin := filepath.Join(home, "bin")
@@ -69,6 +73,11 @@ func TestOneTimeInstallerRegistersAvailableMachine(t *testing.T) {
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("generated installer: %v\n%s", err, b)
 	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.Name = hostname // The generated installer runs on this test machine.
 	var pool []model.Node
 	call(t, ctx, c, "", "nodes.list", map[string]any{}, &pool)
 	for _, n := range pool {
@@ -93,15 +102,24 @@ func TestOneTimeInstallerRegistersAvailableMachine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var config struct{ Token, DataDir string }
+	var config struct{ Name, Token, DataDir string }
 	if err = json.Unmarshal(b, &config); err != nil {
 		t.Fatal(err)
+	}
+	if config.Name != hostname {
+		t.Fatalf("installer used %q instead of the target hostname %q", config.Name, hostname)
 	}
 	if _, err = (client.Admin{URL: admin.URL, Key: config.Token}).Invite(ctx, enrollment.Request{Name: "forbidden", OS: runtime.GOOS, Arch: runtime.GOARCH}); err == nil {
 		t.Fatal("installed common credential created another invitation")
 	}
 	for _, name := range []string{link.Name, "renamed-worker"} {
 		previousName, previousToken := link.Name, config.Token
+		// Model a previous installer exiting after redemption/startup but before
+		// removing its recovery marker. A new invitation must supersede it.
+		pendingPath := filepath.Join(home, "pending-enrollment.json")
+		if err = store.Write(pendingPath, map[string]any{"url": link.URL, "invitation": link.Invitation, "credential": config.Token, "identityId": installedID}); err != nil {
+			t.Fatal(err)
+		}
 		link, err = admin.Invite(ctx, enrollment.Request{Name: name, OS: runtime.GOOS, Arch: runtime.GOARCH})
 		if err != nil {
 			t.Fatal(err)
@@ -110,6 +128,9 @@ func TestOneTimeInstallerRegistersAvailableMachine(t *testing.T) {
 		cmd.Env = environment
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("replacement installer: %v\n%s", err, output)
+		}
+		if _, err = os.Stat(pendingPath); !os.IsNotExist(err) {
+			t.Fatal("successful replacement left pending enrollment behind", err)
 		}
 		if err := (client.Admin{URL: admin.URL, Key: previousToken}).JSON(ctx, "GET", "/v1/auth", nil, nil); err == nil {
 			t.Fatal("previous enrollment credential still authenticates")
@@ -148,7 +169,7 @@ func TestOneTimeInstallerRegistersAvailableMachine(t *testing.T) {
 		return err == nil && n.Disabled && !n.ControlPending
 	})
 	if err := c.Call(ctx, link.Name, "exec.run", map[string]any{"command": "true"}, nil); err == nil {
-		t.Fatal("disabled installed agent accepted work")
+		t.Fatal("disabled installed node accepted work")
 	}
 	cli(t, ctx, "machines", "enable", link.Name)
 	waitUpdate(t, ctx, func() bool {
@@ -206,7 +227,7 @@ func TestOneTimeInstallerRegistersAvailableMachine(t *testing.T) {
 	}
 	call(t, ctx, c, link.Name, "exec.run", map[string]any{"command": "printf", "args": []string{"reinstalled"}}, nil)
 	t.Log("disable blocked execution, enable restored admission, and unregister stopped the installed supervisor")
-	t.Log("a new invitation reinstalled the retired agent using fresh identity state and the existing profile")
+	t.Log("a new invitation reinstalled the retired node using fresh identity state and the existing profile")
 	t.Log("copied Bash command installed a verified binary, redeemed one identity, started its node, and made it available for remote work")
 }
 

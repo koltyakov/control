@@ -26,7 +26,7 @@ func TestUnregisterConnectedLegacyMachine(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ws := rawPeer(t, s.URL, a.Key, "old-agent", alice.ID, id)
+			ws := rawPeer(t, s.URL, a.Key, "old-node", alice.ID, id)
 			if ws == nil {
 				t.Fatal("registration failed")
 			}
@@ -37,7 +37,7 @@ func TestUnregisterConnectedLegacyMachine(t *testing.T) {
 			g.mu.Unlock()
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			// Installer inspection must not claim that an old running agent can
+			// Installer inspection must not claim that an old running node can
 			// enforce disable or acknowledge a policy it has not applied.
 			proof := model.MachineStateProof{PublicKey: id.Public, SignedAt: time.Now().UTC(), InspectOnly: true}
 			proof.Signature = ed25519.Sign(id.Private, proof.Message())
@@ -55,23 +55,23 @@ func TestUnregisterConnectedLegacyMachine(t *testing.T) {
 			g.mu.Unlock()
 			path := "/v1/fleet/nodes/" + id.ID + "?stop=true"
 			if err := b.JSON(ctx, "DELETE", path, nil, nil); err == nil {
-				t.Fatal("foreign owner removed old agent")
+				t.Fatal("foreign owner removed old node")
 			}
 			if err := (testAdmin{URL: s.URL, Key: commonKey}).JSON(ctx, "DELETE", path, nil, nil); err == nil {
-				t.Fatal("common key removed old agent")
+				t.Fatal("common key removed old node")
 			}
 			if err := a.JSON(ctx, "DELETE", path, nil, nil); err != nil {
-				t.Fatal("owner could not unregister connected old agent", err)
+				t.Fatal("owner could not unregister connected old node", err)
 			}
 			if _, _, err := ws.Read(ctx); err == nil || errors.Is(err, context.DeadlineExceeded) {
-				t.Fatal("old agent was not disconnected", err)
+				t.Fatal("old node was not disconnected", err)
 			}
 			var nodes []model.Node
 			if err := a.JSON(ctx, "GET", "/v1/nodes", nil, &nodes); err != nil || len(nodes) != 0 {
 				t.Fatal("removed registration remains", nodes, err)
 			}
-			if rawPeer(t, s.URL, a.Key, "old-agent", alice.ID, id) != nil {
-				t.Fatal("retired agent reconnected")
+			if rawPeer(t, s.URL, a.Key, "old-node", alice.ID, id) != nil {
+				t.Fatal("retired node reconnected")
 			}
 		})
 	}
@@ -228,7 +228,7 @@ func TestMachinePolicySchemaMigrationPreservesAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(`DROP TABLE machine_states; PRAGMA user_version=1;`)
+	_, err = db.Exec(`DROP TABLE machine_states; DROP TABLE client_transports; DROP TABLE client_identities; PRAGMA user_version=1;`)
 	_ = db.Close()
 	if err != nil {
 		t.Fatal(err)
@@ -242,7 +242,7 @@ func TestMachinePolicySchemaMigrationPreservesAccounts(t *testing.T) {
 		t.Fatal("migration lost account")
 	}
 	var version int
-	if err := g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 2 {
+	if err := g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 4 {
 		t.Fatal("schema not migrated", err)
 	}
 }

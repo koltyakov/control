@@ -1,4 +1,5 @@
-// Package gateway implements the shared directory, signaling and opaque relay.
+// Package gateway implements enrollment, discovery, signaling, encrypted relay
+// fallback, and fleet administration. It does not schedule or execute application work.
 package gateway
 
 import (
@@ -29,12 +30,31 @@ import (
 )
 
 type Hello struct {
-	Version   string     `json:"version"`
-	Node      model.Node `json:"node"`
-	Signature []byte     `json:"signature"`
+	Version        string     `json:"version"`
+	Node           model.Node `json:"node"`
+	Client         bool       `json:"client,omitempty"`
+	OwnerKey       []byte     `json:"ownerKey,omitempty"`
+	OwnerSignature []byte     `json:"ownerSignature,omitempty"`
+	Signature      []byte     `json:"signature"`
+}
+
+// Message binds client proofs to their role while preserving machine proofs.
+func (h Hello) Message(challenge []byte) []byte {
+	b := append([]byte(nil), challenge...)
+	if h.Client {
+		b = append(b, []byte("control-client-session-v1\x00")...)
+	}
+	return append(b, model.JSON(h.Node)...)
+}
+
+// OwnerMessage authorizes this particular TLS identity to act for a stable
+// client owner. A bearer credential alone cannot impersonate another owner.
+func (h Hello) OwnerMessage(challenge []byte) []byte {
+	return append([]byte("control-client-owner-v1\x00"), h.Message(challenge)...)
 }
 
 type connection struct {
+	client            bool
 	userID            string
 	ws                *websocket.Conn
 	out               chan *protocol.Packet
@@ -45,34 +65,38 @@ type connection struct {
 	lifecycleRevision uint64
 }
 
+// Gateway manages fleet membership and connectivity for nodes and clients.
 type Gateway struct {
-	db            *sql.DB
-	users         map[string]User
-	owners        map[string]string
-	token         string
-	path          string
-	mu            sync.Mutex
-	nodes         map[string]model.Node
-	peers         map[string]*connection
-	wg            sync.WaitGroup
-	closed        bool
-	restarting    bool
-	lock          *flock.Flock
-	superuser     string
-	keys          map[string]keyRecord
-	updates       *update.Repository
-	options       Options
-	updateStatus  map[string]update.Status
-	updateCtx     context.Context
-	updateCancel  context.CancelFunc
-	updateWG      sync.WaitGroup
-	rolloutMu     sync.Mutex
-	installations map[string]installation
-	metrics       *system.Collector
-	metricsCancel context.CancelFunc
-	metricsWG     sync.WaitGroup
-	startedAt     time.Time
-	machineStates map[string]model.MachineState
+	db               *sql.DB
+	users            map[string]User
+	owners           map[string]string
+	clientOwners     map[string]bool
+	clientTransports map[string]string
+	token            string
+	path             string
+	mu               sync.Mutex
+	nodes            map[string]model.Node
+	clients          map[string]model.Node
+	peers            map[string]*connection
+	wg               sync.WaitGroup
+	closed           bool
+	restarting       bool
+	lock             *flock.Flock
+	superuser        string
+	keys             map[string]keyRecord
+	updates          *update.Repository
+	options          Options
+	updateStatus     map[string]update.Status
+	updateCtx        context.Context
+	updateCancel     context.CancelFunc
+	updateWG         sync.WaitGroup
+	rolloutMu        sync.Mutex
+	installations    map[string]installation
+	metrics          *system.Collector
+	metricsCancel    context.CancelFunc
+	metricsWG        sync.WaitGroup
+	startedAt        time.Time
+	machineStates    map[string]model.MachineState
 }
 
 func New(dir, token string, options ...Options) (*Gateway, error) {
@@ -97,7 +121,7 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 	if !locked {
 		return nil, errors.New("gateway data directory is already in use")
 	}
-	g := &Gateway{token: token, path: filepath.Join(dir, "nodes.json"), nodes: map[string]model.Node{}, peers: map[string]*connection{}}
+	g := &Gateway{token: token, path: filepath.Join(dir, "nodes.json"), nodes: map[string]model.Node{}, clients: map[string]model.Node{}, peers: map[string]*connection{}}
 	g.lock = lock
 	g.superuser, g.options = opts.SuperuserKey, opts
 	g.updateStatus = map[string]update.Status{}
@@ -105,6 +129,11 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 		if g.db != nil {
 			_ = g.db.Close()
 		}
+		_ = lock.Close()
+		return nil, err
+	}
+	if err := g.migrateLegacyClients(); err != nil {
+		_ = g.db.Close()
 		_ = lock.Close()
 		return nil, err
 	}
@@ -137,6 +166,8 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/nodes", g.auth(g.list))
 	mux.HandleFunc("GET /v1/status", g.auth(g.status))
 	mux.HandleFunc("GET /v1/connect", g.auth(g.connect))
+	mux.HandleFunc("GET /v1/client/connect", g.auth(g.connectClient))
+	mux.HandleFunc("GET /v1/peers/{id}", g.auth(g.lookupPeer))
 	g.authRoutes(mux)
 	g.userRoutes(mux)
 	g.updateRoutes(mux)
@@ -175,6 +206,14 @@ func (g *Gateway) list(w http.ResponseWriter, r *http.Request) {
 var validName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
 
 func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
+	g.connectPeer(w, r, false)
+}
+
+func (g *Gateway) connectClient(w http.ResponseWriter, r *http.Request) {
+	g.connectPeer(w, r, true)
+}
+
+func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client bool) {
 	g.mu.Lock()
 	if g.closed || g.restarting {
 		g.mu.Unlock()
@@ -210,11 +249,23 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n := hello.Node
-	if hello.Version != model.Version || !validName.MatchString(n.Name) || len(n.PublicKey) != ed25519.PublicKeySize || identity.ID(n.PublicKey) != n.ID {
+	if hello.Client != client || hello.Version != model.Version || !validName.MatchString(n.Name) || len(n.PublicKey) != ed25519.PublicKeySize || identity.ID(n.PublicKey) != n.ID {
 		return
 	}
 	// Sign both the fresh challenge and registration metadata.
-	if !ed25519.Verify(n.PublicKey, append(challenge, model.JSON(n)...), hello.Signature) {
+	if !ed25519.Verify(n.PublicKey, hello.Message(challenge), hello.Signature) {
+		return
+	}
+	ownerID := n.ID
+	if client && len(hello.OwnerKey) != 0 {
+		if len(hello.OwnerKey) != ed25519.PublicKeySize || !ed25519.Verify(hello.OwnerKey, hello.OwnerMessage(challenge), hello.OwnerSignature) {
+			return
+		}
+		ownerID = identity.ID(hello.OwnerKey)
+		if n.ClientOwner != ownerID || n.ID == ownerID {
+			return
+		}
+	} else if n.ClientOwner != "" || len(hello.OwnerSignature) != 0 || (!client && len(hello.OwnerKey) != 0) {
 		return
 	}
 	g.mu.Lock()
@@ -232,7 +283,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	n.Disabled, n.ControlPending = g.machineStates[n.ID].Disabled, false
 	registered := g.nodes[n.ID]
 	n.Managed = registered.Managed && n.Software.SHA256 != "" && registered.Software.SHA256 == n.Software.SHA256
-	c := &connection{ws: ws, out: make(chan *protocol.Packet, 256), keyID: p.KeyID, userID: p.UserID}
+	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, 256), keyID: p.KeyID, userID: p.UserID}
 	if !g.allowInstallation(p.KeyID, n) {
 		g.mu.Unlock()
 		_ = ws.Close(websocket.StatusPolicyViolation, "credential does not authorize this registration")
@@ -242,11 +293,34 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		g.mu.Unlock()
 		return
 	}
-	for id, existing := range g.nodes {
-		if existing.UserID == n.UserID && existing.Name == n.Name && id != n.ID {
+	if client {
+		if err := g.validateClient(n, p, ownerID); err != nil {
 			g.mu.Unlock()
-			_ = ws.Close(websocket.StatusPolicyViolation, "name already enrolled")
+			_ = ws.Close(websocket.StatusPolicyViolation, err.Error())
 			return
+		}
+	} else {
+		if g.clientOwners[n.ID] {
+			g.mu.Unlock()
+			_ = ws.Close(websocket.StatusPolicyViolation, "client identities cannot enroll as machines")
+			return
+		}
+		if g.clientTransports[n.ID] != "" {
+			g.mu.Unlock()
+			_ = ws.Close(websocket.StatusPolicyViolation, "client transport identities cannot enroll as machines")
+			return
+		}
+		if g.clientNameReserved(n.UserID, n.Name) {
+			g.mu.Unlock()
+			_ = ws.Close(websocket.StatusPolicyViolation, "name is reserved for a client identity")
+			return
+		}
+		for id, existing := range g.nodes {
+			if existing.UserID == n.UserID && existing.Name == n.Name && id != n.ID {
+				g.mu.Unlock()
+				_ = ws.Close(websocket.StatusPolicyViolation, "name already enrolled")
+				return
+			}
 		}
 	}
 	if _, exists := g.peers[n.ID]; exists {
@@ -257,20 +331,43 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	n.Online = true
 	n.LastSeen = time.Now().UTC()
 	previous, existed := g.nodes[n.ID]
-	previousOwner := g.owners[n.ID]
-	g.owners[n.ID] = n.UserID
-	g.nodes[n.ID] = n
+	previousOwner := g.owners[ownerID]
+	g.owners[ownerID] = n.UserID
+	previousClient := g.clientOwners[ownerID]
+	previousTransportOwner := g.owners[n.ID]
+	previousTransport := g.clientTransports[n.ID]
+	if client {
+		g.clientOwners[ownerID] = true
+		if n.ID != ownerID {
+			g.owners[n.ID] = n.UserID
+			g.clientTransports[n.ID] = ownerID
+		}
+	} else {
+		g.nodes[n.ID] = n
+	}
 	if err = g.persist(); err != nil {
 		if previousOwner == "" {
-			delete(g.owners, n.ID)
+			delete(g.owners, ownerID)
 		}
 		if existed {
 			g.nodes[n.ID] = previous
 		} else {
 			delete(g.nodes, n.ID)
 		}
+		if !previousClient {
+			delete(g.clientOwners, ownerID)
+		}
+		if n.ID != ownerID && previousTransportOwner == "" {
+			delete(g.owners, n.ID)
+		}
+		if previousTransport == "" {
+			delete(g.clientTransports, n.ID)
+		}
 		g.mu.Unlock()
 		return
+	}
+	if client {
+		g.clients[n.ID] = n
 	}
 	g.peers[n.ID] = c
 	delete(g.updateStatus, n.ID)
@@ -278,6 +375,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		g.mu.Lock()
 		delete(g.peers, n.ID)
+		delete(g.clients, n.ID)
 		for _, peer := range g.peers {
 			if peer.userID != n.UserID {
 				continue
@@ -292,7 +390,9 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 			latest.LastSeen = time.Now().UTC()
 			g.nodes[n.ID] = latest
 		}
-		_ = g.persist()
+		if !client {
+			_ = g.persist()
+		}
 		g.mu.Unlock()
 	}()
 	if err = ws.Write(handshake, websocket.MessageBinary, []byte("ready")); err != nil {
@@ -338,12 +438,15 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if p.Kind == "node.health" && p.To == "" {
-			if !g.receiveHealth(n, c, p.Data) {
+			if client || !g.receiveHealth(n, c, p.Data) {
 				return
 			}
 			continue
 		}
 		if p.Kind == "update.status" && p.To == "" {
+			if client {
+				return
+			}
 			var status update.Status
 			if len(p.Data) > 8192 || json.Unmarshal(p.Data, &status) != nil {
 				return

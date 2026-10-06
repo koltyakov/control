@@ -146,7 +146,7 @@ func (n *Node) serveArtifact(ctx context.Context, caller string, conn net.Conn, 
 		_ = writeFrame(conn, model.Response{Error: err.Error()})
 		return
 	}
-	activity := n.beginActivity(ctx, "transfer", "artifacts.send", caller, caller)
+	activity := n.beginActivity(ctx, "transfer", "artifacts.send", n.Peer.Owner(caller), caller)
 	workCtx, release, gateErr := n.enterWork(ctx)
 	if gateErr != nil {
 		activity.finish(gateErr)

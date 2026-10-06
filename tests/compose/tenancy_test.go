@@ -135,7 +135,7 @@ func TestInstalledFleetsArePrivate(t *testing.T) {
 		return c
 	}
 	mainA := install(a, "main", "")
-	otherA := install(a, "second-agent", "")
+	otherA := install(a, "second-orchestrator", "")
 	mainB := install(b, "main", "")
 	request := enrollment.Request{Name: "private-worker", OS: runtime.GOOS, Arch: runtime.GOARCH}
 	link, err := a.Invite(ctx, request)
@@ -151,12 +151,12 @@ func TestInstalledFleetsArePrivate(t *testing.T) {
 	if err = worker.Call(ctx, "", "node.describe", map[string]any{}, &description); err != nil {
 		t.Fatal(err)
 	}
-	for _, agent := range []client.Client{mainA, otherA} {
-		if err = agent.Call(ctx, "private-worker", "exec.run", map[string]any{"command": "printf", "args": []string{"private-fleet"}}, nil); err != nil {
+	for _, orchestrator := range []client.Client{mainA, otherA} {
+		if err = orchestrator.Call(ctx, "private-worker", "exec.run", map[string]any{"command": "printf", "args": []string{"private-fleet"}}, nil); err != nil {
 			t.Fatal("same user's host could not use its worker", err)
 		}
 		var observed struct{ Connections map[string]string }
-		if err = agent.Call(ctx, "", "node.describe", map[string]any{}, &observed); err != nil {
+		if err = orchestrator.Call(ctx, "", "node.describe", map[string]any{}, &observed); err != nil {
 			t.Fatal(err)
 		}
 		if mode := observed.Connections[description.ID]; mode != os.Getenv("CONTROL_EXPECT_TRANSPORT") {
@@ -185,5 +185,5 @@ func TestInstalledFleetsArePrivate(t *testing.T) {
 	if err = b.JSON(ctx, "DELETE", "/v1/fleet/installations/"+otherLink.ID, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	t.Log("separate user accounts, duplicate names, saved account credentials, installed worker, multiple host agents, and cross-user denial verified")
+	t.Log("separate user accounts, duplicate names, saved account credentials, installed worker, multiple orchestrators, and cross-user denial verified")
 }

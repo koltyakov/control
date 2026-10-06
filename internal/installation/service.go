@@ -19,12 +19,42 @@ import (
 	"github.com/koltyakov/control/internal/processutil"
 )
 
+// ServiceMode resolves the saved startup selection without changing the profile.
+func ServiceMode(config, mode string) (string, error) {
+	config, err := filepath.Abs(config)
+	if err != nil {
+		return "", err
+	}
+	mode, err = resolveServiceMode(config, mode)
+	if err != nil {
+		return "", err
+	}
+	return mode, ValidateServiceMode(mode)
+}
+
+// CheckServiceProfile validates installation privileges before credentials are
+// issued or an invitation is redeemed, including system-to-user migration.
+func CheckServiceProfile(config, mode string) error {
+	if err := CheckServiceMode(mode); err != nil {
+		return err
+	}
+	config, err := filepath.Abs(config)
+	if err != nil {
+		return err
+	}
+	return checkServiceProfile(config, mode)
+}
+
 func Service(ctx context.Context, operation, binary, config, mode string) error {
 	if err := ValidateServiceMode(mode); err != nil {
 		return err
 	}
 	var err error
 	config, err = filepath.Abs(config)
+	if err != nil {
+		return err
+	}
+	mode, err = resolveServiceMode(config, mode)
 	if err != nil {
 		return err
 	}
@@ -77,6 +107,9 @@ func Service(ctx context.Context, operation, binary, config, mode string) error 
 			return fmt.Errorf("stop local node: %s", resp.Status)
 		}
 		if err = waitStopped(requestCtx, cfg); err != nil {
+			return err
+		}
+		if err = finishServiceStop(requestCtx, config, mode); err != nil {
 			return err
 		}
 		if operation == "uninstall" {

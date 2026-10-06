@@ -30,7 +30,7 @@ func TestMachineManagementTargetsSelectedIdentityOnce(t *testing.T) {
 	if m.manager.phase != "confirm" || calls != 0 {
 		t.Fatal("unregister ran before selection confirmation")
 	}
-	if text := m.View().Content; !strings.Contains(text, "offline registration will be removed immediately") || !strings.Contains(text, "Lifecycle-capable agents stop") {
+	if text := m.View().Content; !strings.Contains(text, "offline registration will be removed immediately") || !strings.Contains(text, "Lifecycle-capable nodes stop") {
 		t.Fatal("offline confirmation does not explain removal", text)
 	}
 	for _, width := range []int{4, 30, 90} {

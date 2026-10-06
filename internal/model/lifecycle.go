@@ -9,7 +9,7 @@ type MachineState struct {
 	Unregistered bool   `json:"unregistered"`
 }
 
-// MachineStateProof permits an agent to learn that it was unregistered even
+// MachineStateProof permits a node to learn that it was unregistered even
 // after its enrollment credential has been revoked. It authorizes no mutation.
 type MachineStateProof struct {
 	PublicKey   []byte    `json:"publicKey"`

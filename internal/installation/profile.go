@@ -59,14 +59,26 @@ func ReadConfig(path string) (node.Config, error) {
 	return cfg, err
 }
 func ReadAdmin() (AdminProfile, error) {
+	return readAdminProfile("admin.json")
+}
+
+func ReadUpdateAdmin() (AdminProfile, error) {
+	return readAdminProfile("update-admin.json")
+}
+
+func readAdminProfile(name string) (AdminProfile, error) {
 	var p AdminProfile
-	err := store.Read(filepath.Join(Home(), "admin.json"), &p)
+	err := store.Read(filepath.Join(Home(), name), &p)
 	if errors.Is(err, os.ErrNotExist) {
 		err = nil
 	}
 	return p, err
 }
 func SaveAdmin(p AdminProfile) error { return store.Write(filepath.Join(Home(), "admin.json"), p) }
+
+func SaveUpdateAdmin(p AdminProfile) error {
+	return store.Write(filepath.Join(Home(), "update-admin.json"), p)
+}
 
 func API(cfg node.Config) string {
 	address := cfg.Listen

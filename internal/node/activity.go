@@ -17,6 +17,7 @@ import (
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/transport"
 )
 
 const maxTrackedActivities = 2048
@@ -128,6 +129,8 @@ func (c *activityConn) Write(b []byte) (int, error) {
 	return n, err
 }
 func (c *activityConn) Close() error { err := c.Conn.Close(); c.activity.finish(err); return err }
+
+func (c *activityConn) CloseWrite() error { return transport.CloseWrite(c.Conn) }
 
 func trackOperation(method string) bool {
 	// Exclude observation requests so the dashboard never monitors its own polls.

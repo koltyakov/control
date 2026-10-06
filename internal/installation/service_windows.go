@@ -2,7 +2,6 @@ package installation
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/node"
+	"github.com/koltyakov/control/internal/store"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
@@ -89,8 +89,7 @@ func uninstallService(ctx context.Context, config string) error {
 
 // WindowsServiceName binds each SCM registration to an absolute node profile.
 func WindowsServiceName(config string) string {
-	sum := sha256.Sum256([]byte(strings.ToLower(filepath.Clean(config))))
-	return fmt.Sprintf("ControlNode-%x", sum[:8])
+	return "ControlNode-" + profileName(config)
 }
 
 // CheckServiceMode checks elevation before setup issues credentials or enrollment
@@ -99,7 +98,17 @@ func CheckServiceMode(mode string) error {
 	if err := ValidateServiceMode(mode); err != nil {
 		return err
 	}
-	if mode != "process" && !windows.GetCurrentProcessToken().IsElevated() {
+	if mode == "user" {
+		user, err := windows.GetCurrentProcessToken().GetTokenUser()
+		if err != nil {
+			return err
+		}
+		sid := user.User.Sid.String()
+		if sid == "S-1-5-18" || sid == "S-1-5-19" || sid == "S-1-5-20" {
+			return errors.New("user startup must be installed under the intended interactive user account, not a system service account")
+		}
+	}
+	if mode != "process" && mode != "user" && !windows.GetCurrentProcessToken().IsElevated() {
 		return errors.New("Windows service installation requires Administrator PowerShell; rerun the command there")
 	}
 	return nil
@@ -114,6 +123,9 @@ func platformService(ctx context.Context, operation, binary, config, mode string
 	}
 	if mode == "process" {
 		return false, nil
+	}
+	if mode == "user" {
+		return platformUserService(ctx, operation, binary, config, cfg)
 	}
 	if err := CheckServiceMode(mode); err != nil {
 		return true, err
@@ -131,6 +143,13 @@ func platformService(ctx context.Context, operation, binary, config, mode string
 		return false, nil // A pre-service installation still uses the local API.
 	}
 	if operation == "start" {
+		// Remove this user's login startup before SCM takes over the identity.
+		if err = removeUserTask(ctx, config); err != nil {
+			if s != nil {
+				s.Close()
+			}
+			return true, err
+		}
 		if err = prepareServiceFiles(ctx, binary, config, cfg); err != nil {
 			if s != nil {
 				s.Close()
@@ -188,7 +207,10 @@ func platformService(ctx context.Context, operation, binary, config, mode string
 				return true, err
 			}
 		}
-		return true, uninstallService(ctx, config)
+		if err = uninstallService(ctx, config); err != nil {
+			return true, err
+		}
+		return true, store.Write(config+".startup.json", startupProfile{Mode: "auto"})
 	}
 	defer s.Close()
 	if err = stopWindowsService(ctx, s); err != nil {

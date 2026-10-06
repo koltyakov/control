@@ -18,7 +18,7 @@ import (
 	"github.com/koltyakov/control/internal/model"
 )
 
-func TestMachineLifecycleBlocksSchedulingAndStopsAgent(t *testing.T) {
+func TestMachineLifecycleBlocksSchedulingAndStopsNode(t *testing.T) {
 	for _, relay := range []bool{false, true} {
 		t.Run(fmt.Sprint("relay=", relay), func(t *testing.T) {
 			const adminKey = "machine-lifecycle-superuser-123456789"
@@ -140,7 +140,7 @@ func TestMachineLifecycleBlocksSchedulingAndStopsAgent(t *testing.T) {
 			select {
 			case <-stopped:
 			case <-ctx.Done():
-				t.Fatal("unregister did not stop agent")
+				t.Fatal("unregister did not stop node")
 			}
 			if err := worker.Close(); err != nil {
 				t.Fatal(err)
@@ -157,7 +157,7 @@ func TestMachineLifecycleBlocksSchedulingAndStopsAgent(t *testing.T) {
 			}
 			defer func() { _ = restarted.Close() }()
 			if err := restarted.Start(ctx); !errors.Is(err, ErrUnregistered) {
-				t.Fatal("unregistered agent restarted", err)
+				t.Fatal("unregistered node restarted", err)
 			}
 		})
 	}

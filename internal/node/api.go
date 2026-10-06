@@ -1,14 +1,17 @@
 package node
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/transport"
 )
 
 type APICall struct {
@@ -77,13 +80,53 @@ func (n *Node) Handler() http.Handler {
 			return
 		}
 		defer func() { _ = peer.Close() }()
+		duplex := r.URL.Query().Get("duplex") == "1"
+		if duplex {
+			w.Header().Set("Control-Tunnel-Duplex", "1")
+		}
 		ws, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			return
 		}
 		defer func() { _ = ws.CloseNow() }()
 		stream := websocket.NetConn(r.Context(), ws, websocket.MessageBinary)
+		if duplex {
+			stream = transport.NewDuplexConn(stream)
+		}
 		Bridge(r.Context(), peer, stream)
+	})
+	mux.HandleFunc("GET /v1/logs", func(w http.ResponseWriter, r *http.Request) {
+		offset, err := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
+		if err != nil || offset < 0 {
+			http.Error(w, "invalid log offset", http.StatusBadRequest)
+			return
+		}
+		started := false
+		controller := http.NewResponseController(w)
+		// A follower can be blocked writing to a slow local client. Node
+		// shutdown must interrupt that write before waiting for followers.
+		if n.ctx != nil {
+			stop := context.AfterFunc(n.ctx, func() { _ = controller.SetWriteDeadline(time.Now()) })
+			defer stop()
+		}
+		emit := func(chunk model.TaskLogChunk) error {
+			if !started {
+				w.Header().Set("Content-Type", "application/x-ndjson")
+				started = true
+			}
+			if err := json.NewEncoder(w).Encode(chunk); err != nil {
+				return err
+			}
+			return controller.Flush()
+		}
+		err = n.FollowTaskLogs(r.Context(), r.URL.Query().Get("target"), r.URL.Query().Get("id"), offset, emit)
+		if err != nil {
+			if !started {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+			} else if r.Context().Err() == nil {
+				_ = emit(model.TaskLogChunk{Error: err.Error()})
+			}
+		}
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")

@@ -11,7 +11,7 @@ import (
 )
 
 func (c Client) MCPServer() *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "control", Version: buildinfo.Version}, &mcp.ServerOptions{Instructions: "Use control_nodes to resolve machine names. Do not schedule work on disabled machines or machines with controlPending set; control_select excludes them. Inspect capabilities and their input schemas with control_describe. Execute long work with control_task_start, then inspect status and logs. Machines can fetch artifact inputs directly from peers. Use control_mcp_discover before calling installed MCP tools. Every node argument accepts a machine name or stable ID; an empty node selects the local machine."})
+	server := mcp.NewServer(&mcp.Implementation{Name: "control", Version: buildinfo.Version}, &mcp.ServerOptions{Instructions: "An orchestrator coordinates work through this CLI/MCP client; a worker is a node executing requested work. Nodes can perform both roles. The gateway handles enrollment, discovery, signaling, encrypted relay fallback, and fleet administration, not application execution. Agent refers to AI software, not Control services. Use control_nodes to resolve machine names. Do not schedule work on disabled machines or machines with controlPending set; control_select excludes them. Inspect capabilities and their input schemas with control_describe. Execute long work with control_task_start, then inspect status and logs. Accepted tasks survive this process exiting and can be managed by concurrent standalone CLI/MCP clients sharing the saved owner identity. Use control_forward_start for a local TCP listener, control_forward_list to inspect it, and control_forward_stop to close it. Forwards live on the orchestrator machine until stopped or this MCP process exits; they do not stop remote services. control_session inspects the requesting process without enrolling a fleet machine. Machines can fetch artifact inputs directly from peers. Use control_mcp_discover before calling installed MCP tools. Every node argument accepts a machine name or stable ID. With a local node, an empty node selects the local machine. Without a local node, only nodes.list and nodes.select accept an empty target; other calls require a machine name or ID. Pool activity aggregation requires a local node."})
 	add := func(name, description, method string, properties map[string]any, required []string, transform func(map[string]json.RawMessage) (string, any, error)) {
 		input := map[string]any{"type": "object", "properties": properties}
 		if len(required) > 0 {
@@ -80,6 +80,48 @@ func (c Client) MCPServer() *mcp.Server {
 	add("control_mcp_call", "Invoke an installed MCP tool on the selected node.", "mcp.call", map[string]any{"node": text, "server": text, "tool": text, "arguments": object}, []string{"node", "server", "tool"}, normal)
 	add("control_artifact_export", "Publish a file from a node's filesystem root as an immutable downloadable artifact.", "artifacts.export", map[string]any{"node": text, "path": text}, []string{"node", "path"}, normal)
 	add("control_artifact_deliver", "Tell the source node to deliver an artifact directly to another node, without passing bytes through the orchestrator.", "artifacts.deliver", map[string]any{"node": text, "id": text, "target": text}, []string{"node", "id", "target"}, normal)
+	local := func(name, description string, properties map[string]any, required []string, call func(context.Context, json.RawMessage) (any, error)) {
+		input := map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
+		if len(required) > 0 {
+			input["required"] = required
+		}
+		server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: input}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			result, err := call(ctx, request.Params.Arguments)
+			if err != nil {
+				return toolError(err), nil
+			}
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(model.JSON(result))}}}, nil
+		})
+	}
+	local("control_session", "Inspect this orchestrator process's role, stable task owner, live transport identity, connections, and local port forwards. Does not enroll a fleet machine.", map[string]any{}, nil, func(ctx context.Context, _ json.RawMessage) (any, error) {
+		return c.Session(ctx)
+	})
+	local("control_forward_start", "Forward a local TCP port on the orchestrator to HOST:PORT through a named fleet machine. Defaults to loopback on an ephemeral port. Returns immediately and survives tool-call completion until stopped or the MCP process exits. Remote tcp.open permission is required. Existing sockets are not replayed after failure.", map[string]any{"node": text, "address": text, "listen": text}, []string{"node", "address"}, func(ctx context.Context, args json.RawMessage) (any, error) {
+		var spec ForwardSpec
+		if err := json.Unmarshal(args, &spec); err != nil {
+			return nil, err
+		}
+		f, err := c.StartForward(ctx, spec)
+		if err != nil {
+			return nil, err
+		}
+		return f.Info(), nil
+	})
+	local("control_forward_list", "List local port forwards owned by this MCP process, including active connection counts and last connection errors.", map[string]any{}, nil, func(context.Context, json.RawMessage) (any, error) {
+		return c.Forwards(), nil
+	})
+	local("control_forward_stop", "Close this process's port forward by ID, including its listener and active sockets. Does not stop the remote service or durable tasks.", map[string]any{"id": text}, []string{"id"}, func(_ context.Context, args json.RawMessage) (any, error) {
+		var q struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(args, &q); err != nil {
+			return nil, err
+		}
+		if err := c.StopForward(q.ID); err != nil {
+			return nil, err
+		}
+		return map[string]bool{"stopped": true}, nil
+	})
 	return server
 }
 

@@ -46,12 +46,13 @@ curl -fsSL {{q .Binary}}"?arch=$arch" -o "$tmp/control"
 if command -v sha256sum >/dev/null; then actual="$(sha256sum "$tmp/control" | awk '{print $1}')"; else actual="$(shasum -a 256 "$tmp/control" | awk '{print $1}')"; fi
 if [ "$actual" != "$checksum" ]; then echo 'Binary checksum mismatch' >&2; exit 1; fi
 chmod 700 "$tmp/control"
-"$tmp/control" enroll --url {{q .Link}}
+"$tmp/control" enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}}
 `
 
 const powershellScript = `#Requires -Version 5.1
 $ErrorActionPreference = 'Stop'
-if ($env:CONTROL_SERVICE_MODE -ne 'process') {
+$serviceMode = if ($env:CONTROL_SERVICE_MODE) { $env:CONTROL_SERVICE_MODE } else { 'user' }
+if ($serviceMode -ne 'process' -and $serviceMode -ne 'user') {
   $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
   if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run this installation command in Administrator PowerShell to install the automatic Windows service.' }
 }
@@ -68,7 +69,7 @@ try {
   $exe = Join-Path $tmp 'control.exe'
   Invoke-WebRequest -UseBasicParsing -Uri ({{q .Binary}} + '?arch=' + $arch) -OutFile $exe
   if ((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -ne $checksum) { throw 'Binary checksum mismatch' }
-  & $exe enroll --url {{q .Link}}
+  & $exe enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}} --service $serviceMode
   if ($LASTEXITCODE -ne 0) { throw 'Control enrollment failed' }
 } finally { Remove-Item -LiteralPath $tmp -Recurse -Force }
 `

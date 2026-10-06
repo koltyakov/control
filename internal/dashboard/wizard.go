@@ -13,15 +13,18 @@ import (
 )
 
 type Invite func(context.Context, string, string) (enrollment.Link, error)
+type InvitationStatus func(context.Context, string) (enrollment.Invitation, error)
 type Copy func(context.Context, string) error
 
 type registration struct {
-	id       int
-	step     string
-	name     string
-	platform int
-	link     enrollment.Link
-	err      string
+	id         int
+	step       string
+	name       string
+	platform   int
+	link       enrollment.Link
+	err        string
+	checking   bool
+	redeemedID string
 }
 
 type invitationResult struct {
@@ -32,6 +35,11 @@ type invitationResult struct {
 type clipboardResult struct {
 	id  int
 	err error
+}
+type invitationStatusResult struct {
+	id         int
+	invitation enrollment.Invitation
+	err        error
 }
 
 var registrationName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
@@ -61,6 +69,21 @@ func (m view) copyInvitation() tea.Cmd {
 	}
 }
 
+func (m view) checkInvitation() tea.Cmd {
+	w := m.wizard
+	if w == nil || (w.step != "done" && w.step != "copying") || w.checking || w.link.ID == "" || m.options.InvitationStatus == nil {
+		return nil
+	}
+	w.checking = true
+	id, invitationID := w.id, w.link.ID
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(m.ctx, 10*time.Second)
+		defer cancel()
+		invitation, err := m.options.InvitationStatus(ctx, invitationID)
+		return invitationStatusResult{id, invitation, err}
+	}
+}
+
 func (m view) updateRegistration(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.wizard == nil {
 		return m, nil
@@ -85,6 +108,22 @@ func (m view) updateRegistration(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			w.err = msg.err.Error()
 		}
+		return m, m.checkInvitation()
+	case invitationStatusResult:
+		if msg.id != w.id {
+			return m, nil
+		}
+		w.checking = false
+		if msg.err == nil && msg.invitation.ID == w.link.ID && msg.invitation.RedeemedID != "" && !msg.invitation.Revoked {
+			first := w.redeemedID == ""
+			w.redeemedID = msg.invitation.RedeemedID
+			if first && !m.busy {
+				m.busy = true
+				return m, m.poll()
+			}
+		} else {
+			w.redeemedID = ""
+		}
 	case tea.PasteMsg:
 		if w.step == "name" {
 			w.name = registrationInput(w.name, msg.Content)
@@ -106,6 +145,9 @@ func (m view) updateRegistration(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "name":
 			switch key {
 			case "enter":
+				if w.name == "" {
+					w.name = "auto"
+				}
 				if !registrationName.MatchString(w.name) {
 					w.err = "Use 1–63 letters, digits, dots, hyphens or underscores."
 				} else {
@@ -167,9 +209,9 @@ func (m view) registrationView() tea.View {
 	footer := hint("Esc", "close")
 	switch w.step {
 	case "name":
-		add("Machine name", "37")
+		add("Machine name, or auto for the target hostname", "37")
 		if w.name == "" {
-			add(paint("❯ ", "1;35", m.color)+paint("e.g. render-01", "2", m.color), "")
+			add(paint("❯ ", "1;35", m.color)+paint("auto (Enter), or e.g. render-01", "2", m.color), "")
 		} else {
 			add(paint("❯ ", "1;35", m.color)+paint(w.name, "1;36", m.color), "")
 		}
@@ -199,13 +241,20 @@ func (m view) registrationView() tea.View {
 		add(message, style)
 		shell := "Bash"
 		if w.platform == 1 {
-			shell = "Administrator PowerShell"
+			shell = "PowerShell as the intended user"
 		}
 		add("Paste into "+shell+" on the target machine.", "2")
 		add("", "")
 		add(clean(w.link.Command), "36")
 		add("", "")
 		add(paint("Expires ", "2", m.color)+paint(w.link.ExpiresAt.Local().Format("15:04"), "33", m.color), "")
+		if m.options.InvitationStatus != nil {
+			if w.redeemedID != "" {
+				add("Enrolled. Waiting for the machine to come online.", "2")
+			} else {
+				add("Closes automatically when the machine is online.", "2")
+			}
+		}
 		footer = hint("c", "copy again") + separator + hint("Enter / Esc", "close")
 	case "failed":
 		add("Could not create the invitation.", "31")

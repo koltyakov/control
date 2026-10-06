@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
@@ -23,10 +24,21 @@ type column struct {
 }
 
 var machineColumns = []column{
-	{"Node", 0, 18}, {"State", 0, 14}, {"Seen", 1, 6}, {"Work", 3, 4}, {"OS", 6, 7},
-	{"Version", 1, 25},
-	{"CPU", 1, 6}, {"RAM", 2, 17}, {"Disk free", 4, 10},
+	{"Node", 0, 18}, {"State", 0, len("busy/leased")}, {"Seen", 1, 6}, {"Work", 3, 4}, {"OS", 6, len("windows")},
+	{"Version", 1, len("v10.2.3*")},
+	{"CPU", 1, len("100.0%")}, {"RAM", 2, len("1023.9GiB/1023.9GiB")}, {"Disk free", 4, len("1023.9GiB")},
 	{"D/R", 8, 5},
+}
+
+var versionPrefix = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+`)
+
+func (o renderOptions) version(version string) string {
+	if !o.details {
+		if base := versionPrefix.FindString(version); base != "" && base != version {
+			return base + "*"
+		}
+	}
+	return version
 }
 
 var activityColumns = []column{
@@ -62,9 +74,13 @@ func (o renderOptions) table(b *strings.Builder, columns []column, rows [][]stri
 			widths[i] = max(widths[i], ansi.StringWidth(clean(row[i])))
 		}
 		if !o.details {
-			// Choose columns by terminal width, not changing sample values.
-			// This keeps headers and cells stationary between refreshes.
-			widths[i] = col.width
+			// Fit node names, but keep sampled values from moving columns
+			// between refreshes. Long names retain the compact width limit.
+			if col.label == "Node" {
+				widths[i] = min(max(8, widths[i]), col.width)
+			} else {
+				widths[i] = col.width
+			}
 		}
 	}
 	total := func() int {
@@ -123,7 +139,9 @@ func (o renderOptions) table(b *strings.Builder, columns []column, rows [][]stri
 					style = "36"
 				case "failed", "unavailable", "queued", "disabling", "enabling":
 					style = "33"
-				case "offline", "canceled", "disabled":
+				case "offline":
+					style = "31"
+				case "canceled", "disabled":
 					style = "2"
 				}
 			}

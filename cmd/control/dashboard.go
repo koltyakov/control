@@ -65,12 +65,12 @@ func dashboardCLI(ctx context.Context, c client.Client, remote client.Admin, arg
 		_, err = fmt.Fprintln(os.Stdout, dashboard.Render(snapshot, time.Now()))
 		return err
 	}
-	options := dashboard.Options{Interval: *interval, Timeout: *timeout, Output: os.Stdout, GatewayURL: remote.URL}
+	options := dashboard.Options{Interval: *interval, Timeout: *timeout, Output: os.Stdout, GatewayURL: remote.URL, Copy: clipboard.Copy}
 	if role := remote.Role(ctx); role == "user" || role == "superuser" {
 		options.Invite = func(ctx context.Context, name, platform string) (enrollment.Link, error) {
 			return remote.Invite(ctx, enrollment.Request{Name: name, OS: platform})
 		}
-		options.Copy = clipboard.Copy
+		options.InvitationStatus = remote.Invitation
 		options.Manage = remote.ManageMachine
 	}
 	return dashboard.Run(ctx, fetch, options)

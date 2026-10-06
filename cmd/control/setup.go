@@ -13,18 +13,15 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 
 	"github.com/gofrs/flock"
-	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/client"
 	"github.com/koltyakov/control/internal/enrollment"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/installation"
 	"github.com/koltyakov/control/internal/node"
 	"github.com/koltyakov/control/internal/store"
-	"github.com/koltyakov/control/internal/update"
 	"golang.org/x/term"
 )
 
@@ -46,7 +43,7 @@ func setupCLI(ctx context.Context, args []string, config string) error {
 	name := f.String("name", "", "this machine's name")
 	agent := f.String("client", "", "install MCP and skill for this AI client")
 	listen := f.String("listen", "127.0.0.1:7331", "loopback local API address")
-	mode := f.String("service", env("CONTROL_SERVICE_MODE", "auto"), "auto (Windows system service), user, or process")
+	mode := f.String("service", env("CONTROL_SERVICE_MODE", "auto"), "auto (Windows system service), user (at login), or process")
 	if err := f.Parse(args); err != nil {
 		return err
 	}
@@ -61,7 +58,7 @@ func setupCLI(ctx context.Context, args []string, config string) error {
 			return err
 		}
 	}
-	if err := installation.CheckServiceMode(*mode); err != nil {
+	if err := installation.CheckServiceProfile(config, *mode); err != nil {
 		return err
 	}
 	host, _, listenErr := net.SplitHostPort(*listen)
@@ -188,14 +185,21 @@ type pendingEnrollment struct {
 func enrollCLI(ctx context.Context, args []string, config string) error {
 	f := flag.NewFlagSet("enroll", flag.ContinueOnError)
 	link := f.String("url", "", "one-time installation URL")
-	mode := f.String("service", env("CONTROL_SERVICE_MODE", "auto"), "auto (Windows system service), user, or process")
+	requireAutoName := f.Bool("auto-name", false, "require an automatic-name invitation")
+	mode := f.String("service", os.Getenv("CONTROL_SERVICE_MODE"), "auto (Windows system service), user (at login), or process; defaults to saved mode")
 	if err := f.Parse(args); err != nil {
 		return err
 	}
 	if *link == "" {
 		return errors.New("installation URL is required")
 	}
-	if err := installation.CheckServiceMode(*mode); err != nil {
+	*link = strings.TrimRight(*link, "/")
+	selectedMode, err := installation.ServiceMode(config, *mode)
+	if err != nil {
+		return err
+	}
+	*mode = selectedMode
+	if err := installation.CheckServiceProfile(config, *mode); err != nil {
 		return err
 	}
 	if _, err := enrollment.GatewayURL(*link); err != nil {
@@ -214,44 +218,11 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 	}
 	defer func() { _ = lock.Close() }()
 	pendingPath := filepath.Join(filepath.Dir(config), "pending-enrollment.json")
-	var pending pendingEnrollment
-	readErr := store.Read(pendingPath, &pending)
-	if readErr != nil && !os.IsNotExist(readErr) {
-		return readErr
-	}
-	if readErr == nil && pending.URL != *link {
-		return errors.New("another enrollment is pending; resume it before using a new invitation")
+	pending, err := prepareEnrollment(ctx, config, *link, *requireAutoName)
+	if err != nil {
+		return err
 	}
 	c := client.Admin{URL: strings.TrimRight(*link, "/")}
-	if os.IsNotExist(readErr) {
-		if err = c.JSON(ctx, "GET", "/info?arch="+runtime.GOARCH, nil, &pending.Invitation); err != nil {
-			return err
-		}
-		if !strings.HasPrefix(*link, pending.Invitation.Gateway+"/install/") {
-			return errors.New("invitation gateway mismatch")
-		}
-		a := pending.Invitation.Asset
-		if a.OS != runtime.GOOS || a.Arch != runtime.GOARCH {
-			return errors.New("invitation platform does not match this machine")
-		}
-		if !update.Matches(buildinfo.Current(), a) {
-			return errors.New("enrollment must use the executable pinned by the invitation")
-		}
-		credential, err := randomCredential()
-		if err != nil {
-			return err
-		}
-		pending.URL, pending.Credential = *link, credential
-		if err = prepareReenrollment(config, &pending); err != nil {
-			return err
-		}
-	}
-	if err = replaceRetiredIdentity(ctx, config, &pending); err != nil {
-		return err
-	}
-	if err = store.Write(pendingPath, pending); err != nil {
-		return err
-	}
 	if _, err := os.Stat(config); os.IsNotExist(err) {
 		if err = createNodeConfig(config, pending.Invitation.Name, pending.Invitation.Gateway, pending.Credential, "", false); err != nil {
 			return err
@@ -288,6 +259,9 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 	}
 	ticket := (*link)[strings.LastIndex(*link, "/")+1:]
 	q := enrollment.Redemption{PublicKey: id.Public, CredentialHash: enrollment.Hash(pending.Credential)}
+	if pending.Invitation.AutoName {
+		q.Name = pending.Invitation.Name
+	}
 	if len(pending.Invitation.Assets) > 0 {
 		q.Arch = pending.Invitation.Asset.Arch
 	}
@@ -336,6 +310,9 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 func prepareReenrollment(config string, pending *pendingEnrollment) error {
 	data, err := os.ReadFile(config)
 	if os.IsNotExist(err) {
+		if pending.IdentityID != "" {
+			return errors.New("pending enrollment's local profile is missing")
+		}
 		if pending.Invitation.ReplaceID != "" {
 			return errors.New("this invitation replaces an existing machine; run it using that machine's profile")
 		}
@@ -355,6 +332,23 @@ func prepareReenrollment(config string, pending *pendingEnrollment) error {
 	if err != nil {
 		return err
 	}
+	if pending.IdentityID != "" && id.ID != pending.IdentityID && (pending.DataDir == "" || id.ID != pending.PreviousIdentityID) {
+		return errors.New("pending enrollment does not match local identity")
+	}
+	if pending.DataDir != "" {
+		selected, err := identity.Load(pending.DataDir)
+		if err != nil {
+			return err
+		}
+		if selected.ID != pending.IdentityID {
+			return errors.New("pending replacement identity has changed")
+		}
+		pending.PreviousIdentityID = ""
+		if selected.ID != id.ID {
+			pending.PreviousIdentityID = id.ID
+		}
+		id = selected
+	}
 	if pending.Invitation.ReplaceID != "" && pending.Invitation.ReplaceID != id.ID {
 		return errors.New("invitation name belongs to another machine")
 	}
@@ -364,6 +358,9 @@ func prepareReenrollment(config string, pending *pendingEnrollment) error {
 	}
 	for key, value := range map[string]string{"name": pending.Invitation.Name, "gateway": pending.Invitation.Gateway, "token": pending.Credential} {
 		fields[key], _ = json.Marshal(value)
+	}
+	if pending.DataDir != "" {
+		fields["dataDir"], _ = json.Marshal(pending.DataDir)
 	}
 	pending.Config, err = json.MarshalIndent(fields, "", "  ")
 	pending.IdentityID = id.ID
@@ -376,6 +373,13 @@ func replaceRetiredIdentity(ctx context.Context, config string, pending *pending
 	if len(pending.Config) == 0 || pending.DataDir != "" {
 		return nil
 	}
+	return refreshEnrollmentIdentity(ctx, config, pending)
+}
+
+func refreshEnrollmentIdentity(ctx context.Context, config string, pending *pendingEnrollment) error {
+	if len(pending.Config) == 0 {
+		return nil
+	}
 	cfg, err := node.LoadConfig(config)
 	if err != nil {
 		return err
@@ -383,6 +387,16 @@ func replaceRetiredIdentity(ctx context.Context, config string, pending *pending
 	id, err := identity.Load(cfg.DataDir)
 	if err != nil {
 		return err
+	}
+	activeID := id.ID
+	if pending.DataDir != "" {
+		if activeID != pending.IdentityID && activeID != pending.PreviousIdentityID {
+			return errors.New("pending enrollment does not match local identity")
+		}
+		id, err = identity.Load(pending.DataDir)
+		if err != nil {
+			return err
+		}
 	}
 	if id.ID != pending.IdentityID {
 		return errors.New("pending enrollment does not match local identity")
@@ -411,7 +425,7 @@ func replaceRetiredIdentity(ctx context.Context, config string, pending *pending
 	if err != nil {
 		return err
 	}
-	pending.PreviousIdentityID, pending.IdentityID, pending.DataDir = id.ID, fresh.ID, dir
+	pending.PreviousIdentityID, pending.IdentityID, pending.DataDir = activeID, fresh.ID, dir
 	return nil
 }
 
@@ -420,7 +434,7 @@ func serviceCLI(ctx context.Context, args []string, config string) error {
 		return errors.New("usage: control service start|stop|status|uninstall [--mode auto|user|process]")
 	}
 	f := flag.NewFlagSet("service", flag.ContinueOnError)
-	mode := f.String("mode", env("CONTROL_SERVICE_MODE", "auto"), "startup mode")
+	mode := f.String("mode", os.Getenv("CONTROL_SERVICE_MODE"), "startup mode; defaults to the saved mode")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}

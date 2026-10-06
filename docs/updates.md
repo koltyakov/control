@@ -4,6 +4,8 @@
 
 The gateway accepts development bundles and can poll GitHub Releases. It distributes the selected platform binary across all user fleets, waits for idle nodes, restarts the nodes, then restarts itself. Offline nodes receive the current deployment when they reconnect. Publication and global rollout status are restricted to the gateway superuser; user-account and common keys cannot access them.
 
+CLI/MCP client sessions are not managed fleet nodes. Their platforms do not constrain the release bundle, they do not receive update commands, and they are excluded from rollout participants and the gateway's machine-reservation count. Work accepted on their destination nodes is still included in those nodes' idle checks. Upgrade the CLI with `control update`. The gateway and target nodes must both support client sessions before standalone execution can use them; see [standalone usage](installation.md#standalone-cli-and-mcp) and [terminology](terminology.md).
+
 ## Update the local CLI
 
 ```sh
@@ -41,14 +43,26 @@ Managed updates require compatible Control versions on both the gateway and node
 
 ## Push from a development machine
 
+With persisted gateway superuser authorization, run:
+
 ```sh
-export CONTROL_GATEWAY='https://control.example.com'
-export CONTROL_SUPERUSER_KEY='your-gateway-superuser-key'
 make update
 make update-status
 ```
 
-`make update` builds the CLI and a bundle for Linux, macOS, and Windows on amd64 and arm64. It uploads the binaries and publishes the manifest. A successful push means the gateway has accepted the rollout; use `update status` to follow staging, waiting for idle, installation, and completion.
+`control login` validates the key through `/v1/auth` and persists it in `admin.json`. A superuser login also saves update authorization in `update-admin.json`. Later normal fleet logins do not overwrite that update authorization, so the dashboard can use your account while updates retain operator permission. Repeating `control login` for the same gateway revalidates the saved key instead of asking for it again. Supply `--api-key` or `--key-stdin` to replace the login. Both credential files use atomic private-file storage, with `0600` permissions on Unix. Failed credential validation leaves both profiles unchanged.
+
+When replacing an older CLI's saved superuser login with a normal fleet login on the same gateway, login verifies and preserves the previous operator key in `update-admin.json` before overwriting the regular profile. It does not infer operator authority from an ordinary account key.
+
+`make update` builds the native CLI, then runs `update authorize --check` before building the platform bundle. This check reuses saved authorization and never prompts or saves credentials. If no selected credential has superuser permission, the target stops with a permission error. Authentication and connection failures also stop it before bundle builds, including under `make -j`. A normal account login by itself does not authorize gateway-wide updates.
+
+The target then builds the local checkout's bundle for Linux, macOS, and Windows on amd64 and arm64. It uploads the binaries and publishes the manifest without fetching a GitHub release. The rollout covers every enrolled node across user fleets, including nodes on orchestrator machines and all workers, then the gateway. Offline nodes catch up when they reconnect. Standalone CLI/MCP installations are not enrolled nodes and are not updated by this rollout. A successful push means the gateway has accepted the rollout; use `make update-status` to follow staging, waiting for idle, installation, and completion.
+
+Binary uploads stream from an open file as `application/octet-stream`, with an exact `Content-Length`. The gateway streams each upload into a temporary file while hashing it, then publishes the verified file. Only the small manifest uses JSON. A reverse proxy or tunnel must forward request and response bodies without whole-file buffering and permit binaries up to Control's 128 MiB limit. Streaming does not bypass a proxy's total-body limit; HTTP 413 stops the push before manifest publication. Stock expose v0.28.2 has a hard-coded 10 MiB tunnel-body limit, which is too small for Control binaries. Use an expose build with uncapped streamed tunnel bodies; bounded buffers and frame limits still apply. Its static-site `EXPOSE_PUBLISH_MAX_BYTES` setting does not change the tunnel limit.
+
+Update administration selects an explicit global `--token`, then `CONTROL_SUPERUSER_KEY`, then a matching saved update authorization. Otherwise, the usual gateway credential selection applies, including a matching saved login. Saved credentials are never reused for a different gateway. Dashboard, execution, key-management, and user-management commands do not use `update-admin.json`. A normal account or common key still cannot publish updates. Missing credentials, rejected authentication, and gateway connection failures are reported directly rather than as `unknown command "update"`.
+
+Environment variables remain optional for automation. As an explicit alternative to login, `bin/control update authorize` can securely prompt for an operator key and save it without replacing the regular fleet login. `update authorize --key-stdin` reads a replacement key for validation and storage; it cannot be combined with `--check`, global `--token`, or `CONTROL_SUPERUSER_KEY`. This explicit authorization command does not fall back to prompting after a rejected credential or a connection failure. Remove `update-admin.json` to forget the separate update authorization. A superuser key still saved in `admin.json` remains usable for updates. Keep both files out of node workspaces, state directories, and other locations accessible to unrestricted providers.
 
 For a Linux-only pool, build just its required platforms:
 
@@ -61,6 +75,8 @@ The bundle must include the gateway platform and every registered node's platfor
 The equivalent commands are:
 
 ```sh
+make build
+bin/control update authorize --check
 make bundle
 bin/control update push dist
 bin/control update status
@@ -112,7 +128,7 @@ Key creation prints the common token once. The gateway persists only its hash in
 
 Common keys can enroll peers and read the directory only within their owning fleet, and download shared update binaries. They cannot upload binaries, publish deployments, inspect rollout administration, trigger release checks, or manage keys. Update endpoints enforce the superuser role. Fleet-management endpoints require the owning user's account key or the operator for its legacy fleet. Revocation rejects new gateway requests and disconnects gateway sessions authenticated with that key. It does not revoke an already-established direct peer session or change a node's local API token.
 
-`control help` always includes local CLI updates. It shows user fleet commands for an authenticated account and global account/update administration only for a verified superuser. Common-key, unauthenticated, and unreachable-gateway help omit management commands. `control update --help` describes local self-updates without authentication. The `update push`, `update status`, and `update check` subcommands require the superuser role. An explicit `--token` overrides the environment credential for administration. The MCP server advertises no account, update, or key-management tools.
+`control help` always includes local CLI updates. It shows user fleet commands for an authenticated account and global account/update administration only for a verified superuser. Common-key, unauthenticated, and unreachable-gateway help omit management commands even when separate update authorization is saved. `control update --help` describes local self-updates without authentication. The `update push`, `update status`, and `update check` subcommands require the superuser role. `update authorize` validates and saves that authorization; it never grants it to an ordinary key. An explicit `--token` overrides saved and environment update credentials. The MCP server advertises no account, update, or key-management tools.
 
 Keys govern Control's API. Providers still run with their node's OS privileges. Keep gateway secrets and gateway state out of accounts or filesystems accessible to unrestricted worker commands.
 
@@ -130,6 +146,8 @@ The installed binary is the launcher. Standalone CLI and MCP invocations use the
 
 On Windows, SCM hosts the supervisor as an automatic LocalService service. Updates restart only the managed child; the SCM process remains running. Background children and executable validation suppress console windows. SCM stop/shutdown controls cancel the supervisor and wait for the child to finish. Migrating an older login-based installation requires a current CLI and `control service start` in Administrator PowerShell; see [installation](installation.md#migrate-an-older-windows-installation).
 
+Explicit Windows user-login startup runs the same supervisor under the user's limited interactive token, with a scheduled-task launcher instead of SCM. Managed updates retain that token and startup registration. A managed child update alone cannot add the new startup mode to an older installed CLI; install a CLI with user-login support before [migrating startup](installation.md#switch-windows-to-user-login-startup).
+
 The updater verifies size and checksum, then runs `version --json` to check the staged executable before selecting it. It preserves identities, tasks, leases, keys, and other state. It does not migrate incompatible state schemas or automatically roll back after a service startup failure. The supervisor saves `runtime-previous.json` before switching. For manual recovery, stop the supervisor, restore that file as `runtime.json`, resolve or replace the gateway deployment, and restart. Existing binaries remain in state storage until the operator removes unused versions.
 
 ## HTTP and control messages
@@ -142,7 +160,7 @@ All endpoints use `Authorization: Bearer TOKEN`.
 | `POST /v1/admin/keys` | Superuser | Create legacy-fleet common key with JSON `name` |
 | `GET /v1/admin/keys` | Superuser | Legacy-fleet key metadata without secrets or hashes |
 | `DELETE /v1/admin/keys/{id}` | Superuser | Revoke a legacy-fleet common key |
-| `PUT /v1/admin/updates/blobs/{sha256}` | Superuser | Stream a binary with an exact `Content-Length` |
+| `PUT /v1/admin/updates/blobs/{sha256}` | Superuser | Stream an `application/octet-stream` binary with an exact `Content-Length` |
 | `POST /v1/admin/updates` | Superuser | Publish a manifest after its binaries are uploaded |
 | `GET /v1/admin/updates` | Superuser | Deployment, gateway software, and node acknowledgments |
 | `POST /v1/admin/updates/check` | Superuser | Fetch configured latest GitHub release |

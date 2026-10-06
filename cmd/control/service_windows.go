@@ -13,7 +13,7 @@ import (
 )
 
 func runPlatformService(ctx context.Context, args []string) (bool, error) {
-	if len(args) == 0 || args[0] != "__service" {
+	if len(args) == 0 || (args[0] != "__service" && args[0] != "__user") {
 		return false, nil
 	}
 	if len(args) != 2 || !filepath.IsAbs(args[1]) {
@@ -28,6 +28,9 @@ func runPlatformService(ctx context.Context, args []string) (bool, error) {
 	stdout, stderr := os.Stdout, os.Stderr
 	os.Stdout, os.Stderr = log, log
 	defer func() { os.Stdout, os.Stderr = stdout, stderr }()
+	if args[0] == "__user" {
+		return true, run(ctx, []string{"--token", "", "node", "--config", config})
+	}
 	return true, svc.Run(installation.WindowsServiceName(config), &windowsNodeService{
 		ctx: ctx,
 		run: func(ctx context.Context) error {

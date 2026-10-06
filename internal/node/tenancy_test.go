@@ -16,7 +16,7 @@ import (
 	"github.com/koltyakov/control/internal/model"
 )
 
-func TestPrivateFleetsWithMultipleHostAgents(t *testing.T) {
+func TestPrivateFleetsWithMultipleOrchestrators(t *testing.T) {
 	for _, relay := range []bool{false, true} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			const super = "tenant-test-superuser-key-123456789"
@@ -46,7 +46,7 @@ func TestPrivateFleetsWithMultipleHostAgents(t *testing.T) {
 				if err != nil || account.Token == "" {
 					t.Fatal("account creation failed", err)
 				}
-				for _, name := range []string{"agent-one", "agent-two", "worker"} {
+				for _, name := range []string{"orchestrator-one", "orchestrator-two", "worker"} {
 					n, err := New(Config{Name: name, Gateway: s.URL, Token: account.Token, DataDir: t.TempDir(), WorkDir: t.TempDir(), RelayOnly: relay})
 					if err != nil {
 						t.Fatal(err)
@@ -65,23 +65,23 @@ func TestPrivateFleetsWithMultipleHostAgents(t *testing.T) {
 					t.Fatal(err)
 				}
 				var artifact model.Artifact
-				for _, agent := range fleet[:2] {
+				for _, orchestrator := range fleet[:2] {
 					var nodes []model.Node
-					call(t, agent, "", "nodes.list", map[string]any{}, &nodes)
+					call(t, orchestrator, "", "nodes.list", map[string]any{}, &nodes)
 					if len(nodes) != 3 {
 						t.Fatalf("foreign nodes visible: %+v", nodes)
 					}
-					call(t, agent, "worker", "exec.run", executable(t, "agent"), nil)
-					call(t, agent, "worker", "artifacts.export", map[string]any{"path": "private.txt"}, &artifact)
+					call(t, orchestrator, "worker", "exec.run", executable(t, "agent"), nil)
+					call(t, orchestrator, "worker", "artifacts.export", map[string]any{"path": "private.txt"}, &artifact)
 					var content bytes.Buffer
-					if err = agent.Download(ctx, artifact, 0, &content); err != nil || content.String() != private {
+					if err = orchestrator.Download(ctx, artifact, 0, &content); err != nil || content.String() != private {
 						t.Fatalf("same-fleet download: %q %v", content.String(), err)
 					}
 					want := "webrtc"
 					if relay {
 						want = "relay"
 					}
-					if mode := agent.Peer.Connections()[worker.Identity.ID]; mode != want {
+					if mode := orchestrator.Peer.Connections()[worker.Identity.ID]; mode != want {
 						t.Fatalf("want %s, got %s", want, mode)
 					}
 				}

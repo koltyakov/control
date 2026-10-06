@@ -155,7 +155,7 @@ func (g *Gateway) control(id, kind string, command update.Command) {
 	g.mu.Lock()
 	peer := g.peers[id]
 	g.mu.Unlock()
-	if peer == nil {
+	if peer == nil || peer.client {
 		return
 	}
 	select {
@@ -175,8 +175,10 @@ func (g *Gateway) rolloutPeers(d *update.Deployment) []rolloutPeer {
 	defer g.mu.Unlock()
 	peers := []rolloutPeer{}
 	ids := map[string]bool{}
-	for id := range g.peers {
-		ids[id] = true
+	for id, c := range g.peers {
+		if !c.client {
+			ids[id] = true
+		}
 	}
 	if d.Phase == "installing" {
 		for _, id := range d.Participants {
@@ -184,6 +186,9 @@ func (g *Gateway) rolloutPeers(d *update.Deployment) []rolloutPeer {
 		}
 	}
 	for id := range ids {
+		if g.clientOwners[id] {
+			continue
+		}
 		status, ok := g.updateStatus[id]
 		peers = append(peers, rolloutPeer{g.nodes[id], status, g.peers[id] != nil && ok && time.Since(status.SeenAt) < 8*time.Second})
 	}
@@ -330,7 +335,13 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 func (g *Gateway) reserveRestart(d *update.Deployment, peers []rolloutPeer) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if len(g.peers) != len(peers) {
+	machines := 0
+	for _, c := range g.peers {
+		if !c.client {
+			machines++
+		}
+	}
+	if machines != len(peers) {
 		return false
 	}
 	for _, peer := range peers {

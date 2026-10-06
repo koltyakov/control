@@ -1,3 +1,6 @@
+// Package node implements the enrolled execution service. A node can coordinate
+// work as an orchestrator and execute requested work as a worker. These are roles
+// within an operation, not distinct runtime types. AI agents are optional providers.
 package node
 
 import (
@@ -48,6 +51,7 @@ func (p provider) Run(ctx context.Context, args json.RawMessage, e Execution) (a
 	return p.run(ctx, args, e)
 }
 
+// Node owns a machine's capabilities, tasks, artifacts, and peer connections.
 type Node struct {
 	Config              Config
 	Identity            *identity.Identity
@@ -59,6 +63,7 @@ type Node struct {
 	mu                  sync.Mutex
 	tasks               map[string]*model.Task
 	cancels             map[string]context.CancelFunc
+	taskChanges         map[string]chan struct{}
 	slots               chan struct{}
 	wg                  sync.WaitGroup
 	mcpMu               sync.Mutex
@@ -77,7 +82,7 @@ type Node struct {
 	untrackedActivities int
 	system              *system.Collector
 	work                *workgate.Gate
-	updater             *update.Agent
+	updater             *update.Updater
 	shutdown            func()
 	lifecycleMu         sync.Mutex
 	machineState        model.MachineState
@@ -111,6 +116,7 @@ func New(cfg Config) (*Node, error) {
 	}
 	n := &Node{Config: cfg, Identity: id, root: root, providers: map[string]Provider{}, tasks: map[string]*model.Task{}, cancels: map[string]context.CancelFunc{}, slots: make(chan struct{}, cfg.MaxTasks), mcpSessions: map[string]*mcp.ClientSession{}, transfers: map[string]*sync.Mutex{}}
 	n.lock = lock
+	n.taskChanges = map[string]chan struct{}{}
 	n.work = workgate.New()
 	if err = n.loadMachineState(); err != nil {
 		_ = root.Close()
@@ -228,24 +234,23 @@ func (n *Node) authorize(ctx context.Context, caller, method string) error {
 		return nil
 	}
 	patterns := append([]string{}, n.Config.Allow[caller]...)
+	owner := n.Peer.Owner(caller)
+	if owner != caller {
+		patterns = append(patterns, n.Config.Allow[owner]...)
+	}
 	patterns = append(patterns, n.Config.Allow["*"]...)
 	for _, pattern := range patterns {
 		if ok, _ := path.Match(pattern, method); ok {
 			return nil
 		}
 	}
-	nodes, err := n.Peer.Nodes(ctx)
+	peer, err := n.Peer.Lookup(ctx, caller)
 	if err != nil {
 		return err
 	}
-	for _, peer := range nodes {
-		if peer.ID != caller {
-			continue
-		}
-		for _, pattern := range n.Config.Allow[peer.Name] {
-			if ok, _ := path.Match(pattern, method); ok {
-				return nil
-			}
+	for _, pattern := range n.Config.Allow[peer.Name] {
+		if ok, _ := path.Match(pattern, method); ok {
+			return nil
 		}
 	}
 	return fmt.Errorf("caller is not authorized for %s", method)
@@ -283,6 +288,15 @@ func (n *Node) handle(caller string, conn net.Conn) {
 		n.serveTCP(ctx, caller, conn, request.Params)
 		return
 	}
+	if request.Method == "tasks.logs" {
+		var q struct {
+			Follow bool `json:"follow"`
+		}
+		if json.Unmarshal(request.Params, &q) == nil && q.Follow {
+			n.serveTaskLogs(ctx, caller, conn, request.Params)
+			return
+		}
+	}
 	// A normal RPC has no client payload after the frame. EOF cancels its
 	// synchronous provider without affecting separately accepted durable tasks.
 	go func() { var b [1]byte; _, _ = conn.Read(b[:]); cancel() }()
@@ -298,27 +312,7 @@ func (n *Node) handle(caller string, conn net.Conn) {
 }
 
 func (n *Node) open(ctx context.Context, target, method string, params any) (net.Conn, json.RawMessage, error) {
-	conn, err := n.Peer.Open(ctx, target)
-	if err != nil {
-		return nil, nil, err
-	}
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
-	defer stop()
-	deadline, _ := ctx.Deadline()
-	if err = writeFrame(conn, model.Request{Version: model.Version, Method: method, Params: model.JSON(params), Deadline: deadline}); err != nil {
-		_ = conn.Close()
-		return nil, nil, err
-	}
-	var response model.Response
-	if err = readFrame(conn, &response); err != nil {
-		_ = conn.Close()
-		return nil, nil, err
-	}
-	if response.Error != "" {
-		_ = conn.Close()
-		return nil, nil, errors.New(response.Error)
-	}
-	return conn, response.Result, nil
+	return n.Peer.OpenRPC(ctx, target, method, params)
 }
 
 func (n *Node) Call(ctx context.Context, target, method string, params any, result any) error {
@@ -376,10 +370,11 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		defer release()
 		ctx = workCtx
 	}
-	ctx = context.WithValue(ctx, activityContextKey{}, activityContext{owner: caller})
+	owner := n.Peer.Owner(caller)
+	ctx = context.WithValue(ctx, activityContextKey{}, activityContext{owner: owner})
 	var activity *activityHandle
 	if trackOperation(method) {
-		activity = n.beginActivity(ctx, "operation", method, caller, "")
+		activity = n.beginActivity(ctx, "operation", method, owner, "")
 		defer func() { activity.finish(err) }()
 	}
 	switch method {
@@ -416,7 +411,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		}
 		sort.Strings(agents)
 		sort.Strings(servers)
-		return map[string]any{"id": n.Identity.ID, "name": n.Config.Name, "capabilities": n.Capabilities(), "connections": n.Peer.Connections(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot()}, nil
+		return map[string]any{"id": n.Identity.ID, "name": n.Config.Name, "capabilities": n.Capabilities(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot()}, nil
 	case "capabilities.list":
 		return n.Capabilities(), nil
 	case "tasks.start":
@@ -427,11 +422,11 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		if err := n.authorize(ctx, caller, spec.Capability); err != nil {
 			return nil, err
 		}
-		return n.startTask(caller, spec)
+		return n.startTask(owner, spec)
 	case "tasks.get", "tasks.cancel", "tasks.logs", "tasks.list":
-		return n.taskMethod(caller, method, args)
+		return n.taskMethod(owner, method, args)
 	case "leases.acquire", "leases.renew", "leases.release", "leases.get":
-		return n.leaseMethod(caller, method, args)
+		return n.leaseMethod(owner, method, args)
 	case "artifacts.export", "artifacts.list", "artifacts.delete", "artifacts.pull", "artifacts.deliver", "artifacts.grant":
 		return n.artifactMethod(ctx, caller, method, args)
 	case "mcp.discover":
@@ -461,44 +456,10 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 			}
 		}
 		activity.phase("executing")
-		return p.Run(ctx, args, Execution{Dir: n.Config.WorkDir, Log: io.Discard, Owner: caller})
+		return p.Run(ctx, args, Execution{Dir: n.Config.WorkDir, Log: io.Discard, Owner: owner})
 	}
 }
 
 func (n *Node) selectNode(ctx context.Context, args json.RawMessage) (any, error) {
-	var query struct {
-		Labels     map[string]string `json:"labels"`
-		Capability string            `json:"capability"`
-	}
-	if err := json.Unmarshal(args, &query); err != nil {
-		return nil, err
-	}
-	nodes, err := n.Peer.Nodes(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, peer := range nodes {
-		if !peer.Online || peer.Disabled || peer.ControlPending {
-			continue
-		}
-		matches := true
-		for k, v := range query.Labels {
-			if peer.Labels[k] != v {
-				matches = false
-			}
-		}
-		if query.Capability != "" {
-			found := false
-			for _, c := range peer.Capabilities {
-				if c.Name == query.Capability {
-					found = true
-				}
-			}
-			matches = matches && found
-		}
-		if matches {
-			return peer, nil
-		}
-	}
-	return nil, errors.New("no online enabled node matches the selector")
+	return n.Peer.Select(ctx, args)
 }

@@ -29,6 +29,10 @@ type Node struct {
 	Disabled       bool              `json:"disabled,omitempty"`
 	ControlPending bool              `json:"controlPending,omitempty"`
 	Managed        bool              `json:"managed,omitempty"`
+	ClientSessions bool              `json:"clientSessions,omitempty"`
+	ClientOwners   bool              `json:"clientOwners,omitempty"`
+	ClientOwner    string            `json:"clientOwner,omitempty"`
+	PeerChannels   bool              `json:"peerChannels,omitempty"`
 }
 
 type Artifact struct {
@@ -60,6 +64,22 @@ type Lease struct {
 	ID      string    `json:"id"`
 	Owner   string    `json:"owner"`
 	Expires time.Time `json:"expires"`
+}
+
+type PeerSession struct {
+	ID       string `json:"id"`
+	Peer     string `json:"peer"`
+	Lane     string `json:"lane"`
+	Mode     string `json:"mode"`
+	Outgoing int    `json:"outgoingStreams"`
+	Incoming int    `json:"incomingStreams"`
+}
+
+type TaskLogChunk struct {
+	Data     []byte `json:"data,omitempty"`
+	Offset   int64  `json:"offset"`
+	Terminal bool   `json:"terminal"`
+	Error    string `json:"error,omitempty"`
 }
 
 type Task struct {

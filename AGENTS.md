@@ -4,9 +4,14 @@ Control is a Go peer execution network for Windows, Linux, and macOS. Every node
 
 These instructions apply throughout the repository.
 
+## Terminology
+
+Follow [Terminology](docs/terminology.md) in documentation, code, CLI/dashboard text, and MCP instructions. Orchestrator coordinates work; worker executes requested work; gateway handles enrollment, discovery, signaling, relay, and fleet administration. Orchestrator and worker are operation roles, not fixed machine types. Client is the CLI/MCP component; node is the enrolled execution service and can perform either role. An orchestrator can use a standalone client without a local node. Reserve agent for AI software, not Control services. Preserve existing command, configuration, protocol, authentication-role, and session-backend identifiers.
+
 ## Read first
 
 - [README](README.md): build, deployment, examples, and current limitations.
+- [Terminology](docs/terminology.md): canonical roles, components, and naming rules.
 - [Architecture](docs/architecture.md): components, connections, identity, and execution lifecycle.
 - [Engineering principles](docs/principles.md): constraints to preserve when changing the system.
 - [Design decisions](docs/decisions.md): current choices, their reasons, and consequences.
@@ -56,7 +61,7 @@ These instructions apply throughout the repository.
 
 ## Verification
 
-Use Docker Compose for integration testing:
+Tests are not required for every change. Run relevant tests when requested or when the change warrants them. Use Docker Compose when running integration tests:
 
 ```sh
 make test-compose
@@ -64,13 +69,12 @@ make test-compose
 
 This runs the core Go checks once and cross-container tests over both WebRTC and the relay. Use `make test-compose-webrtc` or `make test-compose-relay` for a focused run. The script handles startup readiness, failure logs, exit status, and cleanup of its test volumes. See [testing documentation](docs/testing.md) for keeping a deployment around for debugging.
 
-For code changes, format the affected Go files and run the relevant tests. Before completing any code change, run the following checks after the final edits and verify that they pass:
+For code changes, format the affected Go files. Linting is mandatory. Before completing any code change, run the following checks after the final edits and verify that they pass:
 
 ```sh
 make fmt-check
 make lint
 go vet ./...
-go test -race ./... -timeout=120s
 go build -o bin/control ./cmd/control
 ```
 

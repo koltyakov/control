@@ -100,8 +100,8 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	p := g.authenticate(bearer(r))
 	r.Body = http.MaxBytesReader(w, r.Body, 8192)
 	var q enrollment.Request
-	if json.NewDecoder(r.Body).Decode(&q) != nil || !validName.MatchString(q.Name) || (q.OS != "linux" && q.OS != "darwin" && q.OS != "windows") || (q.Arch != "" && q.Arch != "amd64" && q.Arch != "arm64") {
-		http.Error(w, "name and supported OS are required; arch may be amd64, arm64, or omitted", 400)
+	if json.NewDecoder(r.Body).Decode(&q) != nil || (q.AutoName && q.Name != "") || (!q.AutoName && !validName.MatchString(q.Name)) || (q.OS != "linux" && q.OS != "darwin" && q.OS != "windows") || (q.Arch != "" && q.Arch != "amd64" && q.Arch != "arm64") {
+		http.Error(w, "name or autoName with an empty name and supported OS are required; arch may be amd64, arm64, or omitted", 400)
 		return
 	}
 	if q.TTLSeconds == 0 {
@@ -153,9 +153,13 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	ticket := base64.RawURLEncoding.EncodeToString(secret[:])
 	now := time.Now().UTC()
-	i := installation{Invitation: enrollment.Invitation{UserID: p.UserID, ID: identity.NewID(), Name: q.Name, Gateway: base, Asset: asset, Assets: assets, Version: version, CreatedAt: now, ExpiresAt: now.Add(time.Duration(q.TTLSeconds) * time.Second)}}
+	i := installation{Invitation: enrollment.Invitation{UserID: p.UserID, ID: identity.NewID(), Name: q.Name, AutoName: q.AutoName, Gateway: base, Asset: asset, Assets: assets, Version: version, CreatedAt: now, ExpiresAt: now.Add(time.Duration(q.TTLSeconds) * time.Second)}}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.clientNameReserved(p.UserID, q.Name) {
+		http.Error(w, "name is reserved for a client identity", http.StatusConflict)
+		return
+	}
 	for _, n := range g.nodes {
 		if n.UserID == p.UserID && n.Name == q.Name {
 			i.ReplaceID = n.ID
@@ -170,11 +174,11 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 			delete(g.installations, hash)
 			continue
 		}
-		if old.Name == q.Name && !old.Revoked && old.RedeemedID == "" {
+		if !q.AutoName && old.Name == q.Name && !old.Revoked && old.RedeemedID == "" {
 			http.Error(w, "name has an existing invitation", http.StatusConflict)
 			return
 		}
-		if old.Name == q.Name && !old.Revoked && old.RedeemedID != "" {
+		if !q.AutoName && old.Name == q.Name && !old.Revoked && old.RedeemedID != "" {
 			i.ReplaceID = old.RedeemedID
 		}
 		count++
@@ -281,7 +285,7 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if i.RedeemedID != "" {
-		if i.RedeemedID != id || i.CredentialHash != q.CredentialHash || (q.Arch != "" && q.Arch != i.Asset.Arch) || (len(i.Assets) > 0 && q.Arch == "") {
+		if i.RedeemedID != id || i.CredentialHash != q.CredentialHash || (q.Arch != "" && q.Arch != i.Asset.Arch) || (len(i.Assets) > 0 && q.Arch == "") || (i.AutoName && q.Name != i.Name) || (!i.AutoName && q.Name != "") {
 			http.Error(w, "invitation already redeemed", http.StatusGone)
 			return
 		}
@@ -297,8 +301,29 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "identity cannot be enrolled", http.StatusConflict)
 		return
 	}
-	if g.machineStates[id].Unregistered || (i.ReplaceID != "" && i.ReplaceID != id) {
+	if g.clientOwners[id] || g.clientTransports[id] != "" || g.machineStates[id].Unregistered || (i.ReplaceID != "" && i.ReplaceID != id) {
 		http.Error(w, "invitation requires an eligible local identity", http.StatusConflict)
+		return
+	}
+	old := i
+	if i.AutoName {
+		if !validName.MatchString(q.Name) {
+			http.Error(w, "auto-name invitation requires a valid signed target hostname", http.StatusBadRequest)
+			return
+		}
+		i.Name = q.Name
+		for h, previous := range g.installations {
+			if h != hash && previous.UserID == i.UserID && previous.Name == i.Name && !previous.Revoked && previous.RedeemedID != id && previous.ReplaceID != id && (previous.RedeemedID != "" || time.Now().Before(previous.ExpiresAt)) {
+				http.Error(w, "name has an existing invitation or enrollment", http.StatusConflict)
+				return
+			}
+		}
+	} else if q.Name != "" {
+		http.Error(w, "named invitation does not accept a target-selected name", http.StatusBadRequest)
+		return
+	}
+	if g.clientNameReserved(i.UserID, i.Name) {
+		http.Error(w, "name is reserved for a client identity", http.StatusConflict)
 		return
 	}
 	for _, n := range g.nodes {
@@ -307,7 +332,6 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	old := i
 	if q.Arch != "" || len(i.Assets) > 0 {
 		asset, found := i.Select(q.Arch)
 		if !found {

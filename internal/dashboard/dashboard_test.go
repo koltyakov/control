@@ -33,6 +33,63 @@ func TestRenderAvailabilityAndHostileTerminalText(t *testing.T) {
 	}
 }
 
+func TestOfflineMachineStateIsRed(t *testing.T) {
+	now := time.Now()
+	snapshot := model.PoolActivitySnapshot{ObservedAt: now, Nodes: []model.NodeActivitySnapshot{{Name: "worker", Status: "offline"}}}
+	for _, details := range []bool{false, true} {
+		colored := render(snapshot, now, renderOptions{width: 80, details: details, color: true})
+		if !strings.Contains(colored, "\x1b[31moffline") {
+			t.Fatalf("offline state is not red:\n%s", colored)
+		}
+		plain := render(snapshot, now, renderOptions{width: 80, details: details})
+		if strings.Contains(plain, "\x1b") || ansi.Strip(colored) != plain {
+			t.Fatal("color changed the text or leaked into plain output")
+		}
+	}
+}
+
+func TestMachineSummarySeparatedFromTable(t *testing.T) {
+	now := time.Now()
+	snapshot := model.PoolActivitySnapshot{ObservedAt: now, Nodes: []model.NodeActivitySnapshot{{Name: "worker", Status: "offline"}}}
+	for _, options := range []renderOptions{{}, {width: 80, color: true}, {width: 80, details: true}} {
+		text := ansi.Strip(render(snapshot, now, options))
+		if !strings.Contains(text, "Machines  1 nodes · 0 online\n\nNode") {
+			t.Fatalf("missing blank line before machine table:\n%s", text)
+		}
+	}
+}
+
+func TestOfflineMachineHidesResourceUsage(t *testing.T) {
+	now := time.Now()
+	cpu := 12.5
+	snapshot := model.PoolActivitySnapshot{ObservedAt: now, Nodes: []model.NodeActivitySnapshot{{
+		Name: "worker", OS: "linux", Status: "offline", LastSeen: now.Add(-time.Hour),
+		System: &model.SystemInfo{
+			CPUModel: "Test CPU", CPUUsagePercent: &cpu, MemoryUsedBytes: 8 << 30, MemoryTotalBytes: 16 << 30,
+			Disks: []model.DiskUsage{{Path: "work", UsedBytes: 20 << 30, TotalBytes: 100 << 30, FreeBytes: 80 << 30}},
+		},
+	}}}
+	for _, options := range []renderOptions{{}, {width: 80, color: true}, {width: 120, details: true}} {
+		text := ansi.Strip(render(snapshot, now, options))
+		for _, stale := range []string{"12.5%", "8.0GiB/16.0GiB", "20.0GiB", "80.0GiB"} {
+			if strings.Contains(text, stale) {
+				t.Fatalf("offline machine shows stale %q:\n%s", stale, text)
+			}
+		}
+		if options.details && (!strings.Contains(text, "Test CPU") || !strings.Contains(text, "work: 100.0GiB total")) {
+			t.Fatalf("offline machine lost hardware details:\n%s", text)
+		}
+	}
+	snapshot.Nodes[0].Online = true
+	snapshot.Nodes[0].Status = "summary"
+	text := Render(snapshot, now)
+	for _, expected := range []string{"12.5%", "8.0GiB/16.0GiB", "80.0GiB"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("online machine missing %q:\n%s", expected, text)
+		}
+	}
+}
+
 func TestGatewayVisibleWithoutFleetOrLocalNode(t *testing.T) {
 	now := time.Now()
 	cpu := 12.5
@@ -41,7 +98,7 @@ func TestGatewayVisibleWithoutFleetOrLocalNode(t *testing.T) {
 		System: &model.SystemInfo{OS: "linux", Arch: "amd64", LogicalCPUs: 4, CPUUsagePercent: &cpu, MemoryTotalBytes: 8 << 30, MemoryUsedBytes: 2 << 30, MemoryAvailableBytes: 6 << 30, SampledAt: now.Add(-45 * time.Second), IntervalSeconds: 15, Disks: []model.DiskUsage{{TotalBytes: 100 << 30, FreeBytes: 80 << 30, UsedBytes: 20 << 30}}},
 	}}
 	text := Render(snapshot, now)
-	for _, expected := range []string{"Gateway  https://control.example.com  v1.2.3  Up 1h0m0s", "CPU 12.5%", "2.0GiB/8.0GiB", "25%", "No machines registered."} {
+	for _, expected := range []string{"Gateway  https://control.example.com  v1.2.3  Up 1h 0m", "CPU 12.5%", "2.0GiB/8.0GiB", "25%", "No machines registered."} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("missing %q in %s", expected, text)
 		}
@@ -52,6 +109,30 @@ func TestGatewayVisibleWithoutFleetOrLocalNode(t *testing.T) {
 	snapshot.Gateway.URL += "\x1b[2J\nspoof"
 	if text := Render(snapshot, now); strings.Contains(text, "\x1b") || strings.Contains(text, "\nspoof") {
 		t.Fatal("gateway text injected terminal control")
+	}
+}
+
+func TestUptime(t *testing.T) {
+	for _, tt := range []struct {
+		duration time.Duration
+		want     string
+	}{
+		{-time.Second, "0s"},
+		{0, "0s"},
+		{54 * time.Second, "54s"},
+		{1500 * time.Millisecond, "2s"},
+		{time.Minute, "1m 0s"},
+		{2*time.Minute + 54*time.Second, "2m 54s"},
+		{time.Hour - time.Second, "59m 59s"},
+		{time.Hour, "1h 0m"},
+		{2*time.Hour + 54*time.Minute + 35*time.Second, "2h 54m"},
+		{27*time.Hour + 4*time.Minute + 5*time.Second, "27h 4m"},
+	} {
+		t.Run(tt.duration.String(), func(t *testing.T) {
+			if got := uptime(tt.duration); got != tt.want {
+				t.Fatalf("uptime(%s) = %q, want %q", tt.duration, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -155,7 +236,7 @@ func TestResponsiveTablesKeepImportantColumnsAndDetails(t *testing.T) {
 	var short, long strings.Builder
 	opts := renderOptions{width: 80}
 	opts.table(&short, machineColumns, [][]string{{"node", "idle", "now", "0", "linux", "v1", "0.1%", "1/2", "2", "0/0"}})
-	opts.table(&long, machineColumns, [][]string{{"longer-node-name", "busy/leased", "100d", "1000", "linux", "v1.2.3-4-gabcd-dirty", "100.0%", "100.0GiB/120.0GiB", "10.0GiB", "10/1"}})
+	opts.table(&long, machineColumns, [][]string{{"node", "busy/leased", "100d", "1000", "linux", "v1.2.3-4-gabcd-dirty", "100.0%", "100.0GiB/120.0GiB", "10.0GiB", "10/1"}})
 	if strings.Split(short.String(), "\n")[0] != strings.Split(long.String(), "\n")[0] {
 		t.Fatal("changing values moved or hid table columns")
 	}
@@ -165,6 +246,36 @@ func TestResponsiveTablesKeepImportantColumnsAndDetails(t *testing.T) {
 	}
 	if strings.Contains(narrow, "Hardware") {
 		t.Fatal("compact view repeats hardware details")
+	}
+}
+
+func TestNodeColumnFitsNames(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		names []string
+		width int
+	}{
+		{"short", []string{"tj"}, 8},
+		{"longest", []string{"tj", "worker-01"}, 9},
+		{"unicode", []string{"tj", "東京大阪"}, 8},
+		{"capped", []string{strings.Repeat("x", 30)}, 18},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, columns := range [][]column{machineColumns, activityColumns, recentColumns} {
+				rows := make([][]string, len(tt.names))
+				for i, name := range tt.names {
+					rows[i] = make([]string, len(columns))
+					rows[i][0] = name
+				}
+				var b strings.Builder
+				renderOptions{width: 240}.table(&b, columns, rows)
+				header := strings.Split(b.String(), "\n")[0]
+				next := columns[1].label
+				if got := strings.Index(header, next); got != tt.width+2 {
+					t.Fatalf("%s starts at %d, want %d: %q", next, got, tt.width+2, header)
+				}
+			}
+		})
 	}
 }
 

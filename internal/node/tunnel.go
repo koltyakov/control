@@ -3,18 +3,23 @@ package node
 import (
 	"context"
 	"encoding/json"
-	"io"
+	"errors"
 	"net"
 	"time"
 
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/transport"
 )
 
 func (n *Node) serveTCP(ctx context.Context, caller string, stream net.Conn, args json.RawMessage) {
 	var q struct {
 		Address string `json:"address"`
+		Duplex  int    `json:"duplex,omitempty"`
 	}
 	err := json.Unmarshal(args, &q)
+	if err == nil && q.Duplex != 0 && q.Duplex != transport.DuplexVersion {
+		err = errors.New("unsupported TCP duplex version")
+	}
 	if err == nil {
 		err = n.authorize(ctx, caller, "tcp.open")
 	}
@@ -22,7 +27,7 @@ func (n *Node) serveTCP(ctx context.Context, caller string, stream net.Conn, arg
 		_ = writeFrame(stream, model.Response{Error: err.Error()})
 		return
 	}
-	activity := n.beginActivity(ctx, "tunnel", "tcp.accept", caller, caller)
+	activity := n.beginActivity(ctx, "tunnel", "tcp.accept", n.Peer.Owner(caller), caller)
 	workCtx, release, gateErr := n.enterWork(ctx)
 	if gateErr != nil {
 		activity.finish(gateErr)
@@ -42,8 +47,11 @@ func (n *Node) serveTCP(ctx context.Context, caller string, stream net.Conn, arg
 		return
 	}
 	defer func() { _ = conn.Close() }()
-	if err = writeFrame(stream, model.Response{Result: model.JSON(map[string]any{"connected": true})}); err != nil {
+	if err = writeFrame(stream, model.Response{Result: model.JSON(map[string]any{"connected": true, "duplex": q.Duplex})}); err != nil {
 		return
+	}
+	if q.Duplex == transport.DuplexVersion {
+		stream = transport.NewDuplexConn(stream)
 	}
 	activity.phase("connected")
 	Bridge(ctx, &activityConn{Conn: stream, activity: activity}, conn)
@@ -57,7 +65,7 @@ func (n *Node) OpenTCP(ctx context.Context, target, address string) (net.Conn, e
 	ctx = workCtx
 	activity := n.beginActivity(ctx, "tunnel", "tcp.open", "", target)
 	activity.phase("connecting")
-	conn, _, err := n.open(ctx, target, "tcp.open", map[string]any{"address": address})
+	conn, err := n.Peer.OpenTCP(ctx, target, address)
 	if err != nil {
 		release()
 		activity.finish(err)
@@ -67,15 +75,7 @@ func (n *Node) OpenTCP(ctx context.Context, target, address string) (net.Conn, e
 	return &workConn{Conn: &activityConn{Conn: conn, activity: activity}, release: release}, nil
 }
 
-// Bridge ends both directions when either closes, or when the context expires.
+// Bridge preserves TCP half-close when supported and joins both copy directions.
 func Bridge(ctx context.Context, a, b net.Conn) {
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(a, b); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(b, a); done <- struct{}{} }()
-	select {
-	case <-ctx.Done():
-	case <-done:
-	}
-	_ = a.Close()
-	_ = b.Close()
+	transport.Bridge(ctx, a, b)
 }

@@ -10,10 +10,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -83,7 +83,8 @@ func run(ctx context.Context, args []string) error {
 		level = slog.LevelDebug
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
-	c := client.Client{URL: *api, Token: *token}
+	c := (client.Client{URL: *api, Token: *token}).WithLifetime(ctx)
+	defer func() { _ = c.Close() }()
 	if args[0] != "node" && args[0] != "gateway" && args[0] != "version" && args[0] != "update" && args[0] != "upgrade" {
 		cfg, err := installation.ReadConfig(*profile)
 		if err != nil {
@@ -103,6 +104,21 @@ func run(ctx context.Context, args []string) error {
 		}
 		if !explicitToken && os.Getenv("CONTROL_TOKEN") == "" {
 			c.Token = cfg.Token
+		}
+		switch args[0] {
+		case "mcp", "system", "call", "exec", "task", "artifact", "tunnel", "session":
+			if !explicitAPI && os.Getenv("CONTROL_API") == "" {
+				var override *string
+				if explicitToken {
+					override = token
+				}
+				remote, err := gatewayClient(*profile, override)
+				if err != nil {
+					return err
+				}
+				c = c.WithStandalone(ctx, client.StandaloneConfig{Gateway: remote,
+					StateDir: filepath.Join(installation.Home(), "clients"), RelayOnly: cfg.RelayOnly, ICEServers: cfg.ICEServers})
+			}
 		}
 	}
 	switch args[0] {
@@ -137,8 +153,21 @@ func run(ctx context.Context, args []string) error {
 		}
 		return nil
 	case "update":
-		if len(args) > 1 && (args[1] == "push" || args[1] == "status" || args[1] == "check") {
-			return adminCLI(ctx, admin(), args)
+		if len(args) > 1 && (args[1] == "push" || args[1] == "status" || args[1] == "check" || args[1] == "authorize") {
+			var override *string
+			flags.Visit(func(f *flag.Flag) {
+				if f.Name == "token" {
+					override = token
+				}
+			})
+			remote, err := updateAdminClient(*profile, override)
+			if err != nil {
+				return err
+			}
+			if args[1] == "authorize" {
+				return authorizeUpdateCLI(ctx, remote, args[2:], override == nil && os.Getenv("CONTROL_SUPERUSER_KEY") == "")
+			}
+			return adminCLI(ctx, remote, args)
 		}
 		return selfUpdateCLI(ctx, args[1:])
 	case "upgrade":
@@ -260,18 +289,17 @@ func run(ctx context.Context, args []string) error {
 		}
 		return callPrint(ctx, c, args[1], args[2], params)
 	case "exec":
-		if len(args) < 3 {
-			return errors.New("usage: control exec NODE [--] COMMAND [ARG...]")
+		return execCLI(ctx, c, args[1:])
+	case "session":
+		if len(args) != 1 {
+			return errors.New("usage: control session")
 		}
-		command := args[2:]
-		if command[0] == "--" {
-			command = command[1:]
+		info, err := c.Session(ctx)
+		if err != nil {
+			return err
 		}
-		if len(command) == 0 {
-			return errors.New("command is required")
-		}
-		spec := model.TaskSpec{ID: identity.NewID(), Capability: "exec.run", Args: model.JSON(map[string]any{"command": command[0], "args": command[1:]})}
-		return submit(ctx, c, args[1], spec, true)
+		printJSON(info)
+		return nil
 	case "task":
 		if len(args) < 3 {
 			return errors.New("usage: control task start|get|wait|cancel|logs|list NODE [ID|@spec.json]")
@@ -305,6 +333,9 @@ func run(ctx context.Context, args []string) error {
 			}
 			return nil
 		}
+		if method == "logs" {
+			return logsCLI(ctx, c, target, args[3:])
+		}
 		switch method {
 		case "get", "cancel", "logs":
 		default:
@@ -314,40 +345,7 @@ func run(ctx context.Context, args []string) error {
 	case "artifact":
 		return artifactCLI(ctx, c, args[1:])
 	case "tunnel":
-		if len(args) < 3 {
-			return errors.New("usage: control tunnel NODE HOST:PORT [--listen 127.0.0.1:PORT]")
-		}
-		f := flag.NewFlagSet("tunnel", flag.ContinueOnError)
-		address := f.String("listen", "127.0.0.1:0", "local listen address")
-		if err := f.Parse(args[3:]); err != nil {
-			return err
-		}
-		listener, err := net.Listen("tcp", *address)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = listener.Close() }()
-		stop := context.AfterFunc(ctx, func() { _ = listener.Close() })
-		defer stop()
-		fmt.Fprintln(os.Stderr, "listening on", listener.Addr())
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				if ctx.Err() != nil {
-					return nil
-				}
-				return err
-			}
-			go func() {
-				defer func() { _ = conn.Close() }()
-				remote, err := c.Tunnel(ctx, args[1], args[2])
-				if err != nil {
-					slog.Error("tunnel", "error", err)
-					return
-				}
-				node.Bridge(ctx, conn, remote)
-			}()
-		}
+		return tunnelCLI(ctx, c, args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -520,20 +518,24 @@ Environment: CONTROL_API, CONTROL_TOKEN
   service start|stop|status|uninstall    Manage the installed background node
   install-mcp CLIENT [--project DIR]    Configure an AI client's MCP server
   install-skill CLIENT [--project DIR]  Install the Control CLI skill
-  mcp                                  Serve MCP over stdio using a local node
+  mcp                                  Serve MCP over stdio using saved credentials
   machines                             List your fleet directly from the gateway
   dashboard [--once] [--json] [--node NAME,...]  Gateway status, fleet activity and resources
   system NODE [--refresh]               Cached or requested system sample
   call NODE METHOD [JSON|@file]         Invoke any operation
-  exec NODE [--] COMMAND [ARG...]       Submit a command and wait for its result
+  exec NODE [--detach] [--id ID] [--timeout DURATION] [--] COMMAND [ARG...]
   task start NODE JSON|@file            Submit a durable task
   task get|wait|cancel|logs NODE ID      Inspect or manage a task
-  task list NODE                       List tasks owned by this node
+  task logs NODE ID [--follow] [--offset BYTES]
+  task list NODE                       List tasks owned by this client or local node
   artifact list NODE
   artifact export NODE PATH
   artifact deliver NODE ID DEST_NODE   Peer-to-peer transfer
   artifact get NODE ID LOCAL_PATH      Resumable, checksum-verified download
   tunnel NODE HOST:PORT [--listen ADDRESS]
+  session                              Inspect this process's client identity and connections
 
-Global flags precede the command. Start a local node before CLI or MCP use.
+Global flags precede the command. Remote CLI/MCP calls use a local node when
+available, otherwise a command-scoped peer using your saved gateway login.
+Explicit --api or CONTROL_API selects only that API and disables fallback.
 `

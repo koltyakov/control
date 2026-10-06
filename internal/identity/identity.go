@@ -43,6 +43,19 @@ func Load(dir string) (*Identity, error) {
 	if err != nil {
 		return nil, err
 	}
+	return fromKey(b)
+}
+
+// Generate creates a connection identity without persisting a new task owner.
+func Generate() (*Identity, error) {
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	return fromKey(key)
+}
+
+func fromKey(b []byte) (*Identity, error) {
 	if len(b) != ed25519.PrivateKeySize {
 		return nil, errors.New("invalid identity key")
 	}

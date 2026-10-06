@@ -8,6 +8,7 @@ import (
 
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/transport"
 	"github.com/koltyakov/control/internal/update"
 )
 
@@ -66,7 +67,7 @@ func (n *Node) pauseForUpdate() bool {
 // cannot accidentally replace their own test runner through an update message.
 func (n *Node) ConfigureUpdates(info buildinfo.Info, apply func(string) error) error {
 	n.Peer.SetSoftware(info)
-	a, err := update.NewAgent(update.AgentOptions{
+	updater, err := update.NewUpdater(update.UpdaterOptions{
 		Gateway: n.Config.Gateway, Token: n.Config.Token, Dir: n.Config.DataDir, Software: info,
 		Busy: n.updateBusy, Pause: n.pauseForUpdate, Resume: n.work.Resume, Apply: apply,
 		Report: func(ctx context.Context, status update.Status) error {
@@ -76,8 +77,8 @@ func (n *Node) ConfigureUpdates(info buildinfo.Info, apply func(string) error) e
 	if err != nil {
 		return err
 	}
-	n.updater = a
-	n.Peer.SetControlHandler(a.Receive)
+	n.updater = updater
+	n.Peer.SetControlHandler(updater.Receive)
 	return nil
 }
 
@@ -88,3 +89,5 @@ type workConn struct {
 }
 
 func (c *workConn) Close() error { err := c.Conn.Close(); c.once.Do(c.release); return err }
+
+func (c *workConn) CloseWrite() error { return transport.CloseWrite(c.Conn) }

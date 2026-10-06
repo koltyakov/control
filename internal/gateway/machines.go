@@ -33,6 +33,11 @@ func (g *Gateway) nodeState(w http.ResponseWriter, r *http.Request) {
 	}
 	id := identity.ID(proof.PublicKey)
 	g.mu.Lock()
+	if g.clientOwners[id] || g.clientTransports[id] != "" {
+		g.mu.Unlock()
+		http.NotFound(w, r)
+		return
+	}
 	state := g.machineStates[id]
 	if c := g.peers[id]; c != nil && !proof.InspectOnly {
 		if n, ok := g.nodes[id]; ok && !n.Managed {
@@ -42,7 +47,7 @@ func (g *Gateway) nodeState(w http.ResponseWriter, r *http.Request) {
 			if err := g.persist(); err != nil {
 				g.nodes[id] = n
 				g.mu.Unlock()
-				http.Error(w, "could not persist agent management support", 500)
+				http.Error(w, "could not persist node management support", 500)
 				return
 			}
 		}
@@ -75,7 +80,7 @@ func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !n.Managed {
-		http.Error(w, "upgrade this agent before managing its state", http.StatusConflict)
+		http.Error(w, "upgrade this node before managing its state", http.StatusConflict)
 		return
 	}
 	old := g.machineStates[id]

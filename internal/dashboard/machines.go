@@ -137,14 +137,14 @@ func (m view) managerView() tea.View {
 		} else {
 			lines = append(lines, "The offline registration will be removed immediately.", "This identity cannot rejoin the fleet.")
 		}
-		lines = append(lines, "Lifecycle-capable agents stop on their next gateway contact.", "Older agents must be stopped locally or replaced by an installer.")
+		lines = append(lines, "Lifecycle-capable nodes stop on their next gateway contact.", "Older nodes must be stopped locally or replaced by an installer.")
 		footer = hint("Enter", "unregister") + sep + hint("Esc", "back")
 	case "pending":
 		lines = append(lines, paint("Requesting "+w.action+" for "+clean(n.Name)+"…", "36", m.color))
 		footer = ""
 	case "done":
 		message := fmt.Sprintf("%s requested for %s.", strings.ToUpper(w.action[:1])+w.action[1:], clean(n.Name))
-		lines = append(lines, paint(message, "32", m.color), paint("Agents apply changes when they contact the gateway.", "2", m.color))
+		lines = append(lines, paint(message, "32", m.color), paint("Nodes apply changes when they contact the gateway.", "2", m.color))
 		footer = hint("Enter / Esc", "close")
 	case "error":
 		lines = append(lines, paint(clean(w.message), "33", m.color), "Check the machine's state before trying again.")

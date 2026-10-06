@@ -20,18 +20,20 @@ import (
 type Fetch func(context.Context) (model.PoolActivitySnapshot, error)
 
 type Options struct {
-	Interval   time.Duration
-	Timeout    time.Duration
-	Output     io.Writer
-	GatewayURL string
-	Invite     Invite
-	Copy       Copy
-	Manage     ManageMachine
+	Interval         time.Duration
+	Timeout          time.Duration
+	Output           io.Writer
+	GatewayURL       string
+	Invite           Invite
+	InvitationStatus InvitationStatus
+	Copy             Copy
+	Manage           ManageMachine
 }
 
 type result struct {
-	snapshot model.PoolActivitySnapshot
-	err      error
+	snapshot       model.PoolActivitySnapshot
+	err            error
+	registrationID int
 }
 type tick struct{ generation int }
 
@@ -50,6 +52,10 @@ type view struct {
 	wizardGeneration      int
 	manager               *machineManager
 	managerGeneration     int
+	selection             *textSelection
+	selectedText          string
+	selectionCopying      bool
+	selectionNotice       string
 }
 
 func Run(ctx context.Context, fetch Fetch, options Options) error {
@@ -66,11 +72,17 @@ func Run(ctx context.Context, fetch Fetch, options Options) error {
 }
 
 func (m view) poll() tea.Cmd {
+	// Only a poll started after redemption can confirm the new connection.
+	// A replacement may share an identity with an older online snapshot.
+	registrationID := 0
+	if m.wizard != nil && m.wizard.redeemedID != "" {
+		registrationID = m.wizard.id
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, m.options.Timeout)
 		defer cancel()
 		snapshot, err := m.fetch(ctx)
-		return result{snapshot, err}
+		return result{snapshot: snapshot, err: err, registrationID: registrationID}
 	}
 }
 
@@ -78,14 +90,34 @@ func (m view) Init() tea.Cmd { return m.poll() }
 
 func (m view) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.MouseMsg:
+		return m.updateSelection(msg)
+	case selectionCopyResult:
+		m.selectionCopying = false
+		m.selectionNotice = "Selection copied."
+		if msg.err != nil {
+			m.selectionNotice = "Copy failed: " + clean(msg.err.Error()) + " · c retries"
+		}
 	case machineActionResult:
 		return m.updateManager(msg)
-	case invitationResult, clipboardResult, tea.PasteMsg:
+	case invitationResult, invitationStatusResult, clipboardResult, tea.PasteMsg:
 		return m.updateRegistration(msg)
 	case tea.WindowSizeMsg:
+		m.selection = nil
 		m.width, m.height = msg.Width, msg.Height
 		m.xOffset = 0
 	case tea.KeyPressMsg:
+		if m.selection != nil {
+			m.selection = nil
+			if msg.String() == "esc" {
+				return m, nil
+			}
+		}
+		if msg.String() == "c" && m.selectedText != "" {
+			return m.copySelection()
+		}
+		m.selectionNotice = ""
+		m.selectedText = ""
 		if m.manager != nil {
 			return m.updateManager(msg)
 		}
@@ -131,13 +163,22 @@ func (m view) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.offset = 1 << 30
 		}
 	case result:
-		m.busy, m.err = false, msg.err
+		m.busy = false
+		m.err = msg.err
 		if msg.err == nil {
 			m.snapshot = msg.snapshot
+			if w := m.wizard; w != nil && w.redeemedID != "" && msg.registrationID == w.id {
+				for _, node := range m.snapshot.Nodes {
+					if node.ID == w.redeemedID && node.Online {
+						m.wizard = nil
+						break
+					}
+				}
+			}
 		}
 		m.generation++
 		generation := m.generation
-		return m, tea.Tick(m.options.Interval, func(time.Time) tea.Msg { return tick{generation} })
+		return m, tea.Batch(tea.Tick(m.options.Interval, func(time.Time) tea.Msg { return tick{generation} }), m.checkInvitation())
 	case tick:
 		if msg.generation != m.generation {
 			return m, nil
@@ -157,7 +198,7 @@ func (m view) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m view) View() tea.View {
+func (m view) contentView() tea.View {
 	if m.manager != nil {
 		return m.managerView()
 	}
@@ -256,10 +297,10 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 		return "Waiting for the gateway..."
 	}
 	if g := snapshot.Gateway; g != nil {
-		title := paint("Gateway", "1", options.color) + "  " + paint(clean(g.URL), "1;36", options.color) + paint("  "+clean(g.Software.Version), "2", options.color)
+		title := paint("Gateway", "1", options.color) + "  " + paint(clean(g.URL), "1;36", options.color) + paint("  "+clean(options.version(g.Software.Version)), "2", options.color)
 		up := "Up ?"
 		if !g.StartedAt.IsZero() {
-			up = "Up " + elapsed(now.Sub(g.StartedAt))
+			up = "Up " + uptime(now.Sub(g.StartedAt))
 		}
 		status := paint("  "+up, "2", options.color)
 		if options.stale {
@@ -333,7 +374,7 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 			count = "-"
 		}
 		osName, cpuUsed, ram, free := n.OS, "-", "-", "-"
-		if s := n.System; s != nil {
+		if s := n.System; n.Online && s != nil {
 			if s.CPUUsagePercent != nil {
 				cpuUsed = fmt.Sprintf("%.1f%%", *s.CPUUsagePercent)
 			} else {
@@ -350,7 +391,7 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 		if n.Status == "ready" {
 			connections = fmt.Sprintf("%d/%d", n.DirectSessions, n.RelaySessions)
 		}
-		version := n.Software.Version
+		version := options.version(n.Software.Version)
 		if version == "" {
 			version = "-"
 		}
@@ -362,6 +403,7 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 		}
 		rows = append(rows, []string{n.Name, status, seen, count, osName, version, cpuUsed, ram, free, connections})
 	}
+	b.WriteByte('\n')
 	options.table(&b, machineColumns, rows)
 	for _, n := range snapshot.Nodes {
 		if n.Error != "" {
@@ -427,11 +469,18 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 			}
 			fmt.Fprintf(&b, "%s: %s %s | %s | %d physical / %d logical CPUs\n", clean(n.Name), clean(s.Platform), clean(s.PlatformVersion), clean(s.CPUModel), s.PhysicalCPUs, s.LogicalCPUs)
 			for _, disk := range s.Disks {
+				if !n.Online {
+					fmt.Fprintf(&b, "  %s: %s total\n", clean(disk.Path), bytes(disk.TotalBytes))
+					continue
+				}
 				fmt.Fprintf(&b, "  %s: %s used / %s total, %s free", clean(disk.Path), bytes(disk.UsedBytes), bytes(disk.TotalBytes), bytes(disk.FreeBytes))
 				if disk.Error != "" {
 					fmt.Fprintf(&b, " (%s)", clean(disk.Error))
 				}
 				b.WriteByte('\n')
+			}
+			if !n.Online {
+				continue
 			}
 			for _, err := range s.Errors {
 				fmt.Fprintf(&b, "  metric unavailable: %s\n", clean(err))
@@ -461,6 +510,18 @@ func bytes(value uint64) string {
 		return fmt.Sprintf("%dB", value)
 	}
 	return fmt.Sprintf("%.1f%s", v, units[unit])
+}
+
+func uptime(d time.Duration) string {
+	d = max(0, d).Round(time.Second)
+	switch {
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh %dm", d/time.Hour, d%time.Hour/time.Minute)
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm %ds", d/time.Minute, d%time.Minute/time.Second)
+	default:
+		return d.String()
+	}
 }
 
 func elapsed(d time.Duration) string {

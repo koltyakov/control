@@ -6,7 +6,9 @@ These principles guide changes to Control. The [decision record](decisions.md) d
 
 ## Every machine is a peer
 
-A node can initiate work, receive work, serve artifacts, and consume another node's capabilities. An orchestrator is a role that a node performs. Avoid introducing assumptions that all requests originate from one laptop or that only workers can produce files.
+A node can initiate work, receive work, serve artifacts, and consume another node's capabilities. Orchestrator and worker are roles within an operation, not fixed machine types. An orchestrator can coordinate through a standalone client or a node. Follow the [terminology](terminology.md): client, node, and gateway name components; agent refers to AI software. Avoid introducing assumptions that all requests originate from one laptop or that only workers can produce files.
+
+An orchestrator's CLI or MCP process is an authenticated client, not an enrolled execution machine. Keep client transport identities and task ownership separate from the fleet machine catalog, resource observation, lifecycle controls, and managed binary rollout. Remote client execution must not require enrolling the requesting machine as a worker.
 
 Windows, Linux, and macOS are equal targets. Power BI, FFmpeg, databases, and AI CLIs are examples of capabilities, not categories built into the connection protocol.
 

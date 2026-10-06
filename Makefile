@@ -35,7 +35,7 @@ help:
 	@echo "  make vuln               - Scan dependencies for vulnerabilities"
 	@echo "  make ci / ci-compose    - Local CI checks / CI plus Compose integration"
 	@echo "  make test-compose       - Test WebRTC and relay deployments"
-	@echo "  make update             - Build and push a managed pool update"
+	@echo "  make update             - Push local build to gateway and all enrolled nodes"
 	@echo "  make update-status      - Show managed rollout status"
 	@echo "  make uninstall          - Run the per-user uninstaller"
 	@echo "  make clean              - Remove local build and coverage output"
@@ -90,7 +90,9 @@ release-local: bundle
 release-check:
 	$(GO) run ./cmd/control-bundle --out "$(DIST_DIR)" --check
 
-update: build bundle
+update: build
+	"$(BIN_DIR)/control$(EXE)" update authorize --check
+	$(MAKE) bundle
 	"$(BIN_DIR)/control$(EXE)" update push "$(DIST_DIR)"
 
 update-status: build

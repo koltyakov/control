@@ -1,4 +1,6 @@
-// Package client talks to a local node. CLI and MCP share this implementation.
+// Package client implements the orchestrator's CLI/MCP component, routing calls
+// through a local node API or a standalone authenticated client session.
+// Standalone clients are not enrolled fleet machines and cannot execute work.
 package client
 
 import (
@@ -17,11 +19,35 @@ import (
 	"github.com/coder/websocket"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/node"
+	"github.com/koltyakov/control/internal/transport"
 )
 
+// Client submits and observes work on nodes without defining a fixed machine role.
 type Client struct {
-	URL   string
-	Token string
+	URL       string
+	Token     string
+	routing   *routing
+	resources *resources
+}
+
+// WithLifetime owns local listeners and streams until Close or cancellation.
+func (c Client) WithLifetime(ctx context.Context) Client {
+	if c.resources == nil {
+		c.resources = newResources(ctx)
+	}
+	return c
+}
+
+func (c Client) lifetimeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+	if c.resources == nil {
+		return ctx, cancel
+	}
+	stop := context.AfterFunc(c.resources.ctx, cancel)
+	if c.resources.ctx.Err() != nil {
+		cancel()
+	}
+	return ctx, func() { stop(); cancel() }
 }
 
 func (c Client) request(ctx context.Context, path string, value any) (*http.Response, error) {
@@ -35,6 +61,13 @@ func (c Client) request(ctx context.Context, path string, value any) (*http.Resp
 }
 
 func (c Client) Call(ctx context.Context, target, method string, params any, result any) error {
+	peer, err := c.backend(ctx)
+	if err != nil {
+		return err
+	}
+	if peer != nil {
+		return peerCall(ctx, peer, target, method, params, result)
+	}
 	resp, err := c.request(ctx, "/v1/call", node.APICall{Target: target, Method: method, Params: model.JSON(params)})
 	if err != nil {
 		return fmt.Errorf("local node API: %w", err)
@@ -76,6 +109,13 @@ func (c Client) Wait(ctx context.Context, target, id string) (model.Task, error)
 }
 
 func (c Client) Download(ctx context.Context, a model.Artifact, offset int64, w io.Writer) error {
+	peer, err := c.backend(ctx)
+	if err != nil {
+		return err
+	}
+	if peer != nil {
+		return peerDownload(ctx, peer, a, offset, w)
+	}
 	resp, err := c.request(ctx, "/v1/download", map[string]any{"artifact": a, "offset": offset})
 	if err != nil {
 		return err
@@ -89,11 +129,47 @@ func (c Client) Download(ctx context.Context, a model.Artifact, offset int64, w 
 }
 
 func (c Client) Tunnel(ctx context.Context, target, address string) (net.Conn, error) {
-	u := strings.TrimRight(c.URL, "/") + "/v1/tunnel?" + url.Values{"target": {target}, "address": {address}}.Encode()
-	u = strings.Replace(strings.Replace(u, "https://", "wss://", 1), "http://", "ws://", 1)
-	ws, _, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + c.Token}}})
+	ctx, cancel := context.WithCancel(ctx)
+	stopLifetime := func() bool { return false }
+	if c.resources != nil {
+		if c.resources.ctx.Err() != nil {
+			cancel()
+			return nil, errors.New("client is closed")
+		}
+		stopLifetime = context.AfterFunc(c.resources.ctx, cancel)
+	}
+	cleanup := func() { stopLifetime(); cancel() }
+	var conn net.Conn
+	var err error
+	defer func() {
+		if conn == nil {
+			cleanup()
+		}
+	}()
+	peer, err := c.backend(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return websocket.NetConn(ctx, ws, websocket.MessageBinary), nil
+	if peer != nil {
+		if target == "" {
+			return nil, errors.New("standalone tunnels require a target machine")
+		}
+		conn, err = peer.OpenTCP(ctx, target, address)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		u := strings.TrimRight(c.URL, "/") + "/v1/tunnel?" + url.Values{"target": {target}, "address": {address}, "duplex": {"1"}}.Encode()
+		u = strings.Replace(strings.Replace(u, "https://", "wss://", 1), "http://", "ws://", 1)
+		ws, response, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + c.Token}}})
+		if err != nil {
+			return nil, err
+		}
+		conn = websocket.NetConn(ctx, ws, websocket.MessageBinary)
+		if response.Header.Get("Control-Tunnel-Duplex") == "1" {
+			conn = transport.NewDuplexConn(conn)
+		}
+	}
+	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()); _ = conn.Close(); cleanup() })
+	return &contextConn{Conn: conn, stop: func() bool { stopped := stop(); cleanup(); return stopped }}, nil
 }

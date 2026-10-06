@@ -1,4 +1,4 @@
-// Package clipboard copies installation commands through the host's clipboard tool.
+// Package clipboard copies text through the host's clipboard tool.
 package clipboard
 
 import (

@@ -64,7 +64,7 @@ func TestUnverifiedUploadNeverReplacesPublishedBinary(t *testing.T) {
 	}
 }
 
-func TestAgentWaitsForWorkAndRequiresLiveReservation(t *testing.T) {
+func TestUpdaterWaitsForWorkAndRequiresLiveReservation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	executable, err := os.Executable()
@@ -93,27 +93,27 @@ func TestAgentWaitsForWorkAndRequiresLiveReservation(t *testing.T) {
 	old := info
 	old.SHA256 = strings.Repeat("0", 64)
 	applied := 0
-	options := AgentOptions{Dir: t.TempDir(), Gateway: server.URL, Software: old, Busy: func() bool { n, _ := gate.State(); return n > 0 }, Pause: gate.PauseIfIdle, Resume: gate.Resume, Report: func(context.Context, Status) error { return nil }, Apply: func(path string) error { applied++; return Verify(path, asset) }}
-	a, err := NewAgent(options)
+	options := UpdaterOptions{Dir: t.TempDir(), Gateway: server.URL, Software: old, Busy: func() bool { n, _ := gate.State(); return n > 0 }, Pause: gate.PauseIfIdle, Resume: gate.Resume, Report: func(context.Context, Status) error { return nil }, Apply: func(path string) error { applied++; return Verify(path, asset) }}
+	a, err := NewUpdater(options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	command := Command{ID: strings.Repeat("a", 64), Version: info.Version, Asset: asset, LeaseUntil: time.Now().Add(time.Minute)}
-	a.process(ctx, agentCommand{"update.offer", command})
+	a.process(ctx, queuedCommand{"update.offer", command})
 	if s := a.Snapshot(); s.State != "staged" {
 		t.Fatalf("staging: %+v", s)
 	}
-	a.process(ctx, agentCommand{"update.prepare", command})
-	a.process(ctx, agentCommand{"update.commit", command})
+	a.process(ctx, queuedCommand{"update.prepare", command})
+	a.process(ctx, queuedCommand{"update.commit", command})
 	if applied != 0 || a.Snapshot().Paused {
 		t.Fatal("updated while work was active")
 	}
 	active()
-	a.process(ctx, agentCommand{"update.commit", command})
+	a.process(ctx, queuedCommand{"update.commit", command})
 	if applied != 0 {
 		t.Fatal("commit without reservation")
 	}
-	a.process(ctx, agentCommand{"update.prepare", command})
+	a.process(ctx, queuedCommand{"update.prepare", command})
 	if !a.Snapshot().Paused {
 		t.Fatal("idle reservation missing")
 	}
@@ -123,21 +123,21 @@ func TestAgentWaitsForWorkAndRequiresLiveReservation(t *testing.T) {
 		t.Fatal("accepted work during reservation")
 	}
 	stop()
-	a.process(ctx, agentCommand{"update.commit", command})
+	a.process(ctx, queuedCommand{"update.commit", command})
 	if applied != 1 {
 		t.Fatal("idle committed update did not apply")
 	}
 	// A restarted process keeps admissions closed until the coordinator resumes.
 	gate.Resume()
 	options.Software = info
-	restarted, err := NewAgent(options)
+	restarted, err := NewUpdater(options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if s := restarted.Snapshot(); !s.Paused || s.State != "applied" {
 		t.Fatalf("lost restart reservation: %+v", s)
 	}
-	restarted.process(ctx, agentCommand{"update.resume", command})
+	restarted.process(ctx, queuedCommand{"update.resume", command})
 	if _, paused := gate.State(); paused {
 		t.Fatal("resume did not release gate")
 	}
@@ -148,7 +148,7 @@ func TestAgentWaitsForWorkAndRequiresLiveReservation(t *testing.T) {
 	bad := command
 	bad.ID = strings.Repeat("b", 64)
 	bad.Asset.Size++
-	a.process(ctx, agentCommand{"update.offer", bad})
+	a.process(ctx, queuedCommand{"update.offer", bad})
 	if a.Snapshot().State != "error" {
 		t.Fatal("accepted truncated update")
 	}

@@ -8,7 +8,11 @@ Use Docker Compose for repeatable integration testing. Docker supplies Go, FFmpe
 
 The suite also runs generated Bash installers in the test container, verifies online registration and remote execution, rejects reuse and common-key invitation creation, and checks login followed by host setup without credential environment variables, plus MCP/skill installation. Unit tests cover saved login reuse, private credential files, failed-login preservation, concurrent redemption, expiry, revocation, name reservations, and configuration preservation. These Linux container tests do not exercise native launchd or Windows SCM startup.
 
-Private-fleet tests create two user accounts with duplicate machine names, multiple host agents, and a worker installed through a user-owned invitation. They verify saved account credentials, same-fleet execution over the required transport, and rejection of cross-user discovery, execution, tasks, artifacts, observation, and invitation revocation. Native tests also send forged signaling/relay packets directly to the gateway, check receiver membership and cross-user artifact grants, reject identity reassignment, and verify transactional JSON-to-SQLite migration and account persistence.
+Private-fleet tests create two user accounts with duplicate machine names, multiple orchestrator nodes, and a worker installed through a user-owned invitation. They verify saved account credentials, same-fleet execution over the required transport, and rejection of cross-user discovery, execution, tasks, artifacts, observation, and invitation revocation. Native tests also send forged signaling/relay packets directly to the gateway, check receiver membership and cross-user artifact grants, reject identity reassignment, and verify transactional JSON-to-SQLite migration and account persistence.
+
+Standalone client tests exercise named calls, owner-scoped task recovery across invocations, resumed artifact downloads, and cancellable TCP tunnels over both WebRTC and relay. Concurrent clients use independent TLS identities while sharing task submission, cancellation, logs, and lease ownership. Closing the submitting client shuts down its listener and sockets without cancelling durable work. They check account and independent-owner isolation, worker authorization, exclusion of clients from machine discovery and the dashboard, and refusal to switch backends after local authentication or application failures. Gateway tests cover role-bound and owner proofs, forged metadata, immutable roles and bindings, client credential revocation, transient routing metadata, exclusion from managed updates, and database migration of legacy CLI registrations without losing ownership. Negotiation tests reject older gateways and workers before connecting or sending work. CLI tests execute a subprocess with only a saved login, exercise detached submission, timeout selection and followed logs, and verify that explicit API settings disable fallback. MCP tests cover session inspection and start/list/stop forwarding through the local API, socket cleanup, listener limits, and closed-client rejection. These tests run in the core suite inside Compose as well as native CI.
+
+Streaming tests also verify concurrent traffic lanes, one WebRTC carrier across lane channels, control traffic during blocked bulk writes, sibling multiplexer closure, independently cancelled slow-peer setup, stream-capacity cancellation, receive-packet bounds and buffer ownership, changing write deadlines, TCP EOF-driven responses through standalone and local API forwards, malformed duplex records, legacy raw/polling fallback, and binary log offsets with cancellation and owner checks. Adapter microbenchmarks and measured allocation changes are documented in [fleet streaming](streaming.md#verification-and-measurements).
 
 From the repository root:
 
@@ -49,6 +53,8 @@ The [Compose file](../compose.yaml) defines five services:
 
 Every node has its own state and working-directory volumes. Artifacts cannot pass between machines through a shared filesystem. The network is internal to Docker, no host ports are published, and containers do not mount the Docker socket.
 
+These are fixture names, not fixed runtime types. `source` takes the orchestrator role for the workflow and executes its local generation step as a worker. `consumer` is an enrolled node receiving artifacts. See [terminology](terminology.md).
+
 For this isolated fixture, node APIs listen on all container interfaces so the test runner can reach them. The pool uses a fixed test-only token. This configuration is for testing; normal deployment keeps each local API on loopback.
 
 Gateway and node health checks gate test startup. The [relay override](../compose.relay.yaml) switches every node to relay-only mode and changes the expected transport in the runner.
@@ -67,13 +73,19 @@ Gateway and node health checks gate test startup. The [relay override](../compos
 - Cached system capabilities and explicit resource refreshes. The core suite also checks periodic/completion-request collection, denied/offline machine states, metadata privacy, and stale-view behavior.
 - A development bundle pushed to the gateway, deferred by a running task and lease, then applied by real process restarts on all three nodes and the gateway. Identities, task state, and issued keys survive the rollout.
 - Rejection of common-key update uploads and omission of administrative commands from common-key CLI help. Core tests also check release retrieval, corrupted binaries, persisted maintenance reservations, and key revocation.
-- One-time enrollment and Bash installer architecture selection with checksum rejection for Linux/macOS amd64 and arm64. The architecture tests simulate target detection; they do not execute foreign-platform binaries. Core tests cover architecture-bound redemption, pinned downloads across deployment changes, restart recovery, and wizard clipboard failures without duplicate invitations.
-- Re-running generated installers on an existing agent with the same name and a new name, retaining one identity and restoring remote execution while rejecting old credentials. After unregistration, a new installer uses fresh identity state and restores execution through the same profile. Core tests cover same-name identity reservations, profile/access-rule preservation, response recovery, persistence, and foreign or retired identity rejection.
+- One-time enrollment using the target's automatic hostname, and Bash installer architecture selection with checksum rejection for Linux/macOS amd64 and arm64. The architecture tests simulate target detection; they do not execute foreign-platform binaries. Core tests cover architecture-bound redemption, pinned downloads across deployment changes, restart recovery, and wizard clipboard failures without duplicate invitations.
+- Re-running generated installers on an existing node with the same name and a new name, including when an earlier attempt left pending enrollment, retaining one identity and restoring remote execution while rejecting old credentials. After unregistration, a new installer uses fresh identity state and restores execution through the same profile. Core tests cover replacement of expired pending attempts, preservation of pending replacement identities and profile settings, same-link credential recovery, and rejection of invalid replacements without losing recovery state.
 - Enable/disable/unregister through the installed CLI: admission changes on the remote node, unregister revokes its credential, and its actual supervisor exits. Core tests cover existing WebRTC/relay sessions, selector exclusion, accepted-task recovery and completion while disabled, independent update reservations, fleet isolation, signed acknowledgements, durable policy, online/offline unregistration without lifecycle support, inspection without lifecycle acknowledgement, retired identities, and dashboard action selection.
 
 These tests live in [tests/compose/e2e_test.go](../tests/compose/e2e_test.go) and [tests/compose/updates_test.go](../tests/compose/updates_test.go) behind the `compose` build tag. The ordinary Go suite remains independent of Docker and FFmpeg. Its existing tests cover cancellation, leases, grants, MCP, identity ownership, gateway restarts, and task reconciliation.
 
+Core automatic-name tests cover CLI omitted/`auto` names, blank dashboard input, target-hostname validation, signed name binding, legacy proof compatibility, concurrent hostname claims, explicit reservations, persistence rollback, response recovery across restart, and rejection of foreign or retired identities.
+
 Native CLI self-update tests use a local release server and a real running executable to check replacement, pinned downloads, checksum and version rejection, cancellation, and repeated updates. Windows CI exercises replacement while the previous executable is running. These tests require no published release or gateway credential.
+
+Development-update tests verify private credential storage independent of the dashboard login, operator-login persistence across later fleet logins, repeated login without key entry, reuse without environment variables, gateway scoping, explicit overrides, stdin authorization, rejected keys, and cancellation without credential changes. Check-only authorization cannot prompt, read a key, or save credentials. POSIX Make tests verify that this check precedes bundling and publishing even under `make -j`, and that failed authorization stops before platform builds.
+
+Shared client tests verify that binary request bytes reach the receiver before the producer completes the body, that a 16 MiB binary uses `application/octet-stream` with its exact length and checksum, and that the JSON manifest is published only after successful uploads. HTTP 413 must stop publication without automatically retrying the upload.
 
 The Dockerfile downloads Go dependencies while building the image. The running test network does not need internet access. The initial image build does need access to container registries, Go modules, and Debian package repositories.
 
@@ -126,7 +138,7 @@ Linux containers on Docker Desktop do not verify Windows process handling or mac
 
 ## Local development commands
 
-Windows-native tests cover SCM stop/shutdown cancellation, failure reporting, and console-free background children. To exercise an actual service, run from Administrator PowerShell:
+Windows-native tests cover SCM stop/shutdown cancellation, failure reporting, and console-free background children. Login-task tests also read the real scheduler to verify that an absent task is a successful no-op, and use PowerShell fixtures to verify exact task filtering, ownership checks, and readable errors without CLIXML progress output. These checks need no elevation and do not create or remove tasks. To exercise an actual service, run from Administrator PowerShell:
 
 ```powershell
 $env:CONTROL_TEST_WINDOWS_SERVICE = '1'
@@ -134,6 +146,15 @@ go test ./cmd/control -run '^TestWindowsServiceLifecycle$' -timeout 180s
 ```
 
 This opt-in test builds a temporary executable, migrates a live detached node to SCM, verifies automatic startup settings and LocalService permissions, kills the supervisor to check SCM recovery and identity preservation, then stops, restarts, and removes the service. It uses a local gateway and paths containing spaces. Boot and logout persistence still need a Windows machine smoke test.
+
+To test user-login startup in a logged-in Windows session, without an account password:
+
+```powershell
+$env:CONTROL_TEST_WINDOWS_USER_STARTUP = '1'
+go test ./cmd/control -run '^TestWindowsUserStartupLifecycle$' -timeout 180s
+```
+
+This creates a temporary login task, checks execution under the installing user's SID, and verifies saved-mode stop/start, repeated start, and identity preservation. It removes the task and stops the node on completion. Pure Go tests cover launcher encoding, path quoting, task ownership guards, profile scope, and limited interactive-token registration. Cross-compilation does not verify Task Scheduler permissions, console visibility, login/logout behavior, or SCM migration; verify those on a Windows machine before deployment.
 
 `make` and `make help` list available targets. Make recipes use a POSIX shell; Windows developers can use Git Bash with Make or run the corresponding Go commands directly.
 

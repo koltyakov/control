@@ -134,6 +134,7 @@ func (n *Node) startTask(owner string, spec model.TaskSpec) (model.Task, error) 
 		return model.Task{}, err
 	}
 	n.tasks[task.ID] = task
+	n.taskChanges[task.ID] = make(chan struct{})
 	ctx, cancel := context.WithTimeout(n.ctx, time.Duration(spec.TimeoutSeconds)*time.Second)
 	ctx = context.WithValue(ctx, workContextKey{}, n)
 	n.cancels[task.ID] = cancel
@@ -180,7 +181,7 @@ func (n *Node) runTask(ctx context.Context, id string) {
 		return
 	}
 	defer func() { _ = log.Close() }()
-	output := &limitedLog{w: log, remaining: 10 << 20}
+	output := &limitedLog{w: log, remaining: 10 << 20, notify: func() { n.mu.Lock(); n.notifyTaskLocked(id); n.mu.Unlock() }}
 	var result any
 	var artifacts []model.Artifact
 	err = func() error {
@@ -265,6 +266,7 @@ func (n *Node) finishTask(id string, ctx context.Context, result any, artifacts 
 		task.State, task.Error = "failed", "persist task completion: "+e.Error()
 	}
 	delete(n.cancels, id)
+	n.notifyTaskLocked(id)
 	if task.Spec.Capability == "exec.run" || task.Spec.Capability == "agent.run" || time.Since(task.Created) > time.Second {
 		n.system.Request()
 	}
@@ -349,6 +351,7 @@ type limitedLog struct {
 	mu        sync.Mutex
 	w         io.Writer
 	remaining int64
+	notify    func()
 }
 
 func (w *limitedLog) Write(b []byte) (int, error) {
@@ -360,6 +363,9 @@ func (w *limitedLog) Write(b []byte) (int, error) {
 	}
 	n, err := w.w.Write(b)
 	w.remaining -= int64(n)
+	if n > 0 && w.notify != nil {
+		w.notify()
+	}
 	if err != nil {
 		return n, err
 	}

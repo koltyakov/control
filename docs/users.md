@@ -2,7 +2,7 @@
 
 [README](../README.md) · [Installation](installation.md) · [Architecture](architecture.md) · [Protocol](protocol.md)
 
-One gateway can serve multiple users. Each user owns one private fleet with any number of host agents and workers. All of that user's agents can address their workers by name, subject to the workers' access rules. Workers can collaborate with other machines in the same fleet. Another user's credentials cannot discover or connect to those machines.
+One gateway can serve multiple users. Each user owns one private fleet with any number of nodes. Orchestrators can address worker nodes by name, subject to the workers' access rules. Nodes can perform either role and collaborate with other machines in the same fleet. An orchestrator can also use a standalone client without enrolling its machine. Another user's credentials cannot discover or connect to those machines. See [terminology](terminology.md) for roles and components.
 
 ## Register a user
 
@@ -34,7 +34,7 @@ control dashboard
 
 Bob follows the same flow with his account key. He can also name a machine `render`; names are unique within a fleet. He sees only his own registrations, invitations, keys, and activity. Knowing Alice's machine ID does not grant access.
 
-## Roles
+## Credential roles
 
 | Credential | Scope |
 | --- | --- |
@@ -56,7 +56,7 @@ The gateway operator remains trusted. The operator owns the database and release
 - Node dispatch checks the attested membership before capability access rules and before artifact-grant handling. Wildcard access rules and signed artifact grants cannot create a cross-fleet connection.
 - Identity ownership stays recorded after a registration is forgotten. The same key cannot move to another user, so cached direct sessions cannot become cross-user sessions after re-enrollment.
 
-Task ownership remains narrower than fleet membership. One agent can use a worker without gaining permission to cancel another agent's tasks. Node-wide monitoring remains read-only and scoped to the fleet.
+Task ownership remains narrower than fleet membership. One orchestrator can use a worker without gaining permission to cancel another orchestrator's tasks. Node-wide monitoring remains read-only and scoped to the fleet.
 
 Revoking a key or disabling a user rejects subsequent gateway authentication and disconnects affected gateway sessions. It does not terminate already accepted work or an established direct session inside that same fleet. Existing direct sessions can survive a gateway outage because their authenticated identities cannot change fleet ownership.
 
@@ -64,9 +64,17 @@ Revoking a key or disabling a user rejects subsequent gateway authentication and
 
 The gateway stores accounts, credential hashes, node registrations, permanent identity ownership, and invitations in `gateway.db`. SQLite uses WAL, full synchronous commits, foreign keys, and a unique machine-name constraint per user. Its driver is pure Go; all six supported platforms retain CGO-free builds. The gateway commits changes before acknowledging them and holds an exclusive state-directory lock.
 
+Authenticated CLI/MCP client sessions belong to an account but are not fleet machines. Concurrent processes have independent transport identities and a shared persistent task-owner key. The gateway verifies both signatures and persists immutable account ownership, client role, and transport-to-owner bindings. Only live routing metadata is kept in memory, for same-account peer authentication. Machine discovery, status, enrollment management, and managed updates exclude clients. Revoking their credential or disabling their account disconnects them like other authenticated connections. See [standalone CLI and MCP](installation.md#standalone-cli-and-mcp).
+
+Derived client identity names remain reserved within their account after disconnecting. A machine or installation invitation cannot claim that name and impersonate a client trusted by a node's name-based access rule. Prefer full identity IDs for access rules.
+
 The first startup imports existing `nodes.json`, `keys.json`, and `installations.json` into a single `legacy` fleet in one transaction. Old records cannot identify separate users, so migration never guesses ownership. Legacy files are retained but ignored after the database migration commits. Failed migration leaves them intact and can be retried.
 
 Schema version 2 adds `machine_states` for disabled policies and unregistration tombstones, referencing the existing permanent identities. Upgrading schema version 1 creates this table transactionally. Older gateways reject the newer schema; do not point them at the upgraded database. Node policy changes and directory removal commit together, and disconnect cleanup never recreates a removed node.
+
+Schema version 3 adds `client_identities`, referencing permanent identities without storing machine registrations or session metadata. Versions 1 and 2 upgrade transactionally. On startup, the gateway migrates only the previous standalone implementation's exact capability-free, unmanaged, unbound `cli-<identity-prefix>` entries out of `nodes`, preserving their account ownership and task-owner identity. Capability-bearing machines, invitation-bound identities, lifecycle-managed machines, and retired identities are not converted. Client roles survive disconnects and gateway restarts and cannot be reused for machine enrollment. Back up the gateway state before upgrading; earlier executables reject schema version 3.
+
+Schema version 4 adds `client_transports` with immutable references to permanent transport and owner identities. Versions 1 through 3 upgrade through transactional schema migrations. The existing persistent client key remains the task owner, so previous tasks and leases stay recoverable. Each process's transport binding survives disconnects and restarts to prevent role changes or owner reassignment, including for cached direct sessions. This ledger stores no routing metadata and is retained without automatic pruning. Back up the gateway state before upgrading; older gateways reject schema version 4.
 
 `CONTROL_TOKEN` on the gateway is an optional bootstrap common key for the legacy fleet only. For a new shared gateway, omit it and configure `CONTROL_SUPERUSER_KEY`, then create separate accounts. Do not give unrelated users the same account key or legacy bootstrap token.
 
@@ -83,6 +91,8 @@ To split an old shared pool into new accounts, enroll fresh node identities unde
 | `DELETE /v1/admin/users/{id}` | Superuser | Disable that account and its credentials |
 | `GET /v1/auth` | Authenticated | `role`, `userId`, and management capabilities |
 | `GET /v1/nodes` | Authenticated | Only the credential owner's fleet |
+| `GET /v1/client/connect` | Authenticated, unbound credential | Role-proven client session, without machine enrollment |
+| `GET /v1/peers/{id}` | Authenticated | Same-account machine identity or a connected client's transient identity; other IDs return 404 |
 | `GET /v1/status` | Authenticated | Gateway version, URL, resources, and own directory; account keys also receive fresh aggregate health for their fleet |
 | `POST /v1/fleet/keys` | Fleet owner | JSON `name`; returns common key metadata and one-time `token` |
 | `GET /v1/fleet/keys` | Fleet owner | Own credential metadata |

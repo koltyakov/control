@@ -34,6 +34,15 @@ func loginCLI(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	explicitKey := false
+	f.Visit(func(f *flag.Flag) {
+		if f.Name == "api-key" {
+			explicitKey = true
+		}
+	})
+	if !*stdin && !explicitKey && *key == "" && gatewayURL == strings.TrimRight(saved.Gateway, "/") {
+		*key = saved.Key
+	}
 	if *stdin {
 		if *key != "" {
 			return errors.New("use --key-stdin without --api-key or a credential environment variable")
@@ -66,8 +75,24 @@ func loginCLI(ctx context.Context, args []string) error {
 	if role != "user" && role != "superuser" && role != "common" {
 		return errors.New("gateway returned an unsupported credential role")
 	}
-	if err := installation.SaveAdmin(installation.AdminProfile{Gateway: gatewayURL, Key: *key}); err != nil {
+	profile := installation.AdminProfile{Gateway: gatewayURL, Key: *key}
+	// Preserve an operator login written by an older CLI before replacing it
+	// with a fleet-account login. Only a verified superuser key is retained.
+	if role != "superuser" && saved.Key != "" && saved.Key != profile.Key && gatewayURL == strings.TrimRight(saved.Gateway, "/") {
+		previous := client.Admin{URL: gatewayURL, Key: saved.Key}
+		if previous.IsSuperuser(ctx) {
+			if err := installation.SaveUpdateAdmin(installation.AdminProfile{Gateway: gatewayURL, Key: saved.Key}); err != nil {
+				return fmt.Errorf("preserve previous update authorization: %w", err)
+			}
+		}
+	}
+	if err := installation.SaveAdmin(profile); err != nil {
 		return err
+	}
+	if role == "superuser" {
+		if err := installation.SaveUpdateAdmin(profile); err != nil {
+			return fmt.Errorf("login saved, but could not save update authorization: %w", err)
+		}
 	}
 	fmt.Printf("Logged in to %s as %s. API key saved for future commands.\n", gatewayURL, role)
 	return nil

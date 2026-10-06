@@ -7,7 +7,11 @@ description: Use Control to inspect registered machines, run tools on named Wind
 
 # Work with the Control pool
 
-Use the installed `control` CLI or the corresponding Control MCP tools. The saved local configuration supplies the gateway connection and credentials. Do not print configuration secrets or installation links in logs.
+## Terminology
+
+An orchestrator coordinates work, a worker executes requested work, and the gateway handles enrollment, discovery, signaling, encrypted relay fallback, and fleet administration. Client names the CLI/MCP component; node names the enrolled execution service. Orchestrator and worker are operation roles, not fixed machine types: a node can perform both, and an orchestrator can use a standalone client without a local node. Reserve agent for AI software, including optional `agent.run` providers, not Control services.
+
+Use the installed `control` CLI or the corresponding Control MCP tools. The saved login or local configuration supplies the gateway connection and credentials. Remote CLI/MCP calls work without a local service using an authenticated client session, unless `--api` or `CONTROL_API` explicitly selects an API. A client is not a fleet machine and must never enroll itself or appear in machine discovery. Standalone mode requires client-session and concurrent-owner support on the gateway and target nodes; report an upgrade error rather than falling back to enrollment. Use named targets in standalone mode. Concurrent standalone processes share the persistent task owner but use independent transport connections. Do not print configuration secrets or installation links in logs.
 
 Commands operate only within the authenticated user's private fleet. Machine names can repeat across users. Never switch credentials to reach another user's machine or interpret an unknown foreign ID as permission to enroll it.
 
@@ -21,9 +25,9 @@ An offline or unavailable node is not an idle node. Do not schedule work on mach
 
 ## Submit durable work
 
-For a command, use `control exec NAME -- COMMAND ARG...`. The CLI prints a task ID before submission and waits for its result. Use structured argument arrays; do not assume the remote machine has a Unix shell.
+For a command, use `control exec NAME -- COMMAND ARG...`. The CLI prints a task ID before submission and waits for its result. For long work, use `--detach --id TASK_ID --timeout 4h` before `--` to return after durable acceptance. Follow logs with `control task logs NAME TASK_ID --follow --offset 0`. Stopping a follower or wait does not cancel the task; use `control task cancel`. Use structured argument arrays; do not assume the remote machine has a Unix shell.
 
-For agents, custom providers, input artifacts, or declared outputs, create a task specification and submit it:
+For AI agents, custom providers, input artifacts, or declared outputs, create a task specification and submit it:
 
 ```sh
 control task start worker @task.json
@@ -43,8 +47,14 @@ Export files from their source with `control artifact export SOURCE PATH`. Pass 
 control artifact get worker ARTIFACT_ID ./result.bin
 ```
 
+## Forward ports on the orchestrator
+
+Use `control tunnel NAME HOST:PORT --listen 127.0.0.1:PORT` for a foreground TCP forward. MCP `control_forward_start` accepts `node`, `address`, and optional `listen` and returns an ID and local address immediately. It survives tool-call completion until `control_forward_stop` or MCP process exit. Use `control_forward_list` for active connections and errors, and `control_session` or CLI `control session` for process identity, traffic lanes, and stream counts. Upgraded peers share a WebRTC carrier across independent control, bulk, and interactive channels, stream followed task logs, and preserve TCP write-side EOF. Older peers retain separate connections, log polling, or full-close semantics. Forwards require `tcp.open` permission on the worker, do not create fleet registrations, and do not stop remote services when closed. Default to loopback; use a non-loopback listener only when the user asks to expose it. Failed sockets and log streams are not automatically replayed. Resume log following explicitly by byte offset.
+
 ## Setup and administration
 
-Use `control service status` to check the local node. `control service start` starts its saved configuration. A fleet owner can create an installation command with `control machines add NAME --platform macos|windows|linux`. The installer detects architecture and uses the default invitation lifetime. Treat the URL as a short-lived bearer secret and share it only with the intended installer. Account keys can use `control machines disable|enable|unregister NAME`; unregister removes even offline registrations and retires their identities. Lifecycle-capable agents stop on their next gateway contact; older offline agents require a local stop if still running. Use these lifecycle commands only when the user requests the change. Common keys cannot manage invitations or machine policy. User provisioning and global software updates require the gateway superuser.
+Use `control machines add auto --platform OS`, or omit the name, to use the target machine's hostname. This name is resolved by the target installer, not by the orchestrator. Hostname collisions fail without replacing another machine; choose an explicit name rather than automatically retrying or adding a suffix. Automatic naming requires compatible gateway and installer binaries.
+
+Use `control service status` to check the local node. `control service start` starts its saved configuration. A fleet owner can create an installation command with `control machines add NAME --platform macos|windows|linux`. The installer detects architecture and uses the default invitation lifetime. Treat the URL as a short-lived bearer secret and share it only with the intended installer. Account keys can use `control machines disable|enable|unregister NAME`; unregister removes even offline registrations and retires their identities. Lifecycle-capable nodes stop on their next gateway contact; older offline nodes require a local stop if still running. Use these lifecycle commands only when the user requests the change. Common keys cannot manage invitations or machine policy. User provisioning and global software updates require the gateway superuser.
 
 Prefer MCP tools when already available. The MCP server is self-contained and does not need this skill to expose its tool schemas.

@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 
 type Request struct {
 	Name       string `json:"name"`
+	AutoName   bool   `json:"autoName,omitempty"`
 	OS         string `json:"os"`
 	Arch       string `json:"arch,omitempty"`
 	TTLSeconds int    `json:"ttlSeconds,omitempty"`
@@ -25,6 +28,7 @@ type Invitation struct {
 	UserID     string         `json:"userId,omitempty"`
 	ID         string         `json:"id"`
 	Name       string         `json:"name"`
+	AutoName   bool           `json:"autoName,omitempty"` // Hostname selected and signed by the target installer.
 	Gateway    string         `json:"gateway"`
 	Asset      update.Asset   `json:"asset"`            // Selected binary; first candidate until architecture selection.
 	Assets     []update.Asset `json:"assets,omitempty"` // Pinned candidates for architecture-detecting installers.
@@ -44,6 +48,7 @@ type Link struct {
 
 type Redemption struct {
 	Arch           string `json:"arch,omitempty"`
+	Name           string `json:"name,omitempty"`
 	PublicKey      []byte `json:"publicKey"`
 	CredentialHash string `json:"credentialHash"`
 	Signature      []byte `json:"signature"`
@@ -59,8 +64,24 @@ func Message(ticket string, r Redemption) []byte {
 		Purpose, Ticket, Credential string
 		PublicKey                   []byte
 		Arch                        string `json:"arch,omitempty"`
-	}{"control-enrollment-v1", Hash(ticket), r.CredentialHash, r.PublicKey, r.Arch})
+		Name                        string `json:"name,omitempty"`
+	}{"control-enrollment-v1", Hash(ticket), r.CredentialHash, r.PublicKey, r.Arch, r.Name})
 	return b
+}
+
+var machineName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
+
+// ResolveName runs on the target. The resolved name is persisted with the
+// pending enrollment so a retry cannot rename the machine if its hostname changes.
+func (i Invitation) ResolveName(hostname string) (string, error) {
+	name := i.Name
+	if i.AutoName {
+		name = hostname
+	}
+	if !machineName.MatchString(name) {
+		return "", fmt.Errorf("machine name %q must be 1..63 letters, digits, dots, underscores, or hyphens and start with a letter or digit; use an explicit invitation name if the hostname is invalid", name)
+	}
+	return name, nil
 }
 
 func (i Invitation) Candidates() []update.Asset {

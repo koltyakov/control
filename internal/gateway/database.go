@@ -39,7 +39,7 @@ func (g *Gateway) openDatabase(dir string) error {
 	if err = g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 2 {
+	if version > 4 {
 		return errors.New("gateway database is newer than this executable")
 	}
 	if version == 0 {
@@ -60,7 +60,9 @@ CREATE TABLE invitations (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCE
 CREATE INDEX credentials_user ON credentials(user_id);
 CREATE INDEX invitations_user ON invitations(user_id);
 CREATE TABLE machine_states (id TEXT PRIMARY KEY REFERENCES identities(id), data BLOB NOT NULL);
-PRAGMA user_version=2;`); err != nil {
+CREATE TABLE client_identities (id TEXT PRIMARY KEY REFERENCES identities(id), data BLOB NOT NULL);
+CREATE TABLE client_transports (id TEXT PRIMARY KEY REFERENCES identities(id), owner_id TEXT NOT NULL REFERENCES client_identities(id), data BLOB NOT NULL);
+PRAGMA user_version=4;`); err != nil {
 			return err
 		}
 		if err = g.writeState(tx); err != nil {
@@ -80,13 +82,49 @@ PRAGMA user_version=2;`); err != nil {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		version = 2
+	}
+	if version == 2 {
+		tx, err := g.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(`CREATE TABLE client_identities (id TEXT PRIMARY KEY REFERENCES identities(id), data BLOB NOT NULL); PRAGMA user_version=3;`); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		version = 3
+	}
+	if version == 3 {
+		tx, err := g.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(`CREATE TABLE client_transports (id TEXT PRIMARY KEY REFERENCES identities(id), owner_id TEXT NOT NULL REFERENCES client_identities(id), data BLOB NOT NULL); PRAGMA user_version=4;`); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
 	}
 	g.users = map[string]User{}
 	g.owners = map[string]string{}
+	g.clientOwners = map[string]bool{}
+	g.clientTransports = map[string]string{}
 	g.keys = map[string]keyRecord{}
 	g.nodes = map[string]model.Node{}
 	g.installations = map[string]installation{}
 	g.machineStates = map[string]model.MachineState{}
+	if err = readRecords(g.db, "client_identities", "id", g.clientOwners); err != nil {
+		return err
+	}
+	if err = readRecords(g.db, "client_transports", "id", g.clientTransports); err != nil {
+		return err
+	}
 	if err = readRecords(g.db, "machine_states", "id", g.machineStates); err != nil {
 		return err
 	}
@@ -139,6 +177,8 @@ func readRecords[T any](db *sql.DB, table, key string, dst map[string]T) error {
 }
 
 func (g *Gateway) importLegacy(dir string) error {
+	g.clientOwners = map[string]bool{}
+	g.clientTransports = map[string]string{}
 	g.machineStates = map[string]model.MachineState{}
 	g.users = map[string]User{legacyUser: {ID: legacyUser, Name: "legacy", CreatedAt: time.Now().UTC()}}
 	g.owners = map[string]string{}
@@ -198,6 +238,23 @@ func (g *Gateway) writeState(tx *sql.Tx) error {
 		}
 		if stored != user {
 			return errors.New("identity ownership is immutable")
+		}
+	}
+	for id, client := range g.clientOwners {
+		if _, err := tx.Exec(`INSERT INTO client_identities(id,data) VALUES(?,?) ON CONFLICT(id) DO NOTHING`, id, model.JSON(client)); err != nil {
+			return err
+		}
+	}
+	for id, owner := range g.clientTransports {
+		if _, err := tx.Exec(`INSERT INTO client_transports(id,owner_id,data) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING`, id, owner, model.JSON(owner)); err != nil {
+			return err
+		}
+		var stored string
+		if err := tx.QueryRow(`SELECT owner_id FROM client_transports WHERE id=?`, id).Scan(&stored); err != nil {
+			return err
+		}
+		if stored != owner {
+			return errors.New("client transport ownership is immutable")
 		}
 	}
 	if _, err := tx.Exec(`DELETE FROM nodes; DELETE FROM credentials; DELETE FROM invitations;`); err != nil {

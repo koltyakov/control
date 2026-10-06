@@ -17,7 +17,7 @@ import (
 
 type Admin struct{ URL, Key string }
 
-func (c Admin) request(ctx context.Context, method, path string, body io.Reader, size int64, result any) error {
+func (c Admin) request(ctx context.Context, method, path string, body io.Reader, size int64, contentType string, result any) error {
 	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.URL, "/")+path, body)
 	if err != nil {
 		return err
@@ -26,7 +26,7 @@ func (c Admin) request(ctx context.Context, method, path string, body io.Reader,
 		req.ContentLength = size
 	}
 	req.Header.Set("Authorization", "Bearer "+c.Key)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	client := &http.Client{Timeout: 3 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -63,7 +63,7 @@ func (c Admin) AuthRole(ctx context.Context) (string, error) {
 	var info struct {
 		Role string `json:"role"`
 	}
-	if err := c.request(ctx, http.MethodGet, "/v1/auth", nil, 0, &info); err != nil {
+	if err := c.request(ctx, http.MethodGet, "/v1/auth", nil, 0, "application/json", &info); err != nil {
 		return "", fmt.Errorf("authenticate with gateway %s: %w", c.URL, err)
 	}
 	return info.Role, nil
@@ -78,7 +78,7 @@ func (c Admin) JSON(ctx context.Context, method, path string, params, result any
 			return err
 		}
 	}
-	return c.request(ctx, method, path, bytes.NewReader(b), int64(len(b)), result)
+	return c.request(ctx, method, path, bytes.NewReader(b), int64(len(b)), "application/json", result)
 }
 
 func (c Admin) Push(ctx context.Context, dir string) (update.Deployment, error) {
@@ -102,7 +102,7 @@ func (c Admin) Push(ctx context.Context, dir string) (update.Deployment, error) 
 		if err != nil {
 			return update.Deployment{}, err
 		}
-		err = c.request(ctx, http.MethodPut, "/v1/admin/updates/blobs/"+asset.SHA256, f, asset.Size, nil)
+		err = c.request(ctx, http.MethodPut, "/v1/admin/updates/blobs/"+asset.SHA256, f, asset.Size, "application/octet-stream", nil)
 		_ = f.Close()
 		if err != nil {
 			return update.Deployment{}, err
