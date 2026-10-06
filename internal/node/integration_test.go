@@ -26,7 +26,7 @@ const testToken = "integration-test-token-123456789"
 
 func cluster(t *testing.T, relayOnly bool, configure func(int, *Config)) (*Node, *Node, *Node) {
 	t.Helper()
-	g, err := gateway.New(t.TempDir(), testToken)
+	g, err := gateway.New(t.TempDir(), testToken, gateway.Options{SuperuserKey: testAccount})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,10 +36,23 @@ func cluster(t *testing.T, relayOnly bool, configure func(int, *Config)) (*Node,
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	nodes := []*Node{}
+	orchestrators := []*orchestratorFixture{}
+	for range 3 {
+		orchestrators = append(orchestrators, prepareTestOrchestrator(t, ctx, server.URL, testAccount, "legacy", relayOnly))
+	}
 	for i, name := range []string{"source", "worker", "consumer"} {
 		cfg := Config{Name: name, Gateway: server.URL, Token: testToken, DataDir: t.TempDir(), WorkDir: t.TempDir(), RelayOnly: relayOnly, Labels: map[string]string{"role": name}}
 		if configure != nil {
 			configure(i, &cfg)
+		}
+		if cfg.Allow != nil {
+			for j, alias := range []string{"source", "worker", "consumer"} {
+				if rules, exists := cfg.Allow[alias]; exists {
+					cfg.Allow[orchestrators[j].owner.ID] = rules
+					delete(cfg.Allow, alias)
+				}
+			}
+			cfg.Allow[orchestrators[i].owner.ID] = []string{"*"}
 		}
 		n, err := New(cfg)
 		if err != nil {
@@ -50,6 +63,7 @@ func cluster(t *testing.T, relayOnly bool, configure func(int, *Config)) (*Node,
 			t.Fatal(err)
 		}
 		nodes = append(nodes, n)
+		attachTestOrchestrator(t, n, orchestrators[i])
 	}
 	return nodes[0], nodes[1], nodes[2]
 }
@@ -58,7 +72,7 @@ func call(t *testing.T, n *Node, target, method string, params, result any) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if err := n.Call(ctx, target, method, params, result); err != nil {
+	if err := testCall(t, n, ctx, target, method, params, result); err != nil {
 		t.Fatalf("%s on %s: %v", method, target, err)
 	}
 }
@@ -127,7 +141,7 @@ func TestThreeNodeExecutionAndDelivery(t *testing.T) {
 			call(t, source, "worker", "tasks.start", spec, &submitted)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			finished, err := source.WaitTask(ctx, "worker", submitted.ID)
+			finished, err := testWaitTask(t, source, ctx, "worker", submitted.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -176,16 +190,16 @@ func TestFallbackCancellationAndOwnership(t *testing.T) {
 	})
 	var task model.Task
 	call(t, source, "worker", "tasks.start", model.TaskSpec{ID: "cancel-me", Capability: "exec.run", Args: model.JSON(executable(t, "sleep"))}, &task)
-	if got := source.Peer.Connections()[worker.Identity.ID]; got != "relay" {
+	if got := testConnections(t, source)[worker.Identity.ID]; got != "relay" {
 		t.Fatalf("expected relay fallback, got %s", got)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := consumer.Call(ctx, "worker", "tasks.get", map[string]any{"id": task.ID}, nil); err == nil {
+	if err := testCall(t, consumer, ctx, "worker", "tasks.get", map[string]any{"id": task.ID}, nil); err == nil {
 		t.Fatal("another owner read task")
 	}
 	call(t, source, "worker", "tasks.cancel", map[string]any{"id": task.ID}, nil)
-	finished, err := source.WaitTask(ctx, "worker", task.ID)
+	finished, err := testWaitTask(t, source, ctx, "worker", task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,10 +244,10 @@ func TestArtifactResumeGrantAndFilesystemBoundary(t *testing.T) {
 	if err != nil || !bytes.Equal(b, payload) {
 		t.Fatal("resumed transfer differs", err)
 	}
-	if err := source.Call(ctx, "worker", "files.read", map[string]any{"path": "../outside"}, nil); err == nil {
+	if err := testCall(t, source, ctx, "worker", "files.read", map[string]any{"path": "../outside"}, nil); err == nil {
 		t.Fatal("filesystem traversal accepted")
 	}
-	if err := source.Call(ctx, "worker", "artifacts.export", map[string]any{"path": "../outside"}, nil); err == nil {
+	if err := testCall(t, source, ctx, "worker", "artifacts.export", map[string]any{"path": "../outside"}, nil); err == nil {
 		t.Fatal("artifact traversal accepted")
 	}
 }
@@ -281,7 +295,7 @@ func TestProvidersHTTPAndTCP(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	conn, err := source.OpenTCP(ctx, "worker", listener.Addr().String())
+	conn, err := testOrchestrator(t, source).client.Tunnel(ctx, "worker", listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}

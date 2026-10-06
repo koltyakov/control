@@ -90,7 +90,8 @@ func TestLogStreamingBinaryOffsetsCancellationAndOwnership(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			const token = "log-stream-test-token-1234567890"
-			g, err := gateway.New(t.TempDir(), token)
+			const account = "log-stream-account-key-1234567890"
+			g, err := gateway.New(t.TempDir(), token, gateway.Options{SuperuserKey: account})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -111,7 +112,7 @@ func TestLogStreamingBinaryOffsetsCancellationAndOwnership(t *testing.T) {
 			}
 			api := httptest.NewServer(w.Handler())
 			defer api.Close()
-			cfg := StandaloneConfig{Gateway: Admin{URL: s.URL, Key: token}, StateDir: t.TempDir(), RelayOnly: true}
+			cfg := StandaloneConfig{Gateway: Admin{URL: s.URL, Key: account}, StateDir: t.TempDir(), RelayOnly: true}
 			c := (Client{URL: api.URL, Token: token}).WithLifetime(ctx)
 			if standalone {
 				c = (Client{URL: refusedAPI(t)}).WithStandalone(ctx, cfg)

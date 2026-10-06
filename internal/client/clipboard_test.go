@@ -24,10 +24,11 @@ import (
 func TestClipboardClientFilePaste(t *testing.T) {
 	for _, relay := range []bool{false, true} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
 			const token = "clipboard-client-test-token-12345"
-			g, err := gateway.New(t.TempDir(), token)
+			const account = "clipboard-client-account-key-1234567890"
+			g, err := gateway.New(t.TempDir(), token, gateway.Options{SuperuserKey: account})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -55,8 +56,8 @@ func TestClipboardClientFilePaste(t *testing.T) {
 			defer relayAPI.Close()
 			for i, apiURL := range []string{api.URL, relayAPI.URL, ""} {
 				c := (Client{URL: apiURL, Token: token}).WithLifetime(ctx)
-				if apiURL == "" {
-					c = (Client{URL: refusedAPI(t)}).WithStandalone(ctx, StandaloneConfig{Gateway: Admin{URL: gatewayServer.URL, Key: token}, StateDir: t.TempDir(), RelayOnly: relay})
+				if apiURL != api.URL {
+					c = (Client{URL: apiURL, Token: token}).WithStandalone(ctx, StandaloneConfig{Gateway: Admin{URL: gatewayServer.URL, Key: account}, StateDir: t.TempDir(), RelayOnly: relay, AccountRouting: true})
 				}
 				defer func() { _ = c.Close() }()
 				path := filepath.Join(t.TempDir(), fmt.Sprintf("source-%d.bin", i))

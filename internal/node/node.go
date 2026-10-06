@@ -92,6 +92,8 @@ type Node struct {
 	readClipboard       func(context.Context) (clipboard.Value, error)
 	copyClipboard       func(context.Context, string) error
 	clipboardSlots      chan struct{}
+	delegationMu        sync.Mutex
+	delegations         map[string]*delegationState
 }
 
 func New(cfg Config) (*Node, error) {
@@ -127,6 +129,7 @@ func New(cfg Config) (*Node, error) {
 	n.tcpListeners = make(chan struct{}, 32)
 	n.readClipboard, n.copyClipboard = clipboard.Read, clipboard.Copy
 	n.clipboardSlots = make(chan struct{}, 8)
+	n.delegations = map[string]*delegationState{}
 	if err = n.loadMachineState(); err != nil {
 		_ = root.Close()
 		return nil, err
@@ -206,6 +209,8 @@ func (n *Node) Start(ctx context.Context) error {
 	go func() { defer n.wg.Done(); n.runHealth(n.ctx) }()
 	n.wg.Add(1)
 	go func() { defer n.wg.Done(); n.runMachineState(n.ctx) }()
+	n.wg.Add(1)
+	go func() { defer n.wg.Done(); n.runDelegations(n.ctx) }()
 	if n.updater != nil {
 		n.wg.Add(1)
 		go func() { defer n.wg.Done(); n.updater.Run(n.ctx) }()
@@ -245,6 +250,26 @@ func (n *Node) authorize(ctx context.Context, caller, method string) error {
 	if !n.Peer.IsMember(caller) {
 		return errors.New("caller is outside this fleet")
 	}
+	if a, ok := ctx.Value(authorityContextKey{}).(authority); ok && a.grant != nil {
+		if a.grant.ctx.Err() != nil {
+			return errors.New("delegation was revoked or expired")
+		}
+		if method == "tasks.start" || method == "tasks.get" || method == "tasks.cancel" || method == "tasks.logs" || method == "artifacts.grant" || method == a.grant.grant.Method {
+			return nil
+		}
+		var spec model.TaskSpec
+		if a.grant.grant.Method == "tasks.start" && json.Unmarshal(a.grant.grant.Params, &spec) == nil && method == spec.Capability {
+			return nil
+		}
+		return errors.New("method is outside delegated instruction")
+	}
+	peer, err := n.Peer.Lookup(ctx, caller)
+	if err != nil {
+		return err
+	}
+	if !discoveryMethod(method) && !peer.ExecutionAuthority {
+		return errors.New("worker credentials permit discovery only; execution requires orchestrator delegation")
+	}
 	if n.Config.Allow == nil {
 		return nil
 	}
@@ -254,16 +279,11 @@ func (n *Node) authorize(ctx context.Context, caller, method string) error {
 		patterns = append(patterns, n.Config.Allow[owner]...)
 	}
 	patterns = append(patterns, n.Config.Allow["*"]...)
+	if peer.ExecutionAuthority {
+		patterns = append(patterns, n.Config.Allow["@orchestrator"]...)
+	}
+	patterns = append(patterns, n.Config.Allow[peer.Name]...)
 	for _, pattern := range patterns {
-		if ok, _ := path.Match(pattern, method); ok {
-			return nil
-		}
-	}
-	peer, err := n.Peer.Lookup(ctx, caller)
-	if err != nil {
-		return err
-	}
-	for _, pattern := range n.Config.Allow[peer.Name] {
 		if ok, _ := path.Match(pattern, method); ok {
 			return nil
 		}
@@ -272,6 +292,7 @@ func (n *Node) authorize(ctx context.Context, caller, method string) error {
 }
 
 func (n *Node) handle(caller string, conn net.Conn) {
+	rawConn := conn
 	// This check also precedes streaming artifacts and their grant bypass.
 	if !n.Peer.IsMember(caller) {
 		return
@@ -289,11 +310,25 @@ func (n *Node) handle(caller string, conn net.Conn) {
 	}
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	stop := context.AfterFunc(ctx, func() { _ = rawConn.Close() })
 	defer stop()
 	if request.Version != model.Version {
 		_ = writeFrame(conn, model.Response{Error: "unsupported protocol version"})
 		return
+	}
+	authorityCtx, release, err := n.acceptAuthority(ctx, caller, request)
+	if err != nil {
+		_ = writeFrame(conn, model.Response{Error: err.Error()})
+		return
+	}
+	defer release()
+	ctx = authorityCtx
+	stopAuthority := context.AfterFunc(ctx, func() { _ = rawConn.SetDeadline(time.Now()); _ = rawConn.Close() })
+	defer stopAuthority()
+	// Reverse listeners contain a nested multiplexer with its own keepalives.
+	// Count only forwarded socket bytes in serveTCPListener, not that framing.
+	if a, ok := ctx.Value(authorityContextKey{}).(authority); ok && a.grant != nil && request.Method != "tcp.listen" {
+		conn = &delegationConn{Conn: conn, node: n, state: a.grant}
 	}
 	if request.Method == "artifacts.open" {
 		n.serveArtifact(ctx, caller, conn, request.Params)
@@ -361,6 +396,18 @@ func (n *Node) Call(ctx context.Context, target, method string, params any, resu
 		defer cancel()
 		stop := context.AfterFunc(n.ctx, cancel)
 		defer stop()
+		for _, grant := range model.Delegations(ctx) {
+			if grant.Target == n.Identity.ID && grant.Matches(method, model.JSON(params)) {
+				var release func()
+				var err error
+				ctx, release, err = n.acceptAuthority(ctx, n.Identity.ID, model.Request{Method: method, Params: model.JSON(params), Delegation: grant.ID, Delegations: model.Delegations(ctx)})
+				if err != nil {
+					return err
+				}
+				defer release()
+				break
+			}
+		}
 		value, err := n.dispatch(ctx, n.Identity.ID, method, model.JSON(params))
 		if err != nil {
 			return err
@@ -393,7 +440,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		defer release()
 		ctx = workCtx
 	}
-	owner := n.Peer.Owner(caller)
+	owner := n.executionOwner(ctx, caller)
 	ctx = context.WithValue(ctx, activityContextKey{}, activityContext{owner: owner})
 	var activity *activityHandle
 	if trackOperation(method) {
@@ -401,6 +448,8 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		defer func() { activity.finish(err) }()
 	}
 	switch method {
+	case "access.grant", "access.list", "access.revoke":
+		return n.delegationMethod(ctx, caller, method, args)
 	case "system.info":
 		var q struct {
 			Refresh bool `json:"refresh"`
@@ -445,7 +494,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		if err := n.authorize(ctx, caller, spec.Capability); err != nil {
 			return nil, err
 		}
-		return n.startTask(owner, spec)
+		return n.startTaskContext(ctx, owner, spec)
 	case "tasks.get", "tasks.cancel", "tasks.logs", "tasks.list":
 		return n.taskMethod(owner, method, args)
 	case "leases.acquire", "leases.renew", "leases.release", "leases.get":
@@ -469,7 +518,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 			return nil, errors.New("node is leased; invoke capabilities through tasks.start with leaseId")
 		}
 		defer func() { n.mu.Lock(); n.activeInvocations--; n.mu.Unlock() }()
-		if method != "workflow.run" {
+		if method != "workflow.run" && method != "peers.call" {
 			activity.phase("waiting for worker slot")
 			select {
 			case n.slots <- struct{}{}:

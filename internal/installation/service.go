@@ -75,6 +75,9 @@ func Service(ctx context.Context, operation, binary, config, mode string) error 
 		return err
 	}
 	c := client.Client{URL: API(cfg), Token: cfg.Token}
+	if operation == "firewall" {
+		return configureFirewall(ctx, binary, config, cfg)
+	}
 	if handled, err := platformService(ctx, operation, binary, config, mode, cfg); handled {
 		if err == nil && operation == "start" {
 			return waitReady(ctx, c, cfg)

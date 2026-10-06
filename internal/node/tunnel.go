@@ -27,7 +27,7 @@ func (n *Node) serveTCP(ctx context.Context, caller string, stream net.Conn, arg
 		_ = writeFrame(stream, model.Response{Error: err.Error()})
 		return
 	}
-	activity := n.beginActivity(ctx, "tunnel", "tcp.accept", n.Peer.Owner(caller), caller)
+	activity := n.beginActivity(ctx, "tunnel", "tcp.accept", n.executionOwner(ctx, caller), caller)
 	workCtx, release, gateErr := n.enterWork(ctx)
 	if gateErr != nil {
 		activity.finish(gateErr)

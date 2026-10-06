@@ -18,7 +18,6 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/koltyakov/control/internal/model"
-	"github.com/koltyakov/control/internal/node"
 	"github.com/koltyakov/control/internal/transport"
 )
 
@@ -66,9 +65,26 @@ func (c Client) Call(ctx context.Context, target, method string, params any, res
 		return err
 	}
 	if peer != nil {
-		return peerCall(ctx, peer, target, method, params, result)
+		if c.routing.cfg.AccountRouting && target != "" {
+			destination, err := peer.Lookup(ctx, target)
+			if err != nil {
+				return err
+			}
+			if !destination.InstructionDelegation {
+				return errors.New("target does not support instruction-bound delegation; upgrade it before executing work")
+			}
+			// Use the identity just checked, not a cached session for a former
+			// registration that had the same routing name.
+			target = destination.ID
+		}
+		prepared, grants, err := prepareDelegations(ctx, peer, target, method, model.JSON(params))
+		if err != nil {
+			return err
+		}
+		ctx = model.WithDelegations(ctx, grants)
+		return peerCall(ctx, peer, target, method, prepared, result)
 	}
-	resp, err := c.request(ctx, "/v1/call", node.APICall{Target: target, Method: method, Params: model.JSON(params)})
+	resp, err := c.request(ctx, "/v1/call", model.APICall{Target: target, Method: method, Params: model.JSON(params)})
 	if err != nil {
 		return fmt.Errorf("local node API: %w", err)
 	}

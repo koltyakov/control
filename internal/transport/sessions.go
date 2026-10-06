@@ -224,6 +224,10 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 		err = fmt.Errorf("node %s does not support concurrent client owners; upgrade the target node", node.Name)
 		return
 	}
+	if p.cfg.RequireDelegation && !node.InstructionDelegation {
+		err = errors.New("target does not support instruction-bound delegation; upgrade it before executing work")
+		return
+	}
 	actualKey := sessionKey{node.ID, key.lane}
 	p.mu.Lock()
 	other := p.pending[actualKey]

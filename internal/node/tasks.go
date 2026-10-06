@@ -56,10 +56,28 @@ func cloneTask(task *model.Task) model.Task {
 	return copy
 }
 
-func (n *Node) startTask(owner string, spec model.TaskSpec) (model.Task, error) {
+func (n *Node) startTaskContext(parent context.Context, owner string, spec model.TaskSpec) (model.Task, error) {
 	if n.ctx == nil {
 		return model.Task{}, errors.New("node is not running")
 	}
+	finishAuthority := func() {}
+	retainAuthority := false
+	if a, ok := parent.Value(authorityContextKey{}).(authority); ok && a.grant != nil {
+		s := a.grant
+		n.delegationMu.Lock()
+		if s.ctx.Err() != nil || !n.delegationLiveLocked(s, time.Now()) {
+			n.delegationMu.Unlock()
+			return model.Task{}, errors.New("delegation was revoked or expired")
+		}
+		s.activeTasks++
+		n.delegationMu.Unlock()
+		finishAuthority = func() { n.delegationMu.Lock(); s.activeTasks--; s.lastActivity = time.Now(); n.delegationMu.Unlock() }
+	}
+	defer func() {
+		if !retainAuthority {
+			finishAuthority()
+		}
+	}()
 	if spec.ID == "" {
 		spec.ID = identity.NewID()
 	}
@@ -136,17 +154,40 @@ func (n *Node) startTask(owner string, spec model.TaskSpec) (model.Task, error) 
 	n.tasks[task.ID] = task
 	n.taskChanges[task.ID] = make(chan struct{})
 	ctx, cancel := context.WithTimeout(n.ctx, time.Duration(spec.TimeoutSeconds)*time.Second)
+	ctx = model.WithDelegations(ctx, model.Delegations(parent))
+	var stopAuthority func() bool
+	if a, ok := parent.Value(authorityContextKey{}).(authority); ok {
+		ctx = context.WithValue(ctx, authorityContextKey{}, a)
+		if a.grant != nil {
+			// Do not take delegationMu while holding the task mutex. Admission and
+			// cancellation are serialized by the grant lifetime, not peer EOF.
+			stopAuthority = context.AfterFunc(a.grant.ctx, cancel)
+			if a.grant.ctx.Err() != nil {
+				cancel()
+			}
+		}
+	}
 	ctx = context.WithValue(ctx, workContextKey{}, n)
 	n.cancels[task.ID] = cancel
 	n.wg.Add(1)
 	accepted = true
-	go func() { defer n.wg.Done(); defer cancel(); defer release(); n.runTask(ctx, task.ID) }()
+	retainAuthority = true
+	go func() {
+		defer n.wg.Done()
+		defer cancel()
+		defer release()
+		if stopAuthority != nil {
+			defer stopAuthority()
+		}
+		defer finishAuthority()
+		n.runTask(ctx, task.ID)
+	}()
 	return cloneTask(task), nil
 }
 
 func (n *Node) runTask(ctx context.Context, id string) {
 	n.mu.Lock()
-	isWorkflow := n.tasks[id].Spec.Capability == "workflow.run"
+	isWorkflow := n.tasks[id].Spec.Capability == "workflow.run" || n.tasks[id].Spec.Capability == "peers.call"
 	n.mu.Unlock()
 	// Coordination must not occupy the only worker slot needed by a local step.
 	if !isWorkflow {

@@ -2,7 +2,7 @@
 
 A Go peer execution network for Windows, Linux, and macOS. Connect machines to a public gateway, then address them by name through a CLI, MCP server, or local HTTP API.
 
-Every node can execute work and initiate connections to other nodes. An orchestrator can ask one worker to fetch input from another machine, run an installed tool, and deliver its output to a third machine. AI agents are optional providers.
+Every node can execute requested work and discover peers. An account-authenticated orchestrator can authorize one worker to fetch input from another machine, execute a specific instruction, and deliver output to a third machine. Workers cannot independently execute peer work. AI agents are optional providers. See [orchestrator authority and delegation](docs/delegation.md).
 
 ## Roles and components
 
@@ -26,6 +26,7 @@ Orchestrator and worker are roles, not fixed machine types. A node can perform b
 - Filesystem reads/writes, private-network HTTP requests, and TCP forwarding for database or other protocols.
 - Worker-local secret references for GUI credential entry and HTTP authentication, without a secret-value read API. See [secrets and their limits](docs/secrets.md).
 - Immutable SHA-256 artifacts, resumable transfers, worker-to-worker delivery, and subject-bound artifact grants.
+- Instruction-bound worker delegation with revocation, cancellation, and one-hour idle expiry.
 - Explicit bidirectional clipboard pastes through CLI/MCP, with regular files streamed only when paste is requested. See [clipboard requirements and limits](docs/clipboard.md).
 - Label-based selection, exclusive execution leases, bounded task concurrency, and dependency-ordered workflows.
 - A local MCP server exposing routing tools for AI clients.
@@ -42,11 +43,13 @@ Linux or macOS:
 curl -fsSL https://raw.githubusercontent.com/koltyakov/control/main/scripts/install.sh | sh
 ```
 
-Windows PowerShell:
+Windows, from PowerShell, CMD, or Bash:
 
 ```powershell
-irm https://raw.githubusercontent.com/koltyakov/control/main/scripts/install.ps1 | iex
+powershell -NoProfile -c "irm https://raw.githubusercontent.com/koltyakov/control/main/scripts/install.ps1 | iex"
 ```
+
+On Windows, open a new terminal after installation to pick up the saved user PATH.
 
 Log in once with the account key supplied by your gateway operator:
 
@@ -68,7 +71,7 @@ control exec worker -- hostname
 control call worker node.describe
 ```
 
-The CLI uses a running local node when available. Otherwise it opens an authenticated client session for the command's lifetime. Concurrent CLI/MCP processes use independent connections with a shared persistent task-owner identity, so a tunnel does not block task monitoring or cancellation. The client is not a fleet machine and never appears in the dashboard or managed rollouts. The gateway and target nodes must support client sessions and concurrent client owners. Explicit `--api` or `CONTROL_API` disables this fallback. See [standalone CLI and MCP](docs/installation.md#standalone-cli-and-mcp) for upgrade requirements and identity storage.
+The CLI opens an account-authenticated client session for remote work, even when a local node is running. Concurrent CLI/MCP processes use independent connections with a shared persistent task-owner identity, so a tunnel does not block task monitoring or cancellation. The client is not a fleet machine and never appears in the dashboard or managed rollouts. Upgrade the gateway and target nodes for instruction-bound delegation. Explicit `--api` or `CONTROL_API` selects only the local API, which cannot independently execute peer work. See [delegation and upgrade requirements](docs/delegation.md).
 
 To make this machine an execution host and configure an AI client, start a host node using that saved login. On Windows, run setup in Administrator PowerShell:
 
@@ -92,6 +95,8 @@ The wizard also asks for User context or System context. User context runs with 
 Copy the printed PowerShell command onto the target and run it as the intended Windows user. Windows invitation scripts default to user-login startup, allowing access to that user's files and application credentials. The node is available only while that user is logged in. Set `$env:CONTROL_SERVICE_MODE = 'auto'` before running the command in Administrator PowerShell to select a boot-time LocalService system service instead. Switching an existing system service to user startup also requires Administrator PowerShell under the intended user. See [user-login startup](docs/installation.md#switch-windows-to-user-login-startup). Or press `a` in the dashboard to enter a name, select a platform, and copy the command automatically. Linux and macOS invitations use Bash. The installer detects amd64 or arm64, verifies the selected binary, creates an identity, redeems the single-use ticket, and starts the node. Invitations expire after 15 minutes by default. Success means the machine is registered and available.
 
 See [installation and enrollment](docs/installation.md) for prerequisites, saved profiles, startup, and invitation management. Public installers require published release assets. From a checkout, use `make build` followed by `bin/control setup`.
+
+Windows worker installers request UAC elevation to configure executable-scoped firewall rules for WebRTC UDP and outbound gateway TCP. They do not open the loopback API or elevate user-mode nodes. A stable, verified runtime path keeps these rules valid across managed updates. See [Windows firewall setup](docs/installation.md#windows-firewall).
 
 Running a new invitation on an already registered machine replaces its enrollment in the current local profile. A different name renames the same machine instead of adding a duplicate. Its identity, workspace, and settings are retained.
 
@@ -153,7 +158,7 @@ bin/control node --config examples/worker.json
 bin/control node --config examples/consumer.json
 ```
 
-The CLI uses the source node's local API by default. Node configuration paths are relative to the configuration file. These examples keep state in `examples/state` and working files in `examples/work`.
+For execution, configure a separate gateway superuser key or user account and log in from the orchestrator with `control login --gateway http://127.0.0.1:7330`. Keep that key out of node terminals and configuration. The common token above permits node enrollment and discovery, not execution initiation. Node configuration paths are relative to the configuration file. These examples keep state in `examples/state` and working files in `examples/work`.
 
 ```sh
 bin/control machines
@@ -177,7 +182,7 @@ bin/control dashboard
 
 The dashboard connects directly to the configured gateway and shows its URL, running version, service uptime, CPU, RAM, and disk usage. With an account key, it also shows each machine's current resources, idle/busy state, and work count without a local node. Nodes report health every five seconds from their independently sampled resource cache. Set `CONTROL_GATEWAY` and `CONTROL_USER_KEY` to use it without a saved profile.
 
-With a local node running, the dashboard also shows running and queued tasks from every owner, synchronous operations, artifact transfer progress, TCP tunnel traffic, and recent completions. It lists idle and offline machines and reports their OS, CPU, RAM, and disk capacity and usage.
+With an account login and authorized peer observation, the dashboard also shows running and queued tasks from every owner, synchronous operations, artifact transfer progress, TCP tunnel traffic, and recent completions. It lists idle and offline machines and reports their OS, CPU, RAM, and disk capacity and usage.
 
 Tables adapt to terminal width. Use `d` for full details, arrow keys or Page Up/Page Down to scroll, `r` to refresh activity, and `q` to quit. Drag across text to select it; releasing the mouse copies only that selection to the local clipboard. The display stays fixed during the drag and resumes on release. Press `c` to copy the last selection again. Refreshes use steady text with no blinking indicators.
 
@@ -232,7 +237,7 @@ bin/control task start source @examples/workflow-task.json
 bin/control task wait source media-workflow-001
 ```
 
-The completed task's `result.encode.artifacts[0]` is the encoded artifact reference. Deliver it from the worker to the consumer, or download it through your local node:
+The completed task's `result.encode.artifacts[0]` is the encoded artifact reference. Deliver it from the worker to the consumer, or download it with your account client:
 
 ```sh
 bin/control artifact deliver worker ARTIFACT_ID consumer
@@ -245,9 +250,10 @@ To use an existing file, place it under the source's configured `workDir` and ru
 
 ```sh
 bin/control artifact export source input.mp4
+bin/control call source artifacts.grant '{"id":"ARTIFACT_ID","target":"worker"}'
 ```
 
-Copy the returned artifact reference, including its actual size, into `examples/encode-task.json`, then submit it to the worker. Use a new task ID for new work. Reusing an ID with the same specification returns the existing task; reusing it with different arguments fails.
+Copy the granted artifact reference, including its actual size and `grant`, into `examples/encode-task.json`, then submit it to the worker. The recipient-bound grant authorizes the worker to fetch that input. Use a new task ID for new work. Reusing an ID with the same specification returns the existing task; reusing it with different arguments fails.
 
 The orchestrator receives metadata and results. Source-to-worker and worker-to-consumer transfers do not pass through its storage. The public gateway carries the bytes only when those peers need a relay.
 
@@ -270,7 +276,7 @@ Configure your AI client's stdio MCP integration to run:
 /absolute/path/to/control mcp
 ```
 
-The MCP process uses the saved gateway login without requiring a local node. With a running host node, multiple CLI and MCP processes share its connections and identity. Supply `CONTROL_TOKEN` and, if needed, `CONTROL_API=http://127.0.0.1:7331` to select a local API explicitly. Without a local node, use named targets for execution; pool activity aggregation still requires a local node. See [standalone CLI and MCP](docs/installation.md#standalone-cli-and-mcp).
+The MCP process uses the saved account login without requiring a local node. Concurrent CLI and MCP processes share their stable client owner but have separate transport identities. Use named execution targets; account clients can aggregate peer activity directly. Explicit `CONTROL_API` selects local-node work and discovery, not independent peer execution. See [orchestrator authority and delegation](docs/delegation.md).
 
 The MCP server exposes tools for finding machines, inspecting capability schemas, submitting and inspecting tasks, discovering remote MCP tools, invoking capabilities, and exporting/delivering artifacts. Its initialization instructions explain machine-name routing. You can then ask the AI to do work on a named machine.
 
@@ -356,6 +362,7 @@ MCP clients use `control_forward_start` with `node`, `address`, and optional `li
 
 - [Terminology](docs/terminology.md): orchestrator, gateway, and worker roles; client and node components; naming rules.
 - [Configuration and protocol](docs/protocol.md): methods, leases, providers, task semantics, and limits.
+- [Orchestrator authority and delegation](docs/delegation.md): worker isolation, instruction-bound access, revocation, and idle expiry.
 - [Architecture](docs/architecture.md): components, transport, identity, and recovery.
 - [Engineering principles](docs/principles.md): invariants to preserve as the system evolves.
 - [Design decisions](docs/decisions.md): implementation choices and their tradeoffs.

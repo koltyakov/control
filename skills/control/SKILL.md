@@ -11,7 +11,7 @@ description: Use Control to inspect registered machines, run tools on named Wind
 
 An orchestrator coordinates work, a worker executes requested work, and the gateway handles enrollment, discovery, signaling, encrypted relay fallback, and fleet administration. Client names the CLI/MCP component; node names the enrolled execution service. Orchestrator and worker are operation roles, not fixed machine types: a node can perform both, and an orchestrator can use a standalone client without a local node. Reserve agent for AI software, including optional `agent.run` providers, not Control services.
 
-Use the installed `control` CLI or the corresponding Control MCP tools. The saved login or local configuration supplies the gateway connection and credentials. Remote CLI/MCP calls work without a local service using an authenticated client session, unless `--api` or `CONTROL_API` explicitly selects an API. A client is not a fleet machine and must never enroll itself or appear in machine discovery. Standalone mode requires client-session and concurrent-owner support on the gateway and target nodes; report an upgrade error rather than falling back to enrollment. Use named targets in standalone mode. Concurrent standalone processes share the persistent task owner but use independent transport connections. Do not print configuration secrets or installation links in logs.
+Use the installed `control` CLI or the corresponding Control MCP tools. Default remote calls use the saved account login and a client session even when a local node is running. Worker/common credentials permit discovery, not independent peer execution. `--api` or `CONTROL_API` explicitly selects the local API and does not confer orchestrator authority. A client is not a fleet machine and must never enroll itself. Require delegation support on the gateway and execution nodes; report an upgrade error rather than using older trust rules. Use named execution targets. Concurrent account clients share the persistent task owner but use independent connections. Do not print configuration secrets or installation links in logs.
 
 Commands operate only within the authenticated user's private fleet. Machine names can repeat across users. Never switch credentials to reach another user's machine or interpret an unknown foreign ID as permission to enroll it.
 
@@ -39,9 +39,15 @@ Choose the task ID before submitting. If the connection fails during submission,
 
 Use `control dashboard --once` for pool-wide activity. Observation does not grant permission to read or cancel another owner's work.
 
+## Delegate through another worker
+
+Use `control call FIRST peers.call '{"target":"SECOND","method":"exec.run","params":{"command":"hostname"}}'`, or MCP `control_delegate` with `node`, `target`, `method`, and `params`. The account client prepares a destination-owned grant for that instruction before asking the first worker to execute it. Planned `workflow.run` tasks and artifact deliveries prepare their grants too. Arbitrary scripts or AI CLIs running on a worker do not inherit these grants and cannot invent peer commands.
+
+Grants expire after one hour idle and are lost on destination restart. Accepted tasks keep their grant active; stream bytes refresh idle expiry, not discovery or keepalives. Inspect with `control call DESTINATION access.list`, and revoke with `control call DESTINATION access.revoke '{"id":"GRANT_ID"}'`, or the corresponding MCP access tools. Revocation cancels associated tasks and streams but cannot undo side effects. Only the original account-client owner can manage its grants. Synchronous instructions are single-use; do not replay an uncertain command. Use explicit task IDs for reconcilable work.
+
 ## Move results directly
 
-Export files from their source with `control artifact export SOURCE PATH`. Pass the returned artifact reference as a task input to let the destination fetch it directly. Use `control artifact deliver SOURCE ARTIFACT_ID DESTINATION` for peer-to-peer delivery. Download through the host only when the user needs a local copy:
+Export files from their source with `control artifact export SOURCE PATH`, then request recipient-bound access with `control call SOURCE artifacts.grant '{"id":"ARTIFACT_ID","target":"DESTINATION"}'`. Pass the granted reference, including `grant`, as a task input so the destination can fetch it directly. Planned workflow inputs prepare their signed grants automatically. Use `control artifact deliver SOURCE ARTIFACT_ID DESTINATION` for peer-to-peer delivery. Download through the host only when the user needs a local copy:
 
 ```sh
 control artifact get worker ARTIFACT_ID ./result.bin
@@ -74,3 +80,5 @@ Use `control machines add auto --platform OS`, or omit the name, to use the targ
 Use `control service status` to check the local node. `control service start` starts its saved configuration. A fleet owner can create an installation command with `control machines add NAME --platform macos|windows|linux`. The installer detects architecture and uses the default invitation lifetime. Treat the URL as a short-lived bearer secret and share it only with the intended installer. Account keys can use `control machines disable|enable|unregister NAME`; unregister removes even offline registrations and retires their identities. Lifecycle-capable nodes stop on their next gateway contact; older offline nodes require a local stop if still running. Use these lifecycle commands only when the user requests the change. Common keys cannot manage invitations or machine policy. User provisioning and global software updates require the gateway superuser.
 
 Prefer MCP tools when already available. The MCP server is self-contained and does not need this skill to expose its tool schemas.
+
+Windows worker installers request UAC only for executable-scoped firewall setup; user-login nodes remain non-elevated. For an existing profile, run the installed CLI's `service firewall` locally when the user requests that change. Use its absolute path on Windows because `control` can resolve to Windows Control Panel. Rules cover WebRTC UDP and outbound gateway TCP, not inbound API access. Updated Windows supervisors use a stable verified runtime path so managed updates retain firewall coverage; older launchers need an installed-CLI update and restart.

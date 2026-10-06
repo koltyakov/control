@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/store"
 )
@@ -96,6 +97,9 @@ type artifactGrant struct {
 	Subject  string `json:"subject"`
 	Artifact string `json:"artifact"`
 	Expires  int64  `json:"expires"`
+	Access   string `json:"access,omitempty"`
+	TaskID   string `json:"taskId,omitempty"`
+	Output   int    `json:"output,omitempty"`
 }
 
 func (n *Node) grantArtifact(a model.Artifact, subject string, ttl time.Duration) model.Artifact {
@@ -106,6 +110,15 @@ func (n *Node) grantArtifact(a model.Artifact, subject string, ttl time.Duration
 }
 
 func (n *Node) validGrant(token, subject, artifact string) bool {
+	var g artifactGrant
+	return n.decodeGrant(token, &g) && g.Subject == subject && g.Artifact == artifact && g.Expires > time.Now().Unix()
+}
+
+func (n *Node) decodeGrant(token string, g *artifactGrant) bool {
+	return decodeArtifactGrant(token, n.Identity.Public, g)
+}
+
+func decodeArtifactGrant(token string, public ed25519.PublicKey, g *artifactGrant) bool {
 	parts := strings.Split(token, ".")
 	if len(parts) != 2 {
 		return false
@@ -118,11 +131,10 @@ func (n *Node) validGrant(token, subject, artifact string) bool {
 	if err != nil {
 		return false
 	}
-	if !ed25519.Verify(n.Identity.Public, body, sig) {
+	if !ed25519.Verify(public, body, sig) {
 		return false
 	}
-	var g artifactGrant
-	return json.Unmarshal(body, &g) == nil && g.Subject == subject && g.Artifact == artifact && g.Expires > time.Now().Unix()
+	return json.Unmarshal(body, g) == nil
 }
 
 func (n *Node) serveArtifact(ctx context.Context, caller string, conn net.Conn, args json.RawMessage) {
@@ -146,7 +158,7 @@ func (n *Node) serveArtifact(ctx context.Context, caller string, conn net.Conn, 
 		_ = writeFrame(conn, model.Response{Error: err.Error()})
 		return
 	}
-	activity := n.beginActivity(ctx, "transfer", "artifacts.send", n.Peer.Owner(caller), caller)
+	activity := n.beginActivity(ctx, "transfer", "artifacts.send", n.executionOwner(ctx, caller), caller)
 	workCtx, release, gateErr := n.enterWork(ctx)
 	if gateErr != nil {
 		activity.finish(gateErr)
@@ -297,11 +309,12 @@ func (n *Node) pullArtifact(ctx context.Context, a model.Artifact) (_ model.Arti
 
 func (n *Node) artifactMethod(ctx context.Context, caller, method string, args json.RawMessage) (any, error) {
 	var q struct {
-		ID         string         `json:"id"`
-		Path       string         `json:"path"`
-		Target     string         `json:"target"`
-		Artifact   model.Artifact `json:"artifact"`
-		TTLSeconds int            `json:"ttlSeconds"`
+		ID          string         `json:"id"`
+		Path        string         `json:"path"`
+		Target      string         `json:"target"`
+		Artifact    model.Artifact `json:"artifact"`
+		TTLSeconds  int            `json:"ttlSeconds"`
+		OutputIndex *int           `json:"outputIndex"`
 	}
 	if err := json.Unmarshal(args, &q); err != nil {
 		return nil, err
@@ -344,6 +357,11 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 	case "artifacts.pull":
 		return n.pullArtifact(ctx, q.Artifact)
 	case "artifacts.grant", "artifacts.deliver":
+		if caller == n.Identity.ID {
+			if _, ok := ctx.Value(authorityContextKey{}).(authority); !ok {
+				return nil, errors.New("artifact delegation requires an orchestrator instruction")
+			}
+		}
 		a, err := n.artifact(q.ID)
 		if err != nil {
 			return nil, err
@@ -358,7 +376,34 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 		if q.TTLSeconds < 1 || q.TTLSeconds > 86400 {
 			return nil, errors.New("grant TTL must be 1..86400 seconds")
 		}
-		a = n.grantArtifact(a, peer.ID, time.Duration(q.TTLSeconds)*time.Second)
+		grantParent := n.ctx
+		if a, ok := ctx.Value(authorityContextKey{}).(authority); ok && a.grant != nil {
+			grantParent = a.grant.ctx
+		}
+		grantCtx, cancel := context.WithCancel(grantParent)
+		g := model.Delegation{ID: identity.NewID(), Target: n.Identity.ID, Subject: peer.ID, Owner: n.executionOwner(ctx, caller), Method: "artifacts.open", Params: model.JSON(map[string]any{"id": a.ID}), Expires: time.Now().Add(delegationIdleTimeout).UTC()}
+		n.delegationMu.Lock()
+		if len(n.delegations) >= 4096 {
+			n.delegationMu.Unlock()
+			cancel()
+			return nil, errors.New("delegation limit reached")
+		}
+		n.delegations[g.ID] = &delegationState{grant: g, ctx: grantCtx, cancel: cancel, lastActivity: time.Now()}
+		n.delegationMu.Unlock()
+		proof := artifactGrant{Subject: peer.ID, Artifact: a.ID, Expires: time.Now().Add(time.Duration(q.TTLSeconds) * time.Second).Unix(), Access: g.ID}
+		if auth, ok := ctx.Value(authorityContextKey{}).(authority); ok && auth.grant != nil && auth.grant.grant.TaskID() != "" {
+			proof.TaskID = auth.grant.grant.TaskID()
+			n.mu.Lock()
+			for index, output := range n.tasks[proof.TaskID].Artifacts {
+				if output.ID == a.ID && (q.OutputIndex == nil || *q.OutputIndex == index) {
+					proof.Output = index
+					break
+				}
+			}
+			n.mu.Unlock()
+		}
+		body := model.JSON(proof)
+		a.Grant = base64.RawURLEncoding.EncodeToString(body) + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(n.Identity.Private, body))
 		if method == "artifacts.grant" {
 			return a, nil
 		}

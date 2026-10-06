@@ -33,6 +33,9 @@ type Node struct {
 	ClientOwners   bool              `json:"clientOwners,omitempty"`
 	ClientOwner    string            `json:"clientOwner,omitempty"`
 	PeerChannels   bool              `json:"peerChannels,omitempty"`
+	// ExecutionAuthority is assigned by the gateway, never by enrollment metadata.
+	ExecutionAuthority    bool `json:"executionAuthority,omitempty"`
+	InstructionDelegation bool `json:"instructionDelegation,omitempty"`
 }
 
 type Artifact struct {
@@ -104,7 +107,9 @@ type Request struct {
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
 	// Deadline is enforced by the receiving node, including through a relay.
-	Deadline time.Time `json:"deadline,omitempty"`
+	Deadline    time.Time    `json:"deadline,omitempty"`
+	Delegation  string       `json:"delegation,omitempty"`
+	Delegations []Delegation `json:"delegations,omitempty"`
 }
 
 type Response struct {

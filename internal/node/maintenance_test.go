@@ -25,7 +25,7 @@ func TestMaintenanceWaitsForAcceptedTasksAndBlocksNewWork(t *testing.T) {
 	defer worker.work.Resume()
 	call(t, source, "worker", "node.describe", map[string]any{}, nil)
 	blocked, stop := context.WithTimeout(ctx, 50*time.Millisecond)
-	err := source.Call(blocked, "worker", "files.write", map[string]any{"path": "blocked", "data": "YQ=="}, nil)
+	err := testCall(t, source, blocked, "worker", "files.write", map[string]any{"path": "blocked", "data": "YQ=="}, nil)
 	stop()
 	if err == nil {
 		t.Fatal("accepted new work while reserved")

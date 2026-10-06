@@ -2,12 +2,26 @@ package enrollment
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/binary"
+	"strings"
 	"text/template"
+	"unicode/utf16"
 )
 
 func InstallCommand(link string, windows bool, mode string) string {
 	if windows {
-		return "& ([scriptblock]::Create((Invoke-RestMethod -Uri " + PowerShellQuote(link) + ")))"
+		script := "irm " + PowerShellQuote(link) + " | iex"
+		// Keep unusual URLs literal in CMD, Bash, and the caller's PowerShell.
+		if strings.ContainsAny(link, "\"$`\\%!\r\n") {
+			units := utf16.Encode([]rune(script))
+			encoded := make([]byte, len(units)*2)
+			for i, unit := range units {
+				binary.LittleEndian.PutUint16(encoded[i*2:], unit)
+			}
+			return "powershell -NoProfile -EncodedCommand " + base64.StdEncoding.EncodeToString(encoded)
+		}
+		return `powershell -NoProfile -c "` + script + `"`
 	}
 	if mode == "system" {
 		return "curl -fsSL " + ShellQuote(link) + " | sudo bash"
@@ -84,7 +98,7 @@ try {
   $exe = Join-Path $tmp 'control.exe'
   Invoke-WebRequest -UseBasicParsing -Uri ({{q .Binary}} + '?arch=' + $arch) -OutFile $exe
   if ((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -ne $checksum) { throw 'Binary checksum mismatch' }
-  & $exe enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}} --service $serviceMode
+  & $exe enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}} --service $serviceMode --firewall
   if ($LASTEXITCODE -ne 0) { throw 'Control enrollment failed' }
 } finally { Remove-Item -LiteralPath $tmp -Recurse -Force }
 `

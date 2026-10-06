@@ -39,7 +39,7 @@ func (n *Node) serveTCPListener(ctx context.Context, caller string, stream net.C
 		return
 	}
 	defer release()
-	activity := n.beginActivity(ctx, "tunnel", "tcp.listen", n.Peer.Owner(caller), caller)
+	activity := n.beginActivity(ctx, "tunnel", "tcp.listen", n.executionOwner(ctx, caller), caller)
 	defer func() { activity.finish(err) }()
 	if q.Listen == "" {
 		q.Listen = "127.0.0.1:0"
@@ -55,6 +55,9 @@ func (n *Node) serveTCPListener(ctx context.Context, caller string, stream net.C
 	}
 	activity.phase("listening")
 	err = transport.ServeTCPListener(ctx, stream, listener, func(conn net.Conn) net.Conn {
+		if a, ok := ctx.Value(authorityContextKey{}).(authority); ok && a.grant != nil {
+			conn = &delegationConn{Conn: conn, node: n, state: a.grant}
+		}
 		return &activityConn{Conn: conn, activity: activity}
 	})
 }

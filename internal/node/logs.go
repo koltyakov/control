@@ -103,7 +103,7 @@ func (n *Node) serveTaskLogs(ctx context.Context, caller string, conn net.Conn, 
 		err = errors.New("invalid log offset")
 	}
 	if err == nil {
-		_, _, err = n.readTaskLog(n.Peer.Owner(caller), q.ID, q.Offset)
+		_, _, err = n.readTaskLog(n.executionOwner(ctx, caller), q.ID, q.Offset)
 	}
 	if err != nil {
 		_ = writeFrame(conn, model.Response{Error: err.Error()})
@@ -117,7 +117,7 @@ func (n *Node) serveTaskLogs(ctx context.Context, caller string, conn net.Conn, 
 	readDone := make(chan struct{})
 	go func() { defer close(readDone); var b [1]byte; _, _ = conn.Read(b[:]); cancel() }()
 	defer func() { _ = conn.SetReadDeadline(time.Now()); <-readDone }()
-	err = n.localTaskLogs(ctx, n.Peer.Owner(caller), q.ID, q.Offset, func(chunk model.TaskLogChunk) error { return writeFrame(conn, chunk) })
+	err = n.localTaskLogs(ctx, n.executionOwner(ctx, caller), q.ID, q.Offset, func(chunk model.TaskLogChunk) error { return writeFrame(conn, chunk) })
 	if err != nil && ctx.Err() == nil {
 		_ = writeFrame(conn, model.TaskLogChunk{Error: err.Error(), Offset: q.Offset})
 	}

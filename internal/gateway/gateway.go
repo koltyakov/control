@@ -275,6 +275,8 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		return
 	}
 	n.UserID = p.UserID
+	// A machine or common key cannot claim orchestrator authority in its proof.
+	n.ExecutionAuthority = client && (p.Role == "user" || p.Role == "superuser")
 	if g.machineStates[n.ID].Unregistered {
 		g.mu.Unlock()
 		_ = ws.Close(websocket.StatusPolicyViolation, "machine was unregistered")

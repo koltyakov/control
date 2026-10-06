@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/identity"
-	"github.com/koltyakov/control/internal/node"
+	"github.com/koltyakov/control/internal/transport"
 )
 
 const maxForwards = 32
@@ -246,7 +246,7 @@ func (f *Forward) bridge(c Client, local net.Conn) {
 	f.connections[local] = remote
 	f.mu.Unlock()
 	defer func() { _ = remote.Close() }()
-	node.Bridge(f.ctx, local, remote)
+	transport.Bridge(f.ctx, local, remote)
 }
 
 func (c Client) Forwards() []ForwardInfo {

@@ -148,6 +148,8 @@ On Windows, SCM hosts the supervisor as an automatic LocalService service. Updat
 
 Explicit Windows user-login startup runs the same supervisor under the user's limited interactive token, with a scheduled-task launcher instead of SCM. Managed updates retain that token and startup registration. A managed child update alone cannot add the new startup mode to an older installed CLI; install a CLI with user-login support before [migrating startup](installation.md#switch-windows-to-user-login-startup).
 
+Current Windows supervisors run each verified child from a stable `<dataDir>\runtime\control.exe` copy. They replace this copy only after the previous child exits, while retaining the versioned binaries and `runtime.json` selection for validation and recovery. Installer firewall rules cover this stable path, so managed updates do not require new firewall permissions. Older supervisors need a current installed CLI and one restart before using the stable path. See [Windows firewall setup](installation.md#windows-firewall).
+
 The updater verifies size and checksum, then runs `version --json` to check the staged executable before selecting it. It preserves identities, tasks, leases, keys, and other state. It does not migrate incompatible state schemas or automatically roll back after a service startup failure. The supervisor saves `runtime-previous.json` before switching. For manual recovery, stop the supervisor, restore that file as `runtime.json`, resolve or replace the gateway deployment, and restart. Existing binaries remain in state storage until the operator removes unused versions.
 
 ## HTTP and control messages

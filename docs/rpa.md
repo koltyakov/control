@@ -49,7 +49,7 @@ Windows equivalent:
 }
 ```
 
-The helper runs as the node's OS user and can operate that user's applications. Screenshots and accessibility labels may contain private information. Restrict `allow` to trusted caller IDs and grant `rpa.run` explicitly where appropriate. Tracked tasks also need `tasks.start` and owner-scoped task management permissions. Leases need their existing `leases.*` permissions; image downloads need `artifacts.open`. Default fleet trust applies if `allow` is omitted. Opt-in is not an execution sandbox, and callers already permitted unrestricted `exec.run` can invoke other desktop tools themselves.
+The helper runs as the node's OS user and can operate that user's applications. Screenshots and accessibility labels may contain private information. Restrict `allow` to trusted caller IDs and grant `rpa.run` explicitly where appropriate. Tracked tasks also need `tasks.start` and owner-scoped task management permissions. Leases need their existing `leases.*` permissions; image downloads need `artifacts.open`. Omitting `allow` permits account-client execution, not independent worker execution. Opt-in is not an execution sandbox, and callers already permitted unrestricted `exec.run` can invoke other desktop tools themselves.
 
 ## Inspect, then act
 

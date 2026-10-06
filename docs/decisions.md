@@ -8,13 +8,17 @@ Use the current [terminology](terminology.md) when reading this record. Older en
 
 ## D001: One symmetric node runtime
 
+Unrestricted peer initiation is superseded by [D045](#d045-account-client-authority-and-instruction-bound-worker-delegation). The symmetric runtime remains unchanged.
+
 Use one Go node runtime on Windows, Linux, and macOS. Requester, worker, proxy, and orchestrator are roles within an operation.
 
 This supports worker-to-worker requests and transfers without introducing separate agent and worker protocols. AI reasoning remains optional. OS-specific process handling lives in platform-specific files, while capability and transport contracts remain shared.
 
 ## D002: Persistent local node with thin CLI and MCP clients
 
-The local-node requirement for gateway observation is superseded by [D018](#d018-direct-gateway-observation-with-optional-peer-activity). [D028](#d028-command-scoped-outbound-peers-for-cli-and-mcp) supersedes the local-node requirement for remote execution. Pool activity aggregation retains this design.
+Default remote routing and pool aggregation through the local node's identity are superseded by [D045](#d045-account-client-authority-and-instruction-bound-worker-delegation).
+
+The local-node requirement for gateway observation is superseded by [D018](#d018-direct-gateway-observation-with-optional-peer-activity). [D028](#d028-command-scoped-outbound-peers-for-cli-and-mcp) supersedes the local-node requirement for remote execution.
 
 CLI and AI-facing MCP processes use an authenticated local HTTP API on a persistent node. Their shared implementation lives in `internal/client`.
 
@@ -29,6 +33,8 @@ WebRTC allows direct transfers across networks where ICE succeeds. The relay sup
 Both paths carry the same application protocol. Existing direct sessions can continue during a gateway outage, but new discovery and signaling need the gateway. Re-establishing a transport does not replay an application request.
 
 ## D004: Enrolled Ed25519 identities and pinned TLS sessions
+
+Fleet membership alone no longer permits execution. [D045](#d045-account-client-authority-and-instruction-bound-worker-delegation) adds account-client authority and destination-owned grants without changing identity or encryption.
 
 Each node persists an Ed25519 key. The gateway checks a fresh signed challenge during registration and serves as the trusted naming directory. Peer sessions use mutually authenticated TLS 1.3 pinned to enrolled public-key fingerprints, over either transport.
 
@@ -61,6 +67,8 @@ Accepted tasks run independently of the submitting connection. A node restart ma
 Callers reconcile uncertain submissions by task ID. Automatic process checkpointing and exactly-once external execution are outside this contract.
 
 ## D008: Immutable artifacts and recipient-initiated transfers
+
+[D045](#d045-account-client-authority-and-instruction-bound-worker-delegation) adds revocable destination-owned access to signed artifact grants. Content identity and direct transfer remain unchanged.
 
 Artifacts use SHA-256 content identities. A destination pulls from the source using a resumable offset, then checks the complete checksum. Delivery asks the destination to pull; it does not route bytes through the orchestrator.
 
@@ -236,6 +244,8 @@ When a new invitation runs against a retired local profile, create a fresh ident
 
 ## D028: Command-scoped outbound peers for CLI and MCP
 
+The local-API preference and local-node requirement for activity aggregation are superseded by [D045](#d045-account-client-authority-and-instruction-bound-worker-delegation).
+
 Its machine-registration contract is superseded by [D029](#d029-authenticated-client-sessions-are-not-fleet-machines). Command-scoped transport, persistent task ownership, and pre-submission backend selection are retained.
 
 Allow authenticated CLI and MCP processes to execute remote work without a separately running local node. Prefer the local API, but probe it with a read-only request before submitting work and use a command-scoped peer only on connection refusal. Explicit API settings disable fallback. Never switch backends after an uncertain submission or retry an application operation automatically. This supersedes D002's local-node requirement for remote execution, artifact downloads, and tunnels.
@@ -383,3 +393,21 @@ Expose bidirectional clipboard transfer as an explicit CLI/MCP paste, not a back
 Use separate `clipboard.open` and `clipboard.paste` permissions, with fleet checks, bounded bulk-lane streams, and maintenance admission. A source reads only OS-selected file references, never paths supplied by the caller. Send basenames and sizes first, wait for destination acceptance, then stream file bytes and SHA-256 trailers. Keep bytes out of control frames and avoid artifact staging or whole-file buffering. Receivers confine remote paths to `workDir` and publish verified files atomically without replacing existing entries.
 
 Clipboard transfer exposes the desktop user's data, including selected files outside the workspace, and is not secret-masked. Default trusted-fleet rules still apply; sensitive hosts should restrict the new permissions. Native clipboard access requires that user's desktop session. File transfers need hard-link support, support regular files only, and do not delete cut sources. Cancellation removes unfinished temporary files, but completed files and uncertain text side effects require explicit reconciliation. Never resume or replay automatically. This extends D005's streamed operations and D039's local clipboard helpers without changing gateway routing or durable task semantics. See [clipboard behavior and limits](clipboard.md).
+
+## D045: Account-client authority and instruction-bound worker delegation
+
+Authenticate execution initiation separately from fleet membership. The gateway assigns authority to account-authenticated client sessions, not enrolled nodes or common-key clients. Default CLI/MCP routing always uses this client identity; explicitly selecting a local API retains local execution and discovery only. Nodes remain symmetric runtimes and can coordinate delegated operations without gaining ambient peer authority.
+
+Let destinations issue subject- and owner-bound grants for exact instructions. CLI/MCP prepares grants before instructing a worker through `peers.call`, workflows, or artifact delivery. Task grants include one explicit task's lifecycle; dynamic workflow inputs require signed upstream-task/output provenance. Do not put authority in worker-wide access rules, provider environments, or persisted task specifications. Keep child tasks under the original client owner. Single-use synchronous instructions prevent replaying side effects under a still-live grant.
+
+Keep grant records in bounded destination-owned memory. Expire them after an hour idle, keep accepted tasks active, and renew streams only on actual traffic. Revocation cancels admitted tasks and streams, including derived artifact access. Restart loses grants and marks unfinished tasks interrupted rather than restoring authority. This trades grant continuity across restart for fail-closed recovery and needs no gateway scheduling or database migration. Account clients need the live gateway for new undelegated authority checks; issued grants remain destination-owned. Revocation requires contacting each destination and cannot undo effects.
+
+Negotiate support and refuse older targets rather than silently using their old trust rules. Upgrade the gateway and every node before relying on worker isolation. Keep account credentials off workers; unrestricted providers and fully compromised hosts remain outside an execution sandbox. This supersedes unrestricted peer initiation in D001/D004, default local-node routing in D002/D028, and D008's stateless artifact-grant revocation limitation. See [delegation](delegation.md).
+
+## D046: Windows firewall rules and a stable verified runtime path
+
+Generated Windows worker installers request scoped firewall setup explicitly through `enroll --firewall`. Elevate only the firewall operation with UAC when necessary, passing the installed executable and exact profile by absolute path. Keep enrollment and user-login execution under the installing user's account. Failed or declined configuration is an installation error with pending enrollment retained. Direct CLI installations can opt in; `service firewall` repairs an existing profile without restarting it.
+
+Allow inbound/outbound UDP for WebRTC and outbound TCP to the gateway port for the launcher and one profile-specific stable runtime path, on all Windows network profiles. Do not open inbound TCP, disable firewall protection, or change unrelated rules. Rule names and ownership metadata are deterministic per profile; repeated setup refreshes only owned rules. Keep rules after service uninstall for profile restoration, with explicit removal documented.
+
+Windows firewall application filters use exact executable paths. Versioned update paths would need new privileged rules for every deployment, while a machine-wide UDP port rule would authorize unrelated processes. Instead, the Windows supervisor copies each checksum-verified selection to `<dataDir>\runtime\control.exe` before launch and only after the previous child exits. Preserve versioned source binaries and selection/rollback records; never replace a running child or automatically roll back an uncertain update. Unix execution paths stay unchanged. This extends D014's supervisor implementation and D038's worker-installation flow without changing identity, execution authority, startup context, or idle reservations. Older supervisors need one installed-CLI update and restart. See [firewall behavior](installation.md#windows-firewall).

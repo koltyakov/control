@@ -28,6 +28,8 @@ type StandaloneConfig struct {
 	StateDir   string
 	RelayOnly  bool
 	ICEServers []webrtc.ICEServer
+	// AccountRouting uses the requesting account identity even with a local node.
+	AccountRouting bool
 }
 
 type routing struct {
@@ -64,6 +66,10 @@ func (c Client) backend(ctx context.Context) (*transport.Peer, error) {
 	}
 	if !r.initialized {
 		r.initialized = true
+		if r.cfg.AccountRouting {
+			r.err = r.start(ctx)
+			return r.peer, r.err
+		}
 		local := c
 		local.routing = nil
 		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -87,13 +93,18 @@ func (r *routing) start(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	var auth struct {
-		UserID string `json:"userId"`
+		UserID     string `json:"userId"`
+		Role       string `json:"role"`
+		Delegation bool   `json:"delegation"`
 	}
 	if err := r.cfg.Gateway.JSON(ctx, http.MethodGet, "/v1/auth", nil, &auth); err != nil {
 		return err
 	}
 	if auth.UserID == "" {
 		return errors.New("gateway did not authenticate fleet membership")
+	}
+	if r.cfg.AccountRouting && !auth.Delegation {
+		return errors.New("gateway does not support instruction-bound delegation; upgrade it before executing work")
 	}
 	if r.cfg.StateDir == "" {
 		return errors.New("standalone client state directory is not configured")
@@ -132,6 +143,7 @@ func (r *routing) start(ctx context.Context) error {
 		Gateway: r.cfg.Gateway.URL, Token: r.cfg.Gateway.Key, Identity: sessionID, ClientOwner: id,
 		Node:      model.Node{ID: sessionID.ID, Name: "cli-" + id.ID[:16], PublicKey: sessionID.Public, OS: runtime.GOOS},
 		RelayOnly: r.cfg.RelayOnly, ICEServers: r.cfg.ICEServers,
+		RequireDelegation: r.cfg.AccountRouting,
 	}, nil)
 	peer.SetSoftware(buildinfo.Current())
 	// No listener, providers, health reporting, or update handler is installed.
@@ -180,8 +192,10 @@ func peerCall(ctx context.Context, peer *transport.Peer, target, method string, 
 			value, err = peer.Nodes(ctx)
 		case "nodes.select":
 			value, err = peer.Select(ctx, model.JSON(params))
+		case "activities.pool":
+			value, err = peerActivities(ctx, peer, model.JSON(params))
 		default:
-			return errors.New("standalone calls require a target machine; only nodes.list and nodes.select accept an empty target")
+			return errors.New("standalone calls require a target machine; only nodes.list, nodes.select, and activities.pool accept an empty target")
 		}
 		if err != nil {
 			return err

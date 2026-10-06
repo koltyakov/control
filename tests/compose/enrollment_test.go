@@ -259,9 +259,6 @@ func TestHostSetupInstallsAgentAndRemembersGateway(t *testing.T) {
 	admin := client.Admin{URL: os.Getenv("CONTROL_GATEWAY"), Key: os.Getenv("CONTROL_SUPERUSER_KEY")}
 	var description struct{ ID string }
 	call(t, ctx, c, "installed-host", "node.describe", map[string]any{}, &description)
-	if err := c.Call(ctx, "installed-host", "exec.run", map[string]any{"command": "true"}, nil); err == nil {
-		t.Fatal("a remote worker gained execution access to the host's administrative account")
-	}
 	t.Cleanup(func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -282,6 +279,11 @@ func TestHostSetupInstallsAgentAndRemembersGateway(t *testing.T) {
 		}
 		t.Error("host fixture registration was not removed")
 	})
+	worker := client.Client{URL: c.URL, Token: c.Token}
+	if err := worker.Call(ctx, "installed-host", "exec.run", map[string]any{"command": "true"}, nil); err == nil {
+		t.Fatal("a remote worker gained execution access to the host's administrative account")
+	}
+	call(t, ctx, c, "installed-host", "exec.run", map[string]any{"command": "true"}, nil)
 	cmd = exec.CommandContext(ctx, binary, "machines", "add", "host-invited", "--platform", runtime.GOOS+"/"+runtime.GOARCH, "--json")
 	cmd.Env = clean
 	output, err := cmd.Output()

@@ -7,11 +7,9 @@
 An orchestrator coordinates work through a CLI or MCP client. A worker is a node executing requested work. The gateway handles enrollment, discovery, signaling, encrypted relay fallback, and fleet administration, not application execution. A node can perform both orchestrator and worker roles. AI agents are optional callers or providers, not Control service types. See [terminology](terminology.md) for naming rules.
 
 ```text
-Orchestrator's client / CLI
+Account-authenticated client / CLI
       |
-local authenticated API
-      |
-    Node A -------- WebRTC / TLS / yamux -------- Node B
+      +------------ WebRTC / TLS / yamux -------- Node B
       |                                            |
       +---- outbound WSS ---- Gateway ---- WSS ----+
                               |
@@ -20,7 +18,7 @@ local authenticated API
                         encrypted relay
 ```
 
-The diagram shows a client using a local node. A standalone client connects to the gateway and worker through the same peer transport without enrolling its own machine or running a local node.
+The client connects to the gateway and worker without enrolling its own machine or running a local node. Nodes use the same peer transport for orchestrator-delegated work and direct artifact exchange. An explicitly selected local API provides local execution and peer discovery, not independent peer execution.
 
 ## Components
 
@@ -36,13 +34,13 @@ Re-enrollment replaces the selected local profile's registration using its exist
 
 Unregistration also accepts connected nodes without lifecycle support. The gateway removes their registrations and closes their connections; local shutdown still requires node support or a local stop. Installers inspect policy without acknowledging it or claiming runtime support. When replacing a retired profile, they persist a new identity in a separate state directory and preserve the old files. See [D027](decisions.md#d027-unregister-older-agents-and-reinstall-retired-profiles).
 
-`control login` validates and persists a gateway credential independently of node setup. Directory and fleet-management commands use that saved login directly. Setup reuses the account key to issue a separate node key. Execution uses the local node API when available, or a command-scoped peer when no local API is listening. Pool activity aggregation still uses the local node.
+`control login` validates and persists a gateway credential independently of node setup. Directory and fleet-management commands use that saved login directly. Setup reuses the account key to issue a separate node key. Remote execution and pool activity aggregation use the account client's authority, independently of a local node.
 
 Fleet owners manage machine admission through gateway policy. SQLite stores monotonic disabled/unregistered state per immutable identity. Nodes read only their own policy using short-lived Ed25519 proofs, persist it locally, and acknowledge its revision. This channel survives revocation of installation credentials so an unregistered node can still receive its stop instruction. Disabled admission is separate from updater reservations, and both must permit new execution. Directory selection excludes disabled and policy-pending machines. Unregistration tombstones prevent an old process from recreating a removed registration.
 
 Fleet owners can also set a routing-name override in that SQLite policy. The gateway applies it after checking signed registration identity and fleet ownership, so old local configuration cannot undo a rename on reconnection. Rename commits the directory entry and override together without changing admission revisions or stopping work. A fleet-scoped `directory.changed` notification invalidates peer name caches but preserves identity-bound sessions. Original installation proof names stay unchanged for response recovery; reservation checks use the current alias. Replacement enrollment clears the override. See [registration management](installation.md#manage-registrations).
 
-`cmd/control` provides gateway, node, CLI, MCP, and tunnel entry points. `internal/client` is shared by CLI and MCP. A persistent node owns the connection and identity so concurrent local tools do not re-enroll or compete for the same connection. Without one, the client probes the local API with `node.describe` before submitting work. Only connection refusal enables standalone routing; explicit API configuration, authentication failures, timeouts, and application errors never trigger fallback. The chosen backend remains fixed for the process lifetime.
+`cmd/control` provides gateway, node, CLI, MCP, and tunnel entry points. `internal/client` is shared by CLI and MCP. Default remote CLI/MCP routing uses an account client session even when a local node is running, separating orchestrator authority from worker credentials. Explicit API configuration selects that node's local authority and cannot independently execute peer work. Backend selection precedes submission and never replays uncertain operations. See [authority and delegation](delegation.md).
 
 Standalone routing uses `internal/transport` directly, with the same WebRTC/relay, pinned TLS, account checks, and framed RPCs as nodes. `internal/wire` owns the shared JSON frame format. The client authenticates its account before loading its gateway/account-scoped owner identity under `clients` in the Control configuration directory. A short file lock protects key creation only. Each process generates a separate TLS identity and proves that its persistent owner authorized that connection. Tasks and leases use the stable owner, while TLS and artifact-grant recipients use the live transport identity. Concurrent processes can monitor or cancel work without displacing a long-lived MCP or tunnel connection.
 
@@ -62,7 +60,7 @@ Outgoing control, bulk, and interactive lanes use separate TLS/yamux sessions. C
 
 `internal/secrets` keeps private worker-local credential files outside the filesystem API workspace. Only local CLI commands manage entries. GUI input actions and HTTP header references resolve at execution, without changing persisted task arguments or exposing a value-read API. Supported textual outputs mask configured values; raw desktop-helper logs are suppressed while secrets exist. Storage is not encrypted, screenshots are not masked, and unrestricted providers are not sandboxed. See [secrets](secrets.md) and [D041](decisions.md#d041-worker-local-secret-references-for-credential-entry).
 
-`internal/system` samples and caches host resources. Nodes collect on startup, periodically, on heavy-task completion, or on request. The gateway collects on startup and every 15 seconds, and stops its collector on shutdown. `internal/dashboard` renders a scrollable terminal view using Bubble Tea. Its shared client reads `/v1/status` directly from the gateway for service identity, cached gateway metrics, and the authenticated user's directory. Every five seconds nodes send aggregate work/lease state and cached resources over their authenticated gateway connection. The gateway retains one report per connection for up to 20 seconds and exposes it only to the fleet owner. An available local node enriches directory entries with bounded, authorized peer activity snapshots. Dashboard polls and health reports read resource caches rather than collecting metrics themselves. See [dashboard and system metrics](dashboard.md).
+`internal/system` samples and caches host resources. Nodes collect on startup, periodically, on heavy-task completion, or on request. The gateway collects on startup and every 15 seconds, and stops its collector on shutdown. `internal/dashboard` renders a scrollable terminal view using Bubble Tea. Its shared client reads `/v1/status` directly from the gateway for service identity, cached gateway metrics, and the authenticated user's directory. Every five seconds nodes send aggregate work/lease state and cached resources over their authenticated gateway connection. The gateway retains one report per connection for up to 20 seconds and exposes it only to the fleet owner. An account client enriches directory entries with bounded, authorized peer activity snapshots. Dashboard polls and health reports read resource caches rather than collecting metrics themselves. See [dashboard and system metrics](dashboard.md).
 
 The dashboard handles left-button drag selection through terminal mouse reporting. It captures the visible rendered screen on press so polling cannot change the selected text during a drag. Release resumes the live display and submits only the selected plain text to the local clipboard through a bounded command. Clipboard operations are serialized; resizing or keyboard input cancels an unfinished drag. This does not change fleet observation or expose hidden snapshot fields.
 
@@ -73,6 +71,8 @@ Explicit clipboard pastes use `internal/clipboard` for desktop reads and streame
 Development updates run `update authorize --check` before bundle builds, verifying selected credentials without prompting. Superuser login validates and saves update authorization through `internal/installation` in `update-admin.json`; a later normal login does not overwrite it. Explicit `update authorize` can also obtain and save the key. This gateway-scoped credential is used only by update commands, independently of the regular `admin.json` fleet login. Fleet observation, execution, and general CLI help retain the normal account's authority. See [D035](decisions.md#d035-separate-saved-authorization-for-development-updates) and [D036](decisions.md#d036-persist-operator-login-and-do-not-prompt-during-updates).
 
 `control update`, also available as `control upgrade`, uses `internal/installation` to replace the invoked CLI from a public GitHub release without gateway authentication. It reuses manifest and executable validation from `internal/update`, serializes replacement with a local file lock, and preserves executable permissions. Windows renames a running executable aside before replacement. This does not change the supervisor's persisted runtime selection.
+
+Windows worker enrollment optionally configures profile-scoped executable firewall rules through a separately elevated helper; generated Windows scripts always request it. Rules allow WebRTC UDP in both directions and outbound TCP to the gateway port, but no inbound local API access. Windows supervisors publish checksum-verified launch copies at `<dataDir>\runtime\control.exe` between child runs so executable-scoped rules survive versioned updates. Sources and runtime-selection records remain versioned. Unix launch paths are unchanged. See [Windows firewall setup](installation.md#windows-firewall) and [D046](decisions.md#d046-windows-firewall-rules-and-a-stable-verified-runtime-path).
 
 ## Connection lifecycle
 
@@ -92,13 +92,13 @@ Gateway packets are generated Protobuf messages in `internal/protocol/control.pr
 
 Each user owns a private fleet. User account keys manage only that fleet's enrollment invitations, common keys, and registrations. Common keys belong to one user and permit enrollment and discovery only in that fleet. The optional bootstrap token belongs to the legacy operator fleet. Each node's configured token also authenticates its loopback API, which acts with that node's full authority. Keep that API on loopback. A separate superuser key authorizes user provisioning and gateway-wide executable updates.
 
-Nodes trust enrolled peers in their own fleet by default. Configure `allow` to restrict incoming methods and capabilities by stable node ID or name. Fleet membership is checked before these rules and before artifact grants, so neither wildcard rules nor grants authorize cross-fleet connections. IDs remain stable across renames and are preferred for access rules. Commands run with the node user's normal OS privileges; the node is not an execution sandbox.
+Fleet membership permits discovery, not execution. The gateway assigns `executionAuthority` only to account-authenticated client sessions. A worker must present a destination-owned, instruction-bound delegation for other methods, even if `allow` contains a wildcard. Configure `allow` to restrict discovery and account-client methods by stable owner ID or derived client name; `@orchestrator` selects account clients. Fleet membership precedes these checks and artifact grants. Commands run with the node user's normal OS privileges; the node is not an execution sandbox.
 
 A peer connection proves possession of the enrolled key. The gateway can observe routing, names, labels, and advertised capabilities, but execution payloads in the relay are TLS encrypted. HTTPS/WSS protects enrollment and the naming directory when the gateway is on the internet.
 
-Artifact grants are signed by the artifact-owning node. A grant names one artifact, one authenticated recipient, and an expiry. It permits downloading that artifact even when the recipient otherwise lacks `artifacts.open` permission. `artifacts.deliver` creates this grant and asks the recipient to pull the bytes directly. General capability delegation is expressed through node access rules, rather than transferable bearer authority.
+Artifact grants are signed by the artifact-owning node. A grant names one artifact, one authenticated recipient, an absolute expiry, and revocable destination-owned access. Workflow output grants also sign the originating task and output index. `artifacts.deliver` uses orchestrator-prepared authority to ask the recipient to pull bytes directly. Grants do not convey general filesystem or execution access.
 
-Workflow and agent providers run under the executor node's authority. Grant access to those capabilities only to callers intended to use that authority. AI CLIs do not automatically receive a dynamically scoped network credential.
+`internal/client` prepares destination-owned grants before submitting `peers.call`, workflow, and delivery instructions. JSON peer envelopes carry a selected `delegation` ID and outgoing `delegations`; `internal/node` checks the instruction and carries these through accepted-task contexts without adding them to persisted task specifications or provider environments. Delegated tasks retain the account client's stable owner. Grants expire after one hour idle, remain active during accepted tasks, and are lost on restart. Revocation cancels admitted work and closes streams; derived artifact access shares its parent grant's cancellation. Synchronous instruction grants are single-use. AI CLIs do not automatically inherit these contexts or gain permission to invent peer commands.
 
 ## Tasks and recovery
 

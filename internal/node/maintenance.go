@@ -16,7 +16,7 @@ type workContextKey struct{}
 
 func observational(method string) bool {
 	switch method {
-	case "nodes.list", "nodes.select", "node.describe", "system.info", "capabilities.list", "activities.list", "activities.pool", "tasks.get", "tasks.list", "tasks.logs", "leases.get", "artifacts.list":
+	case "nodes.list", "nodes.select", "node.describe", "system.info", "capabilities.list", "activities.list", "activities.pool", "tasks.get", "tasks.list", "tasks.logs", "leases.get", "artifacts.list", "access.list":
 		return true
 	default:
 		return false
@@ -24,7 +24,7 @@ func observational(method string) bool {
 }
 
 func requiresAdmission(method string) bool {
-	return !observational(method) && method != "tasks.cancel" && method != "leases.release" && method != "leases.renew"
+	return !observational(method) && method != "tasks.cancel" && method != "leases.release" && method != "leases.renew" && method != "access.revoke"
 }
 
 func (n *Node) enterWork(ctx context.Context) (context.Context, func(), error) {

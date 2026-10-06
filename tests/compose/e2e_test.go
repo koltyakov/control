@@ -25,6 +25,7 @@ import (
 
 	"github.com/koltyakov/control/internal/client"
 	"github.com/koltyakov/control/internal/identity"
+	"github.com/koltyakov/control/internal/installation"
 	"github.com/koltyakov/control/internal/model"
 )
 
@@ -36,7 +37,9 @@ func environment(t *testing.T) (context.Context, client.Client) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
-	return ctx, client.Client{URL: api, Token: token}
+	c := (client.Client{URL: api, Token: token}).WithStandalone(ctx, client.StandaloneConfig{Gateway: client.Admin{URL: os.Getenv("CONTROL_GATEWAY"), Key: os.Getenv("CONTROL_SUPERUSER_KEY")}, StateDir: filepath.Join(installation.Home(), "clients"), RelayOnly: os.Getenv("CONTROL_EXPECT_TRANSPORT") == "relay", AccountRouting: true})
+	t.Cleanup(func() { _ = c.Close() })
+	return ctx, c
 }
 
 func call(t *testing.T, ctx context.Context, c client.Client, target, method string, args, result any) {
@@ -49,6 +52,11 @@ func call(t *testing.T, ctx context.Context, c client.Client, target, method str
 func cli(t *testing.T, ctx context.Context, args ...string) []byte {
 	t.Helper()
 	cmd := exec.CommandContext(ctx, "control", args...)
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "CONTROL_API=") {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	b, err := cmd.Output()
@@ -106,8 +114,8 @@ func TestPoolAndAuthentication(t *testing.T) {
 			t.Fatalf("unexpected node labels: %+v", node)
 		}
 	}
-	c.Token = "wrong-token"
-	if err := c.Call(ctx, "", "nodes.list", map[string]any{}, nil); err == nil {
+	bad := client.Client{URL: c.URL, Token: "wrong-token"}
+	if err := bad.Call(ctx, "", "nodes.list", map[string]any{}, nil); err == nil {
 		t.Fatal("local API accepted an invalid token")
 	}
 }
@@ -330,8 +338,13 @@ func TestReverseDevServerTunnel(t *testing.T) {
 
 func TestDashboardObservesPoolWorkAndSampledResources(t *testing.T) {
 	ctx, c := environment(t)
-	pool := nodes(t, ctx, c)
-	consumer := client.Client{URL: "http://consumer:7331", Token: c.Token}
+	nodes(t, ctx, c)
+	consumer := (client.Client{}).WithStandalone(ctx, client.StandaloneConfig{Gateway: client.Admin{URL: os.Getenv("CONTROL_GATEWAY"), Key: os.Getenv("CONTROL_SUPERUSER_KEY")}, StateDir: t.TempDir(), RelayOnly: os.Getenv("CONTROL_EXPECT_TRANSPORT") == "relay", AccountRouting: true})
+	defer func() { _ = consumer.Close() }()
+	consumerSession, err := consumer.Session(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// A file larger than socket buffers keeps the peer transfer observable
 	// while a deliberately slow downloader holds the receiver open.
 	call(t, ctx, c, "consumer", "exec.run", map[string]any{"command": "dd", "args": []string{"if=/dev/zero", "of=dashboard.bin", "bs=1048576", "count=32"}}, nil)
@@ -447,7 +460,7 @@ func TestDashboardObservesPoolWorkAndSampledResources(t *testing.T) {
 			t.Fatalf("missing machine/resource status: %+v", node)
 		}
 		for _, a := range node.Active {
-			if a.Kind == "task" && a.Owner == pool["consumer"].ID {
+			if a.Kind == "task" && a.Owner == consumerSession.OwnerID {
 				found["foreign task"] = true
 				found[a.State] = true
 			}

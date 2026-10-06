@@ -84,7 +84,11 @@ func managed(ctx context.Context, dir string, args []string, service func(contex
 	}
 	_ = os.Remove(request)
 	for {
-		cmd := exec.CommandContext(ctx, current.Path, append([]string{"__managed"}, args...)...)
+		path, err := managedExecutable(ctx, dir, current)
+		if err != nil {
+			return err
+		}
+		cmd := exec.CommandContext(ctx, path, append([]string{"__managed"}, args...)...)
 		processutil.HideWindow(cmd)
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 		// Closing stdin asks the child to shut down on all supported platforms.

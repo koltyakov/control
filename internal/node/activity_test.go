@@ -46,7 +46,7 @@ func TestActivitiesObserveOtherOwnersWithoutTaskAccess(t *testing.T) {
 		for _, a := range snapshot.Active {
 			if a.Kind == "task" {
 				states[a.State] = true
-				if a.Owner != consumer.Identity.ID {
+				if a.Owner != testOrchestrator(t, consumer).owner.ID {
 					t.Fatal("incorrect activity owner")
 				}
 			}
@@ -56,7 +56,7 @@ func TestActivitiesObserveOtherOwnersWithoutTaskAccess(t *testing.T) {
 	if strings.Contains(string(model.JSON(snapshot)), "do-not-expose") {
 		t.Fatal("snapshot leaked executable arguments")
 	}
-	if err := source.Call(ctx, "worker", "tasks.get", map[string]any{"id": "foreign-running"}, nil); err == nil {
+	if err := testCall(t, source, ctx, "worker", "tasks.get", map[string]any{"id": "foreign-running"}, nil); err == nil {
 		t.Fatal("activity permission granted task access")
 	}
 	if err := consumer.Call(ctx, "source", "activities.pool", model.PoolActivityQuery{}, nil); err == nil {
@@ -66,7 +66,7 @@ func TestActivitiesObserveOtherOwnersWithoutTaskAccess(t *testing.T) {
 		call(t, consumer, "worker", "tasks.cancel", map[string]any{"id": id}, nil)
 	}
 	for _, id := range []string{"foreign-running", "foreign-queued"} {
-		if _, err := consumer.WaitTask(ctx, "worker", id); err != nil {
+		if _, err := testWaitTask(t, consumer, ctx, "worker", id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -156,7 +156,7 @@ func TestSynchronousActivityEndsOnDisconnect(t *testing.T) {
 	requestCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	done := make(chan error, 1)
-	go func() { done <- source.Call(requestCtx, "worker", "exec.run", executable(t, "sleep"), nil) }()
+	go func() { done <- testCall(t, source, requestCtx, "worker", "exec.run", executable(t, "sleep"), nil) }()
 	var snapshot model.NodeActivitySnapshot
 	eventually(t, ctx, func() bool {
 		call(t, source, "worker", "activities.list", model.ActivityQuery{}, &snapshot)

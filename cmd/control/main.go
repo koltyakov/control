@@ -106,7 +106,7 @@ func run(ctx context.Context, args []string) error {
 			c.Token = cfg.Token
 		}
 		switch args[0] {
-		case "mcp", "system", "call", "exec", "task", "artifact", "tunnel", "session", "clipboard":
+		case "mcp", "system", "call", "exec", "task", "artifact", "tunnel", "session", "clipboard", "dashboard":
 			if !explicitAPI && os.Getenv("CONTROL_API") == "" {
 				var override *string
 				if explicitToken {
@@ -117,7 +117,7 @@ func run(ctx context.Context, args []string) error {
 					return err
 				}
 				c = c.WithStandalone(ctx, client.StandaloneConfig{Gateway: remote,
-					StateDir: filepath.Join(installation.Home(), "clients"), RelayOnly: cfg.RelayOnly, ICEServers: cfg.ICEServers})
+					StateDir: filepath.Join(installation.Home(), "clients"), RelayOnly: cfg.RelayOnly, ICEServers: cfg.ICEServers, AccountRouting: true})
 			}
 		}
 	}
@@ -522,6 +522,7 @@ Environment: CONTROL_API, CONTROL_TOKEN
   update [--version TAG]                Update this CLI from GitHub Releases; alias: upgrade
   setup [--gateway URL] --name NAME [--client opencode]  Configure and start this host
   service start|stop|status|uninstall    Manage the installed background node
+  service firewall                     Configure Windows node firewall rules (UAC)
   install-mcp CLIENT [--project DIR]    Configure an AI client's MCP server
   install-skill CLIENT [--project DIR]  Install the Control CLI skill
   mcp                                  Serve MCP over stdio using saved credentials

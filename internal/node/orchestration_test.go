@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"github.com/koltyakov/control/internal/client"
 	"testing"
 	"time"
 
@@ -15,24 +16,24 @@ func TestExclusiveLeasesAndQueue(t *testing.T) {
 	call(t, source, "worker", "leases.acquire", map[string]any{"ttlSeconds": 60}, &lease)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := consumer.Call(ctx, "worker", "leases.acquire", map[string]any{}, nil); err == nil {
+	if err := testCall(t, consumer, ctx, "worker", "leases.acquire", map[string]any{}, nil); err == nil {
 		t.Fatal("second lease succeeded")
 	}
 	spec := model.TaskSpec{ID: "leased", Capability: "exec.run", Args: model.JSON(executable(t, "sleep"))}
-	if err := source.Call(ctx, "worker", "tasks.start", spec, nil); err == nil {
+	if err := testCall(t, source, ctx, "worker", "tasks.start", spec, nil); err == nil {
 		t.Fatal("task without lease succeeded")
 	}
 	spec.LeaseID = lease.ID
-	if err := consumer.Call(ctx, "worker", "tasks.start", spec, nil); err == nil {
+	if err := testCall(t, consumer, ctx, "worker", "tasks.start", spec, nil); err == nil {
 		t.Fatal("other owner used lease")
 	}
 	var task model.Task
 	call(t, source, "worker", "tasks.start", spec, &task)
-	if err := source.Call(ctx, "worker", "leases.release", map[string]any{"id": lease.ID}, nil); err == nil {
+	if err := testCall(t, source, ctx, "worker", "leases.release", map[string]any{"id": lease.ID}, nil); err == nil {
 		t.Fatal("released busy lease")
 	}
 	call(t, source, "worker", "tasks.cancel", map[string]any{"id": task.ID}, nil)
-	if _, err := source.WaitTask(ctx, "worker", task.ID); err != nil {
+	if _, err := testWaitTask(t, source, ctx, "worker", task.ID); err != nil {
 		t.Fatal(err)
 	}
 	call(t, source, "worker", "leases.renew", map[string]any{"id": lease.ID}, nil)
@@ -49,7 +50,7 @@ func TestWorkflowLocalStepDoesNotDeadlock(t *testing.T) {
 	call(t, source, "source", "tasks.start", model.TaskSpec{ID: "workflow", Capability: "workflow.run", Args: model.JSON(map[string]any{"steps": steps})}, &task)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	finished, err := source.WaitTask(ctx, "source", task.ID)
+	finished, err := testWaitTask(t, source, ctx, "source", task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +65,7 @@ func TestWorkflowLocalStepDoesNotDeadlock(t *testing.T) {
 		t.Fatal("dependency order ignored")
 	}
 	steps[1].Needs = []string{"remote"}
-	if err = source.Call(ctx, "source", "workflow.run", map[string]any{"steps": steps}, nil); err == nil {
+	if err = testCall(t, source, ctx, "source", "workflow.run", map[string]any{"steps": steps}, nil); err == nil {
 		t.Fatal("dependency cycle accepted")
 	}
 }
@@ -84,6 +85,11 @@ func TestTaskSurvivesSubmitterDisconnect(t *testing.T) {
 	if err := source.Close(); err != nil {
 		t.Fatal(err)
 	}
+	f := testOrchestrator(t, source)
+	if err := f.client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.client = (client.Client{}).WithStandalone(f.ctx, f.config)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	ticker := time.NewTicker(10 * time.Millisecond)
@@ -116,7 +122,7 @@ func TestTaskSurvivesSubmitterDisconnect(t *testing.T) {
 	if err = reconnected.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	finished, err := reconnected.WaitTask(ctx, "worker", task.ID)
+	finished, err := testWaitTask(t, reconnected, ctx, "worker", task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +144,7 @@ func TestNamedAndGlobalPermissionsCombine(t *testing.T) {
 	call(t, consumer, "source", "node.describe", map[string]any{}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := consumer.Call(ctx, "source", "files.list", map[string]any{}, nil); err == nil {
+	if err := testCall(t, consumer, ctx, "source", "files.list", map[string]any{}, nil); err == nil {
 		t.Fatal("unlisted caller inherited another node's permission")
 	}
 }

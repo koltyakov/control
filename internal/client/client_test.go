@@ -17,7 +17,8 @@ import (
 
 func TestLocalAPIAndMCP(t *testing.T) {
 	const token = "client-test-token-12345678"
-	g, err := gateway.New(t.TempDir(), token)
+	const account = "client-test-account-key-1234567890"
+	g, err := gateway.New(t.TempDir(), token, gateway.Options{SuperuserKey: account})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +37,7 @@ func TestLocalAPIAndMCP(t *testing.T) {
 	}
 	api := httptest.NewServer(n.Handler())
 	defer api.Close()
-	c := (Client{URL: api.URL, Token: token}).WithLifetime(ctx)
+	c := (Client{URL: api.URL, Token: token}).WithStandalone(ctx, StandaloneConfig{Gateway: Admin{URL: gatewayServer.URL, Key: account}, StateDir: t.TempDir(), RelayOnly: true, AccountRouting: true})
 	defer func() { _ = c.Close() }()
 	var nodes []model.Node
 	if err = c.Call(ctx, "", "nodes.list", map[string]any{}, &nodes); err != nil {
@@ -111,7 +112,7 @@ func TestLocalAPIAndMCP(t *testing.T) {
 	}
 	var info SessionInfo
 	call("control_session", map[string]any{}, &info)
-	if info.Role != "node-api" || info.OwnerID != n.Identity.ID {
+	if info.Role != "client" || info.OwnerID == n.Identity.ID {
 		t.Fatal(info)
 	}
 	var f ForwardInfo

@@ -14,11 +14,7 @@ import (
 	"github.com/koltyakov/control/internal/transport"
 )
 
-type APICall struct {
-	Target string          `json:"target"`
-	Method string          `json:"method"`
-	Params json.RawMessage `json:"params"`
-}
+type APICall = model.APICall
 
 // Handler is the authenticated local API used by CLI and MCP clients. Bind it
 // to loopback; it carries the local node's authority, not a remote caller's.

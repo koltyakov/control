@@ -19,7 +19,7 @@ x-node: &node
       condition: service_healthy
   networks: [pool]
   healthcheck:
-    test: ["CMD", "control", "call", "", "node.describe"]
+    test: ["CMD", "control", "--api", "http://127.0.0.1:7331", "call", "", "node.describe"]
     interval: 2s
     timeout: 5s
     retries: 30

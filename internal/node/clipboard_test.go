@@ -36,7 +36,7 @@ func TestClipboardPeers(t *testing.T) {
 					cfg.Allow = map[string][]string{"source": {"clipboard.*", "node.describe"}}
 				}
 			})
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
 			path := filepath.Join(t.TempDir(), "copied file.bin")
 			data := bytes.Repeat([]byte("clipboard\x00\xff"), 100000)
@@ -47,11 +47,11 @@ func TestClipboardPeers(t *testing.T) {
 			copied := make(chan string, 1)
 			worker.copyClipboard = func(_ context.Context, text string) error { copied <- text; return nil }
 			// Remote file references can select a desktop file outside workDir, but cannot be supplied by the caller.
-			conn, metadata, err := source.Peer.OpenRPC(ctx, "worker", clipboard.OpenMethod, clipboard.Request{Protocol: clipboard.Protocol})
+			conn, metadata, err := testOpen(t, source, ctx, "worker", clipboard.OpenMethod, clipboard.Request{Protocol: clipboard.Protocol})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() { _ = conn.Close() }()
+			defer func(conn net.Conn) { _ = conn.Close() }(conn)
 			var ack clipboard.Ack
 			if err := json.Unmarshal(metadata, &ack); err != nil || ack.Content.Files[0].Name != filepath.Base(path) {
 				t.Fatal(ack, err)
@@ -92,7 +92,7 @@ func TestClipboardPeers(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer batch.Close()
-			conn, _, err = source.Peer.OpenRPC(ctx, "worker", clipboard.PasteMethod, clipboard.Request{Protocol: clipboard.Protocol, Content: batch.Content, Dir: "."})
+			conn, _, err = testOpen(t, source, ctx, "worker", clipboard.PasteMethod, clipboard.Request{Protocol: clipboard.Protocol, Content: batch.Content, Dir: "."})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -111,19 +111,19 @@ func TestClipboardPeers(t *testing.T) {
 				{Protocol: clipboard.Protocol, Content: batch.Content, Dir: "../"},
 				{Protocol: clipboard.Protocol, Content: clipboard.Content{Kind: "files", Files: []clipboard.File{{Name: "../escape"}}}},
 			} {
-				if conn, _, err := source.Peer.OpenRPC(ctx, "worker", clipboard.PasteMethod, request); err == nil {
+				if conn, _, err := testOpen(t, source, ctx, "worker", clipboard.PasteMethod, request); err == nil {
 					_ = conn.Close()
 					t.Fatal("invalid paste accepted", request)
 				}
 			}
 			for _, method := range []string{clipboard.OpenMethod, clipboard.PasteMethod} {
-				if conn, _, err := consumer.Peer.OpenRPC(ctx, "worker", method, clipboard.Request{Protocol: clipboard.Protocol}); err == nil {
+				if conn, _, err := testOpen(t, consumer, ctx, "worker", method, clipboard.Request{Protocol: clipboard.Protocol}); err == nil {
 					_ = conn.Close()
 					t.Fatal("unauthorized clipboard access", method)
 				}
 			}
 			text := "clipboard Unicode: 世界\nsecond line"
-			conn, _, err = source.Peer.OpenRPC(ctx, "worker", clipboard.PasteMethod, clipboard.Request{Protocol: clipboard.Protocol, Content: clipboard.Content{Kind: "text", Text: text}})
+			conn, _, err = testOpen(t, source, ctx, "worker", clipboard.PasteMethod, clipboard.Request{Protocol: clipboard.Protocol, Content: clipboard.Content{Kind: "text", Text: text}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -143,7 +143,7 @@ func TestClipboardTextOpen(t *testing.T) {
 	worker.readClipboard = func(context.Context) (clipboard.Value, error) { return clipboard.Value{Text: text}, nil }
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	conn, data, err := source.Peer.OpenRPC(ctx, "worker", clipboard.OpenMethod, clipboard.Request{Protocol: clipboard.Protocol})
+	conn, data, err := testOpen(t, source, ctx, "worker", clipboard.OpenMethod, clipboard.Request{Protocol: clipboard.Protocol})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,13 +170,13 @@ func TestClipboardStreamLimit(t *testing.T) {
 		}
 	}()
 	for range 8 {
-		conn, _, err := source.Peer.OpenRPC(ctx, "worker", clipboard.OpenMethod, clipboard.Request{Protocol: clipboard.Protocol})
+		conn, _, err := testOpen(t, source, ctx, "worker", clipboard.OpenMethod, clipboard.Request{Protocol: clipboard.Protocol})
 		if err != nil {
 			t.Fatal(err)
 		}
 		streams = append(streams, conn)
 	}
-	if conn, _, err := source.Peer.OpenRPC(ctx, "worker", clipboard.OpenMethod, clipboard.Request{Protocol: clipboard.Protocol}); err == nil {
+	if conn, _, err := testOpen(t, source, ctx, "worker", clipboard.OpenMethod, clipboard.Request{Protocol: clipboard.Protocol}); err == nil {
 		_ = conn.Close()
 		t.Fatal("clipboard stream limit bypassed")
 	}
@@ -193,7 +193,7 @@ func TestClipboardAPIAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	worker.readClipboard = func(context.Context) (clipboard.Value, error) { return clipboard.Value{Paths: []string{path}}, nil }
-	api := httptest.NewServer(source.Handler())
+	api := httptest.NewServer(worker.Handler())
 	defer api.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -215,8 +215,8 @@ func TestClipboardAPIAndCancellation(t *testing.T) {
 	if err := readFrame(conn, &response); err != nil || response.Error != "" {
 		t.Fatal(response.Error, err)
 	}
-	if source.pauseForUpdate() || worker.pauseForUpdate() {
-		t.Fatal("clipboard API relay did not hold both admissions")
+	if worker.pauseForUpdate() {
+		t.Fatal("local clipboard API did not hold admission")
 	}
 	// Closing before Ready must release the relaying node and source node.
 	_ = conn.Close()

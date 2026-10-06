@@ -12,7 +12,7 @@ Use these terms in documentation, code comments, CLI help, dashboard text, and A
 | Worker | A node performing requested work or exposing capabilities to the caller. It can fetch inputs and deliver outputs directly to other nodes. |
 | Gateway | The shared service handling enrollment, discovery, connection signaling, encrypted relay fallback, and fleet administration. It does not schedule or execute application work. |
 
-Orchestrator and worker are roles within an operation, not fixed machine types. The same node can coordinate one task and execute another. A worker can request work from another worker. "Remote" and "local" describe location relative to the caller, not separate runtime types.
+Orchestrator and worker are roles within an operation, not fixed machine types. A node can coordinate work delegated by an account-authenticated client and execute requested work. A worker can request specific work from another worker only under an orchestrator-issued delegation. "Remote" and "local" describe location relative to the caller, not separate runtime types. See [authority and delegation](delegation.md).
 
 ## Components
 

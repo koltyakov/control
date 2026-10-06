@@ -18,9 +18,10 @@ import (
 
 func TestStableOwnerAccessRulesPreserveTransportBoundGrants(t *testing.T) {
 	const token = "owner-access-rules-test-token-123456"
+	const account = "owner-access-account-key-1234567890"
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	g, err := gateway.New(t.TempDir(), token)
+	g, err := gateway.New(t.TempDir(), token, gateway.Options{SuperuserKey: account})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +46,7 @@ func TestStableOwnerAccessRulesPreserveTransportBoundGrants(t *testing.T) {
 		t.Fatal(err)
 	}
 	local := Client{URL: refusedAPI(t)}
-	cfg := StandaloneConfig{Gateway: Admin{URL: s.URL, Key: token}, StateDir: state, RelayOnly: true}
+	cfg := StandaloneConfig{Gateway: Admin{URL: s.URL, Key: account}, StateDir: state, RelayOnly: true}
 	c := local.WithStandalone(ctx, cfg)
 	defer func() { _ = c.Close() }()
 	other := local.WithStandalone(ctx, cfg)

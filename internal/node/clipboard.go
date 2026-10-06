@@ -43,7 +43,7 @@ func (n *Node) serveClipboard(ctx context.Context, caller string, conn net.Conn,
 	defer release()
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()); _ = conn.Close() })
 	defer stop()
-	activity := n.beginActivity(ctx, "transfer", method, n.Peer.Owner(caller), caller)
+	activity := n.beginActivity(ctx, "transfer", method, n.executionOwner(ctx, caller), caller)
 	defer func() { activity.finish(err) }()
 	if method == clipboard.OpenMethod {
 		var value clipboard.Value

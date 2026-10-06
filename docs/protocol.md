@@ -29,8 +29,8 @@ Running an invitation on an existing profile replaces its enrollment and can ren
   "metricsIntervalSeconds": 15,
   "iceServers": [{ "urls": ["stun:your-stun-server.example.com:3478"] }],
   "allow": {
-    "orchestrator": ["*"],
-    "consumer": ["node.describe", "artifacts.open", "artifacts.pull"]
+    "@orchestrator": ["*"],
+    "*": ["node.describe", "capabilities.list"]
   }
 }
 ```
@@ -45,15 +45,17 @@ The configured token can be a user's issued common key or redeemed installation 
 
 `metricsIntervalSeconds` controls local resource sampling, independently of dashboard activity polls. The default is 15 seconds; 1..3600 changes the interval and `-1` disables periodic collection. Startup, heavy-task completion, and explicit refresh requests can still sample. See [dashboard and system metrics](dashboard.md).
 
-Omitting `allow` trusts enrolled nodes in the same user's fleet. Setting `"allow": {}` denies remote calls except valid artifact download grants within that fleet. Neither grants nor wildcard rules bypass fleet membership. Patterns use Go `path.Match` syntax. For example, `tasks.*` permits task management, but `tasks.start` also requires permission for its requested capability. Task status and logs remain owner-scoped. The local API can inspect every task owned by its node or executed locally.
+Omitting `allow` permits same-fleet discovery and account-client execution, not independent worker execution. Setting `"allow": {}` denies incoming calls except previously issued valid delegation or artifact grants. Neither grants nor wildcard rules bypass fleet membership. Patterns use Go `path.Match` syntax. `@orchestrator` selects account-authenticated clients. `tasks.start` also requires permission for its capability. Task status and logs remain owner-scoped. The local API can inspect tasks owned by its node or executed locally. See [delegation](delegation.md).
 
 ## Operations
+
+Windows invitation scripts also pass `enroll --firewall`. This configures profile-scoped inbound/outbound UDP and outbound gateway-port TCP rules for the installed executable and stable managed runtime path. A separate `service firewall` invocation requests UAC when needed without elevating a user-login node. Direct enrollment can opt in with `--firewall`; existing hosts can run `service firewall` without restarting. No inbound TCP API port is opened. The pinned installer must support this option before the updated script is served. See [Windows firewall setup and recovery](installation.md#windows-firewall).
 
 ### Gateway observation
 
 Authenticated `GET /v1/status` returns a JSON pool snapshot with `observedAt`, `gateway`, and `nodes`. `gateway` contains the configured public `url`, running `software` build metadata, service `startedAt`, and cached host `system` metrics. The URL may be empty when `CONTROL_PUBLIC_URL` is unset; the CLI displays its configured connection URL. Sampling runs at startup and every 15 seconds independently of requests. Disk paths use the label `state`, and collection errors are sanitized.
 
-`nodes` contains only the authenticated credential owner's fleet, including for superuser requests, which see the legacy fleet. Directory-only entries have status `online` or `offline` and registration-time metrics. Account keys also receive fresh node-health reports with status `summary`, numeric `activeCount`, boolean `leased`, cached `system`, and the gateway receipt time in `observedAt`. These reports contain no active/recent records. Common keys do not receive them. The dashboard optionally enriches matching IDs through the local-only `activities.pool` API, producing status `ready` with authorized activity details. Its optional `notice` describes missing live machine health. Every valid credential may read status; unauthenticated, revoked, and disabled credentials receive HTTP 401. The endpoint grants no task control, account administration, or update permissions.
+`nodes` contains only the authenticated credential owner's fleet, including for superuser requests, which see the legacy fleet. Directory-only entries have status `online` or `offline` and registration-time metrics. Account keys also receive fresh node-health reports with status `summary`, numeric `activeCount`, boolean `leased`, cached `system`, and the gateway receipt time in `observedAt`. These reports contain no active/recent records. Common keys do not receive them. The dashboard optionally enriches matching IDs through account-client `activities.pool` aggregation, producing status `ready` with authorized activity details. Its optional `notice` describes missing live machine health. Every valid credential may read status; unauthenticated, revoked, and disabled credentials receive HTTP 401. The endpoint grants no task control, account administration, or update permissions.
 
 `GET /v1/auth` advertises `nodeHealth: true` when the gateway accepts reports. Compatible nodes send a `node.health` routing packet with empty `to` every five seconds, beginning after connection. Its JSON data is limited to 16 KiB and contains `activeCount`, `leased`, and `system`. The gateway binds the report to the authenticated connection, ignores the supplied sender ID, and never forwards health packets to peers. Reports expire after 20 seconds without receipt and are not persisted. Nodes redact filesystem paths and raw collection errors. Resource sample timestamps retain their original collection times. Reporting stops with node shutdown and is disabled for older gateways that omit the feature flag, preserving nodes-first managed updates.
 
@@ -75,7 +77,7 @@ Nodes persist policy in `machine-state.json`. Disable rejects new work independe
 
 ### Node operations
 
-Remote CLI and MCP operations use a running local node when available. Otherwise, unless `--api` or `CONTROL_API` is explicit, a read-only local API probe that fails with connection refusal selects an outbound-only client session using the saved gateway credential. This session uses the same account checks, pinned TLS, framed requests, and streaming methods as nodes, but never enrolls as a machine. It exposes no execution capabilities or local API. Backend selection happens before work and never retries an uncertain operation. See [standalone CLI and MCP](installation.md#standalone-cli-and-mcp) for support negotiation, identity storage, ownership, and concurrency limits.
+Default remote CLI/MCP operations use an outbound-only account client session, even when a local node is running. `--api` or `CONTROL_API` explicitly selects that node's local API, which can execute locally and discover peers but cannot independently execute peer work. Client sessions use the same fleet checks, pinned TLS, framed requests, and streaming methods without enrolling as machines. Backend selection happens before work and never retries uncertain operations. See [delegation and upgrades](delegation.md).
 
 `GET /v1/auth` advertises `clientSessions: true` on compatible gateways. Clients connect through `GET /v1/client/connect`, not `/v1/connect`. The handshake's `Hello` has `client: true`; its Ed25519 signature covers the fresh challenge, `control-client-session-v1` followed by a NUL byte, and the JSON identity metadata. Machine signatures retain their original challenge-plus-metadata encoding. Client names are fixed to `cli-<first-16-identity-hex-digits>` for access-rule lookup, not machine discovery. Client metadata must have no capabilities, labels, or system samples. Installed-machine credentials cannot open these sessions. The gateway commits account ownership and client role before returning `ready`, and limits each account to 64 live sessions.
 
@@ -110,7 +112,7 @@ Authenticate with `Authorization: Bearer TOKEN`. Responses contain `result` or `
 | `node.describe` | `{}`; returns ID, capabilities, connections, lane/session stream counts, configured agent/MCP names |
 | `system.info` | Optional `refresh`; otherwise returns the cached OS, CPU, RAM, and disk sample |
 | `activities.list` | Optional `recent`, 0..64; node-wide activity metadata and cached resources, subject to access rules |
-| `activities.pool` | Optional `nodes` array and `recent`; local-API-only aggregation, including offline and unavailable machines |
+| `activities.pool` | Optional `nodes` array and `recent`; client or local-API aggregation, not a peer RPC; includes offline and unavailable machines |
 | `capabilities.list` | `{}`; descriptions and input schemas |
 | `tasks.start` | A task specification |
 | `tasks.get`, `tasks.cancel` | `id` |
@@ -136,6 +138,10 @@ Authenticate with `Authorization: Bearer TOKEN`. Responses contain `result` or `
 | `files.read` | `path`, optional byte `offset`, `limit` |
 | `files.write` | `path`, base64 `data`, optional byte `offset`, `truncate` |
 | `workflow.run` | `steps`; see `examples/workflow-task.json` |
+| `peers.call` | `target`, `method`, `params`; CLI/MCP first obtains destination-owned delegation for this exact instruction |
+| `access.grant` | `subject` worker name/ID, `method`, `params`; task grants require an explicit task ID; optional workflow `inputsFrom` and `deliverTo`; returns an instruction-bound grant with one-hour idle expiry |
+| `access.list` | `{}`; original orchestrator owner's grants at this destination |
+| `access.revoke` | `id`; owner-only, idempotent when absent; cancels associated tasks and streams |
 | `rpa.run` | Opt-in `actions` array, 1..100 GUI actions; serialized per OS user, two-minute invocation limit; see [GUI automation](rpa.md) |
 
 `artifacts.open`, `tcp.open`, and `tcp.listen` are streaming peer methods, not JSON API calls. Use the CLI's `artifact get` and `tunnel` commands, or the local API's `POST /v1/download`, WebSocket `GET /v1/tunnel?target=NODE&address=HOST:PORT`, and reverse WebSocket `GET /v1/listener?target=NODE&listen=HOST:PORT`.
@@ -176,6 +182,14 @@ New TCP clients request `tcp.open` with `address` and `duplex: 1`. Compatible re
 Streaming log clients send peer `tasks.logs` with `id`, `offset`, and `follow: true`. A compatible receiver checks the existing `tasks.logs` permission and task owner before returning `stream: "task-logs-v1"`. Subsequent length-prefixed JSON records contain base64 `data`, next byte `offset`, and `terminal`, or `error`. Records are limited to 64 KiB of decoded bytes and 128 KiB of framing. Completion is sent only after draining retained bytes. Older receivers return an ordinary snapshot, which the shared client follows with read-only polling. The local API exposes authenticated `GET /v1/logs?target=NODE&id=ID&offset=BYTES` as flushed NDJSON with the same records. A missing older API route permits snapshot polling; permission failures and interrupted streams do not. Standard JSON calls and MCP `control_task_logs` remain snapshot interfaces. Reattach explicitly by offset after a failure; log followers never resubmit or cancel the task.
 
 `control exec NODE [--detach] [--id ID] [--timeout DURATION] [--] COMMAND [ARG...]` submits a durable `exec.run` task. It prints the chosen task ID before submission. Without `--detach` it waits for completion; with it, it returns after acceptance. Timeout defaults to one hour, accepts 1s through 24h, and includes queue/input time. `control task logs NODE ID [--follow] [--offset BYTES]` either returns one structured log chunk or follows text until completion. Following drains remaining terminal chunks. Cancelling a follower or wait never cancels the task; use `control task cancel NODE ID`. Accepted tasks survive client disconnects and remain subject to their existing restart and idempotency rules.
+
+### Instruction-bound delegation
+
+Authenticated gateway metadata advertises `delegation: true`; compatible machines advertise `instructionDelegation: true`. The gateway assigns `executionAuthority: true` only to account-authenticated live clients, never enrolled machines or common-key clients. Default account routing refuses older targets. Worker membership permits only `nodes.list`, `nodes.select`, `node.describe`, `capabilities.list`, and `mcp.discover` without a grant, still subject to `allow`.
+
+Peer requests can carry `delegation` and an outgoing `delegations` array. Destination-owned records bind `id`, `target`, `subject`, `owner`, `method`, and `params`. Task grants also cover status, logs, cancellation, and matching idempotent submission for one task. Workflow `inputsFrom` entries have `node`, `path`, `taskId`, and `artifact` index; `deliverTo` holds authorized recipient IDs. Dynamic artifact grants must sign the expected upstream output and recipient. A caller cannot change a method, arguments, worker, or task by editing the envelope.
+
+Authority contexts survive client disconnects for accepted tasks but are not persisted or exposed as local-worker permissions. Synchronous instructions are single-use. Authorized requests and stream bytes refresh idle expiry; accepted queued/running tasks keep it active. Expiry and revocation close streams and cancel tasks. At most 4,096 records are held per destination, lost on restart. There is no grant-management delegation or nested delegated coordination. See [usage, revocation, and limits](delegation.md).
 
 ## Task specification
 

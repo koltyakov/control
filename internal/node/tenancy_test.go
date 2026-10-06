@@ -40,7 +40,10 @@ func TestPrivateFleetsWithMultipleOrchestrators(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				var account struct{ Token string }
+				var account struct {
+					Token string
+					User  struct{ ID string }
+				}
 				err = json.NewDecoder(resp.Body).Decode(&account)
 				_ = resp.Body.Close()
 				if err != nil || account.Token == "" {
@@ -56,6 +59,7 @@ func TestPrivateFleetsWithMultipleOrchestrators(t *testing.T) {
 						t.Fatal(err)
 					}
 					fleets[u] = append(fleets[u], n)
+					attachTestOrchestrator(t, n, prepareTestOrchestrator(t, ctx, s.URL, account.Token, account.User.ID, relay))
 				}
 			}
 			for u, fleet := range fleets {
@@ -74,20 +78,20 @@ func TestPrivateFleetsWithMultipleOrchestrators(t *testing.T) {
 					call(t, orchestrator, "worker", "exec.run", executable(t, "agent"), nil)
 					call(t, orchestrator, "worker", "artifacts.export", map[string]any{"path": "private.txt"}, &artifact)
 					var content bytes.Buffer
-					if err = orchestrator.Download(ctx, artifact, 0, &content); err != nil || content.String() != private {
+					if err = testOrchestrator(t, orchestrator).client.Download(ctx, artifact, 0, &content); err != nil || content.String() != private {
 						t.Fatalf("same-fleet download: %q %v", content.String(), err)
 					}
 					want := "webrtc"
 					if relay {
 						want = "relay"
 					}
-					if mode := orchestrator.Peer.Connections()[worker.Identity.ID]; mode != want {
+					if mode := testConnections(t, orchestrator)[worker.Identity.ID]; mode != want {
 						t.Fatalf("want %s, got %s", want, mode)
 					}
 				}
 				attacker := fleets[1-u][0]
 				for _, method := range []string{"node.describe", "activities.list", "tasks.list", "files.read", "artifacts.list", "exec.run"} {
-					if err = attacker.Call(ctx, worker.Identity.ID, method, map[string]any{}, nil); err == nil {
+					if err = testCall(t, attacker, ctx, worker.Identity.ID, method, map[string]any{}, nil); err == nil {
 						t.Fatal("foreign operation accepted", method)
 					}
 				}

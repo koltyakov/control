@@ -51,7 +51,7 @@ Interrupted or corrupt files never replace destination entries, and their tempor
 
 ## Permissions
 
-`clipboard.paste` permits changing the node user's clipboard or writing pasted files within its workspace. `clipboard.open` permits reading that user's clipboard and streaming its selected files, including outside the workspace. Both enforce the existing fleet membership and access rules. `node.describe` reports the `clipboard-v1` protocol and both methods. Nodes trust their fleet by default; restrict these permissions on machines with sensitive desktop data:
+`clipboard.paste` permits changing the node user's clipboard or writing pasted files within its workspace. `clipboard.open` permits reading that user's clipboard and streaming its selected files, including outside the workspace. Both require account-client authority or instruction-bound delegation, plus fleet membership and access rules. `node.describe` reports the `clipboard-v1` protocol and both methods. Account clients are permitted by default when `allow` is omitted; restrict these permissions on machines with sensitive desktop data:
 
 ```json
 {

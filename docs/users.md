@@ -2,7 +2,7 @@
 
 [README](../README.md) · [Installation](installation.md) · [Architecture](architecture.md) · [Protocol](protocol.md)
 
-One gateway can serve multiple users. Each user owns one private fleet with any number of nodes. Orchestrators can address worker nodes by name, subject to the workers' access rules. Nodes can perform either role and collaborate with other machines in the same fleet. An orchestrator can also use a standalone client without enrolling its machine. Another user's credentials cannot discover or connect to those machines. See [terminology](terminology.md) for roles and components.
+One gateway can serve multiple users. Each user owns one private fleet with any number of nodes. Account-authenticated clients address workers by name, subject to access rules. Workers collaborate only under instruction-bound orchestrator delegation; fleet membership alone permits discovery. A client does not enroll its machine. Another user's credentials cannot discover or connect to those machines. See [terminology](terminology.md) and [delegation](delegation.md).
 
 ## Register a user
 
@@ -44,6 +44,8 @@ Bob follows the same flow with his account key. He can also name a machine `rend
 | Gateway superuser | Provision/disable accounts and publish gateway-wide software updates; fleet commands operate only on the operator's legacy fleet |
 
 Users issue, list, and revoke their own common keys with `control keys create|list|revoke`. They cannot issue account keys for other users, change credential ownership, publish executable updates, or inspect gateway-wide rollout status. Fleet-management commands appear in user-account help. Gateway administration appears only for the superuser. Common-key help exposes neither.
+
+Only account-authenticated client sessions initiate execution authority. Enrolling a node with an account key does not grant its node identity that authority. Keep account keys off execution workers, since someone who steals one can authenticate a new orchestrator client. Worker installation/common keys do not independently execute peer commands, including through the local API or a new common-key client session.
 
 The gateway operator remains trusted. The operator owns the database and release-distribution authority and can inspect gateway metadata. Fleet isolation protects users from other users; it does not turn the gateway into an untrusted service or sandbox providers running on a machine.
 

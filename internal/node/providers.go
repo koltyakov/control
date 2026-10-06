@@ -44,6 +44,7 @@ func (n *Node) registerProviders() error {
 		{model.Capability{Name: "mcp.call", Description: "Invoke a tool on a configured local MCP server.", InputSchema: schema(map[string]any{"server": text, "tool": text, "arguments": object}, "server", "tool")}, n.mcpCall},
 		{model.Capability{Name: "mcp.request", Description: "Read MCP resources or prompts on a configured server.", InputSchema: schema(map[string]any{"server": text, "method": text, "params": object}, "server", "method")}, n.mcpRequest},
 		{model.Capability{Name: "workflow.run", Description: "Execute dependency-ordered tasks across peers and transfer their artifact inputs.", InputSchema: schema(map[string]any{"steps": map[string]any{"type": "array", "items": object}}, "steps")}, n.workflowRun},
+		{model.Capability{Name: "peers.call", Description: "Carry out an orchestrator-authorized instruction on another worker. Worker credentials alone permit discovery, not peer execution. CLI/MCP prepares an instruction-bound delegation.", InputSchema: schema(map[string]any{"target": text, "method": text, "params": object}, "target", "method", "params")}, n.peerCall},
 	}
 	for _, p := range builtins {
 		if err := n.Register(p); err != nil {

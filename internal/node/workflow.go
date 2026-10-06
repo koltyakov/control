@@ -11,17 +11,7 @@ import (
 	"github.com/koltyakov/control/internal/model"
 )
 
-type WorkflowStep struct {
-	Name   string         `json:"name"`
-	Target string         `json:"target"`
-	Needs  []string       `json:"needs,omitempty"`
-	Task   model.TaskSpec `json:"task"`
-	Inputs []struct {
-		Step     string `json:"step"`
-		Artifact int    `json:"artifact"`
-		Path     string `json:"path"`
-	} `json:"inputs,omitempty"`
-}
+type WorkflowStep = model.WorkflowStep
 
 func (n *Node) workflowRun(ctx context.Context, args json.RawMessage, e Execution) (any, error) {
 	var workflow struct {
@@ -90,7 +80,7 @@ func (n *Node) workflowRun(ctx context.Context, args json.RawMessage, e Executio
 			}
 			a := prior.Artifacts[input.Artifact]
 			var granted model.Artifact
-			if err := n.Call(ctx, a.Node, "artifacts.grant", map[string]any{"id": a.ID, "target": step.Target}, &granted); err != nil {
+			if err := n.Call(ctx, a.Node, "artifacts.grant", map[string]any{"id": a.ID, "target": step.Target, "outputIndex": input.Artifact}, &granted); err != nil {
 				return results, err
 			}
 			step.Task.Inputs = append(step.Task.Inputs, model.Input{Artifact: granted, Path: input.Path})
@@ -105,7 +95,7 @@ func (n *Node) workflowRun(ctx context.Context, args json.RawMessage, e Executio
 		}
 		task, err := n.WaitTask(ctx, step.Target, task.ID)
 		if err != nil {
-			cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			_ = n.Call(cancelCtx, step.Target, "tasks.cancel", map[string]any{"id": step.Task.ID}, nil)
 			cancel()
 			return results, err

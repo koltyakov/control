@@ -126,7 +126,7 @@ func TestSecretPeerTaskRetention(t *testing.T) {
 			spec := model.TaskSpec{ID: "secret-task", Capability: "rpa.run", Args: json.RawMessage(`{"actions":[{"type":"type","secret":"app.password"}]}`)}
 			var accepted model.Task
 			call(t, source, "worker", "tasks.start", spec, &accepted)
-			finished, err := source.WaitTask(ctx, "worker", accepted.ID)
+			finished, err := testWaitTask(t, source, ctx, "worker", accepted.ID)
 			if err != nil || finished.State != "succeeded" {
 				t.Fatalf("task failed: %s, %v", finished.Error, err)
 			}
@@ -146,7 +146,7 @@ func TestSecretPeerTaskRetention(t *testing.T) {
 				t.Fatal("secret task replayed")
 			}
 			for _, method := range []string{"secrets.get", "secrets.list", "secrets.set", "secrets.delete"} {
-				if err := source.Call(ctx, "worker", method, map[string]any{"name": "app.password"}, nil); err == nil {
+				if err := testCall(t, source, ctx, "worker", method, map[string]any{"name": "app.password"}, nil); err == nil {
 					t.Fatal("secret management exposed as RPC")
 				}
 			}

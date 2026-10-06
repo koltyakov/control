@@ -6,7 +6,7 @@ These principles guide changes to Control. The [decision record](decisions.md) d
 
 ## Every machine is a peer
 
-A node can initiate work, receive work, serve artifacts, and consume another node's capabilities. Orchestrator and worker are roles within an operation, not fixed machine types. An orchestrator can coordinate through a standalone client or a node. Follow the [terminology](terminology.md): client, node, and gateway name components; agent refers to AI software. Avoid introducing assumptions that all requests originate from one laptop or that only workers can produce files.
+A node can receive work, serve artifacts, and consume another node's capabilities under orchestrator-issued delegation. Orchestrator and worker are roles within an operation, not fixed machine types. An account-authenticated client initiates execution authority and can delegate coordination to a node. Follow the [terminology](terminology.md): client, node, and gateway name components; agent refers to AI software. Avoid introducing assumptions that all requests originate from one laptop or that only workers can produce files.
 
 An orchestrator's CLI or MCP process is an authenticated client, not an enrolled execution machine. Keep client transport identities and task ownership separate from the fleet machine catalog, resource observation, lifecycle controls, and managed binary rollout. Remote client execution must not require enrolling the requesting machine as a worker.
 
@@ -41,6 +41,8 @@ Keep artifacts immutable and content-addressed. Resume partial transfers by offs
 Each user owns a separate fleet. Derive ownership from authenticated credentials, scope all gateway discovery and routing to that fleet, and verify membership at peer acceptance and dispatch. Client-supplied labels, names, access rules, artifact grants, and cached connections must never override the user boundary. Identity ownership is immutable, including after a registration is forgotten.
 
 Authenticate peers and enforce access on the node that owns the requested capability or artifact. Preserve owner-scoped task access and recipient-bound artifact grants.
+
+Fleet membership and a worker's local API credential permit discovery, not independent peer execution. Bind delegation to the orchestrator owner, destination, authenticated worker, and requested instruction. Do not install ambient worker permissions. Check expiry and revocation on existing sessions as well as new connections; cancellation must cover admitted tasks and streams. See [delegation](delegation.md).
 
 Only the gateway's superuser role can publish executable updates or provision user accounts. A user can issue common keys only within their own fleet. A node must acknowledge an idle maintenance reservation before updating. Never interrupt accepted work to apply an update, and never equate a disconnected participant with a successful restart.
 

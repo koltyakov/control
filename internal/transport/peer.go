@@ -31,15 +31,16 @@ import (
 )
 
 type Config struct {
-	Client        bool
-	Gateway       string
-	Token         string
-	Identity      *identity.Identity
-	ClientOwner   *identity.Identity
-	Node          model.Node
-	RelayOnly     bool
-	ICEServers    []webrtc.ICEServer
-	DirectTimeout time.Duration
+	Client            bool
+	Gateway           string
+	Token             string
+	Identity          *identity.Identity
+	ClientOwner       *identity.Identity
+	Node              model.Node
+	RelayOnly         bool
+	ICEServers        []webrtc.ICEServer
+	DirectTimeout     time.Duration
+	RequireDelegation bool
 }
 
 type link struct {
@@ -179,6 +180,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		ClientSessions bool   `json:"clientSessions"`
 		ClientOwners   bool   `json:"clientOwners"`
 		PeerChannels   bool   `json:"peerChannels"`
+		Delegation     bool   `json:"delegation"`
 	}
 	err = json.NewDecoder(io.LimitReader(resp.Body, 8192)).Decode(&scope)
 	_ = resp.Body.Close()
@@ -209,6 +211,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	p.cfg.Node.ClientSessions = scope.ClientSessions && !p.cfg.Client
 	p.cfg.Node.ClientOwners = scope.ClientOwners && !p.cfg.Client
 	p.cfg.Node.PeerChannels = scope.PeerChannels
+	p.cfg.Node.InstructionDelegation = scope.Delegation && !p.cfg.Client
 	if p.cfg.ClientOwner != nil {
 		p.cfg.Node.ClientOwner = p.cfg.ClientOwner.ID
 	}

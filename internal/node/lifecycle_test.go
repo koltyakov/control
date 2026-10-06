@@ -60,6 +60,7 @@ func TestMachineLifecycleBlocksSchedulingAndStopsNode(t *testing.T) {
 				return n
 			}
 			source, worker := newNode("source"), newNode("worker")
+			attachTestOrchestrator(t, source, prepareTestOrchestrator(t, ctx, server.URL, adminKey, "legacy", relay))
 			started, release := make(chan struct{}, 1), make(chan struct{})
 			if err := worker.Register(provider{cap: model.Capability{Name: "probe", InputSchema: model.JSON(map[string]any{"type": "object"})}, run: func(ctx context.Context, _ json.RawMessage, _ Execution) (any, error) {
 				select {
@@ -94,7 +95,7 @@ func TestMachineLifecycleBlocksSchedulingAndStopsNode(t *testing.T) {
 			})
 			spec := model.TaskSpec{ID: "durable-probe", Capability: "probe", Args: model.JSON(map[string]any{})}
 			var task model.Task
-			if err := source.Call(ctx, "worker", "tasks.start", spec, &task); err != nil {
+			if err := testCall(t, source, ctx, "worker", "tasks.start", spec, &task); err != nil {
 				t.Fatal(err)
 			}
 			select {
@@ -107,21 +108,21 @@ func TestMachineLifecycleBlocksSchedulingAndStopsNode(t *testing.T) {
 				t.Fatal("disable", code)
 			}
 			eventually(t, ctx, func() bool { return worker.currentMachineState().Disabled })
-			if err := source.Call(ctx, "", "nodes.select", map[string]any{"labels": map[string]string{"role": "worker"}}, nil); err == nil {
+			if err := testCall(t, source, ctx, "", "nodes.select", map[string]any{"labels": map[string]string{"role": "worker"}}, nil); err == nil {
 				t.Fatal("disabled worker selected")
 			}
-			if err := source.Call(ctx, "worker", "probe", map[string]any{}, nil); err == nil || !strings.Contains(err.Error(), "disabled") {
+			if err := testCall(t, source, ctx, "worker", "probe", map[string]any{}, nil); err == nil || !strings.Contains(err.Error(), "disabled") {
 				t.Fatal("cached peer session bypassed disable", err)
 			}
-			if err := source.Call(ctx, "worker", "tasks.start", spec, &task); err != nil || task.Terminal() {
+			if err := testCall(t, source, ctx, "worker", "tasks.start", spec, &task); err != nil || task.Terminal() {
 				t.Fatal("disabled machine lost accepted/idempotent task", err)
 			}
 			spec.ID = "new-probe"
-			if err := source.Call(ctx, "worker", "tasks.start", spec, nil); err == nil {
+			if err := testCall(t, source, ctx, "worker", "tasks.start", spec, nil); err == nil {
 				t.Fatal("disabled worker accepted another task")
 			}
 			close(release)
-			if completed, err := source.WaitTask(ctx, "worker", "durable-probe"); err != nil || completed.State != "succeeded" {
+			if completed, err := testWaitTask(t, source, ctx, "worker", "durable-probe"); err != nil || completed.State != "succeeded" {
 				t.Fatal("disable interrupted accepted work", err)
 			}
 			if code := request("PATCH", path, map[string]bool{"disabled": false}, nil); code != 200 {
@@ -129,9 +130,9 @@ func TestMachineLifecycleBlocksSchedulingAndStopsNode(t *testing.T) {
 			}
 			eventually(t, ctx, func() bool {
 				var chosen model.Node
-				return source.Call(ctx, "", "nodes.select", map[string]any{"labels": map[string]string{"role": "worker"}}, &chosen) == nil && chosen.ID == worker.Identity.ID
+				return testCall(t, source, ctx, "", "nodes.select", map[string]any{"labels": map[string]string{"role": "worker"}}, &chosen) == nil && chosen.ID == worker.Identity.ID
 			})
-			if err := source.Call(ctx, "worker", "probe", map[string]any{}, nil); err != nil {
+			if err := testCall(t, source, ctx, "worker", "probe", map[string]any{}, nil); err != nil {
 				t.Fatal("enabled worker rejected work", err)
 			}
 			if code := request("DELETE", path+"?stop=true", nil, nil); code != 204 {

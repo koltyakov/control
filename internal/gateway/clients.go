@@ -35,7 +35,7 @@ func (g *Gateway) validateClient(n model.Node, p principal, ownerID string) erro
 	if n.ID != ownerID && g.owners[n.ID] != "" && g.clientTransports[n.ID] != ownerID {
 		return errors.New("session TLS identities must not reuse permanent identities")
 	}
-	if n.Name != "cli-"+ownerID[:16] || len(n.Capabilities) != 0 || n.System != nil || len(n.Labels) != 0 || n.ClientSessions || n.ClientOwners {
+	if n.Name != "cli-"+ownerID[:16] || len(n.Capabilities) != 0 || n.System != nil || len(n.Labels) != 0 || n.ClientSessions || n.ClientOwners || n.InstructionDelegation {
 		return errors.New("client sessions cannot advertise machine capabilities or resources")
 	}
 	for _, machine := range g.nodes {

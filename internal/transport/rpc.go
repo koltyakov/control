@@ -14,6 +14,13 @@ import (
 // OpenRPC sends one request. The returned stream may contain a bulk payload.
 // It never replays a request after writing application bytes.
 func (p *Peer) OpenRPC(ctx context.Context, target, method string, params any) (net.Conn, json.RawMessage, error) {
+	if len(model.Delegations(ctx)) != 0 {
+		peer, err := p.Lookup(ctx, target)
+		if err != nil {
+			return nil, nil, err
+		}
+		target = peer.ID
+	}
 	lane := ControlLane
 	if method == "artifacts.open" || method == "clipboard.open" || method == "clipboard.paste" {
 		lane = BulkLane
@@ -40,7 +47,14 @@ func (p *Peer) OpenRPC(ctx context.Context, target, method string, params any) (
 	})
 	defer stop()
 	deadline, _ := ctx.Deadline()
-	if err = wire.WriteFrame(conn, model.Request{Version: model.Version, Method: method, Params: model.JSON(params), Deadline: deadline}); err != nil {
+	request := model.Request{Version: model.Version, Method: method, Params: model.JSON(params), Deadline: deadline, Delegations: model.Delegations(ctx)}
+	for _, grant := range request.Delegations {
+		if (grant.Target == target || grant.Alias == target) && grant.Matches(method, request.Params) {
+			request.Delegation = grant.ID
+			break
+		}
+	}
+	if err = wire.WriteFrame(conn, request); err != nil {
 		_ = conn.Close()
 		return nil, nil, err
 	}

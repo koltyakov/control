@@ -23,7 +23,7 @@ The gateway URL comes from `CONTROL_GATEWAY`, the selected `--config` / `CONTROL
 
 With an account key, the dashboard reads fresh machine-health reports from the gateway even without a local node. Nodes publish active-work counts, lease state, and their cached resource sample every five seconds. These reports allow `idle`/`busy`, numeric `Work`, and current CPU/RAM values after the first usable sample.
 
-When a local node is available, the command uses the same `CONTROL_API` and local token as the CLI and MCP server to collect detailed peer snapshots. This observes work submitted by any peer, including tasks delegated by another worker. A failed peer request preserves fresh gateway health. Activity records, recent completions, and connection counts still require authorized peer observation.
+An account client can collect detailed peer snapshots under its own authority, without borrowing worker permissions. This observes work submitted by any owner, including delegated tasks. Explicit local-API routing cannot independently request peer activity beyond discovery. A failed peer request preserves fresh gateway health. Activity records, recent completions, and connection counts still require authorized peer observation.
 
 The pool contains only machines belonging to the authenticated user's fleet. Other users' machines, names, availability, resources, and activity are excluded at directory and transport authorization, including when a caller supplies a foreign machine ID. See [users and private fleets](users.md).
 
@@ -119,11 +119,11 @@ Collection errors are included in the system snapshot. The CPU field is absent u
 
 ## Authorization and data boundaries
 
-Gateway machine-health summaries are available only to the owning account key, or the superuser for its legacy fleet. They expose aggregate work count, lease presence, and cached resources. They contain no task records, operation names, owner IDs, arguments, credentials, or private filesystem paths. Common node keys continue to use peer observation permissions. Owner health grants no execution or task-control access.
+Gateway machine-health summaries are available only to the owning account key, or the superuser for its legacy fleet. They expose aggregate work count, lease presence, and cached resources. They contain no task records, operation names, owner IDs, arguments, credentials, or private filesystem paths. Common node keys permit discovery only. Owner health grants no execution or task-control access.
 
 `activities.list` is a read-only, node-wide metadata operation. A caller allowed to use it can observe work from all owners on that node. It does not grant permission to read another owner's task results/logs, cancel their tasks, invoke providers, or access files.
 
-The default trusted pool permits observation. For a restricted node, add permissions for your orchestrator:
+Account clients can observe peers when their access rules permit it. Workers need instruction-bound delegation for observation beyond discovery. For a restricted node, add permissions for your orchestrator:
 
 ```json
 {
@@ -133,7 +133,7 @@ The default trusted pool permits observation. For a restricted node, add permiss
 }
 ```
 
-`activities.pool` is available only through a node's local API. It uses that node's identity to request `activities.list` from peers, enforcing each peer's access rules. A remote caller cannot ask another node to aggregate with that node's authority.
+The account client implements `activities.pool` by requesting `activities.list` from peers under its own authority and each peer's access rules. The node's local API also exposes aggregation, but its worker identity cannot independently observe peers beyond discovery. The aggregation method is not a peer RPC.
 
 Activity records contain operational metadata and progress. They do not include command arguments, prompts, environment values, credentials, results, or log contents. Observational requests are excluded from activity tracking so the dashboard does not list its own polling traffic.
 
@@ -145,4 +145,4 @@ Tasks retain their existing persisted lifecycle. Active non-task records and the
 
 Each node tracks up to 2,048 non-task activities in addition to its accepted tasks. Additional active records are counted as omitted. Aggregated snapshots include at most 4,096 active records and 512 recent records; the dashboard reports omitted active detail instead of silently claiming complete coverage. Filter by node to inspect a busy subset.
 
-For AI clients, `control_activities` exposes the peer activity snapshot through the local node and `control_system` reads or refreshes a selected node's resource sample. Direct gateway status is available through authenticated `GET /v1/status`; it does not require MCP or a running local node.
+For AI clients, `control_activities` exposes the peer activity snapshot under the requesting account client's authority, and `control_system` reads or refreshes a selected node's resource sample. Direct gateway status is available through authenticated `GET /v1/status`; it does not require MCP or a running local node.

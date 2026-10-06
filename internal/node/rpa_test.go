@@ -225,18 +225,18 @@ func TestRPAPeerTasksAndAuthorization(t *testing.T) {
 			args := json.RawMessage(`{"actions":[{"type":"inspect"},{"type":"screenshot"}]}`)
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			if err := consumer.Call(ctx, "worker", "rpa.run", args, nil); err == nil {
+			if err := testCall(t, consumer, ctx, "worker", "rpa.run", args, nil); err == nil {
 				t.Fatal("unauthorized caller accessed desktop")
 			}
 			var lease model.Lease
 			call(t, source, "worker", "leases.acquire", map[string]any{}, &lease)
-			if err := source.Call(ctx, "worker", "rpa.run", args, nil); err == nil {
+			if err := testCall(t, source, ctx, "worker", "rpa.run", args, nil); err == nil {
 				t.Fatal("synchronous GUI call bypassed lease")
 			}
 			var task model.Task
 			spec := model.TaskSpec{ID: "rpa-once", Capability: "rpa.run", Args: args, LeaseID: lease.ID}
 			call(t, source, "worker", "tasks.start", spec, &task)
-			finished, err := source.WaitTask(ctx, "worker", task.ID)
+			finished, err := testWaitTask(t, source, ctx, "worker", task.ID)
 			if err != nil || finished.State != "succeeded" {
 				t.Fatalf("GUI task failed: %+v, %v", finished, err)
 			}

@@ -158,7 +158,7 @@ func createNodeConfig(path, name, gateway, token, listen string, host bool) erro
 	// Keep the orchestrator's administrative account inaccessible to remote
 	// execution, filesystem reads, and loopback proxying from common workers.
 	if host {
-		cfg.Allow = map[string][]string{"*": {"node.describe", "capabilities.list", "activities.list", "system.info", "artifacts.pull"}}
+		cfg.Allow = map[string][]string{"*": {"node.describe", "capabilities.list"}, "@orchestrator": {"*"}}
 	}
 	if err = os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		return err
@@ -186,6 +186,7 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 	f := flag.NewFlagSet("enroll", flag.ContinueOnError)
 	link := f.String("url", "", "one-time installation URL")
 	requireAutoName := f.Bool("auto-name", false, "require an automatic-name invitation")
+	firewall := f.Bool("firewall", false, "configure Windows firewall rules, requesting UAC elevation if needed")
 	mode := f.String("service", os.Getenv("CONTROL_SERVICE_MODE"), "auto, user (at login), system (at boot), or process; defaults to saved mode")
 	if err := f.Parse(args); err != nil {
 		return err
@@ -292,6 +293,11 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 		}
 		cfg, err = node.LoadConfig(config)
 		if err != nil {
+			return err
+		}
+	}
+	if *firewall {
+		if err = installation.Service(ctx, "firewall", binary, config, *mode); err != nil {
 			return err
 		}
 	}
@@ -431,7 +437,7 @@ func refreshEnrollmentIdentity(ctx context.Context, config string, pending *pend
 
 func serviceCLI(ctx context.Context, args []string, config string) error {
 	if len(args) == 0 {
-		return errors.New("usage: control service start|stop|status|uninstall [--mode auto|user|process]")
+		return errors.New("usage: control service start|stop|status|uninstall|firewall [--mode auto|user|process]")
 	}
 	f := flag.NewFlagSet("service", flag.ContinueOnError)
 	mode := f.String("mode", os.Getenv("CONTROL_SERVICE_MODE"), "startup mode; defaults to the saved mode")

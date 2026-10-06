@@ -132,6 +132,10 @@ func TestInstalledFleetsArePrivate(t *testing.T) {
 				t.Fatalf("saved user login: %v %s", err, out)
 			}
 		}
+		if script == "" {
+			c = c.WithStandalone(ctx, client.StandaloneConfig{Gateway: owner, StateDir: filepath.Join(home, "clients"), RelayOnly: os.Getenv("CONTROL_EXPECT_TRANSPORT") == "relay", AccountRouting: true})
+			t.Cleanup(func() { _ = c.Close() })
+		}
 		return c
 	}
 	mainA := install(a, "main", "")
@@ -155,9 +159,9 @@ func TestInstalledFleetsArePrivate(t *testing.T) {
 		if err = orchestrator.Call(ctx, "private-worker", "exec.run", map[string]any{"command": "printf", "args": []string{"private-fleet"}}, nil); err != nil {
 			t.Fatal("same user's host could not use its worker", err)
 		}
-		var observed struct{ Connections map[string]string }
-		if err = orchestrator.Call(ctx, "", "node.describe", map[string]any{}, &observed); err != nil {
-			t.Fatal(err)
+		observed, sessionErr := orchestrator.Session(ctx)
+		if sessionErr != nil {
+			t.Fatal(sessionErr)
 		}
 		if mode := observed.Connections[description.ID]; mode != os.Getenv("CONTROL_EXPECT_TRANSPORT") {
 			t.Fatalf("fleet transport = %q", mode)
