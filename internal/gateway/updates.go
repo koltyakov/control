@@ -53,7 +53,7 @@ func (g *Gateway) receiveUpdateStatus(n model.Node, c *connection, data []byte) 
 	}
 	if !latest.UpdateUntil.Equal(before.UpdateUntil) {
 		g.nodes[n.ID] = latest
-		if err := g.persist(); err != nil {
+		if err := g.commit(change{nodes: []string{n.ID}}); err != nil {
 			g.nodes[n.ID] = before
 			return false
 		}

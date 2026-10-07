@@ -64,13 +64,16 @@ type Node struct {
 	mu                  sync.Mutex
 	tasks               map[string]*model.Task
 	cancels             map[string]context.CancelFunc
-	taskChanges         map[string]chan struct{}
+	notifiers           map[string]*taskNotifier
+	accepting           map[string]*acceptance
+	tombstones          map[string]taskTombstone
+	pruneMu             sync.Mutex
 	slots               chan struct{}
 	wg                  sync.WaitGroup
 	mcpMu               sync.Mutex
 	mcpSessions         map[string]*mcp.ClientSession
 	artifactMu          sync.Mutex
-	transfers           map[string]*sync.Mutex
+	transfers           map[string]*transferLock
 	lease               *model.Lease
 	lock                *flock.Flock
 	closeOnce           sync.Once
@@ -122,9 +125,11 @@ func New(cfg Config) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	n := &Node{Config: cfg, Identity: id, root: root, providers: map[string]Provider{}, tasks: map[string]*model.Task{}, cancels: map[string]context.CancelFunc{}, slots: make(chan struct{}, cfg.MaxTasks), mcpSessions: map[string]*mcp.ClientSession{}, transfers: map[string]*sync.Mutex{}}
+	n := &Node{Config: cfg, Identity: id, root: root, providers: map[string]Provider{}, tasks: map[string]*model.Task{}, cancels: map[string]context.CancelFunc{}, slots: make(chan struct{}, cfg.MaxTasks), mcpSessions: map[string]*mcp.ClientSession{}, transfers: map[string]*transferLock{}}
 	n.lock = lock
-	n.taskChanges = map[string]chan struct{}{}
+	n.notifiers = map[string]*taskNotifier{}
+	n.accepting = map[string]*acceptance{}
+	n.tombstones = map[string]taskTombstone{}
 	n.work = workgate.New()
 	n.tcpListeners = make(chan struct{}, 32)
 	n.readClipboard, n.copyClipboard = clipboard.Read, clipboard.Copy
@@ -211,6 +216,8 @@ func (n *Node) Start(ctx context.Context) error {
 	go func() { defer n.wg.Done(); n.runMachineState(n.ctx) }()
 	n.wg.Add(1)
 	go func() { defer n.wg.Done(); n.runDelegations(n.ctx) }()
+	n.wg.Add(1)
+	go func() { defer n.wg.Done(); n.runRetention(n.ctx) }()
 	if n.updater != nil {
 		n.wg.Add(1)
 		go func() { defer n.wg.Done(); n.updater.Run(n.ctx) }()
@@ -483,7 +490,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		}
 		sort.Strings(agents)
 		sort.Strings(servers)
-		return map[string]any{"id": n.Identity.ID, "name": n.Config.Name, "capabilities": n.Capabilities(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot(), "clipboard": map[string]any{"protocol": clipboard.Protocol, "methods": []string{clipboard.OpenMethod, clipboard.PasteMethod}}}, nil
+		return map[string]any{"id": n.Identity.ID, "name": n.Config.Name, "capabilities": n.Capabilities(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "transport": n.Peer.Stats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot(), "clipboard": map[string]any{"protocol": clipboard.Protocol, "methods": []string{clipboard.OpenMethod, clipboard.PasteMethod}}}, nil
 	case "capabilities.list":
 		return n.Capabilities(), nil
 	case "tasks.start":
@@ -496,7 +503,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		}
 		return n.startTaskContext(ctx, owner, spec)
 	case "tasks.get", "tasks.cancel", "tasks.logs", "tasks.list":
-		return n.taskMethod(owner, method, args)
+		return n.taskMethod(ctx, owner, method, args)
 	case "leases.acquire", "leases.renew", "leases.release", "leases.get":
 		return n.leaseMethod(owner, method, args)
 	case "artifacts.export", "artifacts.list", "artifacts.delete", "artifacts.pull", "artifacts.deliver", "artifacts.grant":

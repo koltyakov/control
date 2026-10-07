@@ -38,34 +38,48 @@ func (g *Gateway) role(token string) (role, keyID string) {
 	return p.Role, p.KeyID
 }
 
+// authenticate resolves a bearer credential without taking the gateway lock,
+// so authentication never waits behind a database commit and a flood of
+// invalid credentials cannot contend with connection or relay handling.
 func (g *Gateway) authenticate(token string) principal {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.authenticateLocked(token)
-}
-
-func (g *Gateway) authenticateLocked(token string) principal {
 	if token == "" {
 		return principal{}
 	}
 	if g.superuser != "" && subtle.ConstantTimeCompare([]byte(token), []byte(g.superuser)) == 1 {
 		return principal{Role: "superuser", KeyID: "superuser", UserID: legacyUser}
 	}
-	if subtle.ConstantTimeCompare([]byte(token), []byte(g.token)) == 1 {
+	if g.token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(g.token)) == 1 {
 		return principal{Role: "common", KeyID: "bootstrap", UserID: legacyUser}
 	}
-	hash := tokenHash(token)
-	for id, key := range g.keys {
-		if u, ok := g.users[key.UserID]; ok && !u.Disabled && !key.Revoked && subtle.ConstantTimeCompare([]byte(hash), []byte(key.Hash)) == 1 {
-			return principal{Role: key.Role, KeyID: id, UserID: key.UserID}
-		}
-	}
-	for _, i := range g.installations {
-		if u, ok := g.users[i.UserID]; ok && !u.Disabled && !i.Revoked && i.RedeemedID != "" && subtle.ConstantTimeCompare([]byte(hash), []byte(i.CredentialHash)) == 1 {
-			return principal{Role: "common", KeyID: "install:" + i.ID, UserID: i.UserID}
+	// Credentials are 256-bit random secrets, so a lookup by their SHA-256
+	// digest reveals nothing useful through timing.
+	if index := g.credentials.Load(); index != nil {
+		if p, ok := (*index)[tokenHash(token)]; ok {
+			return p
 		}
 	}
 	return principal{}
+}
+
+// authenticateLocked is authenticate for callers already holding g.mu.
+func (g *Gateway) authenticateLocked(token string) principal { return g.authenticate(token) }
+
+// reindexCredentialsLocked publishes the usable credentials after a committed
+// change to users, keys, or invitations. Caller holds g.mu or is initializing.
+func (g *Gateway) reindexCredentialsLocked() {
+	index := make(map[string]principal, len(g.keys)+len(g.installations))
+	for _, i := range g.installations {
+		if u, ok := g.users[i.UserID]; ok && !u.Disabled && !i.Revoked && i.RedeemedID != "" && i.CredentialHash != "" {
+			index[i.CredentialHash] = principal{Role: "common", KeyID: "install:" + i.ID, UserID: i.UserID}
+		}
+	}
+	// Account and common keys take precedence, as they did in the linear scan.
+	for id, key := range g.keys {
+		if u, ok := g.users[key.UserID]; ok && !u.Disabled && !key.Revoked && key.Hash != "" {
+			index[key.Hash] = principal{Role: key.Role, KeyID: id, UserID: key.UserID}
+		}
+	}
+	g.credentials.Store(&index)
 }
 
 func bearer(r *http.Request) string {
@@ -79,6 +93,9 @@ func bearer(r *http.Request) string {
 func (g *Gateway) admin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		role, _ := g.role(bearer(r))
+		if role == "" {
+			g.counters.authFailures.Add(1)
+		}
 		if role != "superuser" {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
@@ -98,7 +115,7 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		case "user":
 			capabilities = []string{"keys.manage", "installations.manage", "machines.manage"}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"role": p.Role, "userId": p.UserID, "capabilities": capabilities, "nodeHealth": true, "clientSessions": true, "clientOwners": true, "peerChannels": true, "delegation": true})
+		_ = json.NewEncoder(w).Encode(map[string]any{"role": p.Role, "userId": p.UserID, "capabilities": capabilities, "nodeHealth": true, "clientSessions": true, "clientOwners": true, "peerChannels": true, "delegation": true, "largePackets": true, "nodeBytes": true})
 	}))
 	create := func(w http.ResponseWriter, r *http.Request) {
 		p := g.authenticate(bearer(r))
@@ -119,7 +136,7 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		key := APIKey{ID: identity.NewID(), UserID: p.UserID, Name: q.Name, Role: "common", CreatedAt: time.Now().UTC()}
 		g.mu.Lock()
 		g.keys[key.ID] = keyRecord{APIKey: key, Hash: tokenHash(token)}
-		err := g.persist()
+		err := g.commit(change{keys: []string{key.ID}})
 		if err != nil {
 			delete(g.keys, key.ID)
 		}
@@ -158,7 +175,7 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		old := key
 		key.Revoked = true
 		g.keys[key.ID] = key
-		err := g.persist()
+		err := g.commit(change{keys: []string{key.ID}})
 		if err != nil {
 			g.keys[key.ID] = old
 		}

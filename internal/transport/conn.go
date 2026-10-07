@@ -9,6 +9,16 @@ import (
 	"time"
 )
 
+const (
+	// legacyPacketSize is the largest message older receivers accept.
+	legacyPacketSize = 16 * 1024
+	// largePacketSize fits several full TLS records. Peers send it only to
+	// receivers that advertise largePackets; every current receiver accepts it.
+	largePacketSize = 64 * 1024
+	// maxQueuedPacketBytes bounds undelivered receive data per link.
+	maxQueuedPacketBytes = 8 << 20
+)
+
 // packetConn turns ordered, reliable messages into the byte stream TLS expects.
 // The session multiplexer above TLS supplies stream-level flow control.
 type packetConn struct {
@@ -28,6 +38,12 @@ type packetConn struct {
 	changed       chan struct{}
 	writeCancel   context.CancelFunc
 	writeTimer    *time.Timer
+	queued        int // Undelivered receive bytes, protected by mu.
+	// packetSize is fixed before the link carries traffic.
+	packetSize int
+	// holding and held batch TLS records under writeMu; see holdWrites.
+	holding bool
+	held    []byte
 }
 
 type packetBuffer struct {
@@ -35,10 +51,11 @@ type packetBuffer struct {
 	bucket int
 }
 
-var packetBuffers = [3]sync.Pool{
+var packetBuffers = [4]sync.Pool{
 	{New: func() any { return &packetBuffer{data: make([]byte, 1024), bucket: 0} }},
 	{New: func() any { return &packetBuffer{data: make([]byte, 4096), bucket: 1} }},
-	{New: func() any { return &packetBuffer{data: make([]byte, 16*1024), bucket: 2} }},
+	{New: func() any { return &packetBuffer{data: make([]byte, legacyPacketSize), bucket: 2} }},
+	{New: func() any { return &packetBuffer{data: make([]byte, largePacketSize), bucket: 3} }},
 }
 
 func releasePacket(b *packetBuffer) {
@@ -49,13 +66,13 @@ func releasePacket(b *packetBuffer) {
 
 func newConn(parent context.Context, send func(context.Context, []byte) error, closeFn func()) *packetConn {
 	ctx, cancel := context.WithCancel(parent)
-	return &packetConn{ctx: ctx, cancel: cancel, in: make(chan *packetBuffer, 256), send: send, onClose: closeFn, changed: make(chan struct{})}
+	return &packetConn{ctx: ctx, cancel: cancel, in: make(chan *packetBuffer, 256), send: send, onClose: closeFn, changed: make(chan struct{}), packetSize: legacyPacketSize}
 }
 
 func (c *packetConn) push(b []byte) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(b) == 0 || len(b) > 16*1024 || len(c.in) == cap(c.in) {
+	if len(b) == 0 || len(b) > largePacketSize || len(c.in) == cap(c.in) || c.queued+len(b) > maxQueuedPacketBytes {
 		return false
 	}
 	select {
@@ -70,11 +87,15 @@ func (c *packetConn) push(b []byte) bool {
 	if len(b) > 4096 {
 		bucket = 2
 	}
+	if len(b) > legacyPacketSize {
+		bucket = 3
+	}
 	packet := packetBuffers[bucket].Get().(*packetBuffer)
 	packet.data = packet.data[:len(b)]
 	copy(packet.data, b)
 	select {
 	case c.in <- packet:
+		c.queued += len(b)
 		return true
 	default:
 		releasePacket(packet)
@@ -107,6 +128,9 @@ func (c *packetConn) Read(b []byte) (int, error) {
 		select {
 		case c.current = <-c.in:
 			c.buffer = c.current.data
+			c.mu.Lock()
+			c.queued -= len(c.buffer)
+			c.mu.Unlock()
 		case <-c.ctx.Done():
 			if timer != nil {
 				timer.Stop()
@@ -132,6 +156,39 @@ func (c *packetConn) Read(b []byte) (int, error) {
 func (c *packetConn) Write(b []byte) (int, error) {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	if c.holding {
+		c.held = append(c.held, b...)
+		return len(b), nil
+	}
+	return c.writeLocked(b)
+}
+
+// holdWrites collects TLS records written for one multiplexer frame. The
+// matching releaseWrites sends them as full packets instead of one message per
+// record. Each hold must be followed by releaseWrites from the same caller.
+func (c *packetConn) holdWrites() {
+	c.writeMu.Lock()
+	c.holding = true
+	c.writeMu.Unlock()
+}
+
+func (c *packetConn) releaseWrites() error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	c.holding = false
+	if len(c.held) == 0 {
+		return nil
+	}
+	_, err := c.writeLocked(c.held)
+	if cap(c.held) > 1<<20 {
+		c.held = nil
+	} else {
+		c.held = c.held[:0]
+	}
+	return err
+}
+
+func (c *packetConn) writeLocked(b []byte) (int, error) {
 	c.mu.Lock()
 	if !c.writeDeadline.IsZero() && !time.Now().Before(c.writeDeadline) {
 		c.mu.Unlock()
@@ -156,7 +213,7 @@ func (c *packetConn) Write(b []byte) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return written, c.writeError(err)
 		}
-		n := min(len(b), 16*1024)
+		n := min(len(b), c.packetSize)
 		if err := c.send(ctx, b[:n]); err != nil {
 			return written, c.writeError(err)
 		}
@@ -177,6 +234,7 @@ func (c *packetConn) Close() error {
 		for len(c.in) != 0 {
 			releasePacket(<-c.in)
 		}
+		c.queued = 0
 		c.mu.Unlock()
 		c.readMu.Unlock()
 		if c.onClose != nil {

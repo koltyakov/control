@@ -18,8 +18,10 @@ func (g *Gateway) receiveHealth(n model.Node, c *connection, data []byte) bool {
 	if arch == "" && n.System != nil {
 		arch = n.System.Arch
 	}
+	// Unknown fields from newer nodes are ignored rather than rejected: only
+	// the known aggregate fields are decoded and retained, and rejecting them
+	// would disconnect an upgraded node from an older gateway every interval.
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
 	if decoder.Decode(&health) != nil || decoder.Decode(new(any)) != io.EOF || health.ActiveCount < 0 || health.System.OS != n.OS || health.System.Arch != arch || len(health.System.Disks) > 2 {
 		return false
 	}

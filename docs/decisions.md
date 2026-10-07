@@ -74,7 +74,7 @@ Artifacts use SHA-256 content identities. A destination pulls from the source us
 
 The artifact owner can issue a signed grant naming the recipient, artifact, and expiry. This permits a specific transfer without granting general filesystem or execution access.
 
-Artifacts and partial transfers occupy local disk until completion or cleanup. Retention is currently explicit; there is no automatic eviction or disk quota policy.
+Artifacts and partial transfers occupy local disk until completion or cleanup. Retention is currently explicit; there is no automatic eviction or disk quota policy. [D059](#d059-artifact-owner-holds) scopes listing and deletion to the owners holding the content.
 
 ## D009: Single-instance metadata in locked local directories
 
@@ -85,6 +85,8 @@ The gateway enrollment/credential persistence portion is superseded by [D016](#d
 This supports the initial single-gateway deployment without an external database. It makes metadata inspectable and keeps installation small. It also means the gateway does not support shared-state horizontal scaling, and state migration or coordinated database access needs a future decision.
 
 ## D010: Destination-owned leases and a small workflow executor
+
+Sequential-only workflow execution and first-match selection are superseded by [D060](#d060-bounded-parallel-workflows-and-load-preferring-selection). Leases are unchanged.
 
 Machine selection returns an online label/capability match. Exclusive execution leases are acquired atomically on the selected node, persisted there, and checked when tasks are accepted. Selection itself is advisory.
 
@@ -469,3 +471,55 @@ Dashboard `Tunnels` counts this host login's retained forward/reverse definition
 Use dashboard `Tunnels` and peer snapshot `tunnels` for tracked live forward connections and reverse listeners across owners. Count `tcp.open` and `tcp.accept` as forward connections and `tcp.listen` as reverse listeners, once per listener regardless of socket count. Compute counts before aggregate detail truncation; older-node fallback counts use only returned active records. Unknown peer observation stays unknown rather than displaying zero.
 
 Keep this host login's unexpired persistent definitions in dashboard `retainedTunnels` and a separate lower-priority `Saved` column. Retrying definitions are not live connections, and foreground or detached tunnel processes have no persistent definitions. Mixing the two made established listeners display zero. Idle local forward listeners are not observable on workers, so forward activity counts describe connected sockets, not local listener definitions. This supersedes D051's dashboard field and column naming without changing tunnel lifetimes, restoration, authorization, gateway health reports, or telemetry privacy. See [dashboard counts](dashboard.md).
+
+## D053: Full carrier packets and negotiated packet size
+
+yamux writes each frame header separately from its body, TLS seals every write in its own records, and the packet adapter split a full 16,406-byte TLS record into 16 KiB plus a 22-byte tail. An 8 MiB transfer produced 1,299 carrier messages, 782 under 128 bytes, and each relayed message is a protobuf packet through the gateway. Hold the packet adapter's output while one multiplexer frame is sealed, then send it in full packets; write duplex records and control frames in one call; join nested reverse-listener frame headers to their bodies. This needs no wire change because packets carry an arbitrary slice of the encrypted stream.
+
+Every current receiver accepts 64 KiB packets with an 8 MiB per-link receive bound. Senders use 64 KiB only toward peers whose signed directory record advertises `largePackets`, negotiated through `/v1/auth` like `peerChannels`; older receivers reject larger messages and keep 16 KiB. Raise bulk caller windows to 4 MiB, interactive caller and accepted-session windows to 1 MiB, and the SCTP receive buffer to 4 MiB, raising per-stream and per-carrier ceilings on high-latency paths with bounded memory. Cap STUN candidate gathering at two seconds, or two fifths of the direct timeout, because Pion's five-second default equalled the direct timeout and one unreachable STUN server forced every session to the relay. Trickle ICE remains unimplemented: new signaling kinds would disconnect senders on older gateways.
+
+Receivers bind an added lane's data channel inside Pion's `OnDataChannel` callback, which Pion completes before it delivers that channel's messages; only the TLS handshake runs asynchronously. Binding it in a goroutine could drop the dialer's first TLS record, stalling the lane until the direct timeout and pushing it onto the relay.
+
+Hard-linking task inputs was considered and rejected. A provider can modify an input in place, which would alter the content-addressed store; inputs remain copies. This extends [D031](#d031-isolated-traffic-lanes-shared-webrtc-carriers-and-duplex-streams) without changing authentication, lanes, or replay rules. See [fleet streaming](streaming.md).
+
+## D054: Cached identity lookups with offline eviction
+
+Workers authenticated every non-delegated request with a gateway `/v1/peers/{id}` lookup, sometimes two or three per request, and delegated calls resolved names by downloading the whole directory. Polling task waits multiplied this into tens of thousands of gateway requests per long task, and established direct sessions could not run account-client work during a gateway outage. Reuse successful lookups of online records for up to 15 seconds. Evict an identity on the gateway's existing `offline` notification and clear everything on `directory.changed` or reconnection; never cache offline records, so a returning peer is never reported offline. A directory read populates name and ID entries for every listed machine.
+
+A disconnected client's execution authority now ends at its offline notification, or within 15 seconds if that best-effort packet is lost. Account revocation already closed its gateway connection and so produces the notification. Membership entries for identities without links or sessions are forgotten on offline notifications and, beyond 1,024 entries, after ten idle minutes, bounding memory for per-process client transport identities. This refines D031's stable-ID lookup without changing who may execute work.
+
+## D055: Incremental gateway commits and separate hot paths
+
+Each connect, disconnect, and administrative change rewrote every gateway record in one fully synchronous transaction while holding the mutex that also routed every relayed packet. Per-process client transport bindings are permanent, so that cost grew with every CLI invocation, and every node reconnecting after a gateway restart repeated it. Commit only the records a mutation names: upsert present records, delete absent ones, and keep identity and transport bindings insert-only with their immutability checks. Mutations still commit before acknowledgement; the full rewrite remains only for startup migration.
+
+Authenticate bearer credentials through an atomically published index keyed by credential SHA-256, rebuilt after committed user, key, or invitation changes, instead of scanning every credential under the gateway mutex. Credentials are 256-bit random values, so digest lookup leaks nothing useful through timing; the superuser and bootstrap tokens keep constant-time comparison. Route relay packets through a separate read-locked connection map so commits and administration never stall forwarding.
+
+Bound each destination queue by 1,024 packets and 8 MiB of relay payload. A data packet that does not fit closes only that relay session: the sender is told to close it, and the session's remaining packets are dropped until the sender's close arrives. Previously the destination's whole gateway connection was closed, dropping every session, signaling, and health report. A receiver that stops reading is still disconnected by its writer timeout. Nodes retry the gateway every 0.5–1.5 seconds, jittered so they do not return in lockstep, then back off exponentially to 30 seconds after ten consecutive failures, logging persistent failures as warnings. Backing off from the first failure left clients asleep for seconds after a restarted gateway returned. Superuser `/v1/admin/metrics` exposes aggregate counters without fleet details. This preserves [D016](#d016-sqlite-backed-users-and-isolated-fleets)'s commit-before-acknowledgement and fleet scoping.
+
+## D056: Signed registration bytes and tolerant health reports
+
+Registration signatures covered the gateway's re-encoding of the node record, so any field an older gateway did not know made verification fail, and each new field needed its own `/v1/auth` negotiation. Gateways that advertise `nodeBytes` accept `Hello.nodeBytes`, the exact signed registration, with a domain-separated message, verify it before decoding, and ignore unknown fields. Older gateways keep the original encoding and per-field negotiation, which nodes still perform. Fields the gateway must store or publish still require that gateway to know them.
+
+Health reports previously rejected unknown fields, so a node adding any system metric would be disconnected by an older gateway every five seconds. Gateways now decode only known fields and retain nothing else, which still keeps operation records, identities, and arguments out of reports. This extends [D022](#d022-owner-visible-machine-health-without-a-local-node).
+
+## D057: Blocking task waits and acceptance outside the node lock
+
+`tasks.get` accepts optional `waitSeconds` and returns when the task is terminal, after at most 60 seconds, or one second before the request deadline. Older nodes ignore the parameter and answer at once, so callers keep their poll interval whenever a call returns early; no negotiation is needed. Delegated task grants already match `tasks.get` by ID. Waiting requests use the interactive lane, keeping control-lane stream budgets for short RPCs.
+
+Task records were written and fsynced while holding the node mutex, and every subprocess log write took that mutex to wake followers. Reserve the task ID in memory, write the record outside the mutex, and publish it afterwards; duplicate submissions wait for the reservation, the queue bound counts reservations, and lease acquisition and release treat reserved tasks as active. Shutdown during acceptance removes the unacknowledged record. Later state changes are written by the task's own goroutine before being published. Per-task notifiers wake log followers and waiters without the node mutex. Health, activity, and lease checks use the active-task set instead of scanning history. This extends D031's notification-driven log following.
+
+## D058: Terminal task retention with tombstones
+
+Task records, logs, and workspaces accumulated forever; startup loaded them all and listing copied them all. Remove terminal tasks after `taskRetentionHours` (default 168) and beyond `maxRetainedTasks` (default 10,000), checking at startup and every ten minutes. Queued, running, and reserved tasks, and tasks named by live delegations, are kept. Artifacts are not pruned.
+
+Pruning must not weaken idempotent submission, so a durable tombstone with the ID, owner, specification digest, final state, and timestamps is appended and fsynced before the record is removed. Resubmitting a pruned ID with the same owner and specification returns the tombstone as a terminal `pruned` task without executing; other owners or specifications are rejected. Owners can still reconcile the outcome, but not the result, artifacts list, or logs. Tombstones are kept for 180 days and at most 50,000 per node; reusing an ID after that is a new submission. Workspace removal goes through the filesystem root so links cannot redirect it.
+
+## D059: Artifact owner holds
+
+Any authorized caller could list every artifact on a node and delete content another owner's task still needed. Record the task owners holding each content-addressed artifact in its local metadata, not in artifact references. Listing returns the caller's holdings and shared records; deletion releases only the caller's hold and removes content when no other owner holds it. The node's own identity keeps full visibility. Records written before this change, and records exceeding 256 owners, are shared and keep the previous behavior. Streaming access by grant or authorization is unchanged, since content IDs are already unguessable digests.
+
+## D060: Bounded parallel workflows and load-preferring selection
+
+Workflows accept optional `maxParallel` from 1 to 16, defaulting to 1 so existing workflows keep their sequential order. Ready steps launch in the same dependency order as before, up to the limit. After a failure no further step starts, but steps already running finish rather than being cancelled mid-effect; the result includes every started step. Each worker still admits its step through its own slots, leases, and maintenance gate.
+
+Selection preferred the first match by name, sending every selected task to one machine. It now prefers the match with the lowest `activeCount` in owner-visible health summaries and chooses randomly among ties or when summaries are unavailable, as for common keys. This is a placement preference, not a reservation; destination admission is unchanged. Resource-based placement remains future work. This supersedes [D010](#d010-destination-owned-leases-and-a-small-workflow-executor)'s sequential execution and first-match selection.

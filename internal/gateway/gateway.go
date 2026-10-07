@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -30,13 +32,19 @@ import (
 )
 
 type Hello struct {
-	Version        string     `json:"version"`
-	Node           model.Node `json:"node"`
-	Client         bool       `json:"client,omitempty"`
-	OwnerKey       []byte     `json:"ownerKey,omitempty"`
-	OwnerSignature []byte     `json:"ownerSignature,omitempty"`
-	Signature      []byte     `json:"signature"`
+	Version string     `json:"version"`
+	Node    model.Node `json:"node"`
+	// NodeBytes, when present, is the exact signed registration. Gateways that
+	// advertise nodeBytes decode it leniently, so a newer node's unknown fields
+	// no longer invalidate a signature computed over a re-encoding.
+	NodeBytes      []byte `json:"nodeBytes,omitempty"`
+	Client         bool   `json:"client,omitempty"`
+	OwnerKey       []byte `json:"ownerKey,omitempty"`
+	OwnerSignature []byte `json:"ownerSignature,omitempty"`
+	Signature      []byte `json:"signature"`
 }
+
+const maxNodeBytes = 512 << 10
 
 // Message binds client proofs to their role while preserving machine proofs.
 func (h Hello) Message(challenge []byte) []byte {
@@ -44,7 +52,26 @@ func (h Hello) Message(challenge []byte) []byte {
 	if h.Client {
 		b = append(b, []byte("control-client-session-v1\x00")...)
 	}
+	if len(h.NodeBytes) != 0 {
+		b = append(b, []byte("control-node-bytes-v1\x00")...)
+		return append(b, h.NodeBytes...)
+	}
 	return append(b, model.JSON(h.Node)...)
+}
+
+// RegisteredNode returns the registration covered by the hello signature.
+func (h Hello) RegisteredNode() (model.Node, error) {
+	if len(h.NodeBytes) == 0 {
+		return h.Node, nil
+	}
+	if len(h.NodeBytes) > maxNodeBytes {
+		return model.Node{}, errors.New("registration exceeds size limit")
+	}
+	var n model.Node
+	if err := json.Unmarshal(h.NodeBytes, &n); err != nil {
+		return model.Node{}, err
+	}
+	return n, nil
 }
 
 // OwnerMessage authorizes this particular TLS identity to act for a stable
@@ -58,6 +85,7 @@ type connection struct {
 	userID            string
 	ws                *websocket.Conn
 	out               chan *protocol.Packet
+	queued            atomic.Int64 // Relay payload bytes waiting in out.
 	keyID             string
 	health            *model.NodeHealth
 	healthAt          time.Time
@@ -97,6 +125,13 @@ type Gateway struct {
 	metricsWG        sync.WaitGroup
 	startedAt        time.Time
 	machineStates    map[string]model.MachineState
+	// credentials indexes usable bearer credentials by digest; see authenticate.
+	credentials atomic.Pointer[map[string]principal]
+	// routes mirrors peers for relay forwarding under its own lock, so packet
+	// routing does not wait for commits or administration holding g.mu.
+	routeMu  sync.RWMutex
+	routes   map[string]*connection
+	counters counters
 }
 
 func New(dir, token string, options ...Options) (*Gateway, error) {
@@ -121,7 +156,7 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 	if !locked {
 		return nil, errors.New("gateway data directory is already in use")
 	}
-	g := &Gateway{token: token, path: filepath.Join(dir, "nodes.json"), nodes: map[string]model.Node{}, clients: map[string]model.Node{}, peers: map[string]*connection{}}
+	g := &Gateway{token: token, path: filepath.Join(dir, "nodes.json"), nodes: map[string]model.Node{}, clients: map[string]model.Node{}, peers: map[string]*connection{}, routes: map[string]*connection{}}
 	g.lock = lock
 	g.superuser, g.options = opts.SuperuserKey, opts
 	g.updateStatus = map[string]update.Status{}
@@ -143,9 +178,21 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 		_ = lock.Close()
 		return nil, err
 	}
+	g.reindexCredentialsLocked()
+	var reset []string
 	for id, n := range g.nodes {
-		n.Online = false
-		g.nodes[id] = n
+		if n.Online {
+			n.Online = false
+			g.nodes[id] = n
+			reset = append(reset, id)
+		}
+	}
+	if len(reset) != 0 {
+		if err := g.commit(change{nodes: reset}); err != nil {
+			_ = g.db.Close()
+			_ = lock.Close()
+			return nil, err
+		}
 	}
 	g.startedAt = time.Now().UTC()
 	g.metrics = system.New([]string{dir}, 15*time.Second)
@@ -168,6 +215,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/connect", g.auth(g.connect))
 	mux.HandleFunc("GET /v1/client/connect", g.auth(g.connectClient))
 	mux.HandleFunc("GET /v1/peers/{id}", g.auth(g.lookupPeer))
+	mux.HandleFunc("GET /v1/admin/metrics", g.admin(g.metricsHandler))
 	g.authRoutes(mux)
 	g.userRoutes(mux)
 	g.updateRoutes(mux)
@@ -180,6 +228,7 @@ func (g *Gateway) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		role, _ := g.role(bearer(r))
 		if role == "" {
+			g.counters.authFailures.Add(1)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -257,7 +306,10 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	if json.Unmarshal(data, &hello) != nil {
 		return
 	}
-	n := hello.Node
+	n, err := hello.RegisteredNode()
+	if err != nil {
+		return
+	}
 	if hello.Client != client || hello.Version != model.Version || !validName.MatchString(n.Name) || len(n.PublicKey) != ed25519.PublicKeySize || identity.ID(n.PublicKey) != n.ID {
 		return
 	}
@@ -297,7 +349,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	if !client && g.machineStates[n.ID].Name != "" {
 		n.Name = g.machineStates[n.ID].Name
 	}
-	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, 256), keyID: p.KeyID, userID: p.UserID}
+	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, relayQueuePackets), keyID: p.KeyID, userID: p.UserID}
 	if !g.allowInstallation(p.KeyID, n) {
 		g.mu.Unlock()
 		_ = ws.Close(websocket.StatusPolicyViolation, "credential does not authorize this registration")
@@ -360,7 +412,17 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	} else {
 		g.nodes[n.ID] = n
 	}
-	if err = g.persist(); err != nil {
+	persisted := change{identities: []string{ownerID}}
+	if client {
+		persisted.clients = []string{ownerID}
+		if n.ID != ownerID {
+			persisted.identities = append(persisted.identities, n.ID)
+			persisted.transports = []string{n.ID}
+		}
+	} else {
+		persisted.nodes = []string{n.ID}
+	}
+	if err = g.commit(persisted); err != nil {
 		if previousOwner == "" {
 			delete(g.owners, ownerID)
 		}
@@ -385,11 +447,21 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		g.clients[n.ID] = n
 	}
 	g.peers[n.ID] = c
+	g.routeMu.Lock()
+	g.routes[n.ID] = c
+	g.routeMu.Unlock()
 	delete(g.updateStatus, n.ID)
 	g.mu.Unlock()
+	g.counters.connects.Add(1)
 	defer func() {
+		g.counters.disconnects.Add(1)
 		g.mu.Lock()
 		delete(g.peers, n.ID)
+		g.routeMu.Lock()
+		if g.routes[n.ID] == c {
+			delete(g.routes, n.ID)
+		}
+		g.routeMu.Unlock()
 		delete(g.clients, n.ID)
 		for _, peer := range g.peers {
 			if peer.userID != n.UserID {
@@ -409,7 +481,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			g.nodes[n.ID] = latest
 		}
 		if !client {
-			_ = g.persist()
+			if err := g.commit(change{nodes: []string{n.ID}}); err != nil {
+				slog.Warn("persist machine disconnect", "node", n.ID, "error", err)
+			}
 		}
 		g.mu.Unlock()
 	}()
@@ -426,6 +500,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			case <-ctx.Done():
 				return
 			case p := <-c.out:
+				if p.Kind == "data" {
+					c.queued.Add(-int64(len(p.Data)))
+				}
 				b, e := proto.Marshal(p)
 				if e != nil {
 					return
@@ -446,6 +523,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			}
 		}
 	}()
+	// Sessions whose data was dropped for a full destination queue. Only this
+	// read loop touches it, and the sender's close packet clears an entry.
+	overflowed := map[string]bool{}
 	for {
 		_, b, e := ws.Read(ctx)
 		if e != nil {
@@ -479,27 +559,42 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			return
 		}
 		p.From = n.ID // Never trust the sender supplied by the client.
-		g.mu.Lock()
-		dest := g.peers[p.To]
-		if dest != nil && dest.userID != c.userID {
-			dest = nil
+		session := p.To + "\x00" + p.Session
+		if overflowed[session] {
+			if p.Kind == "close" {
+				delete(overflowed, session)
+			} else {
+				continue
+			}
 		}
-		g.mu.Unlock()
+		dest := g.route(p.To, c.userID)
 		if dest == nil {
-			if p.Kind == "open" {
-				select {
-				case c.out <- &protocol.Packet{Kind: "close", From: p.To, Session: p.Session, Data: []byte("peer offline")}:
-				default:
-					return
-				}
+			if p.Kind == "open" && !c.enqueue(&protocol.Packet{Kind: "close", From: p.To, Session: p.Session, Data: []byte("peer offline")}) {
+				return
 			}
 			continue
 		}
-		select {
-		case dest.out <- &p:
+		if dest.enqueue(&p) {
+			if p.Kind == "data" {
+				g.counters.relayPackets.Add(1)
+				g.counters.relayBytes.Add(int64(len(p.Data)))
+			}
+			continue
+		}
+		// A full queue means this destination is receiving faster than its link
+		// drains. Close only the affected relay session; a receiver that stops
+		// reading entirely is disconnected by its writer's timeout instead.
+		switch p.Kind {
+		case "data":
+			if len(overflowed) < 4096 {
+				overflowed[session] = true
+			}
+			g.relayOverflow(c, &p)
+		case "open":
+			g.counters.relayDropped.Add(1)
+			_ = c.enqueue(&protocol.Packet{Kind: "close", From: p.To, Session: p.Session, Data: []byte("relay queue full")})
 		default:
-			// Disconnect a stalled receiver rather than blocking unrelated peers.
-			_ = dest.ws.CloseNow()
+			g.counters.relayDropped.Add(1)
 		}
 	}
 }

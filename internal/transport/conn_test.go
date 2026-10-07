@@ -14,7 +14,7 @@ func TestPacketConnBoundsAndChangingWriteDeadline(t *testing.T) {
 	started := make(chan struct{})
 	c := newConn(context.Background(), func(ctx context.Context, _ []byte) error { close(started); <-ctx.Done(); return ctx.Err() }, nil)
 	defer func() { _ = c.Close() }()
-	if c.push(make([]byte, 16*1024+1)) {
+	if c.push(make([]byte, largePacketSize+1)) {
 		t.Fatal("oversized packet accepted")
 	}
 	result := make(chan error, 1)

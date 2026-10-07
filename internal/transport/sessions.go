@@ -283,6 +283,10 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 		directCtx, cancel := context.WithTimeout(ctx, p.cfg.DirectTimeout)
 		s, err = p.dial(directCtx, node.ID, "webrtc", key.lane)
 		cancel()
+		if err != nil {
+			p.stats.relayFallbacks.Add(1)
+			p.log.Debug("direct peer session failed; using relay", "peer", node.Name, "lane", key.lane, "error", err)
+		}
 	}
 	if s == nil || err != nil {
 		if ctx.Err() != nil {
@@ -293,6 +297,11 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 	}
 	if err != nil {
 		return
+	}
+	if s.mode == "relay" {
+		p.stats.relaySessions.Add(1)
+	} else {
+		p.stats.directSessions.Add(1)
 	}
 	if !p.registerSession(s) {
 		_ = s.mux.Close()

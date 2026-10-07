@@ -87,6 +87,11 @@ func TestConcurrentLanesShareCarrierAndSurviveSiblingClose(t *testing.T) {
 				if count != 1 {
 					t.Fatal("independent ICE handshakes for traffic lanes", count)
 				}
+				// An added channel whose first message was dropped stalls until
+				// the direct timeout and then falls back to the relay.
+				if stats := a.Stats(); stats.RelayFallbacks != 0 || stats.RelaySessions != 0 {
+					t.Fatalf("direct lanes fell back to the relay: %+v", stats)
+				}
 			}
 			blockedWrite := make(chan error, 1)
 			go func() { _, err := conns[1].Write(make([]byte, 4*1024*1024)); blockedWrite <- err }()

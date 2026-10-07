@@ -68,7 +68,7 @@ func (g *Gateway) userRoutes(mux *http.ServeMux) {
 		old := u
 		u.Disabled = true
 		g.users[u.ID] = u
-		err := g.persist()
+		err := g.commit(change{users: []string{u.ID}})
 		if err != nil {
 			g.users[u.ID] = old
 		}
@@ -120,7 +120,7 @@ func (g *Gateway) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	g.users[u.ID] = u
 	g.keys[k.ID] = k
-	if err = g.persist(); err != nil {
+	if err = g.commit(change{users: []string{u.ID}, keys: []string{k.ID}}); err != nil {
 		delete(g.users, u.ID)
 		delete(g.keys, k.ID)
 		http.Error(w, "could not persist user", 500)

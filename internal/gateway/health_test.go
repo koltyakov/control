@@ -75,10 +75,20 @@ func TestHealthIdentityFleetAndFreshness(t *testing.T) {
 	if got := read(a); got.Status != "online" || got.ActiveCount != 0 || got.Leased {
 		t.Fatal("stale health appeared live", got)
 	}
-	for _, invalid := range [][]byte{[]byte(`{"activeCount":-1}`), []byte(`{"task":"private"}`), []byte(strings.Repeat(" ", model.MaxNodeHealthBytes+1)), []byte(`{} {}`)} {
+	for _, invalid := range [][]byte{[]byte(`{"activeCount":-1}`), []byte(strings.Repeat(" ", model.MaxNodeHealthBytes+1)), []byte(`{} {}`)} {
 		if g.receiveHealth(n, c, invalid) {
 			t.Fatal("invalid health accepted")
 		}
+	}
+	// A newer node's additional fields are ignored, not retained or rejected.
+	if !g.receiveHealth(n, c, []byte(`{"activeCount":2,"task":"private","system":{"futureMetric":1}}`)) {
+		t.Fatal("health from a newer node disconnected it")
+	}
+	g.mu.Lock()
+	retained := string(model.JSON(c.health))
+	g.mu.Unlock()
+	if strings.Contains(retained, "private") || strings.Contains(retained, "futureMetric") || c.health.ActiveCount != 2 {
+		t.Fatal("unknown health fields retained", retained)
 	}
 	if g.receiveHealth(n, &connection{}, model.JSON(health)) {
 		t.Fatal("superseded connection replaced health")

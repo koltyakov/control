@@ -179,11 +179,20 @@ func (n *Node) activitySnapshot(query model.ActivityQuery) model.NodeActivitySna
 	n.activityMu.Unlock()
 	s.Tunnels = model.ActiveTunnelCounts(s.Active)
 	n.mu.Lock()
-	for _, task := range n.tasks {
-		if !task.Terminal() {
-			s.Active = append(s.Active, taskActivity(task))
-		} else if query.Recent > 0 {
-			s.Recent = append(s.Recent, taskActivity(task))
+	if query.Recent > 0 {
+		for _, task := range n.tasks {
+			if !task.Terminal() {
+				s.Active = append(s.Active, taskActivity(task))
+			} else {
+				s.Recent = append(s.Recent, taskActivity(task))
+			}
+		}
+	} else {
+		// Non-terminal tasks are exactly those with a cancel function.
+		for id := range n.cancels {
+			if task := n.tasks[id]; task != nil {
+				s.Active = append(s.Active, taskActivity(task))
+			}
 		}
 	}
 	if n.lease != nil && (time.Now().Before(n.lease.Expires) || n.leaseBusy()) {

@@ -31,6 +31,12 @@ type Config struct {
 	ICEServers             []webrtc.ICEServer `json:"iceServers,omitempty"`
 	MaxTasks               int                `json:"maxTasks,omitempty"`
 	MetricsIntervalSeconds int                `json:"metricsIntervalSeconds,omitempty"`
+	// TaskRetentionHours keeps terminal task records, logs, and workspaces for
+	// reconciliation. Zero selects 168 hours; -1 disables age-based pruning.
+	TaskRetentionHours int `json:"taskRetentionHours,omitempty"`
+	// MaxRetainedTasks bounds retained terminal tasks. Zero selects 10000; -1
+	// disables count-based pruning.
+	MaxRetainedTasks int `json:"maxRetainedTasks,omitempty"`
 	// Allow maps enrolled caller IDs or names to capability/method glob patterns.
 	// An omitted map trusts all enrolled nodes. An empty map denies all callers.
 	Allow     map[string][]string `json:"allow,omitempty"`
@@ -102,6 +108,18 @@ func (c *Config) defaults() error {
 	}
 	if c.MetricsIntervalSeconds < -1 || c.MetricsIntervalSeconds > 3600 {
 		return errors.New("metricsIntervalSeconds must be -1 or 1..3600; zero selects the 15-second default")
+	}
+	if c.TaskRetentionHours == 0 {
+		c.TaskRetentionHours = 168
+	}
+	if c.TaskRetentionHours < -1 || c.TaskRetentionHours > 87600 {
+		return errors.New("taskRetentionHours must be -1 or 1..87600; zero selects the 168-hour default")
+	}
+	if c.MaxRetainedTasks == 0 {
+		c.MaxRetainedTasks = 10000
+	}
+	if c.MaxRetainedTasks < -1 || c.MaxRetainedTasks > 1000000 {
+		return errors.New("maxRetainedTasks must be -1 or 1..1000000; zero selects the 10000-task default")
 	}
 	if err = os.MkdirAll(c.DataDir, 0700); err != nil {
 		return err

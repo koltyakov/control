@@ -18,12 +18,10 @@ func WriteFrame(w io.Writer, value any) error {
 	if len(b) > MaxFrame {
 		return errors.New("control message exceeds 8 MiB")
 	}
-	var size [4]byte
-	binary.BigEndian.PutUint32(size[:], uint32(len(b)))
-	if _, err = w.Write(size[:]); err != nil {
-		return err
-	}
-	_, err = w.Write(b)
+	// One write keeps the prefix and body in one multiplexer frame and packet.
+	frame := make([]byte, 4, 4+len(b))
+	binary.BigEndian.PutUint32(frame, uint32(len(b)))
+	_, err = w.Write(append(frame, b...))
 	return err
 }
 

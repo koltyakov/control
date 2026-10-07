@@ -56,7 +56,7 @@ func (p *Peer) closeCarrier(c *rtcCarrier) {
 
 func (p *Peer) receiveChannel(base *link, dc *webrtc.DataChannel) {
 	if dc.Label() == "control-v1" {
-		bindDataChannel(base, dc)
+		p.bindDataChannel(base, dc)
 		return
 	}
 	id, ok := strings.CutPrefix(dc.Label(), "control-v1/")
@@ -69,15 +69,27 @@ func (p *Peer) receiveChannel(base *link, dc *webrtc.DataChannel) {
 	}
 	select {
 	case p.setups <- struct{}{}:
-		if !p.worker(func() {
-			defer func() { <-p.setups }()
-			p.acceptChannel(base.carrier, id, dc)
-		}) {
-			<-p.setups
-			_ = dc.Close()
-		}
 	default:
 		_ = dc.Close()
+		return
+	}
+	// Bind before this callback returns. Pion starts delivering the channel's
+	// messages afterwards and drops any that arrive without a handler, which
+	// lost the dialer's TLS ClientHello and stalled setup until the direct
+	// timeout forced the relay. Only the handshake runs asynchronously.
+	l, err := p.newLink(id, base.carrier.remote, "webrtc", base.carrier)
+	if err != nil {
+		<-p.setups
+		_ = dc.Close()
+		return
+	}
+	p.bindDataChannel(l, dc)
+	if !p.worker(func() {
+		defer func() { <-p.setups }()
+		p.acceptChannel(l)
+	}) {
+		<-p.setups
+		_ = l.conn.Close()
 	}
 }
 
@@ -93,30 +105,24 @@ func validChannelID(id string) bool {
 	return true
 }
 
-func (p *Peer) acceptChannel(carrier *rtcCarrier, id string, dc *webrtc.DataChannel) {
-	l, err := p.newLink(id, carrier.remote, "webrtc", carrier)
-	if err != nil {
-		_ = dc.Close()
-		return
-	}
+func (p *Peer) acceptChannel(l *link) {
 	handedOver := false
 	defer func() {
 		if !handedOver {
 			_ = l.conn.Close()
 		}
 	}()
-	bindDataChannel(l, dc)
 	ctx, cancel := context.WithTimeout(p.ctx, 15*time.Second)
 	defer cancel()
-	secure := tls.Server(l.conn, p.cfg.Identity.TLS(carrier.remote))
+	secure := tls.Server(l.conn, p.cfg.Identity.TLS(l.remote))
 	if err := secure.HandshakeContext(ctx); err != nil {
 		return
 	}
-	mux, err := yamux.Server(secure, muxConfig())
+	mux, err := yamux.Server(newFrameConn(secure, l.conn), muxConfig(IncomingLane))
 	if err != nil {
 		return
 	}
-	s := &peerSession{mux: mux, id: id, remote: carrier.remote, mode: "webrtc", lane: IncomingLane, outgoing: make(chan struct{}, 128), incoming: make(chan struct{}, 128)}
+	s := &peerSession{mux: mux, id: l.id, remote: l.remote, mode: "webrtc", lane: IncomingLane, outgoing: make(chan struct{}, 128), incoming: make(chan struct{}, 128)}
 	if !p.registerSession(s) {
 		_ = mux.Close()
 		return
@@ -144,7 +150,7 @@ func (p *Peer) dialChannel(ctx context.Context, carrier *rtcCarrier, lane Lane) 
 	if err != nil {
 		return nil, err
 	}
-	bindDataChannel(l, dc)
+	p.bindDataChannel(l, dc)
 	select {
 	case <-l.ready:
 	case <-ctx.Done():
@@ -156,7 +162,7 @@ func (p *Peer) dialChannel(ctx context.Context, carrier *rtcCarrier, lane Lane) 
 	if err := secure.HandshakeContext(ctx); err != nil {
 		return nil, err
 	}
-	mux, err := yamux.Client(secure, muxConfig(lane))
+	mux, err := yamux.Client(newFrameConn(secure, l.conn), muxConfig(lane))
 	if err != nil {
 		return nil, err
 	}

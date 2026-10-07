@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -44,6 +45,7 @@ type Config struct {
 }
 
 type link struct {
+	id        string
 	remote    string
 	mode      string
 	conn      *packetConn
@@ -60,9 +62,14 @@ type link struct {
 type Peer struct {
 	userID              string
 	members             map[string]bool
+	memberSeen          map[string]time.Time
 	owners              map[string]string
 	channels            map[string]bool
+	largePackets        map[string]bool
+	lookups             map[string]lookupEntry
 	carriers            map[string]*rtcCarrier
+	api                 *webrtc.API
+	stats               transportStats
 	cfg                 Config
 	ctx                 context.Context
 	cancel              context.CancelFunc
@@ -95,12 +102,13 @@ func New(cfg Config, handler func(string, net.Conn)) *Peer {
 		cfg.DirectTimeout = 5 * time.Second
 	}
 	return &Peer{
-		cfg: cfg, handler: handler, log: slog.Default(),
+		cfg: cfg, handler: handler, log: slog.Default(), api: newWebRTCAPI(cfg.DirectTimeout),
 		writes: make(chan *gatewayWrite, 64),
 		links:  map[string]*link{}, sessions: map[sessionKey]*peerSession{},
 		allSessions: map[string]*peerSession{}, pending: map[sessionKey]*sessionDial{},
 		incomingSetups: map[string]*incomingSetup{}, resolved: map[string]string{},
-		members: map[string]bool{}, owners: map[string]string{}, channels: map[string]bool{},
+		members: map[string]bool{}, memberSeen: map[string]time.Time{}, owners: map[string]string{}, channels: map[string]bool{},
+		largePackets: map[string]bool{}, lookups: map[string]lookupEntry{},
 		carriers: map[string]*rtcCarrier{}, setups: make(chan struct{}, 32), streamSlots: make(chan struct{}, 512),
 		pendingSlots: map[Lane]chan struct{}{
 			ControlLane: make(chan struct{}, 32), BulkLane: make(chan struct{}, 16), InteractiveLane: make(chan struct{}, 16),
@@ -181,6 +189,8 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		ClientOwners   bool   `json:"clientOwners"`
 		PeerChannels   bool   `json:"peerChannels"`
 		Delegation     bool   `json:"delegation"`
+		LargePackets   bool   `json:"largePackets"`
+		NodeBytes      bool   `json:"nodeBytes"`
 	}
 	err = json.NewDecoder(io.LimitReader(resp.Body, 8192)).Decode(&scope)
 	_ = resp.Body.Close()
@@ -211,7 +221,9 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	p.cfg.Node.ClientSessions = scope.ClientSessions && !p.cfg.Client
 	p.cfg.Node.ClientOwners = scope.ClientOwners && !p.cfg.Client
 	p.cfg.Node.PeerChannels = scope.PeerChannels
+	p.cfg.Node.LargePackets = scope.LargePackets
 	p.cfg.Node.InstructionDelegation = scope.Delegation && !p.cfg.Client
+	nodeBytes := scope.NodeBytes
 	if p.cfg.ClientOwner != nil {
 		p.cfg.Node.ClientOwner = p.cfg.ClientOwner.ID
 	}
@@ -232,6 +244,11 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	}
 	if err == nil {
 		hello := gateway.Hello{Version: model.Version, Node: p.cfg.Node, Client: p.cfg.Client}
+		if nodeBytes {
+			// Sign the exact registration bytes so a gateway that does not know
+			// a newer field ignores it instead of failing signature verification.
+			hello.NodeBytes, hello.Node = model.JSON(p.cfg.Node), model.Node{}
+		}
 		hello.Signature = ed25519.Sign(p.cfg.Identity.Private, hello.Message(challenge))
 		if p.cfg.ClientOwner != nil {
 			hello.OwnerKey = p.cfg.ClientOwner.Public
@@ -255,6 +272,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	// A reconnect may have missed an owner rename. Keep identity-bound sessions,
 	// but resolve names again before opening new streams through them.
 	p.resolved = map[string]string{}
+	p.lookups = map[string]lookupEntry{}
 	p.directoryGeneration++
 	if p.closed || p.ctx.Err() != nil {
 		p.ws = nil
@@ -294,18 +312,34 @@ func (p *Peer) run(ws *websocket.Conn) {
 		for _, c := range broken {
 			_ = c.Close()
 		}
+		// Jitter keeps nodes from reconnecting in lockstep after a gateway
+		// restart. Persistent failures, such as a rejected credential, back off.
+		delay, failures := reconnectInitial, 0
 		for {
 			select {
 			case <-p.ctx.Done():
 				return
-			case <-time.After(time.Second):
+			case <-time.After(delay/2 + rand.N(delay)):
 			}
 			var err error
 			ws, err = p.connect(p.ctx)
 			if err == nil {
+				p.stats.gatewayReconnects.Add(1)
+				if failures > 0 {
+					p.log.Info("gateway reconnected", "attempts", failures+1)
+				}
 				break
 			}
-			p.log.Debug("gateway reconnect", "error", err)
+			failures++
+			p.stats.gatewayConnectFailure.Add(1)
+			if failures == 1 || failures%10 == 0 {
+				p.log.Warn("gateway reconnect failed", "attempts", failures, "error", err)
+			} else {
+				p.log.Debug("gateway reconnect failed", "attempts", failures, "error", err)
+			}
+			if failures >= reconnectFastAttempts {
+				delay = min(delay*2, reconnectMax)
+			}
 		}
 	}
 }
@@ -347,6 +381,7 @@ func (p *Peer) receive(msg *protocol.Packet) {
 		if msg.From == update.GatewaySender {
 			p.mu.Lock()
 			p.resolved = map[string]string{}
+			p.lookups = map[string]lookupEntry{}
 			p.directoryGeneration++
 			p.mu.Unlock()
 		}
@@ -360,6 +395,12 @@ func (p *Peer) receive(msg *protocol.Packet) {
 	}
 	if msg.Kind == "offline" {
 		p.mu.Lock()
+		// The identity left the gateway: stop reusing its authority lookup, and
+		// forget its membership unless a direct link is still carrying traffic.
+		p.evictLookupLocked(msg.From)
+		if !p.memberInUseLocked(msg.From) {
+			p.forgetMemberLocked(msg.From)
+		}
 		var connections []*packetConn
 		for _, l := range p.links {
 			if l.remote == msg.From && l.mode == "relay" {
@@ -410,6 +451,7 @@ func (p *Peer) receive(msg *protocol.Packet) {
 	switch msg.Kind {
 	case "data":
 		if l.mode == "relay" && !l.conn.push(msg.Data) {
+			p.overflow(l)
 			go func() { _ = l.conn.Close() }()
 		}
 	case "answer":
@@ -430,7 +472,7 @@ func (p *Peer) receive(msg *protocol.Packet) {
 }
 
 func (p *Peer) newLink(id, remote, mode string, shared ...*rtcCarrier) (*link, error) {
-	l := &link{remote: remote, mode: mode, answer: make(chan webrtc.SessionDescription, 1), ready: make(chan struct{})}
+	l := &link{id: id, remote: remote, mode: mode, answer: make(chan webrtc.SessionDescription, 1), ready: make(chan struct{})}
 	l.conn = newConn(p.ctx, func(ctx context.Context, b []byte) error {
 		return p.send(ctx, &protocol.Packet{Kind: "data", To: remote, Session: id, Data: b})
 	}, func() {
@@ -455,7 +497,7 @@ func (p *Peer) newLink(id, remote, mode string, shared ...*rtcCarrier) (*link, e
 		if len(shared) != 0 {
 			l.carrier, l.pc = shared[0], shared[0].pc
 		} else {
-			pc, err := webrtc.NewPeerConnection(webrtc.Configuration{ICEServers: p.cfg.ICEServers})
+			pc, err := p.api.NewPeerConnection(webrtc.Configuration{ICEServers: p.cfg.ICEServers})
 			if err != nil {
 				l.conn.cancel()
 				return nil, err
@@ -488,6 +530,7 @@ func (p *Peer) newLink(id, remote, mode string, shared ...*rtcCarrier) (*link, e
 		return nil, errors.New("duplicate session or peer link limit reached")
 	}
 	p.links[id] = l
+	l.conn.packetSize = p.packetSizeLocked(remote)
 	if l.carrier != nil {
 		l.carrier.links[id] = l
 		l.carrier.shared = p.cfg.Node.PeerChannels && p.channels[remote]
@@ -499,19 +542,30 @@ func (p *Peer) newLink(id, remote, mode string, shared ...*rtcCarrier) (*link, e
 	return l, nil
 }
 
-func bindDataChannel(l *link, dc *webrtc.DataChannel) {
+func (p *Peer) bindDataChannel(l *link, dc *webrtc.DataChannel) {
 	if !dc.Ordered() || dc.MaxRetransmits() != nil || dc.MaxPacketLifeTime() != nil {
 		_ = dc.Close()
 		return
 	}
 	bound := false
-	l.dcOnce.Do(func() { bound = true; bindReliableChannel(l, dc) })
+	l.dcOnce.Do(func() { bound = true; p.bindReliableChannel(l, dc) })
 	if !bound {
 		_ = dc.Close()
 	}
 }
 
-func bindReliableChannel(l *link, dc *webrtc.DataChannel) {
+// overflow records a receive queue that filled faster than TLS consumed it.
+// The link closes; logging is limited so a burst cannot flood the log.
+func (p *Peer) overflow(l *link) {
+	p.stats.linkOverflows.Add(1)
+	now := time.Now().UnixNano()
+	last := p.stats.lastOverflowLog.Load()
+	if now-last > int64(10*time.Second) && p.stats.lastOverflowLog.CompareAndSwap(last, now) {
+		p.log.Warn("peer link receive queue overflowed; closing link", "peer", l.remote, "mode", l.mode)
+	}
+}
+
+func (p *Peer) bindReliableChannel(l *link, dc *webrtc.DataChannel) {
 	l.dcMu.Lock()
 	l.dc = dc
 	l.dcMu.Unlock()
@@ -539,6 +593,9 @@ func bindReliableChannel(l *link, dc *webrtc.DataChannel) {
 	}
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 		if msg.IsString || !l.conn.push(msg.Data) {
+			if !msg.IsString {
+				p.overflow(l)
+			}
 			go func() { _ = l.conn.Close() }()
 		}
 	})
@@ -612,7 +669,7 @@ func (p *Peer) accept(ctx context.Context, msg *protocol.Packet) {
 	if err = secure.HandshakeContext(ctx); err != nil {
 		return
 	}
-	session, err := yamux.Server(secure, muxConfig())
+	session, err := yamux.Server(newFrameConn(secure, l.conn), muxConfig(IncomingLane))
 	if err != nil {
 		return
 	}
@@ -627,14 +684,21 @@ func (p *Peer) accept(ctx context.Context, msg *protocol.Packet) {
 	}
 }
 
-func muxConfig(lanes ...Lane) *yamux.Config {
+// muxConfig sets each side's receive window. Windows bound buffering per
+// stream; on high-latency paths they also cap per-stream throughput.
+func muxConfig(lane Lane) *yamux.Config {
 	cfg := yamux.DefaultConfig()
 	cfg.LogOutput = io.Discard
 	cfg.StreamOpenTimeout = 15 * time.Second
 	cfg.StreamCloseTimeout = 5 * time.Second
 	cfg.AcceptBacklog = 128
-	if len(lanes) > 0 && lanes[0] == BulkLane {
-		cfg.MaxStreamWindowSize = 1024 * 1024
+	switch lane {
+	case BulkLane:
+		// Artifact and clipboard downloads.
+		cfg.MaxStreamWindowSize = 4 << 20
+	case InteractiveLane, IncomingLane:
+		// Forwarded TCP responses, and uploads to the accepting side.
+		cfg.MaxStreamWindowSize = 1 << 20
 	}
 	return cfg
 }
@@ -667,10 +731,31 @@ func (p *Peer) Nodes(ctx context.Context) ([]model.Node, error) {
 }
 
 // Lookup separates fleet-machine discovery from identity checks for live clients.
+// Online results are reused briefly; the gateway's offline notification for an
+// identity, a directory change, or a reconnect evicts them early.
 func (p *Peer) Lookup(ctx context.Context, name string) (model.Node, error) {
+	now := time.Now()
 	p.mu.Lock()
-	clientSessions, userID := p.clientSessions, p.userID
+	clientSessions, userID, generation := p.clientSessions, p.userID, p.directoryGeneration
+	if node, ok := p.cachedLookupLocked(name, now); ok {
+		p.mu.Unlock()
+		p.stats.lookupHits.Add(1)
+		return node, nil
+	}
 	p.mu.Unlock()
+	p.stats.lookupMisses.Add(1)
+	node, err := p.lookup(ctx, name, clientSessions, userID, generation)
+	if err == nil {
+		p.mu.Lock()
+		if generation == p.directoryGeneration {
+			p.storeLookupLocked(node, time.Now(), name, node.ID)
+		}
+		p.mu.Unlock()
+	}
+	return node, err
+}
+
+func (p *Peer) lookup(ctx context.Context, name string, clientSessions bool, userID string, generation uint64) (model.Node, error) {
 	if clientSessions && len(name) == 64 {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, gateway.URL(p.cfg.Gateway, "/v1/peers/"+url.PathEscape(name)), nil)
 		if err != nil {
@@ -701,6 +786,15 @@ func (p *Peer) Lookup(ctx context.Context, name string) (model.Node, error) {
 	if err != nil {
 		return model.Node{}, err
 	}
+	// One directory read answers later name lookups for every listed machine.
+	now := time.Now()
+	p.mu.Lock()
+	if generation == p.directoryGeneration {
+		for _, node := range nodes {
+			p.storeLookupLocked(node, now, node.ID, node.Name)
+		}
+	}
+	p.mu.Unlock()
 	for _, node := range nodes {
 		if node.ID == name || node.Name == name {
 			return node, nil
@@ -717,9 +811,13 @@ func (p *Peer) Resolve(ctx context.Context, name string) (model.Node, error) {
 	if !peer.Online {
 		return peer, fmt.Errorf("node %s is offline", name)
 	}
+	now := time.Now()
 	p.mu.Lock()
+	p.pruneMembersLocked(now)
 	p.members[peer.ID] = true
+	p.memberSeen[peer.ID] = now
 	p.channels[peer.ID] = peer.PeerChannels
+	p.largePackets[peer.ID] = peer.LargePackets
 	if peer.ClientOwner != "" {
 		p.owners[peer.ID] = peer.ClientOwner
 	}
@@ -776,7 +874,7 @@ func (p *Peer) dial(ctx context.Context, remote, mode string, lane Lane) (_ *pee
 		if e != nil {
 			return nil, e
 		}
-		bindDataChannel(l, dc)
+		p.bindDataChannel(l, dc)
 		sdp, e := l.pc.CreateOffer(nil)
 		if e != nil {
 			return nil, e
@@ -818,7 +916,7 @@ func (p *Peer) dial(ctx context.Context, remote, mode string, lane Lane) (_ *pee
 	if err = secure.HandshakeContext(ctx); err != nil {
 		return nil, err
 	}
-	session, err := yamux.Client(secure, muxConfig(lane))
+	session, err := yamux.Client(newFrameConn(secure, l.conn), muxConfig(lane))
 	if err != nil {
 		return nil, err
 	}

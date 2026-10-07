@@ -35,7 +35,7 @@ control task wait worker TASK_ID
 control task logs worker TASK_ID
 ```
 
-Choose the task ID before submitting. If the connection fails during submission, query that same ID before retrying. Reusing an ID with the same specification reconciles acceptance. A failed or interrupted command may already have changed external state; do not automatically submit a replacement task.
+Choose the task ID before submitting. If the connection fails during submission, query that same ID before retrying. Reusing an ID with the same specification reconciles acceptance, even after the node has pruned the finished record; a `pruned` task reports its final state without result or logs. A failed or interrupted command may already have changed external state; do not automatically submit a replacement task. With MCP, wait with `control_task_get` and `waitSeconds` rather than polling repeatedly. For independent `workflow.run` steps, `maxParallel` (up to 16) runs ready steps concurrently; a failed step stops further steps from starting.
 
 Use `control dashboard --once` for pool-wide activity. Observation does not grant permission to read or cancel another owner's work.
 

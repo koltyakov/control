@@ -51,3 +51,27 @@ func Read(path string, dst any) error {
 	}
 	return json.Unmarshal(b, dst)
 }
+
+// Append durably appends records to a file, creating it if necessary. A newly
+// created file's directory entry is synced before Append returns.
+func Append(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	_, statErr := os.Stat(path)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil && os.IsNotExist(statErr) {
+		err = syncDirectory(filepath.Dir(path))
+	}
+	return err
+}

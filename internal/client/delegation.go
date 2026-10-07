@@ -80,7 +80,8 @@ func prepareDelegations(ctx context.Context, peer *transport.Peer, target, metho
 		args = model.JSON(q)
 	case "workflow.run":
 		var workflow struct {
-			Steps []model.WorkflowStep `json:"steps"`
+			Steps       []model.WorkflowStep `json:"steps"`
+			MaxParallel int                  `json:"maxParallel,omitempty"`
 		}
 		if err = json.Unmarshal(args, &workflow); err != nil {
 			return nil, grants, err

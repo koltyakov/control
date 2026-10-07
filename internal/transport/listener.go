@@ -63,7 +63,7 @@ func NewTCPListener(ctx context.Context, conn net.Conn, address string) (net.Lis
 		_ = conn.Close()
 		return nil, err
 	}
-	mux, err := yamux.Client(conn, muxConfig())
+	mux, err := yamux.Client(newJoinConn(conn), muxConfig(ControlLane))
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -77,7 +77,7 @@ func NewTCPListener(ctx context.Context, conn net.Conn, address string) (net.Lis
 // requesting stream closes them even while no TCP connections are active.
 func ServeTCPListener(ctx context.Context, stream net.Conn, listener net.Listener, wrap func(net.Conn) net.Conn) error {
 	defer func() { _ = listener.Close() }()
-	mux, err := yamux.Server(stream, muxConfig())
+	mux, err := yamux.Server(newJoinConn(stream), muxConfig(ControlLane))
 	if err != nil {
 		return err
 	}

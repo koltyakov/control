@@ -33,6 +33,8 @@ type Node struct {
 	ClientOwners   bool              `json:"clientOwners,omitempty"`
 	ClientOwner    string            `json:"clientOwner,omitempty"`
 	PeerChannels   bool              `json:"peerChannels,omitempty"`
+	// LargePackets advertises that this receiver accepts 64 KiB carrier packets.
+	LargePackets bool `json:"largePackets,omitempty"`
 	// ExecutionAuthority is assigned by the gateway, never by enrollment metadata.
 	ExecutionAuthority    bool `json:"executionAuthority,omitempty"`
 	InstructionDelegation bool `json:"instructionDelegation,omitempty"`
@@ -80,6 +82,18 @@ type PeerSession struct {
 	Incoming int    `json:"incomingStreams"`
 }
 
+// TransportStats are cumulative peer-transport counters for local diagnostics.
+type TransportStats struct {
+	GatewayReconnects      int64 `json:"gatewayReconnects"`
+	GatewayConnectFailures int64 `json:"gatewayConnectFailures"`
+	DirectSessions         int64 `json:"directSessions"`
+	RelaySessions          int64 `json:"relaySessions"`
+	RelayFallbacks         int64 `json:"relayFallbacks"`
+	LinkOverflows          int64 `json:"linkOverflows"`
+	LookupHits             int64 `json:"lookupHits"`
+	LookupMisses           int64 `json:"lookupMisses"`
+}
+
 type TaskLogChunk struct {
 	Data     []byte `json:"data,omitempty"`
 	Offset   int64  `json:"offset"`
@@ -98,6 +112,9 @@ type Task struct {
 	Result    json.RawMessage `json:"result,omitempty"`
 	Artifacts []Artifact      `json:"artifacts,omitempty"`
 	Error     string          `json:"error,omitempty"`
+	// Pruned marks a terminal task whose record, logs, result, and workspace
+	// were removed by retention. Its ID still cannot be resubmitted.
+	Pruned bool `json:"pruned,omitempty"`
 }
 
 func (t Task) Terminal() bool {

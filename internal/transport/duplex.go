@@ -16,6 +16,7 @@ const duplexFrameSize = 32 * 1024
 var ErrHalfCloseUnsupported = errors.New("connection does not support write-side EOF")
 
 var bridgeBuffers = sync.Pool{New: func() any { b := make([]byte, 32*1024); return &b }}
+var recordBuffers = sync.Pool{New: func() any { b := make([]byte, 4+duplexFrameSize); return &b }}
 
 // DuplexConn adds bounded data records and a write-side EOF record to a byte
 // stream. This keeps TCP half-close independent of yamux and WebSocket Close.
@@ -73,22 +74,23 @@ func (c *DuplexConn) Write(b []byte) (int, error) {
 	if c.writeEOF {
 		return 0, io.ErrClosedPipe
 	}
+	record := recordBuffers.Get().(*[]byte)
+	defer recordBuffers.Put(record)
 	written := 0
 	for len(b) != 0 {
 		n := min(len(b), duplexFrameSize)
-		var header [4]byte
-		binary.BigEndian.PutUint32(header[:], uint32(n))
-		if count, err := c.Conn.Write(header[:]); err != nil {
-			return written, err
-		} else if count != len(header) {
-			return written, io.ErrShortWrite
+		// Send the length and payload together so one record is one stream frame.
+		frame := (*record)[:4+n]
+		binary.BigEndian.PutUint32(frame, uint32(n))
+		copy(frame[4:], b[:n])
+		count, err := c.Conn.Write(frame)
+		if count > 4 {
+			written += count - 4
 		}
-		count, err := c.Conn.Write(b[:n])
-		written += count
 		if err != nil {
 			return written, err
 		}
-		if count != n {
+		if count != len(frame) {
 			return written, io.ErrShortWrite
 		}
 		b = b[n:]

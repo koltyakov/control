@@ -46,7 +46,7 @@ func (g *Gateway) nodeState(w http.ResponseWriter, r *http.Request) {
 			updated := n
 			updated.Managed = true
 			g.nodes[id] = updated
-			if err := g.persist(); err != nil {
+			if err := g.commit(change{nodes: []string{id}}); err != nil {
 				g.nodes[id] = n
 				g.mu.Unlock()
 				http.Error(w, "could not persist node management support", 500)
@@ -103,7 +103,7 @@ func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 		updated := n
 		updated.Disabled = state.Disabled
 		g.nodes[id] = updated
-		if err := g.persist(); err != nil {
+		if err := g.commit(change{nodes: []string{id}, machineStates: []string{id}}); err != nil {
 			g.nodes[id] = n
 			g.machineStates[id] = old
 			http.Error(w, "could not persist machine state", 500)
@@ -139,7 +139,7 @@ func (g *Gateway) renameMachine(w http.ResponseWriter, n model.Node, name string
 	updated := n
 	updated.Name = name
 	g.nodes[n.ID], g.machineStates[n.ID] = updated, state
-	if err := g.persist(); err != nil {
+	if err := g.commit(change{nodes: []string{n.ID}, machineStates: []string{n.ID}}); err != nil {
 		g.nodes[n.ID], g.machineStates[n.ID] = n, old
 		http.Error(w, "could not persist machine name", 500)
 		return

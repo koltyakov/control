@@ -27,6 +27,8 @@ Running an invitation on an existing profile replaces its enrollment and can ren
   "relayOnly": false,
   "maxTasks": 4,
   "metricsIntervalSeconds": 15,
+  "taskRetentionHours": 168,
+  "maxRetainedTasks": 10000,
   "iceServers": [{ "urls": ["stun:your-stun-server.example.com:3478"] }],
   "allow": {
     "@orchestrator": ["*"],
@@ -47,6 +49,8 @@ An unchanged version skips CLI replacement and managed-service staging/restart, 
 
 `metricsIntervalSeconds` controls local resource sampling, independently of dashboard activity polls. The default is 15 seconds; 1..3600 changes the interval and `-1` disables periodic collection. Startup, heavy-task completion, and explicit refresh requests can still sample. See [dashboard and system metrics](dashboard.md).
 
+`taskRetentionHours` and `maxRetainedTasks` bound terminal task history. Every ten minutes, and at startup, a node removes terminal task records, logs, and `workDir/tasks/ID` workspaces whose last update is older than the retention period, then the oldest beyond the count limit. Defaults are 168 hours and 10,000 tasks; `-1` disables either rule. Queued, running, and reserved tasks, and tasks named by a live delegation, are kept. Artifacts are not pruned. Each removed task leaves a durable tombstone in `dataDir/tasks/pruned.jsonl` with its ID, owner, specification digest, capability, final state, error, and timestamps. `tasks.get`, `tasks.cancel`, and `tasks.logs` return it to its owner as a terminal task with `pruned: true` and no result, artifacts, or log text. Resubmitting the same ID and specification returns that record without executing again; a different owner or specification is rejected. Tombstones are kept for 180 days, at most 50,000 per node. See [D058](decisions.md#d058-terminal-task-retention-with-tombstones).
+
 Omitting `allow` permits same-fleet discovery and account-client execution, not independent worker execution. Setting `"allow": {}` denies incoming calls except previously issued valid delegation or artifact grants. Neither grants nor wildcard rules bypass fleet membership. Patterns use Go `path.Match` syntax. `@orchestrator` selects account-authenticated clients. `tasks.start` also requires permission for its capability. Task status and logs remain owner-scoped. The local API can inspect tasks owned by its node or executed locally. See [delegation](delegation.md).
 
 ## Operations
@@ -61,7 +65,9 @@ Authenticated `GET /v1/status` returns a JSON pool snapshot with `observedAt`, `
 
 `nodes` contains only the authenticated credential owner's fleet, including for superuser requests, which see the legacy fleet. Directory-only entries have status `online` or `offline` and registration-time metrics. Account keys also receive fresh node-health reports with status `summary`, numeric `activeCount`, boolean `leased`, cached `system`, and the gateway receipt time in `observedAt`. These reports contain no active/recent records. Common keys do not receive them. The dashboard optionally enriches matching IDs through account-client `activities.pool` aggregation, producing status `ready` with authorized activity details. Its optional `notice` describes missing live machine health. Every valid credential may read status; unauthenticated, revoked, and disabled credentials receive HTTP 401. The endpoint grants no task control, account administration, or update permissions.
 
-`GET /v1/auth` advertises `nodeHealth: true` when the gateway accepts reports. Compatible nodes send a `node.health` routing packet with empty `to` every five seconds, beginning after connection. Its JSON data is limited to 16 KiB and contains `activeCount`, `leased`, and `system`. The gateway binds the report to the authenticated connection, ignores the supplied sender ID, and never forwards health packets to peers. Reports expire after 20 seconds without receipt and are not persisted. Nodes redact filesystem paths and raw collection errors. Resource sample timestamps retain their original collection times. Reporting stops with node shutdown and is disabled for older gateways that omit the feature flag, preserving nodes-first managed updates.
+`GET /v1/auth` advertises `nodeHealth: true` when the gateway accepts reports. Compatible nodes send a `node.health` routing packet with empty `to` every five seconds, beginning after connection. Its JSON data is limited to 16 KiB and contains `activeCount`, `leased`, and `system`. Current gateways ignore unknown fields rather than rejecting the report, and retain only the known fields. The gateway binds the report to the authenticated connection, ignores the supplied sender ID, and never forwards health packets to peers. Reports expire after 20 seconds without receipt and are not persisted. Nodes redact filesystem paths and raw collection errors. Resource sample timestamps retain their original collection times. Reporting stops with node shutdown and is disabled for older gateways that omit the feature flag, preserving nodes-first managed updates.
+
+Superuser `GET /v1/admin/metrics` returns gateway-wide diagnostic counters since startup: `connectedMachines`, `connectedClients`, `queuedRelayBytes`, `connects`, `disconnects`, `authFailures`, `relayPackets`, `relayBytes`, `relayOverflows`, and `relayDropped`. It contains no fleet, identity, or routing details. Other credentials receive HTTP 403.
 
 Managed-update progress uses snapshot status `update`, taking precedence over health and peer observation. Only fresh reports for the selected deployment count as active progress; a current-version node still paused for maintenance also remains `update`. A matching `restarting` report for a node that needs replacement starts a one-minute grace. Directory records carry gateway-owned `updateUntil`, persisted in SQLite and retained on reconnection; supplied enrollment values cannot set it. A restart disconnect extends the grace to one minute after disconnection. A matching report with the selected software version or checksum and `paused: false` clears the grace durably, allowing normal idle/busy observation immediately. Snapshot `online` and `lastSeen` retain actual connection presence, and update readiness still requires fresh acknowledgements. Expired grace falls back to normal status, including `offline` for nodes that have not returned.
 
@@ -93,6 +99,12 @@ Concurrent clients also require `clientOwners: true` in authenticated gateway me
 
 Workers get `clientOwner` only from scoped gateway lookup and use it for tasks, leases, provider execution ownership, and activity owner fields. Access rules accept that owner ID, the transport ID, wildcard patterns, or the derived client name. TLS and artifact grants still use the transport ID; a grant for one process does not authorize a different process sharing its task owner. Older single-identity client sessions remain accepted by upgraded servers. New concurrent clients reject older gateways and workers before work, without re-enrollment or changing task ownership.
 
+`nodeBytes: true` in `/v1/auth` lets a node send `Hello.nodeBytes`, the exact JSON registration it signs, instead of `Hello.node`. The signature then covers the fresh challenge, the client tag where applicable, `control-node-bytes-v1` followed by a NUL byte, and those bytes. The gateway verifies them before decoding, ignoring fields it does not know. Older gateways omit the flag, so nodes keep the original encoding and the per-field negotiation below.
+
+`largePackets: true` in `/v1/auth` permits compatible peers to advertise the same signed field. Every current receiver accepts carrier packets up to 64 KiB; a sender uses that size only toward a peer whose directory record advertises `largePackets`, and 16 KiB otherwise. Packets carry an arbitrary slice of the encrypted byte stream, not whole TLS records. See [fleet streaming](streaming.md#limits-and-cleanup).
+
+Workers reuse a successful `/v1/peers/{id}` or directory lookup for up to 15 seconds. The gateway's `offline` packet for that identity, a `directory.changed` packet, or gateway reconnection evicts it earlier; only online records are cached. A disconnected client therefore loses execution authority at the next request after its offline notification, or at most 15 seconds after disconnecting if that notification is lost.
+
 `peerChannels: true` in `/v1/auth` permits compatible peers to advertise the same signed field. When both endpoints support it, control, bulk, and interactive lanes share a WebRTC carrier through separate ordered reliable data channels. Initial channels retain label `control-v1`; added channels use `control-v1/<32-lowercase-hex-session-id>` and perform fresh pinned TLS and yamux setup. The routing envelope is unchanged. Older gateways omit the flag, and older peers use independent connections. Relay lanes remain separate multiplexers on one gateway WebSocket. Admission, buffer limits, and failure behavior are described in [fleet streaming](streaming.md).
 
 Use `control call NODE METHOD JSON` or `POST /v1/call` on the local API:
@@ -114,14 +126,15 @@ Authenticate with `Authorization: Bearer TOKEN`. Responses contain `result` or `
 | Method | Parameters |
 | --- | --- |
 | `nodes.list` | `{}` |
-| `nodes.select` | `labels`, optional `capability`; returns first online, enabled, policy-acknowledged machine match by name; clients are not in this directory |
-| `node.describe` | `{}`; returns ID, capabilities, connections, lane/session stream counts, configured agent/MCP names |
+| `nodes.select` | `labels`, optional `capability`; returns an online, enabled, policy-acknowledged match, preferring the lowest `activeCount` in owner-visible health summaries and choosing randomly among ties or without summaries; clients are not in this directory |
+| `node.describe` | `{}`; returns ID, capabilities, connections, lane/session stream counts, cumulative `transport` counters, configured agent/MCP names |
 | `system.info` | Optional `refresh`; otherwise returns the cached OS, CPU, RAM, and disk sample |
 | `activities.list` | Optional `recent`, 0..64; node-wide activity metadata and cached resources, subject to access rules |
 | `activities.pool` | Optional `nodes` array and `recent`; client or local-API aggregation, not a peer RPC; includes offline and unavailable machines |
 | `capabilities.list` | `{}`; descriptions and input schemas |
 | `tasks.start` | A task specification |
-| `tasks.get`, `tasks.cancel` | `id` |
+| `tasks.get` | `id`, optional `waitSeconds`; with a wait, returns when the task is terminal or after `min(waitSeconds, 60)` seconds, ending at least one second before the request deadline. Older nodes ignore the wait and answer at once |
+| `tasks.cancel` | `id` |
 | `tasks.logs` | `id`, optional byte `offset`; returns `text`, next `offset`, `terminal`; streaming clients can use peer-only `follow: true` negotiation |
 | `tasks.list` | `{}`; owner-scoped |
 | `leases.acquire` | Optional `ttlSeconds`, default 300 |
@@ -129,8 +142,8 @@ Authenticate with `Authorization: Bearer TOKEN`. Responses contain `result` or `
 | `leases.release` | `id`; fails while its tasks remain active |
 | `leases.get` | `{}` |
 | `artifacts.export` | `path` relative to `workDir` |
-| `artifacts.list` | `{}` |
-| `artifacts.delete` | `id` |
+| `artifacts.list` | `{}`; artifacts held by the caller's task owner, plus shared records; the node's own identity sees all |
+| `artifacts.delete` | `id`; releases the caller's hold and removes the content when no other owner holds it |
 | `artifacts.grant` | `id`, recipient `target`, optional `ttlSeconds` |
 | `artifacts.pull` | Full `artifact` reference; resumes an existing partial |
 | `artifacts.deliver` | `id`, recipient `target`, optional `ttlSeconds` |
@@ -143,7 +156,7 @@ Authenticate with `Authorization: Bearer TOKEN`. Responses contain `result` or `
 | `files.list` | Optional `path` |
 | `files.read` | `path`, optional byte `offset`, `limit` |
 | `files.write` | `path`, base64 `data`, optional byte `offset`, `truncate` |
-| `workflow.run` | `steps`; see `examples/workflow-task.json` |
+| `workflow.run` | `steps`, optional `maxParallel` 1..16 (default 1, sequential); see `examples/workflow-task.json` |
 | `peers.call` | `target`, `method`, `params`; CLI/MCP first obtains destination-owned delegation for this exact instruction |
 | `access.grant` | `subject` worker name/ID, `method`, `params`; task grants require an explicit task ID; optional workflow `inputsFrom` and `deliverTo`; returns an instruction-bound grant with one-hour idle expiry |
 | `access.list` | `{}`; original orchestrator owner's grants at this destination |
@@ -265,7 +278,7 @@ The process writes one JSON result to stdout, diagnostics to stderr, and exits z
 
 ## Limits and retention
 
-- 8 MiB control frames; 16 KiB transport chunks.
+- 8 MiB control frames; carrier packets of 64 KiB between peers that advertise `largePackets`, otherwise 16 KiB.
 - 256 transport links, 32 concurrent setup operations, 128 streams per multiplexer, and 512 incoming handlers per peer process; outgoing slots are split between control, bulk, and interactive traffic. See [streaming limits](streaming.md#limits-and-cleanup).
 - 1 MiB per filesystem read/write, 2 MiB per HTTP response.
 - Commands retain the first 2 MiB of each stdout/stderr stream in their result. `truncated` indicates additional output.
@@ -273,7 +286,7 @@ The process writes one JSON result to stdout, diagnostics to stderr, and exits z
 - Four simultaneous worker tasks by default, configurable through `maxTasks`; at most 256 accepted unfinished tasks.
 - Coordination workflows do not consume a worker slot, so a workflow can run a local step with `maxTasks: 1`.
 - Task timeouts and artifact/lease TTLs are at most 24 hours. A task defaults to one hour.
-- At most 100 steps per workflow. Steps execute sequentially in dependency order.
-- Artifacts, completed task metadata, logs, and workspaces remain until explicitly removed. `artifacts.delete` removes an artifact; task/workspace pruning is currently an operator action while the node is stopped.
+- At most 100 steps per workflow, and at most 16 running at once through `maxParallel`. Steps launch in dependency order.
+- Terminal task records, logs, and workspaces are pruned after `taskRetentionHours` (default 168) and beyond `maxRetainedTasks` (default 10,000), leaving tombstones for 180 days and at most 50,000 IDs. Artifacts remain until removed; `artifacts.delete` releases the caller's hold and removes content no other owner holds.
 
 The runtime enforces concurrency and message-size bounds, but does not implement per-user billing, CPU/memory isolation, or disk quotas.

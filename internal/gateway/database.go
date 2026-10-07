@@ -209,6 +209,8 @@ func (g *Gateway) importLegacy(dir string) error {
 	return nil
 }
 
+// persist rewrites every record. It runs only during startup migration; request
+// paths commit the records they change with commit.
 // Caller holds g.mu, except during initialization before serving requests.
 func (g *Gateway) persist() error {
 	tx, err := g.db.Begin()
@@ -219,7 +221,164 @@ func (g *Gateway) persist() error {
 	if err = g.writeState(tx); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	g.reindexCredentialsLocked()
+	return nil
+}
+
+// change names the records one mutation touched. commit writes each named
+// record from the in-memory cache, or deletes it when the cache no longer holds
+// it. Identity, client-owner, and transport bindings are insert-only and keep
+// their immutability checks.
+type change struct {
+	users, identities, clients, transports  []string
+	nodes, keys, invitations, machineStates []string
+}
+
+// commit makes one mutation durable in a single transaction before the caller
+// acknowledges it. Its cost is proportional to the change, not to the gateway's
+// accumulated state. Caller holds g.mu.
+func (g *Gateway) commit(c change) error {
+	tx, err := g.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err = g.writeChange(tx, c); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	if len(c.users)+len(c.keys)+len(c.invitations) != 0 {
+		g.reindexCredentialsLocked()
+	}
+	return nil
+}
+
+func (g *Gateway) writeChange(tx *sql.Tx, c change) error {
+	exec := func(query string, args ...any) error {
+		_, err := tx.Exec(query, args...)
+		return err
+	}
+	// Deletions precede inserts so a released name can be reused in one change.
+	for _, id := range c.nodes {
+		if _, ok := g.nodes[id]; !ok {
+			if err := exec(`DELETE FROM nodes WHERE id=?`, id); err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range c.keys {
+		if _, ok := g.keys[id]; !ok {
+			if err := exec(`DELETE FROM credentials WHERE id=?`, id); err != nil {
+				return err
+			}
+		}
+	}
+	for _, hash := range c.invitations {
+		if _, ok := g.installations[hash]; !ok {
+			if err := exec(`DELETE FROM invitations WHERE hash=?`, hash); err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range c.machineStates {
+		if _, ok := g.machineStates[id]; !ok {
+			if err := exec(`DELETE FROM machine_states WHERE id=?`, id); err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range c.users {
+		u, ok := g.users[id]
+		if !ok {
+			continue
+		}
+		if err := exec(`INSERT INTO users(id,name,data) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,data=excluded.data`, u.ID, u.Name, model.JSON(u)); err != nil {
+			return err
+		}
+	}
+	for _, id := range c.identities {
+		if user := g.owners[id]; user != "" {
+			if err := writeIdentity(tx, id, user); err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range c.clients {
+		if g.clientOwners[id] {
+			if err := exec(`INSERT INTO client_identities(id,data) VALUES(?,?) ON CONFLICT(id) DO NOTHING`, id, model.JSON(true)); err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range c.transports {
+		if owner := g.clientTransports[id]; owner != "" {
+			if err := writeTransport(tx, id, owner); err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range c.nodes {
+		if n, ok := g.nodes[id]; ok {
+			if err := exec(`INSERT INTO nodes(id,user_id,name,data) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id,name=excluded.name,data=excluded.data`, n.ID, n.UserID, n.Name, model.JSON(n)); err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range c.keys {
+		if k, ok := g.keys[id]; ok {
+			if err := exec(`INSERT INTO credentials(id,user_id,hash,data) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id,hash=excluded.hash,data=excluded.data`, k.ID, k.UserID, k.Hash, model.JSON(k)); err != nil {
+				return err
+			}
+		}
+	}
+	for _, hash := range c.invitations {
+		if i, ok := g.installations[hash]; ok {
+			if err := exec(`INSERT INTO invitations(hash,user_id,data) VALUES(?,?,?) ON CONFLICT(hash) DO UPDATE SET user_id=excluded.user_id,data=excluded.data`, hash, i.UserID, model.JSON(i)); err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range c.machineStates {
+		if state, ok := g.machineStates[id]; ok {
+			if err := exec(`INSERT INTO machine_states(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`, id, model.JSON(state)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func writeIdentity(tx *sql.Tx, id, user string) error {
+	if _, err := tx.Exec(`INSERT INTO identities(id,user_id) VALUES(?,?) ON CONFLICT(id) DO NOTHING`, id, user); err != nil {
+		return err
+	}
+	var stored string
+	if err := tx.QueryRow(`SELECT user_id FROM identities WHERE id=?`, id).Scan(&stored); err != nil {
+		return err
+	}
+	if stored != user {
+		return errors.New("identity ownership is immutable")
+	}
+	return nil
+}
+
+func writeTransport(tx *sql.Tx, id, owner string) error {
+	if _, err := tx.Exec(`INSERT INTO client_transports(id,owner_id,data) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING`, id, owner, model.JSON(owner)); err != nil {
+		return err
+	}
+	var stored string
+	if err := tx.QueryRow(`SELECT owner_id FROM client_transports WHERE id=?`, id).Scan(&stored); err != nil {
+		return err
+	}
+	if stored != owner {
+		return errors.New("client transport ownership is immutable")
+	}
+	return nil
 }
 
 func (g *Gateway) writeState(tx *sql.Tx) error {
@@ -229,15 +388,8 @@ func (g *Gateway) writeState(tx *sql.Tx) error {
 		}
 	}
 	for id, user := range g.owners {
-		if _, err := tx.Exec(`INSERT INTO identities(id,user_id) VALUES(?,?) ON CONFLICT(id) DO NOTHING`, id, user); err != nil {
+		if err := writeIdentity(tx, id, user); err != nil {
 			return err
-		}
-		var stored string
-		if err := tx.QueryRow(`SELECT user_id FROM identities WHERE id=?`, id).Scan(&stored); err != nil {
-			return err
-		}
-		if stored != user {
-			return errors.New("identity ownership is immutable")
 		}
 	}
 	for id, client := range g.clientOwners {
@@ -246,15 +398,8 @@ func (g *Gateway) writeState(tx *sql.Tx) error {
 		}
 	}
 	for id, owner := range g.clientTransports {
-		if _, err := tx.Exec(`INSERT INTO client_transports(id,owner_id,data) VALUES(?,?,?) ON CONFLICT(id) DO NOTHING`, id, owner, model.JSON(owner)); err != nil {
+		if err := writeTransport(tx, id, owner); err != nil {
 			return err
-		}
-		var stored string
-		if err := tx.QueryRow(`SELECT owner_id FROM client_transports WHERE id=?`, id).Scan(&stored); err != nil {
-			return err
-		}
-		if stored != owner {
-			return errors.New("client transport ownership is immutable")
 		}
 	}
 	if _, err := tx.Exec(`DELETE FROM nodes; DELETE FROM credentials; DELETE FROM invitations;`); err != nil {

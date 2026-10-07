@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"sort"
@@ -170,12 +171,13 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	count := 0
+	expired := map[string]installation{}
 	for hash, old := range g.installations {
 		if old.UserID != p.UserID {
 			continue
 		}
 		if old.RedeemedID == "" && now.After(old.ExpiresAt) {
-			delete(g.installations, hash)
+			expired[hash] = old
 			continue
 		}
 		if !q.AutoName && g.installationName(old) == q.Name && !old.Revoked && old.RedeemedID == "" {
@@ -193,8 +195,14 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	hash := enrollment.Hash(ticket)
 	g.installations[hash] = i
-	if err = g.persist(); err != nil {
+	persisted := change{invitations: []string{hash}}
+	for h := range expired {
+		delete(g.installations, h)
+		persisted.invitations = append(persisted.invitations, h)
+	}
+	if err = g.commit(persisted); err != nil {
 		delete(g.installations, hash)
+		maps.Copy(g.installations, expired)
 		http.Error(w, "could not persist invitation", 500)
 		return
 	}
@@ -370,7 +378,14 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 	g.owners[id] = i.UserID
 	i.RedeemedID, i.CredentialHash = id, q.CredentialHash
 	g.installations[hash] = i
-	if err := g.persist(); err != nil {
+	persisted := change{identities: []string{id}, invitations: []string{hash}, machineStates: []string{id}}
+	if registered {
+		persisted.nodes = []string{id}
+	}
+	for h := range previousInstallations {
+		persisted.invitations = append(persisted.invitations, h)
+	}
+	if err := g.commit(persisted); err != nil {
 		g.machineStates[id] = previousState
 		if registered {
 			g.nodes[id] = previousNode
@@ -410,7 +425,7 @@ func (g *Gateway) revokeInstallation(w http.ResponseWriter, r *http.Request) {
 	i := old
 	i.Revoked = true
 	g.installations[hash] = i
-	err := g.persist()
+	err := g.commit(change{invitations: []string{hash}})
 	if err != nil {
 		g.installations[hash] = old
 	}
@@ -487,7 +502,11 @@ func (g *Gateway) forgetMachine(w http.ResponseWriter, r *http.Request) {
 	delete(g.nodes, id)
 	previous := g.machineStates[id]
 	g.machineStates[id] = model.MachineState{Revision: previous.Revision + 1, Disabled: true, Unregistered: true}
-	if err := g.persist(); err != nil {
+	persisted := change{nodes: []string{id}, machineStates: []string{id}}
+	for hash := range old {
+		persisted.invitations = append(persisted.invitations, hash)
+	}
+	if err := g.commit(persisted); err != nil {
 		g.machineStates[id] = previous
 		g.nodes[id] = n
 		for hash, i := range old {

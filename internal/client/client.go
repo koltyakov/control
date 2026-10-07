@@ -106,21 +106,31 @@ func (c Client) Call(ctx context.Context, target, method string, params any, res
 	return json.Unmarshal(response.Result, result)
 }
 
+// taskWaitSeconds asks the worker to hold tasks.get until the task finishes.
+const taskWaitSeconds = 30
+
+// Wait returns when the task is terminal. Current workers answer a blocking
+// tasks.get as soon as the task finishes; older workers ignore waitSeconds and
+// answer at once, so the loop keeps a minimum poll interval for them.
 func (c Client) Wait(ctx context.Context, target, id string) (model.Task, error) {
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
+	const interval = 250 * time.Millisecond
 	for {
+		started := time.Now()
 		var task model.Task
-		if err := c.Call(ctx, target, "tasks.get", map[string]any{"id": id}, &task); err != nil {
+		if err := c.Call(ctx, target, "tasks.get", map[string]any{"id": id, "waitSeconds": taskWaitSeconds}, &task); err != nil {
 			return task, err
 		}
 		if task.Terminal() {
 			return task, nil
 		}
-		select {
-		case <-ctx.Done():
-			return task, ctx.Err()
-		case <-ticker.C:
+		if remaining := interval - time.Since(started); remaining > 0 {
+			select {
+			case <-ctx.Done():
+				return task, ctx.Err()
+			case <-time.After(remaining):
+			}
+		} else if err := ctx.Err(); err != nil {
+			return task, err
 		}
 	}
 }

@@ -20,13 +20,19 @@ func (n *Node) loadLease() error {
 	return err
 }
 
-// Called with n.mu held. Expiry never permits overlapping a still-running task.
+// Called with n.mu held. Expiry never permits overlapping a still-running task,
+// including one whose acceptance is being written.
 func (n *Node) leaseBusy() bool {
 	if n.lease == nil {
 		return false
 	}
-	for _, task := range n.tasks {
-		if !task.Terminal() && task.Spec.LeaseID == n.lease.ID {
+	for id := range n.cancels {
+		if task := n.tasks[id]; task != nil && task.Spec.LeaseID == n.lease.ID {
+			return true
+		}
+	}
+	for _, pending := range n.accepting {
+		if pending.leaseID == n.lease.ID {
 			return true
 		}
 	}
@@ -64,10 +70,10 @@ func (n *Node) leaseMethod(owner, method string, args json.RawMessage) (any, err
 		if n.lease != nil && (time.Now().Before(n.lease.Expires) || n.leaseBusy()) {
 			return nil, errors.New("node is already leased")
 		}
-		for _, task := range n.tasks {
-			if !task.Terminal() {
-				return nil, errors.New("node has active tasks")
-			}
+		// Every non-terminal task has a cancel function; reservations are tasks
+		// whose acceptance is still being written.
+		if len(n.cancels) != 0 || len(n.accepting) != 0 {
+			return nil, errors.New("node has active tasks")
 		}
 		next = &model.Lease{ID: identity.NewID(), Owner: owner, Expires: time.Now().Add(time.Duration(q.TTLSeconds) * time.Second).UTC()}
 	case "leases.renew", "leases.release":

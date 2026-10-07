@@ -28,7 +28,8 @@ Orchestrator and worker are roles, not fixed machine types. A node can perform b
 - Immutable SHA-256 artifacts, resumable transfers, worker-to-worker delivery, and subject-bound artifact grants.
 - Instruction-bound worker delegation with revocation, cancellation, and one-hour idle expiry.
 - Explicit bidirectional clipboard pastes through CLI/MCP, with regular files streamed only when paste is requested. See [clipboard requirements and limits](docs/clipboard.md).
-- Label-based selection, exclusive execution leases, bounded task concurrency, and dependency-ordered workflows.
+- Label-based selection that prefers less busy machines, exclusive execution leases, bounded task concurrency, and dependency-ordered workflows with optional parallel steps.
+- Blocking task waits, and terminal-task retention with tombstones that keep pruned IDs from running again.
 - A local MCP server exposing routing tools for AI clients.
 - Independent control/bulk/interactive traffic lanes, shared WebRTC carriers, streamed task logs, and negotiated TCP half-close.
 - Persistent forward and reverse TCP tunnels with non-blocking creation, listing, disposal, optional TTL, and user-service listener recovery. See [persistent tunnels](docs/tunnels.md).

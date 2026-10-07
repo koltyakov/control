@@ -13,11 +13,8 @@ func (n *Node) healthSnapshot() model.NodeHealth {
 	health.ActiveCount = len(n.activities) + n.untrackedActivities
 	n.activityMu.Unlock()
 	n.mu.Lock()
-	for _, task := range n.tasks {
-		if !task.Terminal() {
-			health.ActiveCount++
-		}
-	}
+	// Non-terminal tasks are exactly those with a cancel function.
+	health.ActiveCount += len(n.cancels)
 	health.Leased = n.lease != nil && (time.Now().Before(n.lease.Expires) || n.leaseBusy())
 	n.mu.Unlock()
 	for i := range health.System.Disks {

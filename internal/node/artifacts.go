@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -29,13 +30,81 @@ func (n *Node) artifactPath(id string) string {
 	return filepath.Join(n.Config.DataDir, "artifacts", id)
 }
 
+// storedArtifact is the local metadata record. Owners lists the task owners
+// holding the content; an empty list is a shared record from an older version
+// or one with more owners than are tracked.
+type storedArtifact struct {
+	model.Artifact
+	Owners []string `json:"owners,omitempty"`
+}
+
+const maxArtifactOwners = 256
+
 func (n *Node) artifact(id string) (model.Artifact, error) {
-	var a model.Artifact
+	stored, err := n.storedArtifact(id)
+	return stored.Artifact, err
+}
+
+func (n *Node) storedArtifact(id string) (storedArtifact, error) {
+	var a storedArtifact
 	if !digestID.MatchString(id) {
 		return a, errors.New("invalid artifact ID")
 	}
 	err := store.Read(n.artifactPath(id)+".json", &a)
 	return a, err
+}
+
+// visibleTo reports whether owner may list or remove its hold on the record.
+func (a storedArtifact) visibleTo(owner, node string) bool {
+	return owner == node || len(a.Owners) == 0 || slices.Contains(a.Owners, owner)
+}
+
+// artifactOwner is the task owner of the current invocation.
+func (n *Node) artifactOwner(ctx context.Context) string {
+	if meta, _ := ctx.Value(activityContextKey{}).(activityContext); meta.owner != "" {
+		return meta.owner
+	}
+	return n.Identity.ID
+}
+
+// holdArtifactLocked records owner on stored content. Caller holds artifactMu.
+func (n *Node) holdArtifactLocked(a storedArtifact, owner string) error {
+	if len(a.Owners) == 0 || slices.Contains(a.Owners, owner) {
+		return nil
+	}
+	if len(a.Owners) >= maxArtifactOwners {
+		a.Owners = nil
+	} else {
+		a.Owners = append(a.Owners, owner)
+	}
+	return store.Write(n.artifactPath(a.ID)+".json", a)
+}
+
+type transferLock struct {
+	sync.Mutex
+	refs int
+}
+
+// lockTransfer serializes transfers of one artifact and forgets the lock once
+// no transfer needs it.
+func (n *Node) lockTransfer(id string) func() {
+	n.artifactMu.Lock()
+	lock := n.transfers[id]
+	if lock == nil {
+		lock = &transferLock{}
+		n.transfers[id] = lock
+	}
+	lock.refs++
+	n.artifactMu.Unlock()
+	lock.Lock()
+	return func() {
+		lock.Unlock()
+		n.artifactMu.Lock()
+		if lock.refs--; lock.refs == 0 {
+			delete(n.transfers, id)
+		}
+		n.artifactMu.Unlock()
+	}
 }
 
 type contextReader struct {
@@ -81,16 +150,17 @@ func (n *Node) importArtifact(ctx context.Context, reader io.Reader, name string
 		return model.Artifact{}, err
 	}
 	id := hex.EncodeToString(hash.Sum(nil))
+	owner := n.artifactOwner(ctx)
 	n.artifactMu.Lock()
 	defer n.artifactMu.Unlock()
-	if existing, e := n.artifact(id); e == nil {
-		return existing, nil
+	if existing, e := n.storedArtifact(id); e == nil {
+		return existing.Artifact, n.holdArtifactLocked(existing, owner)
 	}
 	if err = os.Rename(f.Name(), n.artifactPath(id)); err != nil {
 		return model.Artifact{}, err
 	}
 	a := model.Artifact{Node: n.Identity.ID, ID: id, Name: name, Size: size, SHA256: id, Created: time.Now().UTC()}
-	return a, store.Write(n.artifactPath(id)+".json", a)
+	return a, store.Write(n.artifactPath(id)+".json", storedArtifact{Artifact: a, Owners: []string{owner}})
 }
 
 type artifactGrant struct {
@@ -242,19 +312,17 @@ func (n *Node) pullArtifact(ctx context.Context, a model.Artifact) (_ model.Arti
 	if !digestID.MatchString(a.ID) || a.SHA256 != a.ID || a.Size < 0 {
 		return model.Artifact{}, errors.New("invalid artifact reference")
 	}
+	defer n.lockTransfer(a.ID)()
+	owner := n.artifactOwner(ctx)
+	activity.phase("checking local cache")
 	n.artifactMu.Lock()
-	lock := n.transfers[a.ID]
-	if lock == nil {
-		lock = &sync.Mutex{}
-		n.transfers[a.ID] = lock
+	local, err := n.storedArtifact(a.ID)
+	if err == nil {
+		err = n.holdArtifactLocked(local, owner)
+		n.artifactMu.Unlock()
+		return local.Artifact, err
 	}
 	n.artifactMu.Unlock()
-	lock.Lock()
-	defer lock.Unlock()
-	activity.phase("checking local cache")
-	if local, err := n.artifact(a.ID); err == nil {
-		return local, nil
-	}
 	if err := os.MkdirAll(filepath.Dir(n.artifactPath(a.ID)), 0700); err != nil {
 		return model.Artifact{}, err
 	}
@@ -273,20 +341,24 @@ func (n *Node) pullArtifact(ctx context.Context, a model.Artifact) (_ model.Arti
 			return model.Artifact{}, err
 		}
 		offset = 0
-		_, _ = f.Seek(0, io.SeekStart)
 	}
-	activity.phase("receiving")
-	if err = n.Download(ctx, a, offset, f); err != nil {
-		return model.Artifact{}, fmt.Errorf("transfer paused at resumable partial: %w", err)
-	}
+	// Hash while receiving so a completed download is not read a second time.
+	// A resumed transfer hashes only its retained prefix first.
+	hash := sha256.New()
 	if _, err = f.Seek(0, io.SeekStart); err != nil {
 		return model.Artifact{}, err
 	}
-	activity.phase("verifying checksum")
-	hash := sha256.New()
-	if _, err = io.Copy(hash, contextReader{ctx, f}); err != nil {
-		return model.Artifact{}, err
+	if offset > 0 {
+		activity.phase("verifying resumed prefix")
+		if _, err = io.CopyN(hash, contextReader{ctx, f}, offset); err != nil {
+			return model.Artifact{}, err
+		}
 	}
+	activity.phase("receiving")
+	if err = n.Download(ctx, a, offset, io.MultiWriter(f, hash)); err != nil {
+		return model.Artifact{}, fmt.Errorf("transfer paused at resumable partial: %w", err)
+	}
+	activity.phase("verifying checksum")
 	if hex.EncodeToString(hash.Sum(nil)) != a.SHA256 {
 		_ = f.Close()
 		_ = os.Remove(partial)
@@ -304,7 +376,7 @@ func (n *Node) pullArtifact(ctx context.Context, a model.Artifact) (_ model.Arti
 		return model.Artifact{}, err
 	}
 	a.Node, a.Grant, a.Created = n.Identity.ID, "", time.Now().UTC()
-	return a, store.Write(n.artifactPath(a.ID)+".json", a)
+	return a, store.Write(n.artifactPath(a.ID)+".json", storedArtifact{Artifact: a, Owners: []string{owner}})
 }
 
 func (n *Node) artifactMethod(ctx context.Context, caller, method string, args json.RawMessage) (any, error) {
@@ -335,21 +407,37 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 		if err != nil {
 			return nil, err
 		}
+		owner := n.artifactOwner(ctx)
 		artifacts := []model.Artifact{}
 		for _, path := range paths {
-			var a model.Artifact
+			var a storedArtifact
 			if err = store.Read(path, &a); err != nil {
 				return nil, err
 			}
-			artifacts = append(artifacts, a)
+			if a.visibleTo(owner, n.Identity.ID) {
+				artifacts = append(artifacts, a.Artifact)
+			}
 		}
 		return artifacts, nil
 	case "artifacts.delete":
 		if !digestID.MatchString(q.ID) {
 			return nil, errors.New("invalid artifact ID")
 		}
+		owner := n.artifactOwner(ctx)
 		n.artifactMu.Lock()
 		defer n.artifactMu.Unlock()
+		stored, err := n.storedArtifact(q.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !stored.visibleTo(owner, n.Identity.ID) {
+			return nil, fmt.Errorf("open %s: %w", n.artifactPath(q.ID)+".json", os.ErrNotExist)
+		}
+		// Another owner's hold keeps the content; only this owner's is released.
+		if owner != n.Identity.ID && len(stored.Owners) > 1 {
+			stored.Owners = slices.DeleteFunc(stored.Owners, func(o string) bool { return o == owner })
+			return nil, store.Write(n.artifactPath(q.ID)+".json", stored)
+		}
 		if err := os.Remove(n.artifactPath(q.ID) + ".json"); err != nil {
 			return nil, err
 		}
@@ -394,10 +482,12 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 		if auth, ok := ctx.Value(authorityContextKey{}).(authority); ok && auth.grant != nil && auth.grant.grant.TaskID() != "" {
 			proof.TaskID = auth.grant.grant.TaskID()
 			n.mu.Lock()
-			for index, output := range n.tasks[proof.TaskID].Artifacts {
-				if output.ID == a.ID && (q.OutputIndex == nil || *q.OutputIndex == index) {
-					proof.Output = index
-					break
+			if task := n.tasks[proof.TaskID]; task != nil {
+				for index, output := range task.Artifacts {
+					if output.ID == a.ID && (q.OutputIndex == nil || *q.OutputIndex == index) {
+						proof.Output = index
+						break
+					}
 				}
 			}
 			n.mu.Unlock()

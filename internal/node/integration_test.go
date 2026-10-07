@@ -98,6 +98,10 @@ func TestWorkerProcess(t *testing.T) {
 		time.Sleep(time.Second)
 		fmt.Print("completed after submitter disconnect")
 		os.Exit(0)
+	case "brief":
+		time.Sleep(300 * time.Millisecond)
+		fmt.Print("brief")
+		os.Exit(0)
 	case "provider":
 		var request struct {
 			Version   string         `json:"version"`
@@ -232,6 +236,19 @@ func TestArtifactResumeGrantAndFilesystemBoundary(t *testing.T) {
 	}
 	if err := os.MkdirAll(filepath.Dir(worker.artifactPath(a.ID)), 0700); err != nil {
 		t.Fatal(err)
+	}
+	// The received bytes are hashed in one pass, including a resumed prefix:
+	// a corrupted partial must fail verification and be discarded.
+	corrupted := bytes.Clone(payload[:12345])
+	corrupted[0] ^= 0xff
+	if err := os.WriteFile(worker.artifactPath(a.ID)+".partial", corrupted, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worker.pullArtifact(ctx, granted); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatal("corrupted resumed prefix accepted", err)
+	}
+	if _, err := os.Stat(worker.artifactPath(a.ID) + ".partial"); !os.IsNotExist(err) {
+		t.Fatal("corrupted partial retained", err)
 	}
 	if err := os.WriteFile(worker.artifactPath(a.ID)+".partial", payload[:12345], 0600); err != nil {
 		t.Fatal(err)

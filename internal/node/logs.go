@@ -13,33 +13,28 @@ import (
 	"github.com/koltyakov/control/internal/transport"
 )
 
-func (n *Node) notifyTaskLocked(id string) {
-	if changed := n.taskChanges[id]; changed != nil {
-		close(changed)
-		if n.tasks[id].Terminal() {
-			delete(n.taskChanges, id)
-		} else {
-			n.taskChanges[id] = make(chan struct{})
-		}
-	}
-}
-
 // Capture the wakeup channel before reading the log to avoid losing an append
 // or task completion between the file read and the subscription.
 func (n *Node) readTaskLog(owner, id string, offset int64) (model.TaskLogChunk, <-chan struct{}, error) {
 	n.mu.Lock()
-	task := n.tasks[id]
-	if task == nil {
+	task, err := n.ownedTaskLocked(owner, id)
+	if err != nil {
 		n.mu.Unlock()
-		return model.TaskLogChunk{}, nil, errors.New("task not found")
+		return model.TaskLogChunk{}, nil, err
 	}
-	if task.Owner != owner && owner != n.Identity.ID {
-		n.mu.Unlock()
-		return model.TaskLogChunk{}, nil, errors.New("task belongs to another caller")
+	terminal := task.Terminal()
+	var changed <-chan struct{}
+	if notifier := n.notifiers[id]; notifier != nil {
+		changed = notifier.next()
 	}
-	terminal, changed := task.Terminal(), n.taskChanges[id]
 	n.mu.Unlock()
 	chunk := model.TaskLogChunk{Offset: offset}
+	if !terminal && changed == nil {
+		// A task without a notifier is settling; poll its state once more.
+		closed := make(chan struct{})
+		close(closed)
+		changed = closed
+	}
 	f, err := os.Open(n.logPath(id))
 	if errors.Is(err, os.ErrNotExist) {
 		chunk.Terminal = terminal
