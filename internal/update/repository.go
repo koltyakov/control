@@ -15,10 +15,11 @@ type Repository struct {
 	dir     string
 	mu      sync.Mutex
 	current *Deployment
+	pins    map[string]int
 }
 
 func OpenRepository(dir string) (*Repository, error) {
-	r := &Repository{dir: dir}
+	r := &Repository{dir: dir, pins: map[string]int{}}
 	if err := store.Read(filepath.Join(dir, "deployment.json"), &r.current); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
@@ -31,7 +32,31 @@ func (r *Repository) Upload(reader io.Reader, asset Asset) error {
 	if !ValidDigest(asset.SHA256) || asset.Size <= 0 || asset.Size > MaxBinarySize {
 		return errors.New("invalid binary metadata")
 	}
+	release := r.Pin([]Asset{asset})
+	defer release()
 	return SaveBinary(reader, r.Blob(asset.SHA256), asset)
+}
+
+// Pin keeps assets available while a release is downloaded and published.
+func (r *Repository) Pin(assets []Asset) func() {
+	r.mu.Lock()
+	for _, asset := range assets {
+		r.pins[asset.SHA256]++
+	}
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			for _, asset := range assets {
+				r.pins[asset.SHA256]--
+				if r.pins[asset.SHA256] == 0 {
+					delete(r.pins, asset.SHA256)
+				}
+			}
+		})
+	}
 }
 
 func (r *Repository) Current() *Deployment {
@@ -50,13 +75,13 @@ func (r *Repository) Publish(manifest Manifest, source string) (*Deployment, err
 	if err := manifest.Validate(); err != nil {
 		return nil, err
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for _, asset := range manifest.Assets {
 		if err := Verify(r.Blob(asset.SHA256), asset); err != nil {
 			return nil, err
 		}
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	id := manifest.ID()
 	if r.current != nil && (r.current.ID == id || r.current.Manifest.Version == manifest.Version) {
 		copy := *r.current

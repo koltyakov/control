@@ -2,7 +2,6 @@ package clipboard
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -42,16 +41,4 @@ func output(cmd *exec.Cmd) ([]byte, error) {
 		return nil, fmt.Errorf("read clipboard: %w", err)
 	}
 	return b.data, nil
-}
-
-func readJSON(cmd *exec.Cmd) (Value, error) {
-	b, err := output(cmd)
-	if err != nil {
-		return Value{}, err
-	}
-	var value Value
-	if err := json.Unmarshal(b, &value); err != nil {
-		return Value{}, fmt.Errorf("decode clipboard: %w", err)
-	}
-	return value, nil
 }

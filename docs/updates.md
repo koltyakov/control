@@ -156,7 +156,15 @@ Explicit Windows user-login startup runs the same supervisor under the user's li
 
 Current Windows supervisors run each verified child from a stable `<dataDir>\runtime\control.exe` copy. They replace this copy only after the previous child exits, while retaining the versioned binaries and `runtime.json` selection for validation and recovery. Installer firewall rules cover this stable path, so managed updates do not require new firewall permissions. Older supervisors need a current installed CLI and one restart before using the stable path. See [Windows firewall setup](installation.md#windows-firewall).
 
-The updater verifies size and checksum, then runs `version --json` to check the staged executable before selecting it. It preserves identities, tasks, leases, keys, and other state. It does not migrate incompatible state schemas or automatically roll back after a service startup failure. The supervisor saves `runtime-previous.json` before switching. For manual recovery, stop the supervisor, restore that file as `runtime.json`, resolve or replace the gateway deployment, and restart. Existing binaries remain in state storage until the operator removes unused versions.
+The updater verifies size and checksum, then runs `version --json` to check the staged executable before selecting it. It preserves identities, tasks, leases, keys, and other state. It does not migrate incompatible state schemas or automatically roll back after a service startup failure. The supervisor saves `runtime-previous.json` before switching. For manual recovery, stop the supervisor, restore that file as `runtime.json`, resolve or replace the gateway deployment, and restart.
+
+### Gateway binary retention
+
+After the gateway and online participants acknowledge the selected software and the gateway durably marks the rollout complete, it removes obsolete uploaded binaries and staged executable directories. Cleanup also runs for an already-complete deployment after gateway restart, and repeats every minute while that deployment remains complete. Failed or unfinished rollouts are not pruned. Cleanup errors are logged and retried without changing the successful deployment's phase.
+
+The gateway retains all assets in the selected manifest for offline nodes, binaries pinned by unexpired, unrevoked, unredeemed installation invitations, and its current, previous, and requested runtime selections. The previous gateway binary is retained for local recovery, not general download. Active uploads and release downloads are protected. Unreferenced uploads younger than one hour are kept so multi-platform pushes can finish before publication; abandoned uploads are removed after that grace. Unreadable runtime records stop cleanup before deletion. Removal is confined to checksum-named entries within gateway update storage and does not follow symlinks outside it.
+
+Authenticated node downloads serve only the selected manifest. Existing installation links use their separately pinned assets until redemption, revocation, or expiry. This policy applies to gateway storage, not node-local version retention, operator-created upload folders, CLI update backups, or system journals.
 
 ## HTTP and control messages
 
@@ -172,8 +180,8 @@ All endpoints use `Authorization: Bearer TOKEN`.
 | `POST /v1/admin/updates` | Superuser | Publish a manifest after its binaries are uploaded |
 | `GET /v1/admin/updates` | Superuser | Deployment, gateway software, and node acknowledgments |
 | `POST /v1/admin/updates/check` | Superuser | Fetch configured latest GitHub release |
-| `GET /v1/updates/blobs/{sha256}` | Any valid key | Download a staged binary |
+| `GET /v1/updates/blobs/{sha256}` | Any valid key | Download a binary from the selected manifest; other hashes return 404 |
 
-Binaries are limited to 128 MiB each, manifests to six platform assets and 64 KiB, and key creation requests to 4 KiB. Invalid uploads never replace a verified binary. Uploads and versioned executables remain on disk; storage retention is manual.
+Binaries are limited to 128 MiB each, manifests to six platform assets and 64 KiB, and key creation requests to 4 KiB. Invalid uploads never replace a verified binary. See [gateway binary retention](#gateway-binary-retention) for automatic cleanup and preserved references.
 
 The existing Protobuf envelope carries `update.offer`, `update.prepare`, `update.commit`, `update.resume`, and `update.status`. Nodes accept update commands only from the reserved gateway sender. The gateway never forwards peer-supplied update commands. Node reports describe their own progress and idle state, not another node's authority.

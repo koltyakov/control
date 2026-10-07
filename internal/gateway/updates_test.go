@@ -214,6 +214,7 @@ func TestRolloutSkipsSameVersionWhileBusy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	obsolete := oldUpdateAsset(t, g, "obsolete binary")
 	g.nodes["worker"] = model.Node{ID: "worker", OS: info.OS, Software: info}
 	out := make(chan *protocol.Packet, 8)
 	g.peers["worker"] = &connection{out: out}
@@ -232,10 +233,19 @@ func TestRolloutSkipsSameVersionWhileBusy(t *testing.T) {
 			case "update.prepare", "update.commit":
 				t.Fatalf("same-version rollout requested maintenance: %s", packet.Kind)
 			case "update.resume":
+				for update.Verify(g.updates.Blob(obsolete.SHA256), obsolete) == nil {
+					if ctx.Err() != nil {
+						t.Fatal("successful rollout did not prune obsolete binaries")
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
 				cancel()
 				<-done
 				if current := g.updates.Current(); current.Phase != "complete" || g.restarting {
 					t.Fatalf("same-version rollout was not skipped: %+v", current)
+				}
+				if err := update.Verify(g.updates.Blob(obsolete.SHA256), obsolete); err == nil {
+					t.Fatal("successful rollout did not prune obsolete binaries")
 				}
 				return
 			}

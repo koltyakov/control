@@ -124,6 +124,8 @@ These metrics describe host-visible capacity and usage. They do not implement ta
 
 Same-version update selection and acknowledgements are refined by [D047](#d047-skip-updates-for-unchanged-versions). Authorization and idle reservations remain unchanged.
 
+Indefinite gateway binary retention is superseded by [D061](#d061-completed-rollout-binary-retention-and-selected-release-downloads). Supervisor recovery and node-local storage remain unchanged.
+
 Extend D004's enrollment model with hashed, revocable common keys and a separately configured superuser key. Only the superuser can issue common keys, upload executable bundles, publish deployments, or trigger release checks. CLI administration help requires a verified superuser response; server-side authorization enforces the permission independently.
 
 [D016](#d016-sqlite-backed-users-and-isolated-fleets) supersedes the common-key issuance restriction: account owners can issue keys for their own fleet. Executable publication and global rollout administration remain superuser-only.
@@ -523,3 +525,11 @@ Any authorized caller could list every artifact on a node and delete content ano
 Workflows accept optional `maxParallel` from 1 to 16, defaulting to 1 so existing workflows keep their sequential order. Ready steps launch in the same dependency order as before, up to the limit. After a failure no further step starts, but steps already running finish rather than being cancelled mid-effect; the result includes every started step. Each worker still admits its step through its own slots, leases, and maintenance gate.
 
 Selection preferred the first match by name, sending every selected task to one machine. It now prefers the match with the lowest `activeCount` in owner-visible health summaries and chooses randomly among ties or when summaries are unavailable, as for common keys. This is a placement preference, not a reservation; destination admission is unchanged. Resource-based placement remains future work. This supersedes [D010](#d010-destination-owned-leases-and-a-small-workflow-executor)'s sequential execution and first-match selection.
+
+## D061: Completed-rollout binary retention and selected-release downloads
+
+Gateway update uploads and staged binaries accumulated across every development push. Prune obsolete checksum-named entries only after the gateway and online participants acknowledge the selected software and completion is durably recorded. Repeat every minute while complete, including after restart, so expired invitation pins and abandoned uploads are eventually removed. Failed or unfinished rollouts keep their files. Cleanup failure does not turn a successful update into a failed deployment.
+
+Retain selected-manifest assets for offline nodes, assets pinned by live installation invitations, and current/previous/requested gateway runtimes for local recovery. Pin active repository uploads and release downloads, and give unpublished uploads one hour to finish publication. Validate invitation binaries again under the same lock as pruning before committing a new invitation. Unreadable runtime records fail closed, and rooted removal cannot follow links outside update storage.
+
+Serve general authenticated binary downloads only from the selected manifest. Pinned installation links retain their existing download authority until redemption, revocation, or expiry; recovery binaries are not generally downloadable. This replaces D014's indefinite gateway storage retention without changing superuser publication, idle reservations, rollout acknowledgements, node-local retention, or supervisor recovery. See [gateway binary retention](updates.md#gateway-binary-retention).

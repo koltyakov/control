@@ -100,6 +100,8 @@ func (g *Gateway) fetchRelease(ctx context.Context) (*update.Deployment, error) 
 	if err = g.validatePlatforms(manifest); err != nil {
 		return nil, err
 	}
+	releaseAssets := g.updates.Pin(manifest.Assets)
+	defer releaseAssets()
 	for _, asset := range manifest.Assets {
 		assetURL := assets[asset.File]
 		if assetURL == "" {

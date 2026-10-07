@@ -100,6 +100,16 @@ func (g *Gateway) updateRoutes(mux *http.ServeMux) {
 			http.NotFound(w, r)
 			return
 		}
+		selected := false
+		if deployment := g.updates.Current(); deployment != nil {
+			for _, asset := range deployment.Manifest.Assets {
+				selected = selected || asset.SHA256 == hash
+			}
+		}
+		if !selected {
+			http.NotFound(w, r)
+			return
+		}
 		http.ServeFile(w, r, g.updates.Blob(hash))
 	}))
 	mux.HandleFunc("PUT /v1/admin/updates/blobs/{hash}", g.admin(func(w http.ResponseWriter, r *http.Request) {
@@ -291,6 +301,8 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 	defer ticker.Stop()
 	var stagedID, stagedPath string
 	var nextAttempt time.Time
+	var cleanedID string
+	var nextCleanup time.Time
 	requestedRestart := false
 	for {
 		select {
@@ -341,7 +353,13 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 					g.control(peer.node.ID, "update.resume", update.Command{ID: d.ID})
 				}
 				if d.Phase != "complete" {
-					_ = g.updates.SetPhase(d.ID, "complete", nil)
+					if err := g.updates.SetPhase(d.ID, "complete", nil); err != nil {
+						return
+					}
+				}
+				if cleanedID != d.ID || !time.Now().Before(nextCleanup) {
+					g.cleanupUpdates(ctx, d.ID)
+					cleanedID, nextCleanup = d.ID, time.Now().Add(time.Minute)
 				}
 				return
 			}
@@ -392,6 +410,31 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 				}
 			}
 		}()
+	}
+}
+
+// Called under rolloutMu, after the gateway and online participants acknowledge
+// the selected software. Keep invitations pinned until they can no longer download.
+func (g *Gateway) cleanupUpdates(ctx context.Context, id string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	retained := []string{g.options.Software.SHA256}
+	now := time.Now()
+	for _, invitation := range g.installations {
+		if invitation.Revoked || invitation.RedeemedID != "" || !now.Before(invitation.ExpiresAt) {
+			continue
+		}
+		retained = append(retained, invitation.Asset.SHA256)
+		for _, asset := range invitation.Assets {
+			retained = append(retained, asset.SHA256)
+		}
+	}
+	result, err := g.updates.Prune(ctx, id, retained)
+	if err != nil && ctx.Err() == nil {
+		slog.Warn("update cleanup", "error", err)
+	}
+	if result.Blobs != 0 || result.Staged != 0 {
+		slog.Info("update cleanup", "blobs", result.Blobs, "staged", result.Staged)
 	}
 }
 

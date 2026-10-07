@@ -1,6 +1,7 @@
 package enrollment
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/binary"
 	"net/http"
@@ -90,9 +91,12 @@ func TestWindowsInstallCommandRunsFromOuterShell(t *testing.T) {
 					cmd = exec.CommandContext(t.Context(), shell)
 					cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: `cmd.exe /d /s /c "` + command + `"`}
 				}
-				output, err := cmd.CombinedOutput()
+				// Encoded commands can emit CLIXML progress on stderr even on success.
+				var stderr bytes.Buffer
+				cmd.Stderr = &stderr
+				output, err := cmd.Output()
 				if err != nil || strings.TrimSpace(string(output)) != "installer executed" {
-					t.Fatalf("launcher: %s\nresult: %v\n%s", command, err, output)
+					t.Fatalf("launcher: %s\nresult: %v\nstdout:\n%s\nstderr:\n%s", command, err, output, stderr.String())
 				}
 			})
 		}

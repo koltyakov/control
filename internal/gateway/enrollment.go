@@ -161,6 +161,14 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	i := installation{Invitation: enrollment.Invitation{UserID: p.UserID, ID: identity.NewID(), Name: q.Name, AutoName: q.AutoName, ServiceMode: q.ServiceMode, Gateway: base, Asset: asset, Assets: assets, Version: version, CreatedAt: now, ExpiresAt: now.Add(time.Duration(q.TTLSeconds) * time.Second)}}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	// Cleanup holds the same lock. Recheck assets selected before acquiring it
+	// so an invitation can never be committed with a pruned binary.
+	for _, candidate := range append([]update.Asset{asset}, assets...) {
+		if err := update.Verify(g.updates.Blob(candidate.SHA256), candidate); err != nil {
+			http.Error(w, "installer binary changed; create a new invitation", http.StatusConflict)
+			return
+		}
+	}
 	if g.clientNameReserved(p.UserID, q.Name) {
 		http.Error(w, "name is reserved for a client identity", http.StatusConflict)
 		return
