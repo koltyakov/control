@@ -55,6 +55,9 @@ func RunTunnelService(ctx context.Context, dir string) error {
 	if !held {
 		return errors.New("tunnel service is already running")
 	}
+	endpointPath := filepath.Join(dir, "endpoint.json")
+	// Keep the endpoint until owned forwards have finished shutting down.
+	defer func() { _ = os.Remove(endpointPath) }()
 	var cfg StandaloneConfig
 	if err = store.Read(filepath.Join(dir, "service.json"), &cfg); err != nil {
 		return err
@@ -73,10 +76,9 @@ func RunTunnelService(ctx context.Context, dir string) error {
 	}
 	defer func() { _ = listener.Close() }()
 	endpoint := tunnelEndpoint{Address: listener.Addr().String(), Token: identity.NewID() + identity.NewID(), PID: os.Getpid()}
-	if err = store.Write(filepath.Join(dir, "endpoint.json"), endpoint); err != nil {
+	if err = store.Write(endpointPath, endpoint); err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(filepath.Join(dir, "endpoint.json")) }()
 	server := &http.Server{Handler: m.handler(endpoint.Token), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10,
 		BaseContext: func(net.Listener) context.Context { return m.ctx }}
 	stop := context.AfterFunc(ctx, func() { _ = server.Close() })

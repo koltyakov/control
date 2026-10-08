@@ -23,13 +23,16 @@ import (
 func TestInstalledNodeUninstallsAfterOnlineOrOfflineUnregistration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
+	// Reuse this executable's real CLI entry point instead of compiling a second
+	// binary while go test is already building/running the race-enabled suite.
+	t.Setenv("CONTROL_TEST_CLI_MAIN", "1")
 	name := "control"
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
-	built := filepath.Join(t.TempDir(), name)
-	if output, err := exec.CommandContext(ctx, "go", "build", "-o", built, ".").CombinedOutput(); err != nil {
-		t.Fatalf("build uninstall fixture: %v\n%s", err, output)
+	built, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
 	}
 	for _, mode := range []string{"online", "offline", "persisted"} {
 		t.Run(mode, func(t *testing.T) {

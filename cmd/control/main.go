@@ -125,7 +125,7 @@ func run(ctx context.Context, args []string) error {
 			c.Token = cfg.Token
 		}
 		switch args[0] {
-		case "mcp", "system", "call", "exec", "task", "artifact", "tunnel", "session", "clipboard", "dashboard":
+		case "mcp", "system", "call", "exec", "task", "artifact", "tunnel", "session", "clipboard", "dashboard", "speedtest":
 			if !explicitAPI && os.Getenv("CONTROL_API") == "" {
 				var override *string
 				if explicitToken {
@@ -336,6 +336,8 @@ func run(ctx context.Context, args []string) error {
 		}
 		printJSON(info)
 		return nil
+	case "speedtest":
+		return speedtestCLI(ctx, c, args[1:])
 	case "clipboard":
 		return clipboardCLI(ctx, c, args[1:])
 	case "task":
@@ -563,6 +565,7 @@ Environment: CONTROL_API, CONTROL_TOKEN
   machines                             List your fleet directly from the gateway
   dashboard [--once] [--json] [--node NAME,...]  Gateway status, fleet activity and resources
   system NODE [--refresh]               Cached or requested system sample
+  speedtest NODE [--from WORKER] [--size MiB] [--samples N] [--timeout DURATION] [--json]
   call NODE METHOD [JSON|@file]         Invoke any operation
   exec NODE [--detach] [--id ID] [--timeout DURATION] [--] COMMAND [ARG...]
   task start NODE JSON|@file            Submit a durable task

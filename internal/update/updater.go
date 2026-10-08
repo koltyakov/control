@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -97,6 +98,10 @@ func (a *Updater) report(ctx context.Context) { _ = a.options.Report(ctx, a.Snap
 func (a *Updater) Run(ctx context.Context) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+	cleanup := time.NewTicker(time.Minute)
+	defer cleanup.Stop()
+	// Run starts only after the node has connected and passed startup checks.
+	a.cleanup(ctx)
 	a.report(ctx)
 	for {
 		select {
@@ -106,10 +111,21 @@ func (a *Updater) Run(ctx context.Context) {
 			if !a.lease.IsZero() && time.Now().After(a.lease) {
 				a.resume()
 			}
+		case <-cleanup.C:
+			a.cleanup(ctx)
 		case command := <-a.commands:
 			a.process(ctx, command)
+			if command.kind == "update.offer" {
+				a.cleanup(ctx)
+			}
 		}
 		a.report(ctx)
+	}
+}
+
+func (a *Updater) cleanup(ctx context.Context) {
+	if err := a.prune(ctx); err != nil && ctx.Err() == nil {
+		slog.Warn("node update binary cleanup", "error", err)
 	}
 }
 

@@ -23,21 +23,18 @@ func encodedPowerShell(script string) string {
 	return base64.StdEncoding.EncodeToString(data)
 }
 
-func userTaskLauncher(binary, config string) string {
-	// Start-Process joins ArgumentList into a Windows command line. Configuration
-	// paths are files, so they cannot contain double quotes or end in a backslash.
-	args := `__user "` + config + `"`
-	return fmt.Sprintf("$ErrorActionPreference = 'Stop'; $p = Start-Process -FilePath %s -ArgumentList %s -WindowStyle Hidden -PassThru; $p.WaitForExit(); exit $p.ExitCode",
-		powershellLiteral(binary), powershellLiteral(args))
+func userTaskArguments(binary, config string) string {
+	// Both arguments are absolute file paths. Windows file names cannot contain
+	// double quotes, and these paths cannot end in a directory separator.
+	return `__user-launch "` + config + `" "` + binary + `"`
 }
 
-func userTaskRegistration(binary, config string) string {
-	arguments := "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " + encodedPowerShell(userTaskLauncher(binary, config))
-	return fmt.Sprintf(`$action = New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'powershell.exe') -Argument %s
+func userTaskRegistration(launcher, binary, config string) string {
+	return fmt.Sprintf(`$action = New-ScheduledTaskAction -Execute %s -Argument %s
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $sid
 $principal = New-ScheduledTaskPrincipal -UserId $sid -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName $name -TaskPath '\' -Description $description -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null`, powershellLiteral(arguments))
+Register-ScheduledTask -TaskName $name -TaskPath '\' -Description $description -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null`, powershellLiteral(launcher), powershellLiteral(userTaskArguments(binary, config)))
 }
 
 func userTaskScript(config, operation string) string {

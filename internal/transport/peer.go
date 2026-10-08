@@ -156,8 +156,22 @@ func (p *Peer) Start(ctx context.Context) error {
 	p.wg.Add(1)
 	p.mu.Unlock()
 	defer p.wg.Done()
-	ws, err := p.connect(p.ctx)
+	var ws *websocket.Conn
+	connect := func(ctx context.Context) (err error) {
+		ws, err = p.connect(ctx)
+		return err
+	}
+	var err error
+	if p.cfg.Client {
+		// Command-scoped clients retain their fail-fast startup behavior.
+		err = connect(p.ctx)
+	} else {
+		err = waitForGateway(p.ctx, p.log, "gateway connection", connect)
+	}
 	if err != nil {
+		if ws != nil {
+			_ = ws.CloseNow()
+		}
 		p.cancel()
 		return err
 	}
@@ -180,7 +194,11 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	req.Header.Set("Authorization", "Bearer "+p.cfg.Token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, gatewayNetworkError(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		return nil, gatewayResponseError(resp.StatusCode, "gateway authentication")
 	}
 	var scope struct {
 		UserID         string `json:"userId"`
@@ -194,7 +212,10 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	}
 	err = json.NewDecoder(io.LimitReader(resp.Body, 8192)).Decode(&scope)
 	_ = resp.Body.Close()
-	if err != nil || resp.StatusCode != http.StatusOK || scope.UserID == "" {
+	if err != nil {
+		return nil, gatewayNetworkError(err)
+	}
+	if scope.UserID == "" {
 		return nil, errors.New("gateway did not authenticate fleet membership; upgrade the gateway before this node")
 	}
 	if p.cfg.Client && !scope.ClientSessions {
@@ -233,9 +254,12 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		u = gateway.URL(p.cfg.Gateway, "/v1/client/connect")
 	}
 	u = strings.Replace(strings.Replace(u, "https://", "wss://", 1), "http://", "ws://", 1)
-	ws, _, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + p.cfg.Token}}})
+	ws, response, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + p.cfg.Token}}})
 	if err != nil {
-		return nil, fmt.Errorf("connect gateway: %w", err)
+		if response != nil && response.StatusCode != http.StatusSwitchingProtocols {
+			return nil, gatewayResponseError(response.StatusCode, "connect gateway")
+		}
+		return nil, fmt.Errorf("connect gateway: %w", gatewayNetworkError(err))
 	}
 	ws.SetReadLimit(1 << 20)
 	_, challenge, err := ws.Read(ctx)
@@ -265,7 +289,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	}
 	if err != nil {
 		_ = ws.CloseNow()
-		return nil, err
+		return nil, gatewayNetworkError(err)
 	}
 	p.mu.Lock()
 	p.ws = ws

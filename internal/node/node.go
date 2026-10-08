@@ -90,11 +90,13 @@ type Node struct {
 	shutdown            func()
 	lifecycleMu         sync.Mutex
 	machineState        model.MachineState
+	startupPending      bool
 	rpaLockPath         string
 	tcpListeners        chan struct{}
 	readClipboard       func(context.Context) (clipboard.Value, error)
 	copyClipboard       func(context.Context, string) error
 	clipboardSlots      chan struct{}
+	connectionTests     chan struct{}
 	delegationMu        sync.Mutex
 	delegations         map[string]*delegationState
 }
@@ -134,6 +136,7 @@ func New(cfg Config) (*Node, error) {
 	n.tcpListeners = make(chan struct{}, 32)
 	n.readClipboard, n.copyClipboard = clipboard.Read, clipboard.Copy
 	n.clipboardSlots = make(chan struct{}, 8)
+	n.connectionTests = make(chan struct{}, 2)
 	n.delegations = map[string]*delegationState{}
 	if err = n.loadMachineState(); err != nil {
 		_ = root.Close()
@@ -195,7 +198,10 @@ func (n *Node) SetShutdown(stop func()) { n.shutdown = stop }
 func (n *Node) Start(ctx context.Context) error {
 	n.Peer.SetCapabilities(n.Capabilities())
 	n.ctx, n.cancel = context.WithCancel(ctx)
-	if err := n.syncMachineState(n.ctx); err != nil {
+	// The peer transport opens before the final policy check. Keep its work
+	// admission closed too, even while the local execution API is not listening.
+	n.setStartupPending(true)
+	if err := transport.WaitForGateway(n.ctx, "machine state", n.syncMachineState); err != nil {
 		n.cancel()
 		return err
 	}
@@ -208,6 +214,13 @@ func (n *Node) Start(ctx context.Context) error {
 		n.cancel()
 		return err
 	}
+	// Connecting can wait through a long outage. Recheck policy before opening
+	// the execution API, rather than admitting work under the pre-outage state.
+	if err := transport.WaitForGateway(n.ctx, "machine state", n.syncMachineState); err != nil {
+		n.cancel()
+		return err
+	}
+	n.setStartupPending(false)
 	n.wg.Add(1)
 	go func() { defer n.wg.Done(); n.system.Run(n.ctx) }()
 	n.wg.Add(1)
@@ -337,6 +350,10 @@ func (n *Node) handle(caller string, conn net.Conn) {
 	if a, ok := ctx.Value(authorityContextKey{}).(authority); ok && a.grant != nil && request.Method != "tcp.listen" {
 		conn = &delegationConn{Conn: conn, node: n, state: a.grant}
 	}
+	if request.Method == model.ConnectionOpenMethod {
+		n.serveConnectionTest(ctx, caller, conn, request.Params)
+		return
+	}
 	if request.Method == "artifacts.open" {
 		n.serveArtifact(ctx, caller, conn, request.Params)
 		return
@@ -436,6 +453,11 @@ func (n *Node) Call(ctx context.Context, target, method string, params any, resu
 }
 
 func (n *Node) dispatch(ctx context.Context, caller, method string, args json.RawMessage) (_ any, err error) {
+	if method == model.ConnectionTestMethod {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, model.ConnectionTestTimeout)
+		defer cancel()
+	}
 	if err := n.authorize(ctx, caller, method); err != nil {
 		return nil, err
 	}
@@ -455,6 +477,8 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		defer func() { activity.finish(err) }()
 	}
 	switch method {
+	case model.ConnectionTestMethod:
+		return n.connectionTest(ctx, args)
 	case "access.grant", "access.list", "access.revoke":
 		return n.delegationMethod(ctx, caller, method, args)
 	case "system.info":
@@ -490,7 +514,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		}
 		sort.Strings(agents)
 		sort.Strings(servers)
-		return map[string]any{"id": n.Identity.ID, "name": n.Config.Name, "capabilities": n.Capabilities(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "transport": n.Peer.Stats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot(), "clipboard": map[string]any{"protocol": clipboard.Protocol, "methods": []string{clipboard.OpenMethod, clipboard.PasteMethod}}}, nil
+		return map[string]any{"id": n.Identity.ID, "name": n.Config.Name, "capabilities": n.Capabilities(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "transport": n.Peer.Stats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot(), "clipboard": map[string]any{"protocol": clipboard.Protocol, "methods": []string{clipboard.OpenMethod, clipboard.PasteMethod}}, "connectionTest": map[string]any{"protocol": model.ConnectionTestProtocol, "methods": []string{model.ConnectionTestMethod, model.ConnectionOpenMethod}, "maxBytes": 256 << 20, "maxSamples": 100, "timeoutSeconds": 120}}, nil
 	case "capabilities.list":
 		return n.Capabilities(), nil
 	case "tasks.start":

@@ -28,7 +28,7 @@ func (p *Peer) OpenRPC(ctx context.Context, target, method string, params any) (
 		target = peer.ID
 	}
 	lane := ControlLane
-	if method == "artifacts.open" || method == "clipboard.open" || method == "clipboard.paste" {
+	if method == "artifacts.open" || method == "clipboard.open" || method == "clipboard.paste" || method == model.ConnectionOpenMethod {
 		lane = BulkLane
 	}
 	if method == "tcp.open" || method == "tcp.listen" {

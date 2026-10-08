@@ -122,6 +122,8 @@ These metrics describe host-visible capacity and usage. They do not implement ta
 
 ## D014: Superuser-authorized gateway updates and idle reservations
 
+Indefinite node-local binary and previous-selection retention is superseded by [D065](#d065-remove-obsolete-node-binaries-after-successful-startup). Gateway recovery retention remains unchanged.
+
 Same-version update selection and acknowledgements are refined by [D047](#d047-skip-updates-for-unchanged-versions). Authorization and idle reservations remain unchanged.
 
 Indefinite gateway binary retention is superseded by [D061](#d061-completed-rollout-binary-retention-and-selected-release-downloads). Supervisor recovery and node-local storage remain unchanged.
@@ -211,6 +213,8 @@ Nodes publish aggregate active-work count, lease presence, and cached system met
 This lets a logged-in dashboard show machine CPU, idle/busy state, and work counts without a local node. Reports contain no operation records, owner IDs, arguments, credentials, or private filesystem paths. Task control and detailed activity remain on the peer API. Sampling runs independently of reporting and dashboard polling. Feature negotiation through `/v1/auth` prevents reports from disconnecting older gateways during nodes-first updates. This extends D018 and preserves fleet isolation and task ownership. See [dashboard](dashboard.md) and [protocol](protocol.md).
 
 ## D023: Durable owner-controlled machine lifecycle
+
+Startup retry behavior is extended by [D062](#d062-retry-transient-gateway-failures-during-node-startup), without bypassing the initial policy check.
 
 The lifecycle-support requirement for offline unregistration is superseded by [D024](#d024-offline-unregistration-without-lifecycle-support).
 
@@ -307,6 +311,8 @@ This clarifies D001 and D029/D030 without changing their contracts. Orchestrator
 ## D033: Explicit Windows user-login startup
 
 The invitation-script default and its reuse of saved startup mode are superseded by [D038](#d038-user-login-startup-by-default-in-windows-invitation-scripts). Direct setup and service commands retain this decision.
+
+The PowerShell task wrapper is superseded by [D063](#d063-console-free-windows-node-login-bootstrap). User context, ownership, and recovery rules remain unchanged.
 
 Keep Windows `auto` startup as an automatic LocalService SCM service. Make explicit `user` startup a scheduled task at the installing user's login, with a limited interactive token and no stored password. A hidden PowerShell launcher waits for the existing node supervisor and propagates its exit status for bounded Task Scheduler recovery. Log output remains in `node.log`. Profile-derived task names and user/description checks keep startup mutations scoped to the current profile and OS user.
 
@@ -418,6 +424,8 @@ Negotiate support and refuse older targets rather than silently using their old 
 
 ## D046: Windows firewall rules and a stable verified runtime path
 
+Retention of obsolete node source binaries and rollback records is superseded by [D065](#d065-remove-obsolete-node-binaries-after-successful-startup). The stable execution path and current versioned source remain unchanged.
+
 Generated Windows worker installers request scoped firewall setup explicitly through `enroll --firewall`. Elevate only the firewall operation with UAC when necessary, passing the installed executable and exact profile by absolute path. Keep enrollment and user-login execution under the installing user's account. Failed or declined configuration is an installation error with pending enrollment retained. Direct CLI installations can opt in; `service firewall` repairs an existing profile without restarting it.
 
 Allow inbound/outbound UDP for WebRTC and outbound TCP to the gateway port for the launcher and one profile-specific stable runtime path, on all Windows network profiles. Do not open inbound TCP, disable firewall protection, or change unrelated rules. Rule names and ownership metadata are deterministic per profile; repeated setup refreshes only owned rules. Keep rules after service uninstall for profile restoration, with explicit removal documented.
@@ -472,7 +480,7 @@ Dashboard `Tunnels` counts this host login's retained forward/reverse definition
 
 Use dashboard `Tunnels` and peer snapshot `tunnels` for tracked live forward connections and reverse listeners across owners. Count `tcp.open` and `tcp.accept` as forward connections and `tcp.listen` as reverse listeners, once per listener regardless of socket count. Compute counts before aggregate detail truncation; older-node fallback counts use only returned active records. Unknown peer observation stays unknown rather than displaying zero.
 
-Keep this host login's unexpired persistent definitions in dashboard `retainedTunnels` and a separate lower-priority `Saved` column. Retrying definitions are not live connections, and foreground or detached tunnel processes have no persistent definitions. Mixing the two made established listeners display zero. Idle local forward listeners are not observable on workers, so forward activity counts describe connected sockets, not local listener definitions. This supersedes D051's dashboard field and column naming without changing tunnel lifetimes, restoration, authorization, gateway health reports, or telemetry privacy. See [dashboard counts](dashboard.md).
+Keep this host login's unexpired persistent definitions in dashboard `retainedTunnels` and a separate lower-priority `P.Tun.` column, meaning permanent tunnels. Retrying definitions are not live connections, and foreground or detached tunnel processes have no persistent definitions. Mixing the two made established listeners display zero. Idle local forward listeners are not observable on workers, so forward activity counts describe connected sockets, not local listener definitions. This supersedes D051's dashboard field and column naming without changing tunnel lifetimes, restoration, authorization, gateway health reports, or telemetry privacy. See [dashboard counts](dashboard.md).
 
 ## D053: Full carrier packets and negotiated packet size
 
@@ -533,3 +541,39 @@ Gateway update uploads and staged binaries accumulated across every development 
 Retain selected-manifest assets for offline nodes, assets pinned by live installation invitations, and current/previous/requested gateway runtimes for local recovery. Pin active repository uploads and release downloads, and give unpublished uploads one hour to finish publication. Validate invitation binaries again under the same lock as pruning before committing a new invitation. Unreadable runtime records fail closed, and rooted removal cannot follow links outside update storage.
 
 Serve general authenticated binary downloads only from the selected manifest. Pinned installation links retain their existing download authority until redemption, revocation, or expiry; recovery binaries are not generally downloadable. This replaces D014's indefinite gateway storage retention without changing superuser publication, idle reservations, rollout acknowledgements, node-local retention, or supervisor recovery. See [gateway binary retention](updates.md#gateway-binary-retention).
+
+## D062: Retry transient gateway failures during node startup
+
+A network delay at login could exhaust Windows Task Scheduler's finite restart attempts and leave a node offline until manually started. Keep the managed node process alive while its initial signed policy query or authenticated gateway connection fails transiently. Retry network errors, HTTP 408/429, and HTTP 5xx with jittered delays, backing off after ten failures and capping each delay at 30 seconds. Bound each request and stop the retry loop on node cancellation. Log the first failure, every tenth failure, and recovery rather than flooding the startup log.
+
+Do not open execution before policy validation. Check cached retirement immediately, fetch policy before registration, and fetch it again after connecting because a long connection wait can make the earlier policy stale. Keep peer work admission blocked throughout startup, including after transport connection while policy is still being checked. Persist restrictions before acknowledging them. Authentication rejection, TLS validation, protocol errors, and local persistence failures still stop startup. Only connectivity and identity-bound policy reads are retried; accepted work, uncertain commands, and client submissions are never replayed.
+
+Apply this in the shared node/transport implementation on all three platforms, not in a Windows launcher. Existing managed installations can receive the fix through a child update without replacing their startup registration. Command-scoped CLI/MCP clients retain fail-fast startup, and installation/service readiness commands retain their 30-second bound. A readiness timeout does not stop a background node's connectivity recovery or report installation success. This extends D003/D023/D033 while preserving retirement, fleet isolation, and task-recovery semantics. See [startup behavior](installation.md#files-and-startup).
+
+## D063: Console-free Windows node login bootstrap
+
+`powershell.exe -WindowStyle Hidden` does not prevent console allocation and can leave a blank Windows Terminal window at login. Make the node login task start a native GUI-subsystem bootstrap directly. Derive it locally from the installed Go CLI by changing only the PE Subsystem field, then publish a checksum-verified, content-addressed copy under the profile's state directory. No separate release asset, compiler, scripting host, or account password is required.
+
+The bootstrap starts the unchanged installed CLI with `CREATE_NO_WINDOW`, waits for its supervisor, and captures output in `node.log`. Keeping the original CLI as the supervisor preserves runtime-selection validation, release checksums, firewall paths, and the installation's shared-launcher registry. Changing the bootstrap's filename when its content changes avoids overwriting a running executable. Old copies remain with retained runtime state. CLI invocations keep their normal console behavior, and automatic SCM startup remains unchanged.
+
+Retain the login task's limited interactive token, exact user/profile ownership checks, restart policy, and single-instance setting. A new installed CLI and saved-mode stop/start refresh an older task; a managed child update cannot change its PowerShell action. Do not migrate to LocalService to suppress windows. This supersedes only D033's PowerShell wrapper and preserves its startup context and graceful service lifecycle. Native tests inspect console allocation and child exit/log behavior without installing tasks; Windows Terminal startup still requires a desktop smoke test. See [Windows startup and refresh](installation.md#files-and-startup).
+
+## D064: On-demand authenticated peer connection tests
+
+Measure Control's actual peer path rather than running an external internet speed test or staging diagnostic artifacts. Use one bulk-lane stream for warmed RTT echoes and sequential, checksum-verified synthetic traffic in each direction. Report its exact WebRTC/relay mode, setup time, RTT statistics, and per-direction application throughput. Bound payloads to 256 MiB per direction, samples to 100, total lifetime to two minutes, and active tests to two per node. Fixed byte counts bound bandwidth consumption even on fast hosts, but short tests may underestimate available capacity.
+
+CLI and MCP share the client implementation. A standalone orchestrator needs no local node; a selected worker source runs `connection.test` using one exact `connection.open` destination grant prepared by that account client. Reject local API mode rather than mislabeling a node-to-worker measurement as the orchestrator's path. Keep receiver fleet membership, method permission, revocation, cancellation, and maintenance admission unchanged. Clean up diagnostic grants after the synchronous call without replay. No gateway wire change, ambient worker permission, nested delegated coordination, durable task capability, disk staging, or background sampling is introduced. These measurements include encryption, hashing, flow control, load, and relay limits, not raw link capacity. See [connection tests](connections.md).
+
+## D065: Remove obsolete node binaries after successful startup
+
+Nodes kept every downloaded executable indefinitely. Prune obsolete checksum-named directories in node update storage at successful startup, after update offers, and every minute. Serialize cleanup with the updater's command loop to protect downloads. Preserve the running software, current and requested runtime selections, and pending staged binary. Match both version and checksum to the persisted selection and verify its source before removing the previous selection and binary. This keeps recovery available for failed startup without keeping old binaries after successful updates.
+
+Run cleanup in the managed child, after gateway connection and startup policy checks, so existing launchers receive it through an ordinary managed update. Keep the installed launcher and Windows stable launch copy plus its current versioned source. Do not prune bootstraps, CLI backups, or unrelated node data. Fail closed on unreadable runtime records, skip symlinks, confine removal to update storage, and log/retry cleanup errors without failing a successful update.
+
+This supersedes D014/D046's node-local recovery retention after successful startup. Gateway retention under D061, idle reservations, persisted runtime selection, and the prohibition on automatic rollback remain unchanged. See [node binary retention](updates.md#node-binary-retention).
+
+## D066: Project-local scenario migration on client renames
+
+Extend the shared CLI/dashboard rename method to migrate `.control-scenarios/OLD/` in the invoking working directory and update supported Markdown/JSON routing references. Resolve old aliases through the authenticated fleet directory, including when the request uses a stable ID. Keep secret references and unrelated file content unchanged. Local alias-based scenario folders belong to their project's selected fleet; do not search other projects or orchestrator hosts, synchronize through the gateway, or add a scenario execution provider.
+
+Preflight under a local lock rejects destination collisions, symlinks, special files, malformed JSON, and bounded-tree violations before the remote mutation. Apply local changes only after gateway acknowledgment, using rooted filesystem operations and atomic text replacement. Preserve detected concurrent edits. The gateway and filesystem cannot commit together; report post-acknowledgment local failures explicitly and never replay or reverse the gateway rename automatically. A crash can require manual local reconciliation. This extends the owner-selected routing-alias decision without changing its gateway protocol, identity, admission, or enrollment contracts. See [scenario scope and recovery](scenarios.md).

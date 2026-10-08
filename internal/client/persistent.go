@@ -192,11 +192,36 @@ func (c Client) ensureTunnelService(ctx context.Context, dir string, create bool
 	if c.persistent.launch == nil {
 		return errors.New("tunnel service launcher is not configured")
 	}
+	// A stopped management API does not mean its owner has released the runtime
+	// lock. Wait for shutdown before launching a process that would otherwise exit.
+	serviceLock := flock.New(filepath.Join(dir, "service.lock"))
+	defer func() { _ = serviceLock.Close() }()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		// An owner that is still starting may become ready without stopping.
+		if err := tunnelRequest(ctx, dir, http.MethodGet, "/health", nil, nil); err == nil {
+			return nil
+		}
+		held, err = serviceLock.TryLock()
+		if err != nil {
+			return err
+		}
+		if held {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("tunnel service did not stop or become ready: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+	if err = serviceLock.Unlock(); err != nil {
+		return err
+	}
 	if err = c.persistent.launch(ctx, dir); err != nil {
 		return err
 	}
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
 	for {
 		if err := tunnelRequest(ctx, dir, http.MethodGet, "/health", nil, nil); err == nil {
 			return nil

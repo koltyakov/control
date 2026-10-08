@@ -25,7 +25,7 @@ type column struct {
 var machineColumns = []column{
 	{"Node", 18}, {"State", 8}, {"Seen", 6}, {"Work", 4}, {"D/R", 5}, {"Tunnels", 9},
 	{"CPU", len("100.0%")}, {"RAM", len("1023.9GiB/1023.9GiB")}, {"Disk free", len("1023.9GiB")},
-	{"Saved", 9}, {"OS", len("windows")}, {"Version", len("v10.2.3*")},
+	{"P.Tun.", 9}, {"OS", len("windows")}, {"Version", len("v10.2.3*")},
 }
 
 var versionPrefix = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+`)
@@ -124,7 +124,7 @@ func (o renderOptions) table(b *strings.Builder, columns []column, rows [][]stri
 				switch strings.Split(row[i], "/")[0] {
 				case "idle", "succeeded":
 					style = "32"
-				case "busy", "running", "update":
+				case "busy", "running", "update", "reserved":
 					style = "36"
 				case "failed", "unavailable", "queued", "disabling", "enabling":
 					style = "33"

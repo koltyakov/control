@@ -38,7 +38,12 @@ func (taskFileProvider) Run(_ context.Context, args json.RawMessage, e node.Exec
 
 func delegationCluster(t *testing.T, relay bool) (context.Context, Client, []*node.Node, Admin) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	return delegationClusterWithTimeout(t, relay, 45*time.Second)
+}
+
+func delegationClusterWithTimeout(t *testing.T, relay bool, timeout time.Duration) (context.Context, Client, []*node.Node, Admin) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	t.Cleanup(cancel)
 	const common = "delegation-worker-key-1234567890"
 	const account = "delegation-account-key-1234567890"

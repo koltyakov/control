@@ -25,7 +25,7 @@ func prepareDelegations(ctx context.Context, peer *transport.Peer, target, metho
 		}
 		capability, args = task.Capability, task.Args
 	}
-	if capability != "peers.call" && capability != "workflow.run" && method != "artifacts.deliver" {
+	if capability != "peers.call" && capability != "workflow.run" && method != "artifacts.deliver" && method != model.ConnectionTestMethod {
 		return params, nil, nil
 	}
 	coordinator, err := peer.Lookup(ctx, target)
@@ -52,6 +52,32 @@ func prepareDelegations(ctx context.Context, peer *transport.Peer, target, metho
 		return nil
 	}
 	switch capability {
+	case model.ConnectionTestMethod:
+		var q model.ConnectionTestRequest
+		if err = json.Unmarshal(args, &q); err != nil {
+			return nil, grants, err
+		}
+		if q.ConnectionTestOptions, err = q.Normalize(); err != nil {
+			return nil, grants, err
+		}
+		destination, lookupErr := peer.Lookup(ctx, q.Target)
+		if lookupErr != nil {
+			return nil, grants, lookupErr
+		}
+		if destination.ID == coordinator.ID {
+			return nil, grants, errors.New("connection test requires distinct workers")
+		}
+		if !destination.Online || destination.Disabled || destination.ControlPending || !coordinator.Online || coordinator.Disabled || coordinator.ControlPending {
+			return nil, grants, errors.New("connection test workers must be online, enabled, and policy-acknowledged")
+		}
+		if !destination.InstructionDelegation {
+			return nil, grants, errors.New("connection test target requires an upgrade for instruction-bound delegation")
+		}
+		q.Target = destination.ID
+		if err = issue(q.Target, model.Delegation{Method: model.ConnectionOpenMethod, Params: model.JSON(model.ConnectionOpenRequest{Protocol: model.ConnectionTestProtocol, ConnectionTestOptions: q.ConnectionTestOptions})}); err != nil {
+			return nil, grants, err
+		}
+		args = model.JSON(q)
 	case "peers.call":
 		var q struct {
 			Target string          `json:"target"`

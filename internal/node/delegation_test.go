@@ -41,6 +41,8 @@ func TestDelegationActiveTaskAndStreamActivity(t *testing.T) {
 		t.Fatal("accepted active task lost authority")
 	}
 	s.activeTasks = 0
+	// Make renewal observable even when the platform clock has coarse resolution.
+	s.lastActivity = now.Add(-time.Minute)
 	a, b := net.Pipe()
 	defer func() { _ = a.Close(); _ = b.Close() }()
 	c := &delegationConn{Conn: a, node: n, state: s}

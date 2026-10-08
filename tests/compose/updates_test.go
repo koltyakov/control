@@ -106,12 +106,32 @@ func TestManagedUpdateDefersWorkAndRestartsWholePool(t *testing.T) {
 			t.Fatalf("identity/version after rollout: %+v", n)
 		}
 	}
-	call(t, ctx, c, "worker", "exec.run", map[string]any{"command": "true"}, nil)
+	// Rollout completion describes the fleet, not this client's old TLS/yamux
+	// sessions or gateway re-registration. Resume as a new CLI invocation using
+	// the same saved owner instead of sending work over a possibly stale stream.
+	previousSession, err := c.Session(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	resumed := newTestClient(ctx)
+	t.Cleanup(func() { _ = resumed.Close() })
+	resumedSession, err := resumed.Session(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumedSession.OwnerID != previousSession.OwnerID || resumedSession.TransportID == previousSession.TransportID {
+		t.Fatal("post-rollout client did not retain its owner with a fresh transport", previousSession, resumedSession)
+	}
+	// Send execution only once. An uncertain side effect must never be retried.
+	call(t, ctx, resumed, "worker", "exec.run", map[string]any{"command": "true"}, nil)
 	// Keys and task records must survive the gateway/node process replacements.
 	if err = common.JSON(ctx, "GET", "/v1/nodes", nil, nil); err != nil {
 		t.Fatal("issued key lost across update", err)
 	}
-	call(t, ctx, c, "worker", "tasks.get", map[string]string{"id": task.ID}, &finished)
+	call(t, ctx, resumed, "worker", "tasks.get", map[string]string{"id": task.ID}, &finished)
 	if finished.State != "cancelled" {
 		t.Fatal("task record changed across update")
 	}
@@ -132,7 +152,7 @@ func TestManagedUpdateDefersWorkAndRestartsWholePool(t *testing.T) {
 	if status.Gateway.ReleaseRepo != "compose/fixture" {
 		t.Fatalf("embedded repository missing: %q", status.Gateway.ReleaseRepo)
 	}
-	t.Log("common key denied; active task deferred rollout; gateway and three nodes restarted with preserved identities and task state")
+	t.Log("common key denied; active task deferred rollout; gateway and three nodes restarted; a fresh client retained its owner and recovered task state")
 }
 
 func waitUpdate(t *testing.T, ctx context.Context, condition func() bool) {

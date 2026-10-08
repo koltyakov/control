@@ -254,7 +254,8 @@ func (m view) contentView() tea.View {
 		}
 	}
 	if m.err != nil {
-		footer = hint("q", "quit") + separator + hint("r", "retry") + separator + paint(clean(m.err.Error()), "2", m.color)
+		message := (renderOptions{details: m.details}).errorMessage(m.err.Error(), "Gateway refresh")
+		footer = hint("q", "quit") + separator + hint("r", "retry") + separator + hint("d", detailLabel) + separator + paint(message, "33", m.color)
 	}
 	visible = append(visible, ansi.Truncate(footer, m.width, "…"))
 	v := tea.NewView(strings.Join(visible, "\n"))
@@ -362,7 +363,11 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 				status = "busy"
 			}
 			if n.LeaseOwner != "" || n.Leased {
-				status += "/leased"
+				if options.details {
+					status += "/leased"
+				} else {
+					status = "reserved"
+				}
 			}
 		}
 		if n.Disabled {
@@ -425,11 +430,18 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 	b.WriteByte('\n')
 	options.table(&b, machineColumns, rows)
 	for _, n := range snapshot.Nodes {
-		if n.Error != "" {
-			options.line(&b, fmt.Sprintf("  %s: %s", clean(n.Name), clean(n.Error)))
-		}
-		if n.LeaseOwner != "" {
+		if options.details && n.LeaseOwner != "" {
 			options.line(&b, fmt.Sprintf("  %s leased by %s until %s", clean(n.Name), name(n.LeaseOwner), n.LeaseExpires.Local().Format(time.RFC3339)))
+		}
+	}
+	warningsHeading := false
+	for _, n := range snapshot.Nodes {
+		if n.Error != "" {
+			if !warningsHeading {
+				options.heading(&b, "Warnings")
+				warningsHeading = true
+			}
+			options.warning(&b, n.Name, n.Error)
 		}
 	}
 	rows = nil

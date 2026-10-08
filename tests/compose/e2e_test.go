@@ -37,9 +37,13 @@ func environment(t *testing.T) (context.Context, client.Client) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
-	c := (client.Client{URL: api, Token: token}).WithStandalone(ctx, client.StandaloneConfig{Gateway: client.Admin{URL: os.Getenv("CONTROL_GATEWAY"), Key: os.Getenv("CONTROL_SUPERUSER_KEY")}, StateDir: filepath.Join(installation.Home(), "clients"), RelayOnly: os.Getenv("CONTROL_EXPECT_TRANSPORT") == "relay", AccountRouting: true})
+	c := newTestClient(ctx)
 	t.Cleanup(func() { _ = c.Close() })
 	return ctx, c
+}
+
+func newTestClient(ctx context.Context) client.Client {
+	return (client.Client{URL: os.Getenv("CONTROL_API"), Token: os.Getenv("CONTROL_TOKEN")}).WithStandalone(ctx, client.StandaloneConfig{Gateway: client.Admin{URL: os.Getenv("CONTROL_GATEWAY"), Key: os.Getenv("CONTROL_SUPERUSER_KEY")}, StateDir: filepath.Join(installation.Home(), "clients"), RelayOnly: os.Getenv("CONTROL_EXPECT_TRANSPORT") == "relay", AccountRouting: true})
 }
 
 func call(t *testing.T, ctx context.Context, c client.Client, target, method string, args, result any) {

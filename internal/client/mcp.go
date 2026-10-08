@@ -107,6 +107,13 @@ func (c Client) MCPServer() *mcp.Server {
 	local("control_session", "Inspect this orchestrator process's role, stable task owner, live transport identity, connections, and port forwards. Does not enroll a fleet machine.", map[string]any{}, nil, func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return c.Session(ctx)
 	})
+	local("control_speedtest", "Run an on-demand Control connection test. Measures warmed round-trip latency, jitter, and sequential throughput in both directions over the actual WebRTC or relay bulk stream. node is the destination; optional from selects a source worker instead of this orchestrator. Worker-to-worker bytes do not pass through the orchestrator. Requires account-client routing and connection.open permission at the destination, plus connection.test at the source. Uses 16 MiB per direction and 10 samples by default, capped at 256 MiB, 100 samples, and two minutes. Synthetic traffic uses bounded memory, verifies checksums, and leaves no files. Never retries a failed test automatically.", map[string]any{"node": text, "from": text, "bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 256 << 20}, "samples": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}, []string{"node"}, func(ctx context.Context, args json.RawMessage) (any, error) {
+		var spec ConnectionTestSpec
+		if err := json.Unmarshal(args, &spec); err != nil {
+			return nil, err
+		}
+		return c.TestConnection(ctx, spec)
+	})
 	local("control_clipboard_paste", "Paste this machine's clipboard onto a remote node. Text goes to its desktop clipboard; copied regular files stream into an existing dir relative to the worker's workDir, default '.'. Set reverse to paste the remote clipboard onto this machine, with dir then a local directory. Transfer happens only on this explicit call. Does not delete source files, overwrite files, or sync automatically. Requires clipboard.paste permission, or clipboard.open for reverse. Both desktops need clipboard access for text. Returns metadata only, never clipboard text. Do not read or transfer a user's clipboard without their request, and do not retry an uncertain paste.", map[string]any{"node": text, "dir": text, "reverse": map[string]any{"type": "boolean"}}, []string{"node"}, func(ctx context.Context, args json.RawMessage) (any, error) {
 		var spec ClipboardSpec
 		if err := json.Unmarshal(args, &spec); err != nil {

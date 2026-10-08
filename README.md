@@ -32,10 +32,12 @@ Orchestrator and worker are roles, not fixed machine types. A node can perform b
 - Blocking task waits, and terminal-task retention with tombstones that keep pruned IDs from running again.
 - A local MCP server exposing routing tools for AI clients.
 - Independent control/bulk/interactive traffic lanes, shared WebRTC carriers, streamed task logs, and negotiated TCP half-close.
+- On-demand orchestrator-to-worker and worker-to-worker connection tests with RTT, jitter, bidirectional throughput, and actual transport reporting.
 - Persistent forward and reverse TCP tunnels with non-blocking creation, listing, disposal, optional TTL, and user-service listener recovery. See [persistent tunnels](docs/tunnels.md).
 - A live CLI dashboard with registered machines, availability, in-flight work, and sampled system resources.
 - Superuser-only development pushes and GitHub Release updates, applied when the pool is idle.
 - Host setup with MCP and skills, plus expiring one-time installation commands for new machines.
+- Project-local machine scenario migration when renaming nodes through CLI or dashboard. See [scenario scope and recovery](docs/scenarios.md).
 
 ## Install and connect your main host
 
@@ -202,6 +204,16 @@ bin/control system worker --refresh
 System metrics are sampled every 15 seconds by default, after heavy tasks finish, or on explicit request. Dashboard refreshes use those cached samples; JSON output retains sampling timestamps. Set `metricsIntervalSeconds` in a node config to change the sampling interval, or `-1` to disable periodic sampling while retaining completion-triggered and explicit refreshes.
 
 See [dashboard and system metrics](docs/dashboard.md) for availability states, permissions, and sampling behavior.
+
+## Test peer connections
+
+```sh
+control speedtest SER5
+control speedtest SER5 --from est-vps
+control speedtest SER5 --size 64 --json
+```
+
+Measures warmed RTT and sequential throughput in both directions over Control's WebRTC or relay stream. Worker-to-worker traffic stays between those workers. Tests run only when requested, default to 16 MiB per direction, and leave no files. MCP exposes `control_speedtest`. See [connection tests](docs/connections.md) for permissions, limits, and interpretation.
 
 ## Update the CLI
 
@@ -371,6 +383,7 @@ MCP clients use `control_forward_start` with `node`, `address`, and optional `li
 - [Engineering principles](docs/principles.md): invariants to preserve as the system evolves.
 - [Design decisions](docs/decisions.md): implementation choices and their tradeoffs.
 - [Fleet streaming](docs/streaming.md): traffic lanes, multiplexers, duplex forwarding, followed logs, limits, and remaining gaps.
+- [Connection tests](docs/connections.md): on-demand latency and throughput between an orchestrator and worker, or between workers.
 - [Docker Compose testing](docs/testing.md): isolated multi-node checks and debugging.
 - [Dashboard and system metrics](docs/dashboard.md): pool-wide activity, availability, and sampled resources.
 - [Managed updates](docs/updates.md): release polling, development pushes, idle rollout, and superuser keys.

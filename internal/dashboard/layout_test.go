@@ -88,17 +88,45 @@ func TestTablesHideColumnsFromRightToLeft(t *testing.T) {
 	}
 }
 
-func TestCompactMachineStateUsesEightCells(t *testing.T) {
+func TestCompactReservedMachineState(t *testing.T) {
 	now := time.Now()
-	snapshot := model.PoolActivitySnapshot{ObservedAt: now, Nodes: []model.NodeActivitySnapshot{{
-		Name: "worker", Online: true, Status: "ready", ActiveCount: 1, Leased: true,
-	}}}
-	compact := render(snapshot, now, renderOptions{width: 140})
-	if !strings.Contains(compact, "busy/le…") || strings.Contains(compact, "busy/leased") {
-		t.Fatalf("compact state did not fit eight cells:\n%s", compact)
-	}
-	if details := render(snapshot, now, renderOptions{width: 40, details: true}); !strings.Contains(details, "busy/leased") {
-		t.Fatalf("details lost the full state:\n%s", details)
+	for _, status := range []string{"ready", "summary"} {
+		for _, active := range []int{0, 1} {
+			for _, owner := range []string{"", strings.Repeat("a", 64)} {
+				snapshot := model.PoolActivitySnapshot{ObservedAt: now, Nodes: []model.NodeActivitySnapshot{{
+					Name: "worker", Online: true, Status: status, ActiveCount: active,
+					Leased: owner == "", LeaseOwner: owner, LeaseExpires: now.Add(time.Minute),
+				}}}
+				for _, color := range []bool{false, true} {
+					compact := ansi.Strip(render(snapshot, now, renderOptions{width: 140, color: color}))
+					if !strings.Contains(compact, "reserved") || strings.Contains(compact, "leased") || strings.Contains(compact, "…") || (owner != "" && strings.Contains(compact, owner)) {
+						t.Fatalf("compact view did not keep the reservation concise:\n%s", compact)
+					}
+					lines := strings.Split(compact, "\n")
+					values := strings.Fields(lines[3])
+					wantCount := "0"
+					if active > 0 {
+						wantCount = "1"
+					}
+					if len(values) < 4 || values[3] != wantCount {
+						t.Fatalf("compact reservation lost the work count:\n%s", compact)
+					}
+				}
+				wantState := "idle/leased"
+				if active > 0 {
+					wantState = "busy/leased"
+				}
+				for _, details := range []string{render(snapshot, now, renderOptions{width: 40, details: true}), Render(snapshot, now)} {
+					if !strings.Contains(details, wantState) {
+						t.Fatalf("details lost the full state:\n%s", details)
+					}
+					wantLease := "workerleasedby" + owner + "until" + snapshot.Nodes[0].LeaseExpires.Local().Format(time.RFC3339)
+					if owner != "" && !strings.Contains(strings.Join(strings.Fields(details), ""), wantLease) {
+						t.Fatalf("details lost the lease owner or expiry:\n%s", details)
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -147,8 +175,8 @@ func TestRenderConnectionsAfterWork(t *testing.T) {
 		if !found {
 			t.Fatalf("missing machine table:\n%s", text)
 		}
-		if options.details && (!strings.Contains(text, "Saved") || !strings.Contains(text, "↑3 ↓4")) {
-			t.Fatalf("details lost saved counts separate from live activity:\n%s", text)
+		if options.details && (!strings.Contains(text, "P.Tun.") || !strings.Contains(text, "↑3 ↓4")) {
+			t.Fatalf("details lost permanent tunnel counts separate from live activity:\n%s", text)
 		}
 	}
 }

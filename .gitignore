@@ -41,3 +41,5 @@ go.work.sum
 /examples/state/
 /examples/work/
 /tmp/
+
+.DS_Store

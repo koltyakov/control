@@ -150,7 +150,11 @@ func platformUserService(ctx context.Context, operation, binary, config string, 
 	if err != nil {
 		return true, err
 	}
-	if err = userPowerShell(ctx, userTaskScript(config, userTaskRegistration(binary, config))); err != nil {
+	launcher, err := prepareUserLauncher(binary, cfg.DataDir)
+	if err != nil {
+		return true, err
+	}
+	if err = userPowerShell(ctx, userTaskScript(config, userTaskRegistration(launcher, binary, config))); err != nil {
 		return true, err
 	}
 	if s != nil {

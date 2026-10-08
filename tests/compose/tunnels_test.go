@@ -70,6 +70,22 @@ func TestPersistentTunnelCLIProcesses(t *testing.T) {
 			stopService(file)
 		}
 	})
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		files, _ := filepath.Glob(filepath.Join(home, "tunnels", "*", "service.log"))
+		for _, path := range files {
+			file, err := os.Open(path)
+			if err != nil {
+				t.Log("tunnel service log:", err)
+				continue
+			}
+			log, err := io.ReadAll(io.LimitReader(file, 16<<10))
+			_ = file.Close()
+			t.Logf("tunnel service log %s: %s (read error: %v)", path, log, err)
+		}
+	})
 	local, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

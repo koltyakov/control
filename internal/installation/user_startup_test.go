@@ -23,14 +23,12 @@ func TestEncodedPowerShell(t *testing.T) {
 	}
 }
 
-func TestUserTaskLauncherQuotesPaths(t *testing.T) {
+func TestUserTaskArgumentsQuotePaths(t *testing.T) {
 	binary := `C:\Users\O'Brien\程序\control.exe`
 	config := `C:\Users\O'Brien\control profile\node.json`
-	launcher := userTaskLauncher(binary, config)
-	for _, want := range []string{`'C:\Users\O''Brien\程序\control.exe'`, `'__user "C:\Users\O''Brien\control profile\node.json"'`, "-WindowStyle Hidden", "$p.WaitForExit(); exit $p.ExitCode"} {
-		if !strings.Contains(launcher, want) {
-			t.Fatalf("launcher missing %q: %s", want, launcher)
-		}
+	want := `__user-launch "C:\Users\O'Brien\control profile\node.json" "C:\Users\O'Brien\程序\control.exe"`
+	if got := userTaskArguments(binary, config); got != want {
+		t.Fatalf("startup arguments changed paths: %q", got)
 	}
 }
 
@@ -54,13 +52,18 @@ func TestUserTaskOwnershipAndProfileScope(t *testing.T) {
 }
 
 func TestUserTaskRunsAtLoginWithoutElevationOrPassword(t *testing.T) {
-	script := userTaskRegistration(`C:\control\control.exe`, `C:\control\node.json`)
-	for _, want := range []string{"-AtLogOn -User $sid", "-LogonType Interactive -RunLevel Limited", "-MultipleInstances IgnoreNew", "-ExecutionTimeLimit ([TimeSpan]::Zero)", "-RestartCount 3", "-WindowStyle Hidden -EncodedCommand"} {
+	script := userTaskRegistration(`C:\control\startup\control-user.exe`, `C:\control\control.exe`, `C:\control\node.json`)
+	for _, want := range []string{"-AtLogOn -User $sid", "-LogonType Interactive -RunLevel Limited", "-MultipleInstances IgnoreNew", "-ExecutionTimeLimit ([TimeSpan]::Zero)", "-RestartCount 3", `-Execute 'C:\control\startup\control-user.exe'`, `-Argument '__user-launch "C:\control\node.json" "C:\control\control.exe"'`} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("registration missing %q: %s", want, script)
 		}
 	}
 	if strings.Contains(script, "-Password") || strings.Contains(script, "Highest") {
 		t.Fatal("user startup must not store a password or request elevation")
+	}
+	for _, unwanted := range []string{"powershell.exe", "Start-Process", "-WindowStyle", "-EncodedCommand"} {
+		if strings.Contains(script, unwanted) {
+			t.Fatalf("login task retained a console wrapper: %s", unwanted)
+		}
 	}
 }

@@ -97,7 +97,7 @@ func (p *Peer) serve(s *peerSession) {
 			abortStream(stream)
 			continue
 		}
-		conn := &sessionStream{Conn: stream, release: func() { <-s.incoming; <-p.streamSlots }}
+		conn := &sessionStream{Conn: stream, mode: s.mode, release: func() { <-s.incoming; <-p.streamSlots }}
 		if !p.worker(func() {
 			defer func() { _ = conn.Close() }()
 			if p.handler != nil {
@@ -116,6 +116,7 @@ func abortStream(conn net.Conn) {
 
 type sessionStream struct {
 	net.Conn
+	mode    string
 	once    sync.Once
 	release func()
 }
@@ -350,7 +351,7 @@ func (p *Peer) openStream(ctx context.Context, s *peerSession) (net.Conn, error)
 		stream, err := s.mux.OpenStream()
 		var conn net.Conn
 		if err == nil {
-			conn = &sessionStream{Conn: stream, release: release}
+			conn = &sessionStream{Conn: stream, mode: s.mode, release: release}
 		} else {
 			release()
 		}

@@ -22,7 +22,7 @@ func (c Admin) ManageMachine(ctx context.Context, id, action string) error {
 }
 
 func (c Admin) RenameMachine(ctx context.Context, id, name string) error {
-	return c.JSON(ctx, http.MethodPatch, "/v1/fleet/nodes/"+url.PathEscape(id), map[string]string{"name": name}, nil)
+	return c.renameMachine(ctx, id, name, ".control-scenarios")
 }
 
 func (c Admin) ResolveMachine(ctx context.Context, name string) (model.Node, error) {

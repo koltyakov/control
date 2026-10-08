@@ -191,7 +191,7 @@ func (n *Node) delegationMethod(ctx context.Context, caller, method string, para
 		if err := json.Unmarshal(params, &q); err != nil {
 			return nil, err
 		}
-		if q.Method == "" || q.Method == "workflow.run" || q.Method == "peers.call" || q.Method == "access.grant" || q.Method == "access.revoke" || q.Method == "access.list" || discoveryMethod(q.Method) {
+		if q.Method == "" || q.Method == "workflow.run" || q.Method == "peers.call" || q.Method == model.ConnectionTestMethod || q.Method == "access.grant" || q.Method == "access.revoke" || q.Method == "access.list" || discoveryMethod(q.Method) {
 			return nil, errors.New("delegate an execution instruction, not discovery, delegation management, or nested coordination")
 		}
 		if err := n.authorize(ctx, caller, q.Method); err != nil {

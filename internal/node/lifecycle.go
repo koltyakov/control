@@ -17,6 +17,13 @@ var ErrUnregistered = errors.New("machine was unregistered by its fleet owner")
 // Unregistered reports whether the node durably received identity retirement.
 func (n *Node) Unregistered() bool { return n.currentMachineState().Unregistered }
 
+func (n *Node) setStartupPending(pending bool) {
+	n.lifecycleMu.Lock()
+	defer n.lifecycleMu.Unlock()
+	n.startupPending = pending
+	n.work.SetDisabled(pending || n.machineState.Disabled || n.machineState.Unregistered)
+}
+
 func (n *Node) loadMachineState() error {
 	err := store.Read(filepath.Join(n.Config.DataDir, "machine-state.json"), &n.machineState)
 	if err != nil && !os.IsNotExist(err) {
@@ -60,7 +67,7 @@ func (n *Node) applyMachineState(state model.MachineState) error {
 			return err
 		}
 		n.machineState = state
-		n.work.SetDisabled(state.Disabled || state.Unregistered)
+		n.work.SetDisabled(n.startupPending || state.Disabled || state.Unregistered)
 		if state.Unregistered {
 			return ErrUnregistered
 		}

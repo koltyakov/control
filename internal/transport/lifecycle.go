@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -34,16 +33,16 @@ func ReadMachineState(ctx context.Context, base string, id *identity.Identity, r
 	client := http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {
-		return model.MachineState{}, false, err
+		return model.MachineState{}, false, gatewayNetworkError(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
 		return model.MachineState{}, false, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return model.MachineState{}, true, fmt.Errorf("machine state: gateway returned %s", resp.Status)
+		return model.MachineState{}, true, gatewayResponseError(resp.StatusCode, "machine state")
 	}
 	var state model.MachineState
 	err = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&state)
-	return state, true, err
+	return state, true, gatewayNetworkError(err)
 }

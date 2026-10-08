@@ -5,19 +5,28 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
 	"github.com/koltyakov/control/internal/installation"
+	"github.com/koltyakov/control/internal/processutil"
 	"golang.org/x/sys/windows/svc"
 )
 
 func runPlatformService(ctx context.Context, args []string) (bool, error) {
-	if len(args) == 0 || (args[0] != "__service" && args[0] != "__user") {
+	if len(args) == 0 || (args[0] != "__service" && args[0] != "__user" && args[0] != "__user-launch") {
 		return false, nil
 	}
-	if len(args) != 2 || !filepath.IsAbs(args[1]) {
+	count := 2
+	if args[0] == "__user-launch" {
+		count = 3
+	}
+	if len(args) != count || !filepath.IsAbs(args[1]) {
 		return true, errors.New("Windows service requires an absolute node configuration path")
+	}
+	if args[0] == "__user-launch" && !filepath.IsAbs(args[2]) {
+		return true, errors.New("user startup requires an absolute installed CLI path")
 	}
 	config := args[1]
 	log, err := os.OpenFile(filepath.Join(filepath.Dir(config), "node.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
@@ -28,6 +37,15 @@ func runPlatformService(ctx context.Context, args []string) (bool, error) {
 	stdout, stderr := os.Stdout, os.Stderr
 	os.Stdout, os.Stderr = log, log
 	defer func() { os.Stdout, os.Stderr = stdout, stderr }()
+	if args[0] == "__user-launch" {
+		// This process has the GUI subsystem, so Task Scheduler never allocates
+		// a console. Run the original, unmodified CLI without a console too and
+		// wait for it so task state and failure recovery follow the supervisor.
+		cmd := exec.CommandContext(ctx, args[2], "__user", config)
+		processutil.HideWindow(cmd)
+		cmd.Stdout, cmd.Stderr = log, log
+		return true, cmd.Run()
+	}
 	if args[0] == "__user" {
 		return true, run(ctx, []string{"--token", "", "node", "--config", config})
 	}

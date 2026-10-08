@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/koltyakov/control/internal/gateway"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/node"
@@ -62,7 +64,9 @@ func checkTunnelEcho(t *testing.T, address string) {
 		t.Fatal(err)
 	}
 	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	// The first socket may need a new interactive lane and the five-second
+	// direct-connect timeout before relay fallback. Binding alone is not readiness.
+	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	if _, err := conn.Write([]byte("ping")); err != nil {
 		t.Fatal(err)
 	}
@@ -227,10 +231,101 @@ func TestPersistentTunnelsSurviveClientsServiceAndWorkerRestart(t *testing.T) {
 			serviceCancel = nil
 			waitPersistent(t, ctx, monitor, 0)
 			for _, spec := range specs {
-				if conn, err := net.DialTimeout("tcp", spec.Listen, 100*time.Millisecond); err == nil {
+				// Reverse closure propagates to the worker after the local service
+				// exits. Check eventual port release, not synchronous remote teardown.
+				closedCtx, closedCancel := context.WithTimeout(ctx, 3*time.Second)
+				defer closedCancel()
+				for {
+					conn, err := net.DialTimeout("tcp", spec.Listen, 100*time.Millisecond)
+					if err != nil {
+						break
+					}
 					_ = conn.Close()
-					t.Fatal("disposed listener returned after restart")
+					select {
+					case <-closedCtx.Done():
+						t.Fatalf("disposed listener %s remained bound after restart", spec.ID)
+					case <-time.After(10 * time.Millisecond):
+					}
 				}
+			}
+		})
+	}
+}
+
+func TestTunnelServiceStartupWaitsForPreviousOwner(t *testing.T) {
+	for _, outcome := range []string{"stop", "cancel", "ready"} {
+		t.Run(outcome, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cfg := StandaloneConfig{Gateway: Admin{URL: "http://gateway.invalid", Key: "test-key"}, StateDir: t.TempDir(), AccountRouting: true}
+			root := t.TempDir()
+			dir := filepath.Join(root, tunnelScope(cfg))
+			if err := store.Write(filepath.Join(dir, "service.json"), cfg); err != nil {
+				t.Fatal(err)
+			}
+			ownerLock := flock.New(filepath.Join(dir, "service.lock"))
+			defer func() { _ = ownerLock.Close() }()
+			if err := ownerLock.Lock(); err != nil {
+				t.Fatal(err)
+			}
+			h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `{}`) }))
+			defer h.Close()
+			publish := func() error {
+				return store.Write(filepath.Join(dir, "endpoint.json"), tunnelEndpoint{Address: strings.TrimPrefix(h.URL, "http://"), Token: "local-token"})
+			}
+			launched := make(chan struct{}, 1)
+			launch := func(_ context.Context, dir string) error {
+				launched <- struct{}{}
+				lock := flock.New(filepath.Join(dir, "service.lock"))
+				defer func() { _ = lock.Close() }()
+				held, err := lock.TryLock()
+				if err != nil {
+					return err
+				}
+				if !held {
+					return fmt.Errorf("previous owner still holds the service lock")
+				}
+				return publish()
+			}
+			c := (Client{}).WithStandalone(ctx, cfg).WithPersistentTunnels(root, launch)
+			defer func() { _ = c.Close() }()
+			done := make(chan error, 1)
+			go func() { done <- c.ensureTunnelService(ctx, dir, false) }()
+			select {
+			case <-launched:
+				t.Fatal("launched before the previous owner released its lock")
+			case <-time.After(100 * time.Millisecond):
+			}
+			switch outcome {
+			case "cancel":
+				cancel()
+			case "ready":
+				if err := publish(); err != nil {
+					t.Fatal(err)
+				}
+			case "stop":
+				if err := ownerLock.Unlock(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case err := <-done:
+				if outcome == "cancel" {
+					if !errors.Is(err, context.Canceled) {
+						t.Fatal("startup did not respect cancellation", err)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				if outcome != "stop" {
+					select {
+					case <-launched:
+						t.Fatal("launched despite cancelled startup or a healthy owner")
+					default:
+					}
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("startup did not finish")
 			}
 		})
 	}
