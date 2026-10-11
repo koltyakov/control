@@ -107,7 +107,7 @@ Each node collects system information locally using cross-platform Go APIs:
 - Total and used RAM, plus available RAM. Available RAM includes memory the OS can reclaim, rather than only completely unused pages.
 - Total, used, and free space on the filesystems containing `workDir` and `dataDir`. Those paths may refer to the same filesystem; their capacities should not be summed.
 
-Collection happens on startup, periodically, after execution/agent tasks or other tasks lasting over a second finish, and on an explicit refresh request. Completion triggers are coalesced and do not delay task completion. CPU utilization is calculated between samples; the first sample establishes the baseline and shows unknown usage rather than a false zero.
+Collection happens on startup, periodically, after execution/agent tasks or other tasks lasting over a second finish, and on an explicit refresh request. Completion triggers are coalesced and do not delay task completion. CPU utilization is calculated between samples; the first sample establishes the baseline and shows unknown usage rather than a false zero. Windows system CPU time already includes interrupt and DPC time, so those counters are not added again.
 
 ```json
 {

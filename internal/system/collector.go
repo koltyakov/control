@@ -117,7 +117,7 @@ func (c *Collector) Refresh(ctx context.Context) (model.SystemInfo, error) {
 	}
 	if times, err := cpu.TimesWithContext(ctx, false); err == nil && len(times) > 0 {
 		if c.previous != nil {
-			s.CPUUsagePercent = usage(*c.previous, times[0])
+			s.CPUUsagePercent = usage(*c.previous, times[0], runtime.GOOS)
 		}
 		copy := times[0]
 		c.previous = &copy
@@ -151,9 +151,15 @@ func (c *Collector) Refresh(ctx context.Context) (model.SystemInfo, error) {
 
 // Utilization is averaged across logical CPUs between samples. The first sample
 // is a baseline; unknown utilization is not reported as a false zero.
-func usage(previous, current cpu.TimesStat) *float64 {
+func usage(previous, current cpu.TimesStat, goos string) *float64 {
 	total := func(t cpu.TimesStat) float64 {
-		return t.User + t.System + t.Nice + t.Idle + t.Iowait + t.Irq + t.Softirq + t.Steal
+		value := t.User + t.System + t.Nice + t.Idle + t.Iowait + t.Steal
+		// Windows kernel time already includes interrupt and DPC time.
+		// gopsutil subtracts idle time for System, but not interrupts.
+		if goos != "windows" {
+			value += t.Irq + t.Softirq
+		}
+		return value
 	}
 	delta := total(current) - total(previous)
 	if delta <= 0 {
