@@ -40,6 +40,8 @@ With older peers, lanes use separate WebRTC connections. Relay lanes use separat
 
 Existing sessions are reused. Name and ID lookups coalesce onto the same established lane. Stable peer-ID resolution uses the account-scoped identity endpoint instead of downloading the whole fleet directory. Successful lookups of online peers are reused for up to 15 seconds and evicted by the gateway's offline notification for that identity, a directory change, or reconnection. One directory read also answers later name lookups. Membership entries for idle identities are forgotten when the gateway reports them offline or after ten idle minutes once more than 1,024 accumulate; peers with links or sessions keep theirs. Live direct sessions remain usable during a gateway outage. Discovering a new target or establishing a new lane still requires gateway membership lookup. A connection failure never replays a submitted command, an artifact stream, or a TCP socket.
 
+A detected local network switch retires all old-network sessions, cancels setup, clears lookup caches, and wakes gateway reconnection. A two-second monitor checks active interface addresses and gateway-route source addresses. Peer connections rebuild on demand, without replaying previous traffic. Disconnected WebRTC carriers are not reused or counted and receive three seconds to recover before their streams close. Negotiated application-level gateway heartbeats detect stale registrations behind WebSocket proxies. See [protocol details and detection limits](protocol.md#node-operations).
+
 ## Limits and cleanup
 
 - At most 256 links and 32 simultaneous TLS/ICE setup operations per process.

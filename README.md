@@ -19,6 +19,7 @@ Orchestrator and worker are roles, not fixed machine types. A node can perform b
 - Persistent machine identities, enrollment, names, labels, and online discovery.
 - SQLite-backed user accounts and private fleets, isolated across discovery, enrollment, WebRTC, relay, and execution.
 - Outbound gateway connections, direct WebRTC data channels, and WebSocket relay fallback.
+- Automatic gateway reconnection after detected network switches, with stale peer sessions retired and rebuilt on demand without replaying interrupted work.
 - Mutually authenticated TLS 1.3 sessions over both transports. The relay forwards encrypted execution traffic.
 - Durable task acceptance, idempotent submission IDs, cancellation, offset-based logs, results, and restart reconciliation.
 - Commands, scripts, configured AI CLIs, versioned subprocess providers, and local MCP servers.

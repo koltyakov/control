@@ -37,11 +37,12 @@ type Hello struct {
 	// NodeBytes, when present, is the exact signed registration. Gateways that
 	// advertise nodeBytes decode it leniently, so a newer node's unknown fields
 	// no longer invalidate a signature computed over a re-encoding.
-	NodeBytes      []byte `json:"nodeBytes,omitempty"`
-	Client         bool   `json:"client,omitempty"`
-	OwnerKey       []byte `json:"ownerKey,omitempty"`
-	OwnerSignature []byte `json:"ownerSignature,omitempty"`
-	Signature      []byte `json:"signature"`
+	NodeBytes        []byte `json:"nodeBytes,omitempty"`
+	Client           bool   `json:"client,omitempty"`
+	GatewayHeartbeat bool   `json:"gatewayHeartbeat,omitempty"`
+	OwnerKey         []byte `json:"ownerKey,omitempty"`
+	OwnerSignature   []byte `json:"ownerSignature,omitempty"`
+	Signature        []byte `json:"signature"`
 }
 
 const maxNodeBytes = 512 << 10
@@ -51,6 +52,9 @@ func (h Hello) Message(challenge []byte) []byte {
 	b := append([]byte(nil), challenge...)
 	if h.Client {
 		b = append(b, []byte("control-client-session-v1\x00")...)
+	}
+	if h.GatewayHeartbeat {
+		b = append(b, []byte("control-gateway-heartbeat-v1\x00")...)
 	}
 	if len(h.NodeBytes) != 0 {
 		b = append(b, []byte("control-node-bytes-v1\x00")...)
@@ -81,6 +85,8 @@ func (h Hello) OwnerMessage(challenge []byte) []byte {
 }
 
 type connection struct {
+	heartbeat         bool
+	pong              chan string
 	client            bool
 	userID            string
 	ws                *websocket.Conn
@@ -349,7 +355,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	if !client && g.machineStates[n.ID].Name != "" {
 		n.Name = g.machineStates[n.ID].Name
 	}
-	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, relayQueuePackets), keyID: p.KeyID, userID: p.UserID}
+	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, relayQueuePackets), keyID: p.KeyID, userID: p.UserID, heartbeat: hello.GatewayHeartbeat, pong: make(chan string, 1)}
 	if !g.allowInstallation(p.KeyID, n) {
 		g.mu.Unlock()
 		_ = ws.Close(websocket.StatusPolicyViolation, "credential does not authorize this registration")
@@ -491,37 +497,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		return
 	}
 	go func() {
-		ticker := time.NewTicker(20 * time.Second)
-		defer ticker.Stop()
 		defer cancel()
 		defer func() { _ = ws.CloseNow() }()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case p := <-c.out:
-				if p.Kind == "data" {
-					c.queued.Add(-int64(len(p.Data)))
-				}
-				b, e := proto.Marshal(p)
-				if e != nil {
-					return
-				}
-				writeCtx, release := context.WithTimeout(ctx, 10*time.Second)
-				e = ws.Write(writeCtx, websocket.MessageBinary, b)
-				release()
-				if e != nil {
-					return
-				}
-			case <-ticker.C:
-				pingCtx, release := context.WithTimeout(ctx, 10*time.Second)
-				e := ws.Ping(pingCtx)
-				release()
-				if e != nil {
-					return
-				}
-			}
-		}
+		c.writePackets(ctx)
 	}()
 	// Sessions whose data was dropped for a full destination queue. Only this
 	// read loop touches it, and the sender's close packet clears an entry.
@@ -534,6 +512,16 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		var p protocol.Packet
 		if proto.Unmarshal(b, &p) != nil {
 			return
+		}
+		if p.Kind == "gateway.pong" && p.To == "" {
+			if !c.heartbeat || len(p.Session) != 32 || len(p.Data) != 0 {
+				return
+			}
+			select {
+			case c.pong <- p.Session:
+			default:
+			}
+			continue
 		}
 		if p.Kind == "node.health" && p.To == "" {
 			if client || !g.receiveHealth(n, c, p.Data) {

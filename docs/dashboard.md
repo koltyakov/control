@@ -25,6 +25,8 @@ With an account key, the dashboard reads fresh machine-health reports from the g
 
 An account client can collect detailed peer snapshots under its own authority, without borrowing worker permissions. This observes work submitted by any owner, including delegated tasks. Explicit local-API routing cannot independently request peer activity beyond discovery. A failed peer request preserves fresh gateway health. Activity records, recent completions, and connection counts still require authorized peer observation.
 
+Individual peer-probe errors remain visible as warnings even when fresh gateway health preserves `idle` or `busy`. Those labels describe reported work, not guaranteed reachability from every caller. `D/R` counts observed peers by transport, excluding disconnected or retired WebRTC carriers. It does not test every caller's path. Network switches retire old sessions; new operations rebuild the connections they need.
+
 The pool contains only machines belonging to the authenticated user's fleet. Other users' machines, names, availability, resources, and activity are excluded at directory and transport authorization, including when a caller supplies a foreign machine ID. See [users and private fleets](users.md).
 
 CLI/MCP processes on the orchestrator are authenticated clients, not fleet machines. Their live or disconnected sessions never add dashboard rows or machine counts. Gateway startup migrates the previous implementation's capability-free CLI registrations out of the machine catalog without changing task ownership. See [standalone clients](installation.md#standalone-cli-and-mcp).
@@ -76,8 +78,8 @@ control dashboard --json
 
 | Display | Meaning |
 | --- | --- |
-| `idle` | Registered, online, and responding, with no observed active work |
-| `busy` | Registered, online, and responding, with active work |
+| `idle` | Registered and online, with fresh gateway health or peer observation reporting no active work |
+| `busy` | Registered and online, with fresh gateway health or peer observation reporting active work |
 | `reserved` | Execution capacity has an active or still-busy exclusive lease; details and plain text show `/leased` after `idle` or `busy` |
 | `online` | Connected to the gateway, but no fresh owner health or peer observation is available; `Work` shows `-` |
 | `disabled` | Registered but excluded from scheduling and new execution; it can remain connected for monitoring |

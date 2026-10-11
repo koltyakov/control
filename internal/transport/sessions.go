@@ -34,17 +34,26 @@ type incomingSetup struct {
 	cancel context.CancelFunc
 }
 type sessionDial struct {
-	done    chan struct{}
-	cancel  context.CancelFunc
-	waiters int
-	session *peerSession
-	err     error
+	generation uint64
+	done       chan struct{}
+	cancel     context.CancelFunc
+	waiters    int
+	session    *peerSession
+	err        error
 }
 type peerSession struct {
 	mux                *yamux.Session
+	link               *link
 	id, remote, mode   string
 	lane               Lane
 	outgoing, incoming chan struct{}
+}
+
+// Called with p.mu held. A disconnected carrier is not evidence of reachability,
+// even while its multiplexer is waiting for failure detection to close it.
+func (s *peerSession) usableLocked() bool {
+	return !s.mux.IsClosed() && (s.link == nil || (s.link.conn.ctx.Err() == nil &&
+		(s.link.carrier == nil || (!s.link.carrier.closed && !s.link.carrier.disconnected))))
 }
 
 func (p *Peer) worker(fn func()) bool {
@@ -61,7 +70,7 @@ func (p *Peer) worker(fn func()) bool {
 func (p *Peer) registerSession(s *peerSession) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed || p.ctx.Err() != nil {
+	if p.closed || p.ctx.Err() != nil || (s.link != nil && (s.link.generation != p.networkGeneration || s.link.conn.ctx.Err() != nil)) {
 		return false
 	}
 	p.allSessions[s.id] = s
@@ -155,7 +164,7 @@ func (p *Peer) session(ctx context.Context, target string, lane Lane) (*peerSess
 		id = target
 	}
 	key := sessionKey{id, lane}
-	if s := p.sessions[key]; s != nil && !s.mux.IsClosed() {
+	if s := p.sessions[key]; s != nil && s.usableLocked() {
 		p.mu.Unlock()
 		return s, nil
 	}
@@ -168,7 +177,7 @@ func (p *Peer) session(ctx context.Context, target string, lane Lane) (*peerSess
 			return nil, errors.New("peer setup limit reached")
 		}
 		dialCtx, cancel := context.WithTimeout(p.ctx, 20*time.Second)
-		d = &sessionDial{done: make(chan struct{}), cancel: cancel}
+		d = &sessionDial{done: make(chan struct{}), cancel: cancel, generation: p.networkGeneration}
 		p.pending[key] = d
 		// The mutex also protects Add against shutdown's Wait.
 		p.wg.Add(1)
@@ -211,6 +220,7 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 	}()
 	p.mu.Lock()
 	directoryGeneration := p.directoryGeneration
+	networkGeneration := d.generation
 	p.mu.Unlock()
 	node, resolveErr := p.Resolve(ctx, target)
 	if resolveErr != nil {
@@ -231,6 +241,11 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 	}
 	actualKey := sessionKey{node.ID, key.lane}
 	p.mu.Lock()
+	if ctx.Err() != nil || networkGeneration != p.networkGeneration {
+		p.mu.Unlock()
+		err = errors.New("network changed during peer lookup")
+		return
+	}
 	other := p.pending[actualKey]
 	if other != nil && other != d {
 		other.waiters++
@@ -266,8 +281,9 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 	// lane after resolution without replacing a session carrying active work.
 	p.mu.Lock()
 	cached := p.sessions[actualKey]
+	usable := cached != nil && cached.usableLocked()
 	p.mu.Unlock()
-	if cached != nil && !cached.mux.IsClosed() {
+	if usable {
 		s = cached
 		return
 	}
@@ -299,6 +315,15 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 	if err != nil {
 		return
 	}
+	p.mu.Lock()
+	changed := networkGeneration != p.networkGeneration
+	p.mu.Unlock()
+	if changed || ctx.Err() != nil {
+		_ = s.mux.Close()
+		s = nil
+		err = errors.New("peer setup interrupted by cancellation or network change")
+		return
+	}
 	if s.mode == "relay" {
 		p.stats.relaySessions.Add(1)
 	} else {
@@ -311,6 +336,13 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 		return
 	}
 	p.mu.Lock()
+	if s.link != nil && s.link.generation != p.networkGeneration {
+		p.mu.Unlock()
+		_ = s.mux.Close()
+		s = nil
+		err = errors.New("network changed during peer setup")
+		return
+	}
 	p.sessions[actualKey] = s
 	if directoryGeneration == p.directoryGeneration {
 		p.resolved[target], p.resolved[node.Name] = node.ID, node.ID
@@ -385,7 +417,7 @@ func (p *Peer) SessionStats() []model.PeerSession {
 	defer p.mu.Unlock()
 	result := []model.PeerSession{}
 	for _, s := range p.allSessions {
-		if !s.mux.IsClosed() {
+		if s.usableLocked() {
 			result = append(result, model.PeerSession{ID: s.id, Peer: s.remote, Lane: string(s.lane), Mode: s.mode, Outgoing: len(s.outgoing), Incoming: len(s.incoming)})
 		}
 	}

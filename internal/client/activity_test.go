@@ -65,6 +65,19 @@ func TestDashboardGatewaySurvivesPeerFailureAndScopesEnrichment(t *testing.T) {
 		t.Fatal("peer tunnel counts replaced gateway update status")
 	}
 	mu.Lock()
+	pool.Nodes[0].Status = "summary"
+	mu.Unlock()
+	unreachable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"result": model.PoolActivitySnapshot{Nodes: []model.NodeActivitySnapshot{
+			{ID: "own", Online: true, Status: "unavailable", Error: "context deadline exceeded"},
+		}}})
+	}))
+	defer unreachable.Close()
+	got, err = (Client{URL: unreachable.URL, Token: "node-key"}).Dashboard(context.Background(), admin, model.PoolActivityQuery{})
+	if err != nil || got.Nodes[0].Status != "summary" || got.Nodes[0].Error != "context deadline exceeded" {
+		t.Fatalf("fresh health hid peer reachability failure: %+v %v", got, err)
+	}
+	mu.Lock()
 	pool.Nodes[0].Status = "unavailable"
 	mu.Unlock()
 	peer.Close()

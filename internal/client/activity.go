@@ -92,6 +92,9 @@ func (c Client) Dashboard(ctx context.Context, gateway Admin, query model.PoolAc
 			pool.Nodes[i] = live
 		} else if n.Online && n.Status != "summary" {
 			missing = true
+		} else if live, ok := byID[n.ID]; ok && n.Online && live.Error != "" {
+			// Fresh health describes work, not reachability from this client.
+			pool.Nodes[i].Error = live.Error
 		}
 	}
 	if !missing {

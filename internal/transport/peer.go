@@ -45,18 +45,19 @@ type Config struct {
 }
 
 type link struct {
-	id        string
-	remote    string
-	mode      string
-	conn      *packetConn
-	pc        *webrtc.PeerConnection
-	carrier   *rtcCarrier
-	answer    chan webrtc.SessionDescription
-	ready     chan struct{}
-	readyOnce sync.Once
-	dcOnce    sync.Once
-	dcMu      sync.Mutex
-	dc        *webrtc.DataChannel
+	generation uint64
+	id         string
+	remote     string
+	mode       string
+	conn       *packetConn
+	pc         *webrtc.PeerConnection
+	carrier    *rtcCarrier
+	answer     chan webrtc.SessionDescription
+	ready      chan struct{}
+	readyOnce  sync.Once
+	dcOnce     sync.Once
+	dcMu       sync.Mutex
+	dc         *webrtc.DataChannel
 }
 
 type Peer struct {
@@ -75,7 +76,9 @@ type Peer struct {
 	cancel              context.CancelFunc
 	mu                  sync.Mutex
 	ws                  *websocket.Conn
+	connectCancel       context.CancelFunc
 	writes              chan *gatewayWrite
+	reconnectWake       chan struct{}
 	links               map[string]*link
 	sessions            map[sessionKey]*peerSession
 	allSessions         map[string]*peerSession
@@ -84,6 +87,7 @@ type Peer struct {
 	incomingSetups      map[string]*incomingSetup
 	resolved            map[string]string
 	directoryGeneration uint64
+	networkGeneration   uint64
 	setups              chan struct{}
 	streamSlots         chan struct{}
 	outgoingSlots       map[Lane]chan struct{}
@@ -95,6 +99,7 @@ type Peer struct {
 	control             func(string, []byte)
 	nodeHealth          bool
 	clientSessions      bool
+	networkSnapshot     func() (string, error)
 }
 
 func New(cfg Config, handler func(string, net.Conn)) *Peer {
@@ -103,8 +108,9 @@ func New(cfg Config, handler func(string, net.Conn)) *Peer {
 	}
 	return &Peer{
 		cfg: cfg, handler: handler, log: slog.Default(), api: newWebRTCAPI(cfg.DirectTimeout),
-		writes: make(chan *gatewayWrite, 64),
-		links:  map[string]*link{}, sessions: map[sessionKey]*peerSession{},
+		writes:        make(chan *gatewayWrite, 64),
+		reconnectWake: make(chan struct{}, 1),
+		links:         map[string]*link{}, sessions: map[sessionKey]*peerSession{},
 		allSessions: map[string]*peerSession{}, pending: map[sessionKey]*sessionDial{},
 		incomingSetups: map[string]*incomingSetup{}, resolved: map[string]string{},
 		members: map[string]bool{}, memberSeen: map[string]time.Time{}, owners: map[string]string{}, channels: map[string]bool{},
@@ -175,7 +181,7 @@ func (p *Peer) Start(ctx context.Context) error {
 		p.cancel()
 		return err
 	}
-	if !p.worker(p.writeGateway) || !p.worker(func() { p.run(ws) }) {
+	if !p.worker(p.writeGateway) || !p.worker(func() { p.run(ws) }) || !p.worker(p.watchNetwork) {
 		_ = ws.CloseNow()
 		return errors.New("peer stopped during startup")
 	}
@@ -185,6 +191,15 @@ func (p *Peer) Start(ctx context.Context) error {
 func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	p.mu.Lock()
+	generation := p.networkGeneration
+	p.connectCancel = cancel
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.connectCancel = nil
+		p.mu.Unlock()
+	}()
 	// Fleet identity comes from the authenticated gateway, never from labels or
 	// an incoming peer. Refuse old gateways that cannot attest membership.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, gateway.URL(p.cfg.Gateway, "/v1/auth"), nil)
@@ -201,14 +216,15 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		return nil, gatewayResponseError(resp.StatusCode, "gateway authentication")
 	}
 	var scope struct {
-		UserID         string `json:"userId"`
-		NodeHealth     bool   `json:"nodeHealth"`
-		ClientSessions bool   `json:"clientSessions"`
-		ClientOwners   bool   `json:"clientOwners"`
-		PeerChannels   bool   `json:"peerChannels"`
-		Delegation     bool   `json:"delegation"`
-		LargePackets   bool   `json:"largePackets"`
-		NodeBytes      bool   `json:"nodeBytes"`
+		UserID           string `json:"userId"`
+		NodeHealth       bool   `json:"nodeHealth"`
+		ClientSessions   bool   `json:"clientSessions"`
+		ClientOwners     bool   `json:"clientOwners"`
+		PeerChannels     bool   `json:"peerChannels"`
+		Delegation       bool   `json:"delegation"`
+		LargePackets     bool   `json:"largePackets"`
+		NodeBytes        bool   `json:"nodeBytes"`
+		GatewayHeartbeat bool   `json:"gatewayHeartbeat"`
 	}
 	err = json.NewDecoder(io.LimitReader(resp.Body, 8192)).Decode(&scope)
 	_ = resp.Body.Close()
@@ -267,7 +283,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		err = errors.New("invalid gateway challenge")
 	}
 	if err == nil {
-		hello := gateway.Hello{Version: model.Version, Node: p.cfg.Node, Client: p.cfg.Client}
+		hello := gateway.Hello{Version: model.Version, Node: p.cfg.Node, Client: p.cfg.Client, GatewayHeartbeat: scope.GatewayHeartbeat}
 		if nodeBytes {
 			// Sign the exact registration bytes so a gateway that does not know
 			// a newer field ignores it instead of failing signature verification.
@@ -292,6 +308,11 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		return nil, gatewayNetworkError(err)
 	}
 	p.mu.Lock()
+	if generation != p.networkGeneration {
+		p.mu.Unlock()
+		_ = ws.CloseNow()
+		return nil, gatewayNetworkError(errors.New("network changed during gateway connection"))
+	}
 	p.ws = ws
 	// A reconnect may have missed an owner rename. Keep identity-bound sessions,
 	// but resolve names again before opening new streams through them.
@@ -344,6 +365,8 @@ func (p *Peer) run(ws *websocket.Conn) {
 			case <-p.ctx.Done():
 				return
 			case <-time.After(delay/2 + rand.N(delay)):
+			case <-p.reconnectWake:
+				delay, failures = reconnectInitial, 0
 			}
 			var err error
 			ws, err = p.connect(p.ctx)
@@ -401,6 +424,15 @@ func (p *Peer) send(ctx context.Context, msg *protocol.Packet) error {
 }
 
 func (p *Peer) receive(msg *protocol.Packet) {
+	if msg.Kind == "gateway.ping" {
+		if msg.From == update.GatewaySender && validChannelID(msg.Session) {
+			// Do not block the gateway reader while the shared writer drains.
+			p.worker(func() {
+				_ = p.send(p.ctx, &protocol.Packet{Kind: "gateway.pong", Session: msg.Session})
+			})
+		}
+		return
+	}
 	if msg.Kind == "directory.changed" {
 		if msg.From == update.GatewaySender {
 			p.mu.Lock()
@@ -495,7 +527,7 @@ func (p *Peer) receive(msg *protocol.Packet) {
 	}
 }
 
-func (p *Peer) newLink(id, remote, mode string, shared ...*rtcCarrier) (*link, error) {
+func (p *Peer) newLink(ctx context.Context, id, remote, mode string, shared ...*rtcCarrier) (*link, error) {
 	l := &link{id: id, remote: remote, mode: mode, answer: make(chan webrtc.SessionDescription, 1), ready: make(chan struct{})}
 	l.conn = newConn(p.ctx, func(ctx context.Context, b []byte) error {
 		return p.send(ctx, &protocol.Packet{Kind: "data", To: remote, Session: id, Data: b})
@@ -509,13 +541,16 @@ func (p *Peer) newLink(id, remote, mode string, shared ...*rtcCarrier) (*link, e
 		p.mu.Lock()
 		delete(p.links, id)
 		closePC := p.releaseCarrierLocked(l, id)
+		notify := l.generation == p.networkGeneration
 		p.mu.Unlock()
 		if closePC {
 			go func() { _ = l.pc.Close() }()
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = p.send(ctx, &protocol.Packet{Kind: "close", To: remote, Session: id})
+		if notify {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = p.send(ctx, &protocol.Packet{Kind: "close", To: remote, Session: id})
+		}
 	})
 	if mode == "webrtc" {
 		if len(shared) != 0 {
@@ -527,25 +562,23 @@ func (p *Peer) newLink(id, remote, mode string, shared ...*rtcCarrier) (*link, e
 				return nil, err
 			}
 			l.pc = pc
-			l.carrier = &rtcCarrier{pc: pc, remote: remote, links: map[string]*link{}}
+			l.carrier = &rtcCarrier{pc: pc, remote: remote, links: map[string]*link{}, changed: make(chan struct{})}
 			pc.OnDataChannel(func(dc *webrtc.DataChannel) { p.receiveChannel(l, dc) })
 			pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-				if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
-					p.closeCarrier(l.carrier)
-				}
+				p.carrierStateChanged(l.carrier, state)
 			})
 		}
 	}
 	p.mu.Lock()
-	if p.ctx.Err() != nil {
+	if err := ctx.Err(); err != nil {
 		p.mu.Unlock()
 		l.conn.cancel()
 		if l.pc != nil && len(shared) == 0 {
 			_ = l.pc.Close()
 		}
-		return nil, p.ctx.Err()
+		return nil, err
 	}
-	if _, exists := p.links[id]; exists || len(p.links) >= 256 || (l.carrier != nil && l.carrier.closed) {
+	if _, exists := p.links[id]; exists || len(p.links) >= 256 || (l.carrier != nil && (l.carrier.closed || l.carrier.disconnected)) {
 		p.mu.Unlock()
 		l.conn.cancel()
 		if l.pc != nil && len(shared) == 0 {
@@ -554,11 +587,12 @@ func (p *Peer) newLink(id, remote, mode string, shared ...*rtcCarrier) (*link, e
 		return nil, errors.New("duplicate session or peer link limit reached")
 	}
 	p.links[id] = l
+	l.generation = p.networkGeneration
 	l.conn.packetSize = p.packetSizeLocked(remote)
 	if l.carrier != nil {
 		l.carrier.links[id] = l
 		l.carrier.shared = p.cfg.Node.PeerChannels && p.channels[remote]
-		if l.carrier.shared && p.carriers[remote] == nil {
+		if old := p.carriers[remote]; l.carrier.shared && (old == nil || old.closed || old.disconnected) {
 			p.carriers[remote] = l.carrier
 		}
 	}
@@ -633,6 +667,9 @@ func (p *Peer) accept(ctx context.Context, msg *protocol.Packet) {
 	if _, err := p.Resolve(ctx, msg.From); err != nil {
 		return
 	}
+	if ctx.Err() != nil {
+		return
+	}
 	mode := "relay"
 	if len(msg.Data) > 0 {
 		mode = "webrtc"
@@ -641,7 +678,7 @@ func (p *Peer) accept(ctx context.Context, msg *protocol.Packet) {
 		_ = p.send(p.ctx, &protocol.Packet{Kind: "close", To: msg.From, Session: msg.Session})
 		return
 	}
-	l, err := p.newLink(msg.Session, msg.From, mode)
+	l, err := p.newLink(ctx, msg.Session, msg.From, mode)
 	if err != nil {
 		return
 	}
@@ -697,7 +734,7 @@ func (p *Peer) accept(ctx context.Context, msg *protocol.Packet) {
 	if err != nil {
 		return
 	}
-	s := &peerSession{mux: session, id: msg.Session, remote: msg.From, lane: IncomingLane, mode: mode, outgoing: make(chan struct{}, 128), incoming: make(chan struct{}, 128)}
+	s := &peerSession{mux: session, link: l, id: msg.Session, remote: msg.From, lane: IncomingLane, mode: mode, outgoing: make(chan struct{}, 128), incoming: make(chan struct{}, 128)}
 	if !p.registerSession(s) {
 		_ = session.Close()
 		return
@@ -872,9 +909,15 @@ func (p *Peer) Owner(id string) string {
 func (p *Peer) IdentityID() string { return p.cfg.Identity.ID }
 
 func (p *Peer) dial(ctx context.Context, remote, mode string, lane Lane) (_ *peerSession, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if mode == "webrtc" {
 		p.mu.Lock()
 		carrier := p.carriers[remote]
+		if carrier != nil && (carrier.closed || carrier.disconnected) {
+			carrier = nil
+		}
 		p.mu.Unlock()
 		if carrier != nil {
 			return p.dialChannel(ctx, carrier, lane)
@@ -883,7 +926,7 @@ func (p *Peer) dial(ctx context.Context, remote, mode string, lane Lane) (_ *pee
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	id := identity.NewID()
-	l, err := p.newLink(id, remote, mode)
+	l, err := p.newLink(ctx, id, remote, mode)
 	if err != nil {
 		return nil, err
 	}
@@ -944,7 +987,7 @@ func (p *Peer) dial(ctx context.Context, remote, mode string, lane Lane) (_ *pee
 	if err != nil {
 		return nil, err
 	}
-	return &peerSession{mux: session, id: id, remote: remote, lane: lane, mode: mode, outgoing: make(chan struct{}, 128), incoming: make(chan struct{}, 128)}, nil
+	return &peerSession{mux: session, link: l, id: id, remote: remote, lane: lane, mode: mode, outgoing: make(chan struct{}, 128), incoming: make(chan struct{}, 128)}, nil
 }
 
 func (p *Peer) Connections() map[string]string {
@@ -952,7 +995,7 @@ func (p *Peer) Connections() map[string]string {
 	defer p.mu.Unlock()
 	result := map[string]string{}
 	for _, s := range p.allSessions {
-		if !s.mux.IsClosed() && result[s.remote] != "webrtc" {
+		if s.usableLocked() && result[s.remote] != "webrtc" {
 			result[s.remote] = s.mode
 		}
 	}

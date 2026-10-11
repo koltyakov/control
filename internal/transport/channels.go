@@ -20,6 +20,8 @@ type rtcCarrier struct {
 	remote         string
 	links          map[string]*link
 	shared, closed bool
+	disconnected   bool
+	changed        chan struct{}
 }
 
 func (p *Peer) releaseCarrierLocked(l *link, id string) bool {
@@ -39,7 +41,15 @@ func (p *Peer) releaseCarrierLocked(l *link, id string) bool {
 }
 
 func (p *Peer) closeCarrier(c *rtcCarrier) {
+	p.closeCarrierIfDisconnected(c, nil)
+}
+
+func (p *Peer) closeCarrierIfDisconnected(c *rtcCarrier, changed <-chan struct{}) {
 	p.mu.Lock()
+	if c.closed || (changed != nil && (!c.disconnected || changed != c.changed)) {
+		p.mu.Unlock()
+		return
+	}
 	c.closed = true
 	links := make([]*link, 0, len(c.links))
 	for _, l := range c.links {
@@ -54,6 +64,36 @@ func (p *Peer) closeCarrier(c *rtcCarrier) {
 	}
 }
 
+func (p *Peer) carrierStateChanged(c *rtcCarrier, state webrtc.PeerConnectionState) {
+	p.mu.Lock()
+	if c.closed {
+		p.mu.Unlock()
+		return
+	}
+	c.disconnected = state == webrtc.PeerConnectionStateDisconnected
+	close(c.changed)
+	c.changed = make(chan struct{})
+	changed := c.changed
+	p.mu.Unlock()
+	switch state {
+	case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+		p.closeCarrier(c)
+	case webrtc.PeerConnectionStateDisconnected:
+		// Allow a brief ICE recovery, but do not retain a dead carrier for the
+		// much longer default ICE/yamux failure timeouts. Never replay its streams.
+		p.worker(func() {
+			timer := time.NewTimer(carrierDisconnectGrace)
+			defer timer.Stop()
+			select {
+			case <-p.ctx.Done():
+			case <-changed:
+			case <-timer.C:
+				p.closeCarrierIfDisconnected(c, changed)
+			}
+		})
+	}
+}
+
 func (p *Peer) receiveChannel(base *link, dc *webrtc.DataChannel) {
 	if dc.Label() == "control-v1" {
 		p.bindDataChannel(base, dc)
@@ -61,7 +101,7 @@ func (p *Peer) receiveChannel(base *link, dc *webrtc.DataChannel) {
 	}
 	id, ok := strings.CutPrefix(dc.Label(), "control-v1/")
 	p.mu.Lock()
-	shared := base.carrier.shared && !base.carrier.closed
+	shared := base.carrier.shared && !base.carrier.closed && !base.carrier.disconnected
 	p.mu.Unlock()
 	if !ok || !shared || !validChannelID(id) {
 		_ = dc.Close()
@@ -77,7 +117,7 @@ func (p *Peer) receiveChannel(base *link, dc *webrtc.DataChannel) {
 	// messages afterwards and drops any that arrive without a handler, which
 	// lost the dialer's TLS ClientHello and stalled setup until the direct
 	// timeout forced the relay. Only the handshake runs asynchronously.
-	l, err := p.newLink(id, base.carrier.remote, "webrtc", base.carrier)
+	l, err := p.newLink(p.ctx, id, base.carrier.remote, "webrtc", base.carrier)
 	if err != nil {
 		<-p.setups
 		_ = dc.Close()
@@ -122,7 +162,7 @@ func (p *Peer) acceptChannel(l *link) {
 	if err != nil {
 		return
 	}
-	s := &peerSession{mux: mux, id: l.id, remote: l.remote, mode: "webrtc", lane: IncomingLane, outgoing: make(chan struct{}, 128), incoming: make(chan struct{}, 128)}
+	s := &peerSession{mux: mux, link: l, id: l.id, remote: l.remote, mode: "webrtc", lane: IncomingLane, outgoing: make(chan struct{}, 128), incoming: make(chan struct{}, 128)}
 	if !p.registerSession(s) {
 		_ = mux.Close()
 		return
@@ -137,7 +177,7 @@ func (p *Peer) acceptChannel(l *link) {
 
 func (p *Peer) dialChannel(ctx context.Context, carrier *rtcCarrier, lane Lane) (_ *peerSession, err error) {
 	id := identity.NewID()
-	l, err := p.newLink(id, carrier.remote, "webrtc", carrier)
+	l, err := p.newLink(ctx, id, carrier.remote, "webrtc", carrier)
 	if err != nil {
 		return nil, err
 	}
@@ -166,5 +206,5 @@ func (p *Peer) dialChannel(ctx context.Context, carrier *rtcCarrier, lane Lane) 
 	if err != nil {
 		return nil, err
 	}
-	return &peerSession{mux: mux, id: id, remote: carrier.remote, mode: "webrtc", lane: lane, outgoing: make(chan struct{}, 128), incoming: make(chan struct{}, 128)}, nil
+	return &peerSession{mux: mux, link: l, id: id, remote: carrier.remote, mode: "webrtc", lane: lane, outgoing: make(chan struct{}, 128), incoming: make(chan struct{}, 128)}, nil
 }
