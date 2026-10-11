@@ -115,9 +115,6 @@ func (a *Updater) Run(ctx context.Context) {
 			a.cleanup(ctx)
 		case command := <-a.commands:
 			a.process(ctx, command)
-			if command.kind == "update.offer" {
-				a.cleanup(ctx)
-			}
 		}
 		a.report(ctx)
 	}
@@ -160,6 +157,9 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 		if command.Asset.OS != a.options.Software.OS || command.Asset.Arch != a.options.Software.Arch {
 			return
 		}
+		// Cleanup verifies the running binary. Duplicate offers and retries still
+		// in backoff must not repeat that work on every gateway rollout tick.
+		defer a.cleanup(ctx)
 		a.resume()
 		a.target, a.staged = command, ""
 		if IsCurrent(a.options.Software, command.Version, command.Asset) {

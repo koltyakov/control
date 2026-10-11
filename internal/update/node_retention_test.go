@@ -5,9 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -147,21 +150,96 @@ func TestNodeUpdaterCleansAtStartupAndAfterOffers(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.Receive("update.offer", data)
-	wait := time.NewTimer(5 * time.Second)
-	defer wait.Stop()
-	for {
-		select {
-		case report := <-reports:
-			if report.ID != command.ID {
-				continue
+	waitReport := func(matches func(Status) bool) {
+		t.Helper()
+		wait := time.NewTimer(5 * time.Second)
+		defer wait.Stop()
+		for {
+			select {
+			case report := <-reports:
+				if matches(report) {
+					return
+				}
+			case <-wait.C:
+				t.Fatal("updater did not process command")
 			}
-			if _, err := os.Stat(obsolete.Path); !os.IsNotExist(err) {
-				t.Fatal("update offer retained obsolete binary", err)
-			}
-			return
-		case <-wait.C:
-			t.Fatal("updater did not process offer")
 		}
+	}
+	waitReport(func(report Status) bool { return report.ID == command.ID })
+	if _, err := os.Stat(obsolete.Path); !os.IsNotExist(err) {
+		t.Fatal("update offer retained obsolete binary", err)
+	}
+	// Queue a distinct reservation after repeated offers so its report proves
+	// all preceding duplicates were processed, not just a periodic status tick.
+	obsolete = nodeRetentionBinary(t, dir, "obsolete")
+	for range 3 {
+		a.Receive("update.offer", data)
+	}
+	command.LeaseUntil = time.Now().Add(time.Minute)
+	data, err = json.Marshal(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Receive("update.prepare", data)
+	waitReport(func(report Status) bool { return report.Paused })
+	if err := Verify(obsolete.Path, obsolete.Asset); err != nil {
+		t.Fatal("duplicate offer ran binary cleanup", err)
+	}
+	// A new deployment still cleans promptly and releases the old reservation.
+	command.ID = strings.Repeat("d", 64)
+	data, err = json.Marshal(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Receive("update.offer", data)
+	waitReport(func(report Status) bool { return report.ID == command.ID && !report.Paused })
+	if _, err := os.Stat(obsolete.Path); !os.IsNotExist(err) {
+		t.Fatal("new update offer retained obsolete binary", err)
+	}
+}
+
+func TestNodeUpdaterCleansOnlyEligibleRetries(t *testing.T) {
+	dir := t.TempDir()
+	current := nodeRetentionBinary(t, dir, "current")
+	if err := store.Write(filepath.Join(dir, "runtime.json"), current); err != nil {
+		t.Fatal(err)
+	}
+	var downloads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		downloads.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	a, err := NewUpdater(UpdaterOptions{
+		Dir: dir, Gateway: server.URL, Software: buildinfo.Info{Version: current.Version, OS: current.Asset.OS, Arch: current.Asset.Arch, SHA256: current.Asset.SHA256},
+		Busy: func() bool { return false }, Pause: func() bool { return true }, Resume: func() {},
+		Report: func(context.Context, Status) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := current.Asset
+	candidate.SHA256 = strings.Repeat("b", 64)
+	command := queuedCommand{"update.offer", Command{ID: strings.Repeat("c", 64), Version: "next", Asset: candidate}}
+	a.process(t.Context(), command)
+	if downloads.Load() != 1 || a.Snapshot().State != "error" {
+		t.Fatal("failed offer did not enter retry backoff")
+	}
+	obsolete := nodeRetentionBinary(t, dir, "obsolete")
+	a.process(t.Context(), command)
+	if downloads.Load() != 1 {
+		t.Fatal("retried download during backoff")
+	}
+	if err := Verify(obsolete.Path, obsolete.Asset); err != nil {
+		t.Fatal("offer in retry backoff ran binary cleanup", err)
+	}
+	a.nextAttempt = time.Time{}
+	a.process(t.Context(), command)
+	if downloads.Load() != 2 || a.Snapshot().State != "error" {
+		t.Fatal("eligible retry did not attempt download")
+	}
+	if _, err := os.Stat(obsolete.Path); !os.IsNotExist(err) {
+		t.Fatal("eligible retry retained obsolete binary", err)
 	}
 }
 
