@@ -6,9 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -233,19 +235,17 @@ func TestRolloutSkipsSameVersionWhileBusy(t *testing.T) {
 			case "update.prepare", "update.commit":
 				t.Fatalf("same-version rollout requested maintenance: %s", packet.Kind)
 			case "update.resume":
-				for update.Verify(g.updates.Blob(obsolete.SHA256), obsolete) == nil {
-					if ctx.Err() != nil {
-						t.Fatal("successful rollout did not prune obsolete binaries")
-					}
-					time.Sleep(10 * time.Millisecond)
-				}
+				// Resume is sent before cleanup finishes under rolloutMu. Wait for
+				// that iteration without opening the blob and blocking Windows deletion.
+				g.rolloutMu.Lock()
+				g.rolloutMu.Unlock()
 				cancel()
 				<-done
 				if current := g.updates.Current(); current.Phase != "complete" || g.restarting {
 					t.Fatalf("same-version rollout was not skipped: %+v", current)
 				}
-				if err := update.Verify(g.updates.Blob(obsolete.SHA256), obsolete); err == nil {
-					t.Fatal("successful rollout did not prune obsolete binaries")
+				if _, err := os.Stat(g.updates.Blob(obsolete.SHA256)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("successful rollout did not prune obsolete binaries: %v", err)
 				}
 				return
 			}
