@@ -47,6 +47,13 @@ func speedtestCLI(ctx context.Context, c client.Client, args []string) error {
 		return nil
 	}
 	fmt.Printf("%s <-> %s (%s)\n", result.Source, result.Target, result.Transport)
+	if result.Route != nil {
+		fmt.Printf("Route %s", result.Route.Kind)
+		if result.Route.LocalCandidate != "" {
+			fmt.Printf(" (local=%s, remote=%s, protocol=%s)", result.Route.LocalCandidate, result.Route.RemoteCandidate, result.Route.Protocol)
+		}
+		fmt.Println()
+	}
 	fmt.Printf("Setup %.1f ms\n", result.SetupMillis)
 	fmt.Printf("RTT %.2f ms average, %.2f min, %.2f max; jitter %.2f ms (%d samples)\n", result.Latency.MeanMillis, result.Latency.MinMillis, result.Latency.MaxMillis, result.Latency.JitterMillis, result.Latency.Samples)
 	fmt.Printf("%s -> %s: %.2f Mbps (%d bytes, %.2fs)\n", result.Source, result.Target, result.Upload.Mbps, result.Upload.Bytes, result.Upload.Seconds)

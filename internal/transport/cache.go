@@ -63,11 +63,21 @@ func (p *Peer) Stats() model.TransportStats {
 // budget, so one unreachable STUN server cannot force every session onto the
 // relay. A larger SCTP window raises the per-carrier throughput ceiling on
 // high-latency paths, where it limits all lanes sharing the carrier.
-func newWebRTCAPI(direct time.Duration) *webrtc.API {
+func newWebRTCAPI(direct time.Duration, trickle bool) *webrtc.API {
+	return webrtc.NewAPI(webrtc.WithSettingEngine(webRTCSettings(direct, trickle)))
+}
+
+func webRTCSettings(direct time.Duration, trickle bool) webrtc.SettingEngine {
 	var settings webrtc.SettingEngine
-	settings.SetSTUNGatherTimeout(max(minSTUNGather, min(maxSTUNGather, direct*2/5)))
+	gather := max(minSTUNGather, min(maxSTUNGather, direct*2/5))
+	if trickle {
+		// Gathering no longer delays SDP. Keep slow candidates available while
+		// connectivity checks run, and briefly after a fast host connection opens.
+		gather = max(maxSTUNGather, min(10*time.Second, direct))
+	}
+	settings.SetSTUNGatherTimeout(gather)
 	settings.SetSCTPMaxReceiveBufferSize(maxSCTPReceive)
-	return webrtc.NewAPI(webrtc.WithSettingEngine(settings))
+	return settings
 }
 
 // Called with p.mu held.
@@ -144,6 +154,8 @@ func (p *Peer) forgetMemberLocked(id string) {
 	delete(p.owners, id)
 	delete(p.channels, id)
 	delete(p.largePackets, id)
+	delete(p.trickle, id)
+	delete(p.directRetry, id)
 }
 
 // Called with p.mu held. Client transport identities are per process, so

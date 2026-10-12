@@ -97,10 +97,14 @@ Windows worker enrollment optionally configures profile-scoped executable firewa
 1. A node loads or generates its Ed25519 key in its data directory.
 2. It opens an outbound gateway WebSocket, answers a fresh challenge, and registers its metadata.
 3. A caller resolves a destination name or ID through the directory.
-4. It tries a reliable ordered WebRTC data channel. Configure ICE servers for STUN/TURN as required by the deployment.
+4. It tries a reliable ordered WebRTC data channel. Configure gateway STUN defaults or per-peer STUN/TURN servers as required by the deployment. Compatible gateways and peers negotiate trickle ICE, sending SDP immediately and exchanging candidates while connectivity checks run. Older peers retain complete-SDP gathering.
 5. If direct establishment fails or times out, it opens an opaque relayed stream over the existing gateway connections.
 6. Both ends authenticate with TLS, then open a multiplexed session.
 7. Broken sessions are discarded. A later operation creates a new session. It does not automatically replay the previous operation.
+
+Trickled candidates cannot overtake their local SDP. Receivers buffer candidates for known pending setups until remote SDP is installed, with sender/session checks, at most 128 candidates per link, and 4 KiB signaling packets. Candidate workers follow the link lifetime, allowing late candidates after a fast connection opens. Shared lane channels do not repeat candidate signaling. Session and connection-test route metadata contains only selected candidate types and protocol, never addresses or credentials.
+
+A failed WebRTC attempt starts a 30-second per-peer backoff shared by traffic lanes. Later operations continue using a healthy relay while a bounded background setup re-probes WebRTC after that backoff, or adds a channel to an already-connected shared carrier. A successful probe changes only the cached session for new streams. The replaced relay drains its existing streams before closing. Network switches clear backoff. There is no idle background probing and no application replay. See [D068](decisions.md#d068-trickle-ice-deployment-stun-defaults-and-non-disruptive-direct-re-probes).
 
 Transport processes sample active non-loopback interface addresses and route-selected source addresses for the gateway every two seconds. Route checks connect local UDP sockets without transmitting packets. A changed sample clears directory caches, cancels pending setups, retires existing peer sessions, and wakes gateway reconnection, including during reconnect backoff. Setup generations prevent old-network connections from repopulating session caches. Subsequent operations establish fresh WebRTC or relay sessions. Accepted tasks are not resubmitted and interrupted streams are not replayed. This monitor is separate from resource sampling.
 

@@ -50,6 +50,7 @@ type ConnectionTestResult struct {
 	Target      string               `json:"target"`
 	TargetID    string               `json:"targetId"`
 	Transport   string               `json:"transport"`
+	Route       *PeerRoute           `json:"route,omitempty"`
 	StartedAt   time.Time            `json:"startedAt"`
 	SetupMillis float64              `json:"setupMillis"`
 	Latency     ConnectionLatency    `json:"latency"`

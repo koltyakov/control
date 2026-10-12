@@ -45,6 +45,7 @@ type Config struct {
 }
 
 type link struct {
+	ice        *linkICE
 	generation uint64
 	id         string
 	remote     string
@@ -67,9 +68,13 @@ type Peer struct {
 	owners              map[string]string
 	channels            map[string]bool
 	largePackets        map[string]bool
+	trickle             map[string]bool
+	iceServers          []webrtc.ICEServer
+	directRetry         map[string]time.Time
 	lookups             map[string]lookupEntry
 	carriers            map[string]*rtcCarrier
 	api                 *webrtc.API
+	trickleAPI          *webrtc.API
 	stats               transportStats
 	cfg                 Config
 	ctx                 context.Context
@@ -107,14 +112,14 @@ func New(cfg Config, handler func(string, net.Conn)) *Peer {
 		cfg.DirectTimeout = 5 * time.Second
 	}
 	return &Peer{
-		cfg: cfg, handler: handler, log: slog.Default(), api: newWebRTCAPI(cfg.DirectTimeout),
+		cfg: cfg, handler: handler, log: slog.Default(), api: newWebRTCAPI(cfg.DirectTimeout, false), trickleAPI: newWebRTCAPI(cfg.DirectTimeout, true),
 		writes:        make(chan *gatewayWrite, 64),
 		reconnectWake: make(chan struct{}, 1),
 		links:         map[string]*link{}, sessions: map[sessionKey]*peerSession{},
 		allSessions: map[string]*peerSession{}, pending: map[sessionKey]*sessionDial{},
 		incomingSetups: map[string]*incomingSetup{}, resolved: map[string]string{},
 		members: map[string]bool{}, memberSeen: map[string]time.Time{}, owners: map[string]string{}, channels: map[string]bool{},
-		largePackets: map[string]bool{}, lookups: map[string]lookupEntry{},
+		largePackets: map[string]bool{}, trickle: map[string]bool{}, directRetry: map[string]time.Time{}, lookups: map[string]lookupEntry{},
 		carriers: map[string]*rtcCarrier{}, setups: make(chan struct{}, 32), streamSlots: make(chan struct{}, 512),
 		pendingSlots: map[Lane]chan struct{}{
 			ControlLane: make(chan struct{}, 32), BulkLane: make(chan struct{}, 16), InteractiveLane: make(chan struct{}, 16),
@@ -216,15 +221,17 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		return nil, gatewayResponseError(resp.StatusCode, "gateway authentication")
 	}
 	var scope struct {
-		UserID           string `json:"userId"`
-		NodeHealth       bool   `json:"nodeHealth"`
-		ClientSessions   bool   `json:"clientSessions"`
-		ClientOwners     bool   `json:"clientOwners"`
-		PeerChannels     bool   `json:"peerChannels"`
-		Delegation       bool   `json:"delegation"`
-		LargePackets     bool   `json:"largePackets"`
-		NodeBytes        bool   `json:"nodeBytes"`
-		GatewayHeartbeat bool   `json:"gatewayHeartbeat"`
+		UserID           string   `json:"userId"`
+		NodeHealth       bool     `json:"nodeHealth"`
+		ClientSessions   bool     `json:"clientSessions"`
+		ClientOwners     bool     `json:"clientOwners"`
+		PeerChannels     bool     `json:"peerChannels"`
+		Delegation       bool     `json:"delegation"`
+		LargePackets     bool     `json:"largePackets"`
+		NodeBytes        bool     `json:"nodeBytes"`
+		GatewayHeartbeat bool     `json:"gatewayHeartbeat"`
+		TrickleICE       bool     `json:"trickleICE"`
+		STUNServers      []string `json:"stunServers"`
 	}
 	err = json.NewDecoder(io.LimitReader(resp.Body, 8192)).Decode(&scope)
 	_ = resp.Body.Close()
@@ -259,6 +266,11 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	p.cfg.Node.ClientOwners = scope.ClientOwners && !p.cfg.Client
 	p.cfg.Node.PeerChannels = scope.PeerChannels
 	p.cfg.Node.LargePackets = scope.LargePackets
+	p.cfg.Node.TrickleICE = scope.TrickleICE
+	p.iceServers = p.cfg.ICEServers
+	if p.iceServers == nil && len(scope.STUNServers) != 0 {
+		p.iceServers = []webrtc.ICEServer{{URLs: scope.STUNServers}}
+	}
 	p.cfg.Node.InstructionDelegation = scope.Delegation && !p.cfg.Client
 	nodeBytes := scope.NodeBytes
 	if p.cfg.ClientOwner != nil {
@@ -481,7 +493,7 @@ func (p *Peer) receive(msg *protocol.Packet) {
 		select {
 		case p.setups <- struct{}{}:
 			ctx, cancel := context.WithTimeout(p.ctx, 20*time.Second)
-			setup := &incomingSetup{remote: msg.From, cancel: cancel}
+			setup := &incomingSetup{remote: msg.From, cancel: cancel, candidates: make(chan webrtc.ICECandidateInit, maxTrickleCandidates)}
 			p.mu.Lock()
 			p.incomingSetups[msg.Session] = setup
 			p.mu.Unlock()
@@ -492,6 +504,10 @@ func (p *Peer) receive(msg *protocol.Packet) {
 		default:
 			// Drop excess setup without blocking the gateway reader on a write.
 		}
+		return
+	}
+	if msg.Kind == "ice" {
+		p.receiveICE(msg)
 		return
 	}
 	p.mu.Lock()
@@ -556,13 +572,24 @@ func (p *Peer) newLink(ctx context.Context, id, remote, mode string, shared ...*
 		if len(shared) != 0 {
 			l.carrier, l.pc = shared[0], shared[0].pc
 		} else {
-			pc, err := p.api.NewPeerConnection(webrtc.Configuration{ICEServers: p.cfg.ICEServers})
+			p.mu.Lock()
+			servers := p.iceServers
+			trickle := p.cfg.Node.TrickleICE && p.trickle[remote]
+			p.mu.Unlock()
+			api := p.api
+			if trickle {
+				api = p.trickleAPI
+			}
+			pc, err := api.NewPeerConnection(webrtc.Configuration{ICEServers: servers})
 			if err != nil {
 				l.conn.cancel()
 				return nil, err
 			}
 			l.pc = pc
 			l.carrier = &rtcCarrier{pc: pc, remote: remote, links: map[string]*link{}, changed: make(chan struct{})}
+			if trickle {
+				l.ice = newLinkICE()
+			}
 			pc.OnDataChannel(func(dc *webrtc.DataChannel) { p.receiveChannel(l, dc) })
 			pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 				p.carrierStateChanged(l.carrier, state)
@@ -588,6 +615,12 @@ func (p *Peer) newLink(ctx context.Context, id, remote, mode string, shared ...*
 	}
 	p.links[id] = l
 	l.generation = p.networkGeneration
+	if l.ice != nil {
+		if setup := p.incomingSetups[id]; setup != nil && setup.remote == remote {
+			l.ice.remote = setup.candidates
+			l.ice.remoteCount = setup.candidateCount
+		}
+	}
 	l.conn.packetSize = p.packetSizeLocked(remote)
 	if l.carrier != nil {
 		l.carrier.links[id] = l
@@ -597,6 +630,9 @@ func (p *Peer) newLink(ctx context.Context, id, remote, mode string, shared ...*
 		}
 	}
 	p.mu.Unlock()
+	if l.ice != nil {
+		p.startICE(l)
+	}
 	return l, nil
 }
 
@@ -696,6 +732,9 @@ func (p *Peer) accept(ctx context.Context, msg *protocol.Packet) {
 		if err = l.pc.SetRemoteDescription(offer); err != nil {
 			return
 		}
+		if l.ice != nil {
+			close(l.ice.remoteReady)
+		}
 		answer, e := l.pc.CreateAnswer(nil)
 		if e != nil {
 			return
@@ -704,15 +743,20 @@ func (p *Peer) accept(ctx context.Context, msg *protocol.Packet) {
 		if err = l.pc.SetLocalDescription(answer); err != nil {
 			return
 		}
-		select {
-		case <-gather:
-		case <-ctx.Done():
-			return
-		case <-l.conn.ctx.Done():
-			return
+		if l.ice == nil {
+			select {
+			case <-gather:
+			case <-ctx.Done():
+				return
+			case <-l.conn.ctx.Done():
+				return
+			}
 		}
 		if err = p.send(ctx, &protocol.Packet{Kind: "answer", To: msg.From, Session: msg.Session, Data: model.JSON(l.pc.LocalDescription())}); err != nil {
 			return
+		}
+		if l.ice != nil {
+			close(l.ice.localReady)
 		}
 		select {
 		case <-l.ready:
@@ -879,6 +923,7 @@ func (p *Peer) Resolve(ctx context.Context, name string) (model.Node, error) {
 	p.memberSeen[peer.ID] = now
 	p.channels[peer.ID] = peer.PeerChannels
 	p.largePackets[peer.ID] = peer.LargePackets
+	p.trickle[peer.ID] = peer.TrickleICE
 	if peer.ClientOwner != "" {
 		p.owners[peer.ID] = peer.ClientOwner
 	}
@@ -950,21 +995,31 @@ func (p *Peer) dial(ctx context.Context, remote, mode string, lane Lane) (_ *pee
 		if e = l.pc.SetLocalDescription(sdp); e != nil {
 			return nil, e
 		}
-		select {
-		case <-gather:
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		if l.ice == nil {
+			select {
+			case <-gather:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-l.conn.ctx.Done():
+				return nil, errors.New("peer closed during candidate gathering")
+			}
 		}
 		offer = model.JSON(l.pc.LocalDescription())
 	}
 	if err = p.send(ctx, &protocol.Packet{Kind: "open", To: remote, Session: id, Data: offer}); err != nil {
 		return nil, err
 	}
+	if l.ice != nil {
+		close(l.ice.localReady)
+	}
 	if mode == "webrtc" {
 		select {
 		case answer := <-l.answer:
 			if err = l.pc.SetRemoteDescription(answer); err != nil {
 				return nil, err
+			}
+			if l.ice != nil {
+				close(l.ice.remoteReady)
 			}
 		case <-ctx.Done():
 			return nil, ctx.Err()

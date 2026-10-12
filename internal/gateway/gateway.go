@@ -145,6 +145,10 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 	if len(options) > 0 {
 		opts = options[0]
 	}
+	if err := validateSTUNServers(opts.STUNServers); err != nil {
+		return nil, err
+	}
+	opts.STUNServers = append([]string(nil), opts.STUNServers...)
 	if opts.SuperuserKey != "" && (len(opts.SuperuserKey) < 32 || opts.SuperuserKey == token) {
 		return nil, errors.New("superuser key must be distinct from the common token and at least 32 characters")
 	}
@@ -540,6 +544,10 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		}
 		switch p.Kind {
 		case "open", "answer", "data", "close":
+		case "ice":
+			if !n.TrickleICE || len(p.Data) > 4096 {
+				return
+			}
 		default:
 			return
 		}

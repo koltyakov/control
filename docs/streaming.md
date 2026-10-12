@@ -59,6 +59,8 @@ A detected local network switch retires all old-network sessions, cancels setup,
 
 Setup cancellation does not cancel another waiter or close an established sibling lane. When the last setup waiter leaves, setup is cancelled. Peer shutdown closes channels, multiplexers, and streams and waits for owned setup and handler goroutines. Forwarding waits for both copy directions, uses reusable copy buffers, and aborts both sides on errors or cancellation. A graceful EOF preserves the response direction only when the destination supports it. Older raw peers and WebSocket clients retain full-close semantics.
 
+Compatible peers trickle ICE through a negotiated gateway packet kind. SDP is sent immediately, candidate queues are bounded, and early candidates wait for remote SDP rather than being dropped. A failed WebRTC attempt shares 30 seconds of backoff across lanes. Subsequent relay operations can trigger a background direct probe without blocking those operations or replacing their existing streams. Successful replacements drain the old relay. See [ICE configuration and signaling](protocol.md#node-configuration).
+
 ## Follow logs and forward services
 
 ```sh
@@ -95,7 +97,6 @@ These gaps are not implemented:
 | UDP forwarding | Tunnel a UDP protocol | Bounded datagrams, size limits, and explicit loss/lifetime semantics |
 | Resource-aware placement | Place work by CPU, memory, or GPU headroom rather than active-operation count | Admission must remain destination-owned; resource samples are not reservations |
 | Stream scheduling on the relay | Protect control latency when a gateway link is saturated | A bounded, fair scheduler across users and sessions, not extra unbounded queues |
-| Trickle ICE | Start connectivity checks before gathering completes | New signaling packet kinds need gateway negotiation, since older gateways disconnect senders of unknown kinds |
 | Artifact quotas and eviction | Keep a large, long-lived fleet within disk budgets | Eviction must protect active inputs, output references, and other owners' holds |
 
 Bounded parallel workflow steps, active-count placement preference, and terminal-task retention are implemented; see [D058](decisions.md#d058-terminal-task-retention-with-tombstones) and [D060](decisions.md#d060-bounded-parallel-workflows-and-load-preferring-selection).

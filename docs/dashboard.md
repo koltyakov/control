@@ -27,6 +27,8 @@ An account client can collect detailed peer snapshots under its own authority, w
 
 Individual peer-probe errors remain visible as warnings even when fresh gateway health preserves `idle` or `busy`. Those labels describe reported work, not guaranteed reachability from every caller. `D/R` counts observed peers by transport, excluding disconnected or retired WebRTC carriers. It does not test every caller's path. Network switches retire old sessions; new operations rebuild the connections they need.
 
+`D` retains its historical meaning of WebRTC transport and can include TURN traffic. Use `control speedtest` or session `route` metadata to distinguish a direct ICE path from TURN. `R` counts the gateway's WebSocket relay.
+
 The pool contains only machines belonging to the authenticated user's fleet. Other users' machines, names, availability, resources, and activity are excluded at directory and transport authorization, including when a caller supplies a foreign machine ID. See [users and private fleets](users.md).
 
 CLI/MCP processes on the orchestrator are authenticated clients, not fleet machines. Their live or disconnected sessions never add dashboard rows or machine counts. Gateway startup migrates the previous implementation's capability-free CLI registrations out of the machine catalog without changing task ownership. See [standalone clients](installation.md#standalone-cli-and-mcp).

@@ -28,7 +28,7 @@ type Config struct {
 	Listen                 string             `json:"listen,omitempty"`
 	Labels                 map[string]string  `json:"labels,omitempty"`
 	RelayOnly              bool               `json:"relayOnly,omitempty"`
-	ICEServers             []webrtc.ICEServer `json:"iceServers,omitempty"`
+	ICEServers             []webrtc.ICEServer `json:"iceServers"`
 	MaxTasks               int                `json:"maxTasks,omitempty"`
 	MetricsIntervalSeconds int                `json:"metricsIntervalSeconds,omitempty"`
 	// TaskRetentionHours keeps terminal task records, logs, and workspaces for

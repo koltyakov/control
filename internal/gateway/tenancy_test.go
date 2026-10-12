@@ -110,7 +110,7 @@ func TestFleetAccountsAndInvitationsAreIsolated(t *testing.T) {
 	}
 }
 
-func rawPeer(t *testing.T, serverURL, token, name, userID string, id *identity.Identity) *websocket.Conn {
+func rawPeer(t *testing.T, serverURL, token, name, userID string, id *identity.Identity, trickle ...bool) *websocket.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -123,6 +123,7 @@ func rawPeer(t *testing.T, serverURL, token, name, userID string, id *identity.I
 		t.Fatal(err)
 	}
 	n := model.Node{ID: id.ID, PublicKey: id.Public, Name: name, UserID: userID}
+	n.TrickleICE = len(trickle) != 0 && trickle[0]
 	hello := Hello{Version: model.Version, Node: n, Signature: ed25519.Sign(id.Private, append(challenge, model.JSON(n)...))}
 	if err = ws.Write(ctx, websocket.MessageBinary, model.JSON(hello)); err != nil {
 		t.Fatal(err)
@@ -148,9 +149,9 @@ func TestGatewayBlocksForgedCrossFleetRoutingAndIdentityTransfer(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	wa := rawPeer(t, s.URL, a.Key, "host", alice.ID, ids[0])
+	wa := rawPeer(t, s.URL, a.Key, "host", alice.ID, ids[0], true)
 	wb := rawPeer(t, s.URL, b.Key, "host", bob.ID, ids[1])
-	wc := rawPeer(t, s.URL, b.Key, "worker", bob.ID, ids[2])
+	wc := rawPeer(t, s.URL, b.Key, "worker", bob.ID, ids[2], true)
 	if wa == nil || wb == nil || wc == nil {
 		t.Fatal("fleet peer registration failed")
 	}
@@ -187,7 +188,7 @@ func TestGatewayBlocksForgedCrossFleetRoutingAndIdentityTransfer(t *testing.T) {
 	}
 	// Bypass directory resolution. An attacker knows Bob's IDs and sends raw
 	// signaling/relay packets with a forged same-fleet From field.
-	for _, kind := range []string{"open", "answer", "data", "close"} {
+	for _, kind := range []string{"open", "answer", "data", "close", "ice"} {
 		send(wa, &protocol.Packet{Kind: kind, From: ids[2].ID, To: ids[1].ID, Session: "attack", Data: []byte("private")})
 		if kind == "open" {
 			if p := read(wa); p.Kind != "close" {
@@ -203,6 +204,10 @@ func TestGatewayBlocksForgedCrossFleetRoutingAndIdentityTransfer(t *testing.T) {
 	send(wc, &protocol.Packet{Kind: "open", To: ids[1].ID, Session: "allowed"})
 	if p := read(wb); p.Session != "allowed" || p.From != ids[2].ID {
 		t.Fatalf("cross-fleet packet escaped filtering: %+v", p)
+	}
+	send(wc, &protocol.Packet{Kind: "ice", From: ids[0].ID, To: ids[1].ID, Session: "allowed", Data: []byte(`{"candidate":"fixture"}`)})
+	if p := read(wb); p.Kind != "ice" || p.Session != "allowed" || p.From != ids[2].ID {
+		t.Fatal("ICE forwarding did not bind the authenticated sender", p)
 	}
 	_ = wa.CloseNow()
 	for {

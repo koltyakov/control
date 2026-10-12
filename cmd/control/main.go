@@ -220,7 +220,13 @@ func run(ctx context.Context, args []string) error {
 					return errors.New("invalid release interval")
 				}
 			}
-			g, err := gateway.New(*data, *token, gateway.Options{PublicURL: os.Getenv("CONTROL_PUBLIC_URL"), SuperuserKey: os.Getenv("CONTROL_SUPERUSER_KEY"), Software: buildinfo.Current(), Apply: apply, ReleaseRepo: releaseRepository(), ReleaseToken: os.Getenv("CONTROL_RELEASE_TOKEN"), ReleaseInterval: interval})
+			var stunServers []string
+			if value := os.Getenv("CONTROL_STUN_SERVERS"); value != "" {
+				for server := range strings.SplitSeq(value, ",") {
+					stunServers = append(stunServers, strings.TrimSpace(server))
+				}
+			}
+			g, err := gateway.New(*data, *token, gateway.Options{STUNServers: stunServers, PublicURL: os.Getenv("CONTROL_PUBLIC_URL"), SuperuserKey: os.Getenv("CONTROL_SUPERUSER_KEY"), Software: buildinfo.Current(), Apply: apply, ReleaseRepo: releaseRepository(), ReleaseToken: os.Getenv("CONTROL_RELEASE_TOKEN"), ReleaseInterval: interval})
 			if err != nil {
 				return err
 			}

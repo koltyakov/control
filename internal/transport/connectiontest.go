@@ -55,6 +55,7 @@ func (p *Peer) TestConnection(ctx context.Context, target string, options model.
 	}
 	result.SetupMillis = float64(time.Since(started)) / float64(time.Millisecond)
 	result.Transport = conn.(*sessionStream).mode
+	result.Route = conn.(*sessionStream).session.route()
 	result.Latency, result.Upload, result.Download, err = runConnectionTest(conn, q)
 	if ctx.Err() != nil {
 		err = ctx.Err()

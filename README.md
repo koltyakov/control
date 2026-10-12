@@ -19,6 +19,7 @@ Orchestrator and worker are roles, not fixed machine types. A node can perform b
 - Persistent machine identities, enrollment, names, labels, and online discovery.
 - SQLite-backed user accounts and private fleets, isolated across discovery, enrollment, WebRTC, relay, and execution.
 - Outbound gateway connections, direct WebRTC data channels, and WebSocket relay fallback.
+- Negotiated trickle ICE, gateway-configured STUN defaults, and demand-driven direct re-probes without interrupting relay streams.
 - Automatic gateway reconnection after detected network switches, with stale peer sessions retired and rebuilt on demand without replaying interrupted work.
 - Mutually authenticated TLS 1.3 sessions over both transports. The relay forwards encrypted execution traffic.
 - Durable task acceptance, idempotent submission IDs, cancellation, offset-based logs, results, and restart reconciliation.
@@ -215,6 +216,8 @@ control speedtest SER5 --size 64 --json
 ```
 
 Measures warmed RTT and sequential throughput in both directions over Control's WebRTC or relay stream. Worker-to-worker traffic stays between those workers. Tests run only when requested, default to 16 MiB per direction, and leave no files. MCP exposes `control_speedtest`. See [connection tests](docs/connections.md) for permissions, limits, and interpretation.
+
+For peers across NAT networks, configure the gateway with `CONTROL_STUN_SERVERS=stun:your-stun-server.example.com:3478`. Nodes and standalone clients without an explicit ICE configuration inherit those defaults on connection. No public STUN provider is contacted by default. Connection tests and session inspection distinguish direct WebRTC, TURN, and the gateway relay. See [ICE configuration](docs/protocol.md#node-configuration).
 
 ## Update the CLI
 

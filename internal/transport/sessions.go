@@ -11,6 +11,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/pion/webrtc/v4"
 )
 
 // Lanes isolate long-lived and bulk traffic from short control RPCs. Each lane
@@ -30,10 +31,13 @@ type sessionKey struct {
 }
 
 type incomingSetup struct {
-	remote string
-	cancel context.CancelFunc
+	remote         string
+	cancel         context.CancelFunc
+	candidates     chan webrtc.ICECandidateInit
+	candidateCount int
 }
 type sessionDial struct {
+	refresh    *peerSession
 	generation uint64
 	done       chan struct{}
 	cancel     context.CancelFunc
@@ -42,6 +46,7 @@ type sessionDial struct {
 	err        error
 }
 type peerSession struct {
+	draining           bool // Protected by the peer mutex; new streams use the replacement.
 	mux                *yamux.Session
 	link               *link
 	id, remote, mode   string
@@ -106,7 +111,7 @@ func (p *Peer) serve(s *peerSession) {
 			abortStream(stream)
 			continue
 		}
-		conn := &sessionStream{Conn: stream, mode: s.mode, release: func() { <-s.incoming; <-p.streamSlots }}
+		conn := &sessionStream{Conn: stream, mode: s.mode, session: s, release: func() { <-s.incoming; <-p.streamSlots }}
 		if !p.worker(func() {
 			defer func() { _ = conn.Close() }()
 			if p.handler != nil {
@@ -126,6 +131,7 @@ func abortStream(conn net.Conn) {
 type sessionStream struct {
 	net.Conn
 	mode    string
+	session *peerSession
 	once    sync.Once
 	release func()
 }
@@ -165,32 +171,30 @@ func (p *Peer) session(ctx context.Context, target string, lane Lane) (*peerSess
 	}
 	key := sessionKey{id, lane}
 	if s := p.sessions[key]; s != nil && s.usableLocked() {
+		if s.mode == "relay" && !p.cfg.RelayOnly && p.pending[key] == nil && p.directAvailableLocked(s.remote, time.Now()) {
+			// Keep the relay available while a bounded setup probes a better path.
+			// Only new streams switch; existing bytes are never replayed.
+			if d := p.beginDialLocked(s.remote, key); d != nil {
+				d.refresh, d.waiters = s, 1
+				p.directRetry[s.remote] = time.Now().Add(directRetryInterval)
+			}
+		}
 		p.mu.Unlock()
 		return s, nil
 	}
 	d := p.pending[key]
 	if d == nil {
-		select {
-		case p.pendingSlots[lane] <- struct{}{}:
-		default:
+		d = p.beginDialLocked(target, key)
+		if d == nil {
 			p.mu.Unlock()
 			return nil, errors.New("peer setup limit reached")
 		}
-		dialCtx, cancel := context.WithTimeout(p.ctx, 20*time.Second)
-		d = &sessionDial{done: make(chan struct{}), cancel: cancel, generation: p.networkGeneration}
-		p.pending[key] = d
-		// The mutex also protects Add against shutdown's Wait.
-		p.wg.Add(1)
-		go func() { defer p.wg.Done(); defer cancel(); p.establish(dialCtx, target, key, d) }()
 	}
 	d.waiters++
 	p.mu.Unlock()
 	defer func() {
 		p.mu.Lock()
-		d.waiters--
-		if d.waiters == 0 {
-			d.cancel()
-		}
+		p.releaseDialWaiterLocked(d)
 		p.mu.Unlock()
 	}()
 	select {
@@ -201,6 +205,44 @@ func (p *Peer) session(ctx context.Context, target string, lane Lane) (*peerSess
 	case <-d.done:
 		return d.session, d.err
 	}
+}
+
+func (p *Peer) releaseDialWaiterLocked(d *sessionDial) {
+	d.waiters--
+	if d.waiters != 0 {
+		return
+	}
+	d.cancel()
+	// A later caller must not attach to an already-cancelled setup while its
+	// network cleanup is still finishing.
+	for key, pending := range p.pending {
+		if pending == d {
+			delete(p.pending, key)
+		}
+	}
+}
+
+// Called with p.mu held, including while assigning a refresh before the worker starts.
+func (p *Peer) beginDialLocked(target string, key sessionKey) *sessionDial {
+	select {
+	case p.pendingSlots[key.lane] <- struct{}{}:
+	default:
+		return nil
+	}
+	dialCtx, cancel := context.WithTimeout(p.ctx, 20*time.Second)
+	d := &sessionDial{done: make(chan struct{}), cancel: cancel, generation: p.networkGeneration}
+	p.pending[key] = d
+	p.wg.Add(1)
+	go func() { defer p.wg.Done(); defer cancel(); p.establish(dialCtx, target, key, d) }()
+	return d
+}
+
+const directRetryInterval = 30 * time.Second
+
+// Called with p.mu held. A healthy shared carrier need not repeat ICE checks.
+func (p *Peer) directAvailableLocked(remote string, now time.Time) bool {
+	c := p.carriers[remote]
+	return (c != nil && c.pc != nil && !c.closed && !c.disconnected && c.pc.ConnectionState() == webrtc.PeerConnectionStateConnected) || !now.Before(p.directRetry[remote])
 }
 
 func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *sessionDial) {
@@ -252,10 +294,7 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 		p.mu.Unlock()
 		defer func() {
 			p.mu.Lock()
-			other.waiters--
-			if other.waiters == 0 {
-				other.cancel()
-			}
+			p.releaseDialWaiterLocked(other)
 			p.mu.Unlock()
 		}()
 		select {
@@ -271,7 +310,7 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 	p.mu.Lock()
 	channelSupport := p.cfg.Node.PeerChannels
 	p.mu.Unlock()
-	if key.lane != ControlLane && node.PeerChannels && channelSupport && !p.cfg.RelayOnly {
+	if d.refresh == nil && key.lane != ControlLane && node.PeerChannels && channelSupport && !p.cfg.RelayOnly {
 		// Establish one carrier, then add channels without another ICE handshake.
 		if _, err = p.session(ctx, node.ID, ControlLane); err != nil {
 			return
@@ -283,7 +322,7 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 	cached := p.sessions[actualKey]
 	usable := cached != nil && cached.usableLocked()
 	p.mu.Unlock()
-	if usable {
+	if usable && d.refresh == nil {
 		s = cached
 		return
 	}
@@ -296,14 +335,33 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 		err = ctx.Err()
 		return
 	}
-	if !p.cfg.RelayOnly {
+	p.mu.Lock()
+	tryDirect := !p.cfg.RelayOnly && (d.refresh != nil || p.directAvailableLocked(node.ID, time.Now()))
+	if tryDirect {
+		p.directRetry[node.ID] = time.Now().Add(directRetryInterval)
+	}
+	p.mu.Unlock()
+	if tryDirect {
+		started := time.Now()
 		directCtx, cancel := context.WithTimeout(ctx, p.cfg.DirectTimeout)
 		s, err = p.dial(directCtx, node.ID, "webrtc", key.lane)
 		cancel()
 		if err != nil {
 			p.stats.relayFallbacks.Add(1)
-			p.log.Debug("direct peer session failed; using relay", "peer", node.Name, "lane", key.lane, "error", err)
+			p.log.Debug("WebRTC setup failed; retaining relay fallback", "peer", node.Name, "lane", key.lane, "elapsed", time.Since(started), "error", err)
 		}
+	}
+	if d.refresh != nil && (s == nil || err != nil) {
+		// A failed probe does not tear down or recreate the working relay.
+		p.mu.Lock()
+		usable := d.refresh.usableLocked() && networkGeneration == p.networkGeneration
+		p.mu.Unlock()
+		if usable {
+			s, err = d.refresh, nil
+		} else if err == nil {
+			err = errors.New("relay unavailable after direct probe")
+		}
+		return
 	}
 	if s == nil || err != nil {
 		if ctx.Err() != nil {
@@ -344,10 +402,23 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 		return
 	}
 	p.sessions[actualKey] = s
+	var replaced *peerSession
+	if d.refresh != nil {
+		replaced = d.refresh
+		replaced.draining = true
+	}
+	if s.mode == "webrtc" {
+		delete(p.directRetry, node.ID)
+	}
 	if directoryGeneration == p.directoryGeneration {
 		p.resolved[target], p.resolved[node.Name] = node.ID, node.ID
 	}
 	p.mu.Unlock()
+	route := s.route()
+	p.log.Debug("peer session established", "peer", node.Name, "lane", key.lane, "transport", s.mode, "route", route.Kind, "localCandidate", route.LocalCandidate, "remoteCandidate", route.RemoteCandidate)
+	if replaced != nil {
+		p.worker(func() { p.drainSession(replaced) })
+	}
 	if !p.worker(func() { p.serve(s) }) {
 		_ = s.mux.Close()
 		err = errors.New("peer stopped during setup")
@@ -362,6 +433,17 @@ func (p *Peer) openStream(ctx context.Context, s *peerSession) (net.Conn, error)
 		return nil, ctx.Err()
 	case <-p.ctx.Done():
 		return nil, p.ctx.Err()
+	}
+	p.mu.Lock()
+	draining := s.draining
+	replacement := p.sessions[sessionKey{s.remote, s.lane}]
+	p.mu.Unlock()
+	if draining {
+		<-s.outgoing
+		if replacement == nil || replacement == s {
+			return nil, errors.New("peer session retired")
+		}
+		return p.openStream(ctx, replacement)
 	}
 	global := p.outgoingSlots[s.lane]
 	select {
@@ -383,7 +465,7 @@ func (p *Peer) openStream(ctx context.Context, s *peerSession) (net.Conn, error)
 		stream, err := s.mux.OpenStream()
 		var conn net.Conn
 		if err == nil {
-			conn = &sessionStream{Conn: stream, mode: s.mode, release: release}
+			conn = &sessionStream{Conn: stream, mode: s.mode, session: s, release: release}
 		} else {
 			release()
 		}
@@ -412,14 +494,36 @@ func (p *Peer) openStream(ctx context.Context, s *peerSession) (net.Conn, error)
 	}
 }
 
+func (p *Peer) drainSession(s *peerSession) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		if len(s.outgoing) == 0 && len(s.incoming) == 0 && s.mux.NumStreams() == 0 {
+			_ = s.mux.Close()
+			return
+		}
+		select {
+		case <-s.mux.CloseChan():
+			return
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 func (p *Peer) SessionStats() []model.PeerSession {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	result := []model.PeerSession{}
+	var sessions []*peerSession
 	for _, s := range p.allSessions {
 		if s.usableLocked() {
-			result = append(result, model.PeerSession{ID: s.id, Peer: s.remote, Lane: string(s.lane), Mode: s.mode, Outgoing: len(s.outgoing), Incoming: len(s.incoming)})
+			sessions = append(sessions, s)
 		}
+	}
+	p.mu.Unlock()
+	result := []model.PeerSession{}
+	for _, s := range sessions {
+		result = append(result, model.PeerSession{ID: s.id, Peer: s.remote, Lane: string(s.lane), Mode: s.mode, Outgoing: len(s.outgoing), Incoming: len(s.incoming), Route: s.route()})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result

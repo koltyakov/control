@@ -17,6 +17,8 @@ control speedtest SER5 --from est-vps --size 64 --samples 20 --json
 
 `--from` selects the initiating worker. Without it, the initiating endpoint is the CLI/MCP process on this orchestrator, with no local node required. Upload means source to target; download means target to source. Worker-to-worker test payloads never pass through the orchestrator. Both paths use Control's normal pinned TLS and bulk-lane WebRTC connection, with gateway relay fallback. The result identifies the transport of the measured stream, rather than inferring it from other connections.
 
+Results also identify the selected route as `direct`, `turn`, `gateway-relay`, or `unknown`. WebRTC can carry traffic through TURN, so `transport: "webrtc"` alone does not prove a direct path. JSON `route` includes local/remote candidate types and protocol when available, never addresses or credentials. CLI output prints the route separately; older nodes may omit it.
+
 ## Measurements
 
 - Setup time includes opening the bulk stream and the destination's acknowledgement. It can reuse an existing session; this is not necessarily a cold ICE/TLS handshake.

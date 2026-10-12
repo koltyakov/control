@@ -107,6 +107,7 @@ func (p *Peer) resetNetwork() {
 	p.directoryGeneration++
 	p.resolved = map[string]string{}
 	p.lookups = map[string]lookupEntry{}
+	p.directRetry = map[string]time.Time{}
 	ws := p.ws
 	p.ws = nil
 	if p.connectCancel != nil {

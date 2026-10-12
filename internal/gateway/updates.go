@@ -18,6 +18,7 @@ import (
 )
 
 type Options struct {
+	STUNServers     []string
 	PublicURL       string
 	SuperuserKey    string
 	Software        buildinfo.Info

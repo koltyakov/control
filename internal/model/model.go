@@ -33,6 +33,7 @@ type Node struct {
 	ClientOwners   bool              `json:"clientOwners,omitempty"`
 	ClientOwner    string            `json:"clientOwner,omitempty"`
 	PeerChannels   bool              `json:"peerChannels,omitempty"`
+	TrickleICE     bool              `json:"trickleICE,omitempty"`
 	// LargePackets advertises that this receiver accepts 64 KiB carrier packets.
 	LargePackets bool `json:"largePackets,omitempty"`
 	// ExecutionAuthority is assigned by the gateway, never by enrollment metadata.
@@ -74,12 +75,21 @@ type Lease struct {
 }
 
 type PeerSession struct {
-	ID       string `json:"id"`
-	Peer     string `json:"peer"`
-	Lane     string `json:"lane"`
-	Mode     string `json:"mode"`
-	Outgoing int    `json:"outgoingStreams"`
-	Incoming int    `json:"incomingStreams"`
+	ID       string     `json:"id"`
+	Peer     string     `json:"peer"`
+	Lane     string     `json:"lane"`
+	Mode     string     `json:"mode"`
+	Outgoing int        `json:"outgoingStreams"`
+	Incoming int        `json:"incomingStreams"`
+	Route    *PeerRoute `json:"route,omitempty"`
+}
+
+// PeerRoute describes the selected path without exposing addresses or ICE credentials.
+type PeerRoute struct {
+	Kind            string `json:"kind"`
+	LocalCandidate  string `json:"localCandidate,omitempty"`
+	RemoteCandidate string `json:"remoteCandidate,omitempty"`
+	Protocol        string `json:"protocol,omitempty"`
 }
 
 // TransportStats are cumulative peer-transport counters for local diagnostics.
