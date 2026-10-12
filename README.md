@@ -350,6 +350,8 @@ bin/control call worker mcp.call '{"server":"local-tools","tool":"TOOL_NAME","ar
 
 MCP connections remain open across calls. The bridge supports tool calls, discovery, resource reads/listing, and prompt reads/listing through stdio or Streamable HTTP. Tool results preserve MCP content. Sampling, elicitation, subscriptions, and client-to-server callback forwarding are not implemented.
 
+Remote `mcp.discover` requires account execution authority or an exact delegation, including server listing, because selecting a server can launch its configured process or open a remote connection.
+
 ## Network access
 
 HTTP requests execute on the selected machine, including DNS resolution:

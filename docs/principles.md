@@ -44,6 +44,8 @@ Authenticate peers and enforce access on the node that owns the requested capabi
 
 Fleet membership and a worker's local API credential permit discovery, not independent peer execution. Bind delegation to the orchestrator owner, destination, authenticated worker, and requested instruction. Do not install ambient worker permissions. Check expiry and revocation on existing sessions as well as new connections; cancellation must cover admitted tasks and streams. See [delegation](delegation.md).
 
+Preserve the same instruction checks when coordinated work targets its own node. Enforce an artifact token's absolute expiry on its backing access record and active transfers. Methods that can start configured processes or open application sessions require execution authority, even when named discovery.
+
 Only the gateway's superuser role can publish executable updates or provision user accounts. A user can issue common keys only within their own fleet. A node must acknowledge an idle maintenance reservation before updating. Never interrupt accepted work to apply an update, and never equate a disconnected participant with a successful restart.
 
 Document the authority under which providers run. A filesystem root limits filesystem API paths; it does not sandbox an executable. An AI CLI is a provider running as the node's OS user, with the authority available to that process.

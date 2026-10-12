@@ -8,9 +8,42 @@ import (
 	"time"
 
 	"github.com/hashicorp/yamux"
+	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/transport"
 )
+
+func TestDelegatedSelfAuthorizationIsInstructionBound(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	n := &Node{Identity: &identity.Identity{ID: "self"}}
+	s := &delegationState{grant: model.Delegation{Method: "files.list"}, ctx: ctx}
+	ctx = context.WithValue(ctx, authorityContextKey{}, authority{owner: "owner", grant: s})
+	if err := n.authorize(ctx, "self", "exec.run"); err == nil {
+		t.Fatal("self identity bypassed delegated instruction")
+	}
+	if err := n.authorize(ctx, "self", "files.list"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDelegationAbsoluteExpiryOverridesActivity(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	n := &Node{delegations: map[string]*delegationState{}}
+	now := time.Now()
+	s := &delegationState{grant: model.Delegation{ID: "absolute"}, ctx: ctx, cancel: cancel, lastActivity: now, expiresAt: now.Add(time.Minute), activeTasks: 1}
+	n.delegations[s.grant.ID] = s
+	n.expireDelegations(s.expiresAt.Add(-time.Nanosecond))
+	if ctx.Err() != nil {
+		t.Fatal("access expired before its absolute limit")
+	}
+	s.lastActivity = s.expiresAt
+	n.expireDelegations(s.expiresAt)
+	if len(n.delegations) != 0 || ctx.Err() == nil {
+		t.Fatal("activity extended absolute expiry")
+	}
+}
 
 func TestDelegationIdleExpiry(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

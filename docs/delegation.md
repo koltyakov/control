@@ -6,6 +6,8 @@ Fleet membership permits discovery, not execution. An account-authenticated CLI 
 
 The gateway assigns `executionAuthority` to live client sessions authenticated with an account key, or the superuser for its legacy fleet. Machines cannot claim it through enrollment metadata or labels. The destination checks this authority before dispatch, on both WebRTC and relay, including existing sessions and streaming methods. Its `allow` rules still restrict account clients. `@orchestrator` in `allow` selects account-authenticated clients; full stable owner IDs allow narrower restrictions.
 
+Worker discovery covers `nodes.list`, `nodes.select`, `node.describe`, and `capabilities.list`. `mcp.discover` requires execution authority or an exact instruction grant, including when listing server names. Selecting an MCP server can start its configured subprocess or connect to its URL as the node's OS user.
+
 ## Run work through another worker
 
 From a logged-in orchestrator:
@@ -15,6 +17,8 @@ control call first peers.call '{"target":"second","method":"exec.run","params":{
 ```
 
 CLI and MCP first ask `second` for an instruction-bound grant naming `first` as its subject. They then instruct `first`, carrying the grant in that invocation's peer envelope. `first` connects directly to `second`, which checks the authenticated worker identity, grant lifetime, method, and arguments. An unrelated `control exec second` from `first` has no grant and fails.
+
+The same checks apply when the destination is `first` itself: local workflow steps and self-directed `peers.call` require destination-owned grants under the requesting orchestrator owner. Permission to coordinate work does not confer permission to execute every local capability. The trusted local API retains local execution permission.
 
 For durable work, submit `peers.call` as a task, or use a `workflow.run` task. A forwarded `tasks.start` returns its child task handle rather than waiting. Workflow preparation assigns stable child IDs and grants each step's task lifecycle. Child tasks belong to the original orchestrator owner, not the forwarding worker. Repeating a parent submission with the same explicit ID retains its child IDs and idempotent acceptance.
 
@@ -39,13 +43,15 @@ There is no fleet-wide grant transaction or single workflow-wide revoke operatio
 
 Every destination owns its grant records. A grant expires after one hour without an authorized invocation or stream traffic. Discovery and transport keepalives do not renew it. An accepted task keeps its grant active while queued or running; task completion starts a fresh idle period. Idle streams do not keep a grant alive just by remaining open. Expiry is checked on admission and once per second for existing streams.
 
-Synchronous instructions are single-use, so a worker cannot replay a command during that hour. Task grants permit idempotent submission and owner-scoped status, logs, and cancellation for one explicit task ID. Artifact downloads permit offset-based resumption. Artifact tokens retain their separately requested absolute TTL in addition to the idle access check.
+Synchronous instructions are single-use, so a worker cannot replay a command during that hour. Task grants permit idempotent submission and owner-scoped status, logs, and cancellation for one explicit task ID. Artifact downloads permit offset-based resumption. Artifact tokens and their backing access IDs share the separately requested absolute TTL in addition to the idle access check. Direct use of an access ID, omission of the token, and ongoing traffic cannot extend that deadline; it cancels admitted transfers. `access.list` reports the earlier idle or absolute expiry.
 
 At most 4,096 grants are retained per destination. Records are in memory and disappear on node restart. Unfinished tasks retain the existing interrupted-on-restart behavior; restart never restores a grant or replays a command. Accepted tasks can outlive the submitting client disconnecting.
 
 ## Upgrade and credential boundaries
 
 Upgrade the gateway and every execution node. `GET /v1/auth` advertises `delegation`; compatible nodes advertise `instructionDelegation`. Default CLI/MCP account routing refuses older gateways and targets before execution. Older receivers retain their old trust rules until upgraded, so a mixed fleet does not provide this protection everywhere.
+
+Install the corrected node version everywhere to enforce local coordination grants, artifact access deadlines, and execution-authorized MCP discovery. Existing capability flags do not distinguish these corrections from earlier delegation implementations.
 
 Default remote CLI/MCP routing now uses the account client's stable owner even when a local node is running. It no longer inherits that node's authority. Keep using named targets. `--api` and `CONTROL_API` explicitly select the local API, which can execute work on its own node and discover peers but cannot independently execute peer work. Previous tasks owned by a node remain owned by it; inspect them through that worker's local API. They are not reassigned to the new client owner.
 

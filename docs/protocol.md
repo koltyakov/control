@@ -166,7 +166,7 @@ Authenticate with `Authorization: Bearer TOKEN`. Responses contain `result` or `
 | `artifacts.grant` | `id`, recipient `target`, optional `ttlSeconds` |
 | `artifacts.pull` | Full `artifact` reference; resumes an existing partial |
 | `artifacts.deliver` | `id`, recipient `target`, optional `ttlSeconds` |
-| `mcp.discover` | Optional `server`; omitted lists configured servers |
+| `mcp.discover` | Optional `server`; omitted lists configured servers; requires execution authority or an exact delegation because discovery can start the configured server |
 | `mcp.call` | `server`, `tool`, `arguments` |
 | `mcp.request` | `server`, `method`, `params` for resource/prompt operations |
 | `exec.run` | `command`, optional `args`, `env`, `dir`, `stdin` |
@@ -237,11 +237,11 @@ Streaming log clients send peer `tasks.logs` with `id`, `offset`, and `follow: t
 
 ### Instruction-bound delegation
 
-Authenticated gateway metadata advertises `delegation: true`; compatible machines advertise `instructionDelegation: true`. The gateway assigns `executionAuthority: true` only to account-authenticated live clients, never enrolled machines or common-key clients. Default account routing refuses older targets. Worker membership permits only `nodes.list`, `nodes.select`, `node.describe`, `capabilities.list`, and `mcp.discover` without a grant, still subject to `allow`.
+Authenticated gateway metadata advertises `delegation: true`; compatible machines advertise `instructionDelegation: true`. The gateway assigns `executionAuthority: true` only to account-authenticated live clients, never enrolled machines or common-key clients. Default account routing refuses older targets. Worker membership permits only `nodes.list`, `nodes.select`, `node.describe`, and `capabilities.list` without a grant, still subject to `allow`. `mcp.discover` requires execution authority or an exact delegation, including server listing, because selecting a server can launch a configured subprocess or open a remote session.
 
-Peer requests can carry `delegation` and an outgoing `delegations` array. Destination-owned records bind `id`, `target`, `subject`, `owner`, `method`, and `params`. Task grants also cover status, logs, cancellation, and matching idempotent submission for one task. Workflow `inputsFrom` entries have `node`, `path`, `taskId`, and `artifact` index; `deliverTo` holds authorized recipient IDs. Dynamic artifact grants must sign the expected upstream output and recipient. A caller cannot change a method, arguments, worker, or task by editing the envelope.
+Peer requests can carry `delegation` and an outgoing `delegations` array. Destination-owned records bind `id`, `target`, `subject`, `owner`, `method`, and `params`. Coordinated work targeting the coordinating node itself requires a matching grant under the original owner, just like work targeting another node. Task grants also cover status, logs, cancellation, and matching idempotent submission for one task. Workflow `inputsFrom` entries have `node`, `path`, `taskId`, and `artifact` index; `deliverTo` holds authorized recipient IDs. Dynamic artifact grants must sign the expected upstream output and recipient. A caller cannot change a method, arguments, worker, or task by editing the envelope.
 
-Authority contexts survive client disconnects for accepted tasks but are not persisted or exposed as local-worker permissions. Synchronous instructions are single-use. Authorized requests and stream bytes refresh idle expiry; accepted queued/running tasks keep it active. Expiry and revocation close streams and cancel tasks. At most 4,096 records are held per destination, lost on restart. There is no grant-management delegation or nested delegated coordination. See [usage, revocation, and limits](delegation.md).
+Authority contexts survive client disconnects for accepted tasks but are not persisted or exposed as local-worker permissions. Synchronous instructions are single-use. Authorized requests and stream bytes refresh idle expiry; accepted queued/running tasks keep it active. Artifact-derived access also expires at the signed token's absolute deadline, even if its access ID is supplied directly, the token is omitted, or transfer traffic continues. `access.list` reports the earlier idle or absolute expiry. Expiry and revocation close streams and cancel tasks. At most 4,096 records are held per destination, lost on restart. There is no grant-management delegation or nested delegated coordination. See [usage, revocation, and limits](delegation.md).
 
 ## Task specification
 

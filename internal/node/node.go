@@ -264,10 +264,7 @@ func (n *Node) Close() error {
 }
 
 func (n *Node) authorize(ctx context.Context, caller, method string) error {
-	if caller == n.Identity.ID {
-		return nil
-	}
-	if !n.Peer.IsMember(caller) {
+	if caller != n.Identity.ID && !n.Peer.IsMember(caller) {
 		return errors.New("caller is outside this fleet")
 	}
 	if a, ok := ctx.Value(authorityContextKey{}).(authority); ok && a.grant != nil {
@@ -282,6 +279,9 @@ func (n *Node) authorize(ctx context.Context, caller, method string) error {
 			return nil
 		}
 		return errors.New("method is outside delegated instruction")
+	}
+	if caller == n.Identity.ID {
+		return nil
 	}
 	peer, err := n.Peer.Lookup(ctx, caller)
 	if err != nil {
@@ -420,6 +420,8 @@ func (n *Node) Call(ctx context.Context, target, method string, params any, resu
 		defer cancel()
 		stop := context.AfterFunc(n.ctx, cancel)
 		defer stop()
+		_, coordinated := ctx.Value(authorityContextKey{}).(authority)
+		delegated := false
 		for _, grant := range model.Delegations(ctx) {
 			if grant.Target == n.Identity.ID && grant.Matches(method, model.JSON(params)) {
 				var release func()
@@ -429,8 +431,15 @@ func (n *Node) Call(ctx context.Context, target, method string, params any, resu
 					return err
 				}
 				defer release()
+				delegated = true
 				break
 			}
+		}
+		// Remote coordination retains its authority boundary even when the
+		// destination is this node. Only the trusted local API has ambient local
+		// execution permission.
+		if coordinated && !delegated {
+			return errors.New("local coordinated work requires an instruction-bound delegation")
 		}
 		value, err := n.dispatch(ctx, n.Identity.ID, method, model.JSON(params))
 		if err != nil {

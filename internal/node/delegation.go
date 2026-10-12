@@ -21,6 +21,7 @@ type delegationState struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	lastActivity time.Time
+	expiresAt    time.Time // Absolute limit for derived artifact access.
 	activeTasks  int
 	used         bool
 }
@@ -33,7 +34,7 @@ type authority struct {
 
 func discoveryMethod(method string) bool {
 	switch method {
-	case "nodes.list", "nodes.select", "node.describe", "capabilities.list", "mcp.discover":
+	case "nodes.list", "nodes.select", "node.describe", "capabilities.list":
 		return true
 	}
 	return false
@@ -83,6 +84,10 @@ func (n *Node) acceptAuthority(ctx context.Context, caller string, request model
 	if s == nil || s.ctx.Err() != nil || s.grant.Subject != caller || !s.grant.Matches(request.Method, request.Params) || !n.delegationLiveLocked(s, time.Now()) {
 		n.delegationMu.Unlock()
 		return ctx, nil, errors.New("delegation is missing, expired, revoked, or does not authorize this instruction")
+	}
+	if a, ok := ctx.Value(authorityContextKey{}).(authority); ok && a.owner != s.grant.Owner {
+		n.delegationMu.Unlock()
+		return ctx, nil, errors.New("delegation belongs to another orchestrator")
 	}
 	if request.Method == "tasks.start" && len(s.grant.InputsFrom) != 0 {
 		// Validate signed output provenance outside the grant lock, then recheck
@@ -148,7 +153,8 @@ func (n *Node) acceptAuthority(ctx context.Context, caller string, request model
 }
 
 func (n *Node) delegationLiveLocked(s *delegationState, now time.Time) bool {
-	if s.ctx.Err() != nil {
+	if s.ctx.Err() != nil || (!s.expiresAt.IsZero() && !now.Before(s.expiresAt)) {
+		s.cancel()
 		delete(n.delegations, s.grant.ID)
 		return false
 	}
@@ -271,6 +277,9 @@ func (n *Node) delegationMethod(ctx context.Context, caller, method string, para
 			if s.grant.Owner == a.owner && n.delegationLiveLocked(s, time.Now()) {
 				q := s.grant
 				q.Expires = s.lastActivity.Add(delegationIdleTimeout).UTC()
+				if !s.expiresAt.IsZero() && s.expiresAt.Before(q.Expires) {
+					q.Expires = s.expiresAt
+				}
 				grants = append(grants, q)
 			}
 		}
