@@ -38,6 +38,9 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 		Gateway:    &model.GatewaySnapshot{URL: g.options.PublicURL, Software: software, StartedAt: g.startedAt, System: &info},
 		Nodes:      []model.NodeActivitySnapshot{},
 	}
+	// Read the selected deployment once, before taking the directory lock.
+	// Repository persistence or cleanup must not hold g.mu through this read.
+	deployment := g.updates.Current()
 	g.mu.Lock()
 	for _, n := range g.nodes {
 		if n.UserID != p.UserID {
@@ -60,7 +63,7 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 			snapshot.ActiveCount, snapshot.Leased = c.health.ActiveCount, c.health.Leased
 			snapshot.System = &c.health.System
 		}
-		if g.nodeUpdating(n, result.ObservedAt) {
+		if g.nodeUpdating(n, result.ObservedAt, deployment) {
 			snapshot.Status = "update"
 		}
 		result.Nodes = append(result.Nodes, snapshot)

@@ -128,6 +128,21 @@ Shared client tests verify that binary request bytes reach the receiver before t
 
 The Dockerfile downloads Go dependencies while building the image. The running test network does not need internet access. The initial image build does need access to container registries, Go modules, and Debian package repositories.
 
+## Performance benchmarks
+
+Measure local observation and gateway commit contention separately from integration flows:
+
+```sh
+go test ./internal/node -run '^$' -bench '^BenchmarkActivitySnapshot$' -benchmem -count=3
+go test ./internal/gateway -run '^$' -bench '^BenchmarkGatewayCommitWithDirectoryReads$' -benchtime=3s -count=3
+```
+
+The activity benchmark has one active task and 100, 10,000, or 100,000 retained terminal tasks, requesting five recent records. The largest fixture exceeds the default retention limit to check scaling when retention is changed. It does not collect resources or use the network. On a local macOS arm64 Apple M4 Pro, before the bounded recent-task index, 10,000 retained tasks took 2.8 to 3.3 milliseconds and allocated about 11.7 MB per snapshot. Afterwards, the same fixture took about 0.5 microseconds and allocated 1,848 bytes. These are in-process measurements, not pool-wide latency or throughput claims.
+
+The gateway benchmark changes one node record under the gateway mutex with SQLite WAL and `synchronous=FULL`, while another goroutine handles directory reads for 100 or 1,000 machines. It reports commits/second, reads/second, and directory p99 latency from a bounded ring of the latest 4,096 reads. HTTP response encoding is included; network I/O, connection proofs, and resource sampling are excluded. Set `CONTROL_BENCH_DIR` to an existing filesystem directory to compare disk with a Linux tmpfs mount. Each run creates and removes only its own benchmark subdirectory. The default uses the Go test temporary directory.
+
+These benchmarks do not establish connection-setup latency under relay saturation, real fleet polling bandwidth, or production storage limits. Before changing gateway mutation ordering or WebSocket scheduling, also measure concurrent connects, status requests, and bulk relay traffic over the actual deployment filesystem and both transports. Adapter benchmarks remain documented in [fleet streaming](streaming.md#verification-and-measurements).
+
 ## Keep a deployment for debugging
 
 To inspect a failed environment, use Compose directly instead of the cleanup script:

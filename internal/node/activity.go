@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -165,6 +166,42 @@ func taskActivity(t *model.Task) model.Activity {
 	return a
 }
 
+func compareRecentActivities(a, b model.Activity) int {
+	if order := b.Finished.Compare(a.Finished); order != 0 {
+		return order
+	}
+	return strings.Compare(a.ID, b.ID)
+}
+
+// Caller holds n.mu or is loading tasks before Start. The index holds only
+// observation metadata, never arguments, results, logs, or task pointers.
+func (n *Node) recordRecentTaskLocked(task *model.Task) {
+	if !task.Terminal() {
+		return
+	}
+	a := taskActivity(task)
+	n.recentTasks = slices.DeleteFunc(n.recentTasks, func(old model.Activity) bool { return old.ID == a.ID })
+	index, _ := slices.BinarySearchFunc(n.recentTasks, a, compareRecentActivities)
+	if index >= maxRecentActivities {
+		return
+	}
+	n.recentTasks = slices.Insert(n.recentTasks, index, a)
+	if len(n.recentTasks) > maxRecentActivities {
+		clear(n.recentTasks[maxRecentActivities:])
+		n.recentTasks = n.recentTasks[:maxRecentActivities]
+	}
+}
+
+// Refill after pruning, including older retained tasks outside the old index.
+// This scans history only during maintenance, not on every dashboard poll.
+func (n *Node) rebuildRecentTasksLocked() {
+	clear(n.recentTasks)
+	n.recentTasks = n.recentTasks[:0]
+	for _, task := range n.tasks {
+		n.recordRecentTaskLocked(task)
+	}
+}
+
 func (n *Node) activitySnapshot(query model.ActivityQuery) model.NodeActivitySnapshot {
 	s := model.NodeActivitySnapshot{ID: n.Identity.ID, Name: n.Config.Name, OS: runtime.GOOS, Online: true, Status: "ready", ObservedAt: time.Now().UTC(), Active: []model.Activity{}, Recent: []model.Activity{}}
 	s.Software, s.Disabled = buildinfo.Current(), n.currentMachineState().Disabled
@@ -180,19 +217,12 @@ func (n *Node) activitySnapshot(query model.ActivityQuery) model.NodeActivitySna
 	s.Tunnels = model.ActiveTunnelCounts(s.Active)
 	n.mu.Lock()
 	if query.Recent > 0 {
-		for _, task := range n.tasks {
-			if !task.Terminal() {
-				s.Active = append(s.Active, taskActivity(task))
-			} else {
-				s.Recent = append(s.Recent, taskActivity(task))
-			}
-		}
-	} else {
-		// Non-terminal tasks are exactly those with a cancel function.
-		for id := range n.cancels {
-			if task := n.tasks[id]; task != nil {
-				s.Active = append(s.Active, taskActivity(task))
-			}
+		s.Recent = append(s.Recent, n.recentTasks[:min(query.Recent, len(n.recentTasks))]...)
+	}
+	// A task retains its cancel function until completion publication finishes.
+	for id := range n.cancels {
+		if task := n.tasks[id]; task != nil && !task.Terminal() {
+			s.Active = append(s.Active, taskActivity(task))
 		}
 	}
 	if n.lease != nil && (time.Now().Before(n.lease.Expires) || n.leaseBusy()) {
@@ -212,7 +242,7 @@ func (n *Node) activitySnapshot(query model.ActivityQuery) model.NodeActivitySna
 		}
 		return s.Active[i].Started.Before(s.Active[j].Started)
 	})
-	sort.Slice(s.Recent, func(i, j int) bool { return s.Recent[i].Finished.After(s.Recent[j].Finished) })
+	slices.SortFunc(s.Recent, compareRecentActivities)
 	if len(s.Recent) > query.Recent {
 		s.Recent = s.Recent[:query.Recent]
 	}

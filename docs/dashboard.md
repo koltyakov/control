@@ -157,7 +157,7 @@ Ordinary forwards create worker activity only while a TCP socket is connected. A
 
 ## Retention and limits
 
-Tasks retain their existing persisted lifecycle. Active non-task records and the last 64 non-task completions per node are held in memory and disappear on restart. Recent task completions are selected from persisted task records. This is an operational view, not a durable audit log.
+Tasks retain their existing persisted lifecycle. Active non-task records and the last 64 non-task completions per node are held in memory and disappear on restart. The newest 64 terminal task metadata records are indexed at completion, reconstructed from persisted task records at startup, and refilled after pruning. Activity polls read that index and the active-task set, not the full retained task history. Recent task and non-task records are merged by completion time, with ID breaking timestamp ties. This is an operational view, not a durable audit log.
 
 Each node tracks up to 2,048 non-task activities in addition to its accepted tasks. Additional active records are counted as omitted. Aggregated snapshots include at most 4,096 active records and 512 recent records; the dashboard reports omitted active detail instead of silently claiming complete coverage. Filter by node to inspect a busy subset.
 

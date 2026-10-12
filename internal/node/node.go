@@ -63,6 +63,7 @@ type Node struct {
 	providers           map[string]Provider
 	mu                  sync.Mutex
 	tasks               map[string]*model.Task
+	recentTasks         []model.Activity // Newest terminal task metadata, protected by mu.
 	cancels             map[string]context.CancelFunc
 	notifiers           map[string]*taskNotifier
 	accepting           map[string]*acceptance

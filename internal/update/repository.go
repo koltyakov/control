@@ -39,6 +39,8 @@ func (r *Repository) Upload(reader io.Reader, asset Asset) error {
 
 // Pin keeps assets available while a release is downloaded and published.
 func (r *Repository) Pin(assets []Asset) func() {
+	// Retain our own list: callers may reuse their manifest after Pin returns.
+	assets = append([]Asset(nil), assets...)
 	r.mu.Lock()
 	for _, asset := range assets {
 		r.pins[asset.SHA256]++
@@ -59,6 +61,30 @@ func (r *Repository) Pin(assets []Asset) func() {
 	}
 }
 
+// VerifyPinned hashes binaries without holding the repository mutex. The
+// returned release function keeps cleanup from deleting them until their
+// durable reference is published. Pins do not authorize unverified bytes.
+func (r *Repository) VerifyPinned(assets []Asset) (func(), error) {
+	for _, asset := range assets {
+		if !ValidDigest(asset.SHA256) || asset.Size <= 0 || asset.Size > MaxBinarySize {
+			return nil, errors.New("invalid binary metadata")
+		}
+	}
+	release := r.Pin(assets)
+	verified := map[Asset]bool{}
+	for _, asset := range assets {
+		if verified[asset] {
+			continue
+		}
+		if err := Verify(r.Blob(asset.SHA256), asset); err != nil {
+			release()
+			return nil, err
+		}
+		verified[asset] = true
+	}
+	return release, nil
+}
+
 func (r *Repository) Current() *Deployment {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -75,13 +101,13 @@ func (r *Repository) Publish(manifest Manifest, source string) (*Deployment, err
 	if err := manifest.Validate(); err != nil {
 		return nil, err
 	}
+	release, err := r.VerifyPinned(manifest.Assets)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, asset := range manifest.Assets {
-		if err := Verify(r.Blob(asset.SHA256), asset); err != nil {
-			return nil, err
-		}
-	}
 	id := manifest.ID()
 	if r.current != nil && (r.current.ID == id || r.current.Manifest.Version == manifest.Version) {
 		copy := *r.current

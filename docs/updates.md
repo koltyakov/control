@@ -170,6 +170,8 @@ After the gateway and online participants acknowledge the selected software and 
 
 The gateway retains all assets in the selected manifest for offline nodes, binaries pinned by unexpired, unrevoked, unredeemed installation invitations, and its current, previous, and requested runtime selections. The previous gateway binary is retained for local recovery, not general download. Active uploads and release downloads are protected. Unreferenced uploads younger than one hour are kept so multi-platform pushes can finish before publication; abandoned uploads are removed after that grace. Unreadable runtime records stop cleanup before deletion. Removal is confined to checksum-named entries within gateway update storage and does not follow symlinks outside it.
 
+Publication and invitation creation temporarily pin their selected binaries and verify their full size and SHA-256 outside the repository and gateway mutexes. Pins remain until the deployment or invitation reference commits, preventing cleanup from deleting a verified binary in that interval. Duplicate identical asset references within one verification pass are hashed once. Failed verification or persistence releases the temporary pins. Pins and file timestamps never replace checksum verification, and staged executables retain their existing verification before execution.
+
 Authenticated node downloads serve only the selected manifest. Existing installation links use their separately pinned assets until redemption, revocation, or expiry. This policy applies to gateway storage, not [node-local binary retention](#node-binary-retention), operator-created upload folders, CLI update backups, or system journals.
 
 ## HTTP and control messages

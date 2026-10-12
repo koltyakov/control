@@ -72,9 +72,8 @@ func updateAppliedAndResumed(d *update.Deployment, status update.Status) bool {
 }
 
 // Called under g.mu. Display grace never changes routing or rollout readiness.
-func (g *Gateway) nodeUpdating(n model.Node, now time.Time) bool {
+func (g *Gateway) nodeUpdating(n model.Node, now time.Time, d *update.Deployment) bool {
 	status := g.updateStatus[n.ID]
-	d := g.updates.Current()
 	fresh := n.Online && now.Sub(status.SeenAt) < 8*time.Second
 	if fresh && updateAppliedAndResumed(d, status) {
 		return false

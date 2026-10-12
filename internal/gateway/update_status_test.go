@@ -134,7 +134,7 @@ func TestUpdateStatusSurvivesDisconnectReconnectAndGatewayRestart(t *testing.T) 
 		t.Fatal("gateway restart lost update grace", got)
 	}
 	n = g.nodes[id.ID]
-	if !g.nodeUpdating(n, n.UpdateUntil.Add(-time.Nanosecond)) || g.nodeUpdating(n, n.UpdateUntil) {
+	if !g.nodeUpdating(n, n.UpdateUntil.Add(-time.Nanosecond), g.updates.Current()) || g.nodeUpdating(n, n.UpdateUntil, g.updates.Current()) {
 		t.Fatal("update grace boundary is incorrect")
 	}
 	g.mu.Lock()
@@ -169,14 +169,14 @@ func TestNodeUpdatingRequiresFreshProgressOrRestartGrace(t *testing.T) {
 	} {
 		n.Online = tc.online
 		g.updateStatus[n.ID] = update.Status{ID: d.ID, State: tc.state, SeenAt: now.Add(-tc.age)}
-		if got := g.nodeUpdating(n, now); got != tc.updating {
+		if got := g.nodeUpdating(n, now, d); got != tc.updating {
 			t.Errorf("state=%s online=%v age=%s: updating=%v", tc.state, tc.online, tc.age, got)
 		}
 	}
 	n.Online = true
 	for _, state := range []string{"downloading", "staged", "busy", "ready", "restarting"} {
 		g.updateStatus[n.ID] = update.Status{ID: "previous-deployment", State: state, SeenAt: now}
-		if g.nodeUpdating(n, now) {
+		if g.nodeUpdating(n, now, d) {
 			t.Errorf("old deployment's %s status still displays update", state)
 		}
 	}
@@ -184,13 +184,13 @@ func TestNodeUpdatingRequiresFreshProgressOrRestartGrace(t *testing.T) {
 	for _, state := range []string{"applied", "idle", "ready", "staged"} {
 		g.updateStatus[n.ID] = update.Status{ID: d.ID, State: state, Software: current, SeenAt: now}
 		n.UpdateUntil = now.Add(time.Minute)
-		if g.nodeUpdating(n, now) {
+		if g.nodeUpdating(n, now, d) {
 			t.Errorf("current resumed node's %s status still displays update", state)
 		}
 	}
 	g.updateStatus[n.ID] = update.Status{ID: d.ID, State: "applied", Software: current, Paused: true, SeenAt: now}
 	n.UpdateUntil = time.Time{}
-	if !g.nodeUpdating(n, now) {
+	if !g.nodeUpdating(n, now, d) {
 		t.Fatal("current node still in maintenance displayed normal availability")
 	}
 }

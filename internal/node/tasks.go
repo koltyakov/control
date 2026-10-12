@@ -92,6 +92,7 @@ func (n *Node) loadTasks() error {
 			}
 		}
 		n.tasks[task.ID] = &task
+		n.recordRecentTaskLocked(&task)
 	}
 	return n.loadTombstones()
 }
@@ -301,6 +302,7 @@ func (n *Node) updateTask(id string, change func(*model.Task)) (model.Task, erro
 		return next, err
 	}
 	*n.tasks[id] = next
+	n.recordRecentTaskLocked(&next)
 	return next, nil
 }
 
@@ -429,6 +431,7 @@ func (n *Node) finishTask(id string, ctx context.Context, result any, artifacts 
 		final(stored)
 		stored.State, stored.Error = "failed", "persist task completion: "+writeErr.Error()
 		task = *stored
+		n.recordRecentTaskLocked(stored)
 	}
 	delete(n.cancels, id)
 	notifier := n.notifiers[id]

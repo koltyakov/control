@@ -137,7 +137,7 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 			if deployment != nil {
 				candidate, found = deployment.Manifest.Asset(q.OS, arch)
 			}
-			if !found || update.Verify(g.updates.Blob(candidate.SHA256), candidate) != nil {
+			if !found {
 				http.Error(w, "publish a bundle containing both amd64 and arm64 installers for "+q.OS, http.StatusConflict)
 				return
 			}
@@ -151,6 +151,14 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
+	// Pin before verification so cleanup cannot remove selected assets while
+	// they are hashed outside g.mu or before the invitation commits.
+	release, err := g.updates.VerifyPinned(append([]update.Asset{asset}, assets...))
+	if err != nil {
+		http.Error(w, "installer binary changed; create a new invitation", http.StatusConflict)
+		return
+	}
+	defer release()
 	var secret [32]byte
 	if _, err = rand.Read(secret[:]); err != nil {
 		http.Error(w, "could not create ticket", 500)
@@ -161,14 +169,6 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	i := installation{Invitation: enrollment.Invitation{UserID: p.UserID, ID: identity.NewID(), Name: q.Name, AutoName: q.AutoName, ServiceMode: q.ServiceMode, Gateway: base, Asset: asset, Assets: assets, Version: version, CreatedAt: now, ExpiresAt: now.Add(time.Duration(q.TTLSeconds) * time.Second)}}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	// Cleanup holds the same lock. Recheck assets selected before acquiring it
-	// so an invitation can never be committed with a pruned binary.
-	for _, candidate := range append([]update.Asset{asset}, assets...) {
-		if err := update.Verify(g.updates.Blob(candidate.SHA256), candidate); err != nil {
-			http.Error(w, "installer binary changed; create a new invitation", http.StatusConflict)
-			return
-		}
-	}
 	if g.clientNameReserved(p.UserID, q.Name) {
 		http.Error(w, "name is reserved for a client identity", http.StatusConflict)
 		return

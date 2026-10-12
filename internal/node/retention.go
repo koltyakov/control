@@ -163,6 +163,9 @@ func (n *Node) pruneTasks(now time.Time) error {
 			removed = append(removed, t.ID)
 		}
 	}
+	if len(removed) > 0 {
+		n.rebuildRecentTasksLocked()
+	}
 	compact := len(n.tombstones) > maxTombstones
 	n.mu.Unlock()
 	for _, id := range removed {
