@@ -171,7 +171,7 @@ Separate jobs cover:
 - Both Compose transport modes.
 - govulncheck, also run by itself every Monday at 06:00 UTC.
 
-Linux containers on Docker Desktop do not verify Windows process handling or macOS filesystem behavior, so container testing complements the native matrix. The Compose image uses Go 1.27.1. Keep its version synchronized with `go.mod` when updating Go.
+Linux containers on Docker Desktop do not verify Windows process handling or macOS filesystem behavior, so container testing complements the native matrix. The Compose image uses Go 1.27.2. Keep its version synchronized with `go.mod` when updating Go.
 
 ## Local development commands
 

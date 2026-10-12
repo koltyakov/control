@@ -109,7 +109,7 @@ One account can have multiple orchestrator machines and collaborating worker nod
 
 ## Build
 
-Go 1.27.1 or newer is required. The binary has no CGO dependency. CI reads the Go version from `go.mod`; the Compose test image uses Go 1.27.1.
+Go 1.27.2 or newer is required. The binary has no CGO dependency. CI reads the Go version from `go.mod`; the Compose test image uses Go 1.27.2.
 
 ```sh
 make build
