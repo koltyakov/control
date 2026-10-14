@@ -66,6 +66,9 @@ func dashboardCLI(ctx context.Context, c client.Client, remote client.Admin, arg
 		return err
 	}
 	options := dashboard.Options{Interval: *interval, Timeout: *timeout, Output: os.Stdout, GatewayURL: remote.URL, Copy: clipboard.Copy}
+	options.Refresh = func(ctx context.Context) (model.PoolActivitySnapshot, error) {
+		return c.DashboardFresh(ctx, remote, query)
+	}
 	if role := remote.Role(ctx); role == "user" || role == "superuser" {
 		options.Invite = func(ctx context.Context, name, platform, mode string) (enrollment.Link, error) {
 			return remote.Invite(ctx, enrollment.Request{Name: name, OS: platform, ServiceMode: mode})

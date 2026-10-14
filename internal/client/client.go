@@ -27,6 +27,7 @@ type Client struct {
 	Token      string
 	routing    *routing
 	resources  *resources
+	pool       *poolActivityCache
 	persistent *persistentAccess
 }
 
@@ -34,6 +35,9 @@ type Client struct {
 func (c Client) WithLifetime(ctx context.Context) Client {
 	if c.resources == nil {
 		c.resources = newResources(ctx)
+	}
+	if c.pool == nil {
+		c.pool = &poolActivityCache{}
 	}
 	return c
 }

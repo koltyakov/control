@@ -255,6 +255,7 @@ func (g *Gateway) commit(c change) error {
 	if len(c.users)+len(c.keys)+len(c.invitations) != 0 {
 		g.reindexCredentialsLocked()
 	}
+	g.publishObservations(c.nodes...)
 	return nil
 }
 

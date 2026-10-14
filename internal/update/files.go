@@ -18,6 +18,8 @@ import (
 	"github.com/koltyakov/control/internal/processutil"
 )
 
+// Verify checks the actual bytes on every call. File metadata is not evidence
+// of integrity: contents can change without changing size or modification time.
 func Verify(path string, asset Asset) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -32,10 +34,11 @@ func Verify(path string, asset Asset) error {
 		return errors.New("update binary size mismatch")
 	}
 	hash := sha256.New()
-	if _, err = io.Copy(hash, f); err != nil {
+	size, err := io.Copy(hash, f)
+	if err != nil {
 		return err
 	}
-	if hex.EncodeToString(hash.Sum(nil)) != asset.SHA256 {
+	if size != asset.Size || hex.EncodeToString(hash.Sum(nil)) != asset.SHA256 {
 		return errors.New("update binary checksum mismatch")
 	}
 	return nil
@@ -69,7 +72,10 @@ func SaveBinary(reader io.Reader, path string, asset Asset) error {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(f.Name(), path)
+	if err = os.Rename(f.Name(), path); err != nil {
+		return err
+	}
+	return nil
 }
 
 func Download(ctx context.Context, client *http.Client, url, token, path string, asset Asset) error {

@@ -4,6 +4,55 @@
 
 Use [orchestrator machine](terminology.md) for the coordinating host, worker for a node receiving work, and client, node, and gateway for the components. A main host is an installation convenience, not a separate runtime type.
 
+For the gateway itself, follow [install a gateway on a Linux VPS](gateway.md). It covers the verified binary, private operator key, dedicated service account, systemd, HTTPS, and account provisioning. The steps below install an orchestrator client or worker, not a gateway.
+
+## Install the orchestrator CLI and AI integrations
+
+1. Install the native binary using the Linux/macOS or Windows command under [install the host CLI](#install-the-host-cli). Unix defaults to `~/.local/bin/control`; Windows defaults to `%LOCALAPPDATA%\Programs\control\control.exe`. Add the Unix directory to PATH if needed, or open a new Windows terminal after installation. If Windows resolves its unrelated `System32\control.exe`, invoke the installed executable by its full path.
+2. Get your own account key from the gateway operator. Run `control login --gateway https://YOUR_GATEWAY` and enter it at the hidden prompt. Do not use a common worker key for execution.
+3. Install MCP, the CLI skill, or both for your AI client. For OpenCode, run `control install-mcp opencode` and `control install-skill opencode`, then restart OpenCode. Use `codex` for OpenAI Codex, `claude` for Claude Code, or `agents` for a generic `.agents` layout. The release installer already installs the OpenCode skill. See [commands for each client and file locations](#mcp-and-skills).
+4. Verify with `control machines` and `control call WORKER node.describe`. A client needs no `control setup`, local service, or enrolled machine to execute remotely.
+
+```sh
+control login --gateway https://control.example.com
+control install-mcp opencode
+control install-skill opencode
+control machines
+```
+
+Only use `control setup --name main --client opencode` if this orchestrator machine should also execute requested work as a node. On Windows, default setup needs Administrator PowerShell; `--service user` selects login startup instead.
+
+## Install workers on each platform
+
+Create invitations on the logged-in orchestrator, then run each generated command on the corresponding target:
+
+```sh
+control machines add win-worker --platform windows --service user
+control machines add mac-worker --platform macos --service user
+control machines add linux-worker --platform linux --service system
+```
+
+| Target | Where to run the generated command | Startup and requirements |
+| --- | --- | --- |
+| Windows | PowerShell under the intended user's account | User mode creates a limited login task; UAC approval is requested separately for executable-scoped firewall rules. System mode requires Administrator PowerShell and runs as LocalService. |
+| macOS | Bash from the intended user's terminal | User mode installs a LaunchAgent and depends on the login session. System mode uses sudo, installs a root LaunchDaemon, and has no interactive desktop access. |
+| Linux | Bash on the target | User mode uses systemd's user manager; linger is needed for logout/reboot persistence. System mode uses sudo and a root systemd service. |
+
+Unix targets need Bash, curl or wget, CA certificates, and a SHA-256 tool such as `sha256sum` or `shasum`. Windows needs Windows PowerShell and HTTPS access. All targets need outbound access to the gateway; they need no inbound SSH port for Control operation. Configure application/provider dependencies on the worker separately. GUI tools require a desktop session and the [platform permissions](rpa.md#install-the-helper).
+
+The invitation pins verified binaries for both amd64 and arm64; the installer selects the target architecture. The gateway needs a selected bundle covering the chosen OS. Commands expire after 15 minutes by default, so generate a fresh invitation if needed. Do not log the installation URL, which is a temporary credential. Workers do not need the orchestrator's account key or a separate `control login`.
+
+Verify from the orchestrator:
+
+```sh
+control machines
+control call win-worker node.describe
+control call mac-worker node.describe
+control call linux-worker node.describe
+```
+
+Use `auto` or omit the name for target-hostname naming. See [add a machine](#add-a-machine) for replacement/recovery and [startup context](#choose-a-startup-context) before selecting system mode or migrating an existing installation.
+
 ## Install the host CLI
 
 Linux or macOS:
@@ -206,31 +255,57 @@ Policy changes are durable before the command returns and compatible nodes check
 
 ## MCP and skills
 
-Install either integration independently, globally by default or in a project:
+MCP exposes Control tools and server instructions to clients with native MCP support. The Control skill provides CLI workflow guidance for clients that can run shell commands. MCP works without the skill; install both if you want both workflows. Run these commands on the orchestrator, not on each worker. They reuse the saved account login and do not require a local node.
+
+Choose the pair for your client. Each command requires an explicit client selector and installs globally by default:
 
 ```sh
+# OpenCode
 control install-mcp opencode
 control install-skill opencode
+
+# OpenAI Codex
+control install-mcp codex
+control install-skill codex
+
+# Claude Code
+control install-mcp claude
+control install-skill claude
+
+# Generic agents
+control install-mcp agents
+control install-skill agents
+```
+
+Other selectors are `cursor`, `copilot`, `windsurf`, and `antigravity`. For example, `control install-mcp cursor` and `control install-skill cursor` configure Cursor. The complete set is `opencode`, `claude`, `cursor`, `copilot`, `codex`, `windsurf`, `antigravity`, and `agents`. Control does not support an `all` selector or automatic client selection.
+
+Add `--project DIR` to either command for project-local installation:
+
+```sh
 control install-mcp claude --project .
+control install-skill claude --project .
+control install-mcp agents --project .
 control install-skill agents --project .
 ```
 
-Supported names are `opencode`, `claude`, `cursor`, `copilot`, `codex`, `windsurf`, `antigravity`, and `agents`.
+Restart the AI client after installation so it reloads MCP configuration and skill definitions.
 
-| Client | Global MCP config | Project MCP config |
-| --- | --- | --- |
-| OpenCode V2 | `~/.config/opencode/opencode.json` | `opencode.json` |
-| Claude Code | `~/.claude.json` | `.mcp.json` |
-| Cursor | `~/.cursor/mcp.json` | `.cursor/mcp.json` |
-| GitHub Copilot | `~/.copilot/mcp-config.json` | `.vscode/mcp.json` |
-| Codex | `~/.codex/config.toml` | `.codex/config.toml` |
-| Windsurf | `~/.codeium/windsurf/mcp_config.json` | `.windsurf/mcp_config.json` |
-| Antigravity | `~/.gemini/antigravity/mcp_config.json` | `.agents/mcp_config.json` |
-| Generic agents | `~/.agents/mcp.json` | `.agents/mcp.json` |
+| Client | Selector | Global MCP config | Project MCP config |
+| --- | --- | --- | --- |
+| OpenCode V2 | `opencode` | `~/.config/opencode/opencode.json` | `opencode.json` |
+| Claude Code | `claude` | `~/.claude.json` | `.mcp.json` |
+| Cursor | `cursor` | `~/.cursor/mcp.json` | `.cursor/mcp.json` |
+| GitHub Copilot | `copilot` | `~/.copilot/mcp-config.json` | `.vscode/mcp.json` |
+| OpenAI Codex | `codex` | `~/.codex/config.toml` | `.codex/config.toml` |
+| Windsurf | `windsurf` | `~/.codeium/windsurf/mcp_config.json` | `.windsurf/mcp_config.json` |
+| Antigravity | `antigravity` | `~/.gemini/antigravity/mcp_config.json` | `.agents/mcp_config.json` |
+| Generic agents | `agents` | `~/.agents/mcp.json` | `.agents/mcp.json` |
 
 OpenCode uses its native `mcp add` command when available. The file-editor fallback uses V2's `mcp.servers` structure and honors `XDG_CONFIG_HOME`. JSON/JSONC edits preserve unrelated configuration and comments. Codex TOML retains unrelated values but is reformatted. Before changing an existing file, the editor saves its original contents once as `.control-backup`.
 
 Skills go into the client's `skills/control/SKILL.md` directory. Project OpenCode uses `.opencode/skills`, Copilot uses `.github/skills`, and Antigravity and generic clients use `.agents/skills`. Existing unmanaged skill files are not overwritten. Generic MCP configuration may need importing into the chosen client.
+
+For the generic `agents` target, the skill is `~/.agents/skills/control/SKILL.md` globally or `.agents/skills/control/SKILL.md` in the selected project. A generic runtime must support that layout or load the skill manually. If it does not read `.agents/mcp.json`, import the generated `control` server entry into its own settings, or configure a stdio server with command `/absolute/path/to/control` and argument `mcp`.
 
 MCP entries contain an absolute executable path and `--config PATH mcp`. Credentials stay in the local profile. The [Control skill](../skills/control/SKILL.md) covers discovery, durable tasks, reconciliation after uncertain submission, and direct artifact delivery. MCP also works without the skill.
 

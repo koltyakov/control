@@ -8,7 +8,9 @@ import (
 )
 
 func Write(path string, value any) error {
-	b, err := json.MarshalIndent(value, "", "  ")
+	// Metadata records are machine-read only; compact encoding writes and
+	// syncs fewer bytes than indented JSON on every task/lease update.
+	b, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}

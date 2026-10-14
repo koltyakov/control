@@ -110,6 +110,7 @@ func (p *Peer) resetNetwork() {
 	p.directRetry = map[string]time.Time{}
 	ws := p.ws
 	p.ws = nil
+	p.gatewayWS.Store(nil)
 	if p.connectCancel != nil {
 		p.connectCancel()
 	}

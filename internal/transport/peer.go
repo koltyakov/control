@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -27,6 +28,7 @@ import (
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/protocol"
 	"github.com/koltyakov/control/internal/update"
+	"github.com/koltyakov/control/internal/wsio"
 	"github.com/pion/webrtc/v4"
 	"google.golang.org/protobuf/proto"
 )
@@ -81,8 +83,10 @@ type Peer struct {
 	cancel              context.CancelFunc
 	mu                  sync.Mutex
 	ws                  *websocket.Conn
+	gatewayWS           atomic.Pointer[websocket.Conn] // send-path mirror of ws, read without mu
 	connectCancel       context.CancelFunc
 	writes              chan *gatewayWrite
+	priorityWrites      chan *gatewayWrite
 	reconnectWake       chan struct{}
 	links               map[string]*link
 	sessions            map[sessionKey]*peerSession
@@ -113,7 +117,7 @@ func New(cfg Config, handler func(string, net.Conn)) *Peer {
 	}
 	return &Peer{
 		cfg: cfg, handler: handler, log: slog.Default(), api: newWebRTCAPI(cfg.DirectTimeout, false), trickleAPI: newWebRTCAPI(cfg.DirectTimeout, true),
-		writes:        make(chan *gatewayWrite, 64),
+		writes: make(chan *gatewayWrite, 64), priorityWrites: make(chan *gatewayWrite, 32),
 		reconnectWake: make(chan struct{}, 1),
 		links:         map[string]*link{}, sessions: map[sessionKey]*peerSession{},
 		allSessions: map[string]*peerSession{}, pending: map[sessionKey]*sessionDial{},
@@ -326,6 +330,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		return nil, gatewayNetworkError(errors.New("network changed during gateway connection"))
 	}
 	p.ws = ws
+	p.gatewayWS.Store(ws)
 	// A reconnect may have missed an owner rename. Keep identity-bound sessions,
 	// but resolve names again before opening new streams through them.
 	p.resolved = map[string]string{}
@@ -333,6 +338,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	p.directoryGeneration++
 	if p.closed || p.ctx.Err() != nil {
 		p.ws = nil
+		p.gatewayWS.Store(nil)
 		p.mu.Unlock()
 		_ = ws.CloseNow()
 		return nil, errors.New("peer stopped during connection")
@@ -343,8 +349,9 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 
 func (p *Peer) run(ws *websocket.Conn) {
 	for {
+		var reader wsio.Reader
 		for {
-			_, b, err := ws.Read(p.ctx)
+			_, b, err := reader.Read(p.ctx, ws)
 			if err != nil {
 				break
 			}
@@ -358,6 +365,7 @@ func (p *Peer) run(ws *websocket.Conn) {
 		p.mu.Lock()
 		if p.ws == ws {
 			p.ws = nil
+			p.gatewayWS.Store(nil)
 		}
 		var broken []*packetConn
 		for _, l := range p.links {
@@ -404,25 +412,34 @@ func (p *Peer) run(ws *websocket.Conn) {
 }
 
 func (p *Peer) send(ctx context.Context, msg *protocol.Packet) error {
-	p.mu.Lock()
-	ws := p.ws
-	closed := p.closed || p.ctx == nil || p.ctx.Err() != nil
-	p.mu.Unlock()
-	if ws == nil || closed {
+	// The send path runs per relay chunk, so it must not serialize on p.mu
+	// behind session setup or directory work; the live socket is mirrored
+	// in gatewayWS and lifecycle state comes from the peer context.
+	ws := p.gatewayWS.Load()
+	if ws == nil || p.ctx == nil || p.ctx.Err() != nil {
 		return errors.New("gateway disconnected")
 	}
-	b, err := proto.Marshal(msg)
+	pooled := getWriteBuffer()
+	b, err := proto.MarshalOptions{}.MarshalAppend((*pooled)[:0], msg)
 	if err != nil {
+		putWriteBuffer(pooled)
 		return err
 	}
+	*pooled = b
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	request := &gatewayWrite{ctx: ctx, ws: ws, data: b, done: make(chan error, 1)}
+	request := &gatewayWrite{ctx: ctx, ws: ws, data: b, pooled: pooled, done: make(chan error, 1)}
+	queue := p.writes
+	if msg.Kind != "data" && msg.Kind != "close" {
+		queue = p.priorityWrites
+	}
 	select {
-	case p.writes <- request:
+	case queue <- request:
 	case <-ctx.Done():
+		putWriteBuffer(pooled)
 		return ctx.Err()
 	case <-p.ctx.Done():
+		putWriteBuffer(pooled)
 		return p.ctx.Err()
 	}
 	select {
@@ -522,7 +539,7 @@ func (p *Peer) receive(msg *protocol.Packet) {
 	}
 	switch msg.Kind {
 	case "data":
-		if l.mode == "relay" && !l.conn.push(msg.Data) {
+		if l.mode == "relay" && !l.conn.pushOwned(msg.Data) {
 			p.overflow(l)
 			go func() { _ = l.conn.Close() }()
 		}

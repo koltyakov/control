@@ -76,6 +76,9 @@ type Node struct {
 	artifactMu          sync.Mutex
 	transfers           map[string]*transferLock
 	lease               *model.Lease
+	leaseMu             sync.Mutex // Serializes durable lease writes.
+	leasePending        bool       // A lease write is in flight outside mu.
+	leaseSettled        chan struct{}
 	lock                *flock.Flock
 	closeOnce           sync.Once
 	closeErr            error
@@ -423,11 +426,12 @@ func (n *Node) Call(ctx context.Context, target, method string, params any, resu
 		defer stop()
 		_, coordinated := ctx.Value(authorityContextKey{}).(authority)
 		delegated := false
+		paramsJSON := model.JSON(params)
 		for _, grant := range model.Delegations(ctx) {
-			if grant.Target == n.Identity.ID && grant.Matches(method, model.JSON(params)) {
+			if grant.Target == n.Identity.ID && grant.Matches(method, paramsJSON) {
 				var release func()
 				var err error
-				ctx, release, err = n.acceptAuthority(ctx, n.Identity.ID, model.Request{Method: method, Params: model.JSON(params), Delegation: grant.ID, Delegations: model.Delegations(ctx)})
+				ctx, release, err = n.acceptAuthority(ctx, n.Identity.ID, model.Request{Method: method, Params: paramsJSON, Delegation: grant.ID, Delegations: model.Delegations(ctx)})
 				if err != nil {
 					return err
 				}
@@ -442,13 +446,15 @@ func (n *Node) Call(ctx context.Context, target, method string, params any, resu
 		if coordinated && !delegated {
 			return errors.New("local coordinated work requires an instruction-bound delegation")
 		}
-		value, err := n.dispatch(ctx, n.Identity.ID, method, model.JSON(params))
+		value, err := n.dispatch(ctx, n.Identity.ID, method, paramsJSON)
 		if err != nil {
 			return err
 		}
 		if result == nil {
 			return nil
 		}
+		// Preserve JSON conversion and independent ownership even for structs
+		// containing maps, slices, or pointers into node-owned state.
 		return json.Unmarshal(model.JSON(value), result)
 	}
 	conn, data, err := n.open(ctx, target, method, params)
@@ -549,7 +555,9 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		if !ok {
 			return nil, fmt.Errorf("unknown method or capability %q", method)
 		}
-		n.mu.Lock()
+		if err := n.lockLeaseSettled(ctx); err != nil {
+			return nil, err
+		}
 		leased := n.lease != nil && (time.Now().Before(n.lease.Expires) || n.leaseBusy())
 		if !leased {
 			n.activeInvocations++

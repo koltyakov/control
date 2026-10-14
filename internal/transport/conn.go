@@ -49,6 +49,7 @@ type packetConn struct {
 type packetBuffer struct {
 	data   []byte
 	bucket int
+	owned  bool // data is caller-owned (pushOwned); never returned to a pool.
 }
 
 var packetBuffers = [4]sync.Pool{
@@ -58,15 +59,50 @@ var packetBuffers = [4]sync.Pool{
 	{New: func() any { return &packetBuffer{data: make([]byte, largePacketSize), bucket: 3} }},
 }
 
+var ownedPacketBuffers = sync.Pool{New: func() any { return &packetBuffer{owned: true} }}
+
 func releasePacket(b *packetBuffer) {
-	if b != nil {
-		packetBuffers[b.bucket].Put(b)
+	if b == nil {
+		return
 	}
+	if b.owned {
+		b.data = nil
+		ownedPacketBuffers.Put(b)
+		return
+	}
+	packetBuffers[b.bucket].Put(b)
 }
 
 func newConn(parent context.Context, send func(context.Context, []byte) error, closeFn func()) *packetConn {
 	ctx, cancel := context.WithCancel(parent)
 	return &packetConn{ctx: ctx, cancel: cancel, in: make(chan *packetBuffer, 256), send: send, onClose: closeFn, changed: make(chan struct{}), packetSize: legacyPacketSize}
+}
+
+// pushOwned queues b without copying; the caller transfers ownership and
+// must not mutate or reuse it. Relay receive uses it for protobuf payloads
+// that already own a fresh allocation per packet.
+func (c *packetConn) pushOwned(b []byte) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(b) == 0 || len(b) > largePacketSize || len(c.in) == cap(c.in) || c.queued+len(b) > maxQueuedPacketBytes {
+		return false
+	}
+	select {
+	case <-c.ctx.Done():
+		return false
+	default:
+	}
+	packet := ownedPacketBuffers.Get().(*packetBuffer)
+	packet.data = b
+	select {
+	case c.in <- packet:
+		c.queued += len(b)
+		return true
+	default:
+		packet.data = nil
+		ownedPacketBuffers.Put(packet)
+		return false
+	}
 }
 
 func (c *packetConn) push(b []byte) bool {

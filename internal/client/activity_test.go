@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -111,5 +112,70 @@ func TestDashboardGatewaySurvivesPeerFailureAndScopesEnrichment(t *testing.T) {
 	got, err = (Client{}).Dashboard(context.Background(), admin, model.PoolActivityQuery{})
 	if err != nil || got.Gateway == nil || got.Notice != "" {
 		t.Fatalf("empty fleet needs a local node: %+v %v", got, err)
+	}
+}
+
+func TestObservedActivitiesReusesFreshCache(t *testing.T) {
+	query := model.PoolActivityQuery{Recent: 5}
+	want := model.PoolActivitySnapshot{Nodes: []model.NodeActivitySnapshot{{ID: "n1", Status: "ready"}}}
+	c := Client{pool: &poolActivityCache{key: "\x00\x00\x00" + string(model.JSON(query)), snapshot: model.JSON(want), at: time.Now()}}
+	got, err := c.observedActivities(context.Background(), query, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Nodes) != 1 || got.Nodes[0].ID != "n1" {
+		t.Fatalf("cached observation = %+v", got)
+	}
+	got.Nodes[0].ID = "mutated"
+	second, err := c.observedActivities(context.Background(), query, "")
+	if err != nil || second.Nodes[0].ID != "n1" {
+		t.Fatal("caller mutated cached storage", second, err)
+	}
+}
+
+func TestObservationCacheCoalescesAndScopesRequests(t *testing.T) {
+	var calls atomic.Int32
+	started, release := make(chan struct{}), make(chan struct{})
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"result": model.PoolActivitySnapshot{Nodes: []model.NodeActivitySnapshot{{ID: r.Header.Get("Authorization")}}}})
+	}))
+	defer s.Close()
+	c := Client{URL: s.URL, Token: "first", pool: &poolActivityCache{}}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			if _, err := c.observedActivities(t.Context(), model.PoolActivityQuery{}, "gateway"); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	<-started
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := c.observedActivities(ctx, model.PoolActivityQuery{}, "gateway"); err != context.Canceled {
+		t.Error("cache waiter ignored cancellation", err)
+	}
+	close(release)
+	wg.Wait()
+	if calls.Load() != 1 {
+		t.Fatal("concurrent refreshes weren't coalesced", calls.Load())
+	}
+	c.Token = "second"
+	got, err := c.observedActivities(t.Context(), model.PoolActivityQuery{}, "gateway")
+	if err != nil || got.Nodes[0].ID != "Bearer second" || calls.Load() != 2 {
+		t.Fatal("credentials reused another cache entry", got, err)
+	}
+	c.pool.mu.Lock()
+	c.pool.at = time.Now().Add(-poolActivityTTL)
+	c.pool.mu.Unlock()
+	if _, err := c.observedActivities(t.Context(), model.PoolActivityQuery{}, "gateway"); err != nil || calls.Load() != 3 {
+		t.Fatal("expired observation reused", err)
+	}
+	if _, err := c.Activities(t.Context(), model.PoolActivityQuery{}); err != nil || calls.Load() != 4 {
+		t.Fatal("direct activities request used cache", err)
 	}
 }

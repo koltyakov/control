@@ -83,16 +83,30 @@ func (g *Gateway) route(to, userID string) *connection {
 // sender's read loop. Relay payload is bounded in bytes as well as packets.
 func (c *connection) enqueue(p *protocol.Packet) bool {
 	size := int64(len(p.Data))
-	if p.Kind == "data" && c.queued.Load()+size > relayQueueBytes {
-		return false
+	if p.Kind == "data" {
+		// Reserve before publication. Concurrent senders must not exceed the
+		// byte bound, and the writer must never decrement unaccounted bytes.
+		for {
+			queued := c.queued.Load()
+			if queued+size > relayQueueBytes {
+				return false
+			}
+			if c.queued.CompareAndSwap(queued, queued+size) {
+				break
+			}
+		}
+	}
+	queue := c.out
+	if (p.Kind == "data" || p.Kind == "close" || p.Kind == "offline") && c.outData != nil {
+		queue = c.outData
 	}
 	select {
-	case c.out <- p:
-		if p.Kind == "data" {
-			c.queued.Add(size)
-		}
+	case queue <- p:
 		return true
 	default:
+		if p.Kind == "data" {
+			c.queued.Add(-size)
+		}
 		return false
 	}
 }

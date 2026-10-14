@@ -217,7 +217,9 @@ func (n *Node) startTaskContext(parent context.Context, owner string, spec model
 			release()
 		}
 	}()
-	n.mu.Lock()
+	if err := n.lockLeaseSettled(parent); err != nil {
+		return model.Task{}, err
+	}
 	if n.lease != nil && (time.Now().Before(n.lease.Expires) || n.leaseBusy()) {
 		if spec.LeaseID != n.lease.ID || owner != n.lease.Owner || time.Now().After(n.lease.Expires) {
 			n.mu.Unlock()

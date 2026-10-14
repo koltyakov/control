@@ -42,6 +42,9 @@ type Updater struct {
 	lease       time.Time
 	staged      string
 	nextAttempt time.Time
+	lastReport  Status
+	lastAt      time.Time
+	reported    bool
 }
 
 func NewUpdater(options UpdaterOptions) (*Updater, error) {
@@ -93,7 +96,25 @@ func (a *Updater) set(state string, err error) {
 	a.mu.Unlock()
 }
 
-func (a *Updater) report(ctx context.Context) { _ = a.options.Report(ctx, a.Snapshot()) }
+// report sends changed status immediately and unchanged status after at least
+// five seconds. The two-second Run tick bounds the usual heartbeat at six
+// seconds, within the gateway's eight-second freshness window.
+func (a *Updater) report(ctx context.Context) {
+	snapshot := a.Snapshot()
+	comparable := snapshot
+	comparable.SeenAt = time.Time{}
+	a.mu.Lock()
+	changed := !a.reported || comparable != a.lastReport
+	due := time.Since(a.lastAt) >= 5*time.Second
+	a.mu.Unlock()
+	if changed || due {
+		if err := a.options.Report(ctx, snapshot); err == nil {
+			a.mu.Lock()
+			a.lastReport, a.lastAt, a.reported = comparable, time.Now(), true
+			a.mu.Unlock()
+		}
+	}
+}
 
 func (a *Updater) Run(ctx context.Context) {
 	ticker := time.NewTicker(2 * time.Second)

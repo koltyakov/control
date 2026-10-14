@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +27,7 @@ import (
 	"github.com/koltyakov/control/internal/protocol"
 	"github.com/koltyakov/control/internal/system"
 	"github.com/koltyakov/control/internal/update"
+	"github.com/koltyakov/control/internal/wsio"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -91,6 +91,8 @@ type connection struct {
 	userID            string
 	ws                *websocket.Conn
 	out               chan *protocol.Packet
+	outData           chan *protocol.Packet
+	writeBuffer       []byte       // Owned exclusively by writePackets.
 	queued            atomic.Int64 // Relay payload bytes waiting in out.
 	keyID             string
 	health            *model.NodeHealth
@@ -131,6 +133,8 @@ type Gateway struct {
 	metricsWG        sync.WaitGroup
 	startedAt        time.Time
 	machineStates    map[string]model.MachineState
+	observationMu    sync.RWMutex
+	observed         map[string]*observedFleet
 	// credentials indexes usable bearer credentials by digest; see authenticate.
 	credentials atomic.Pointer[map[string]principal]
 	// routes mirrors peers for relay forwarding under its own lock, so packet
@@ -166,7 +170,7 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 	if !locked {
 		return nil, errors.New("gateway data directory is already in use")
 	}
-	g := &Gateway{token: token, path: filepath.Join(dir, "nodes.json"), nodes: map[string]model.Node{}, clients: map[string]model.Node{}, peers: map[string]*connection{}, routes: map[string]*connection{}}
+	g := &Gateway{token: token, path: filepath.Join(dir, "nodes.json"), nodes: map[string]model.Node{}, clients: map[string]model.Node{}, peers: map[string]*connection{}, routes: map[string]*connection{}, observed: map[string]*observedFleet{}}
 	g.lock = lock
 	g.superuser, g.options = opts.SuperuserKey, opts
 	g.updateStatus = map[string]update.Status{}
@@ -204,6 +208,11 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 			return nil, err
 		}
 	}
+	ids := make([]string, 0, len(g.nodes))
+	for id := range g.nodes {
+		ids = append(ids, id)
+	}
+	g.publishObservations(ids...)
 	g.startedAt = time.Now().UTC()
 	g.metrics = system.New([]string{dir}, 15*time.Second)
 	metricsCtx, cancel := context.WithCancel(context.Background())
@@ -248,18 +257,19 @@ func (g *Gateway) auth(next http.HandlerFunc) http.HandlerFunc {
 
 func (g *Gateway) list(w http.ResponseWriter, r *http.Request) {
 	p := g.authenticate(bearer(r))
-	g.mu.Lock()
-	nodes := make([]model.Node, 0, len(g.nodes))
-	for _, n := range g.nodes {
-		if n.UserID == p.UserID {
-			n.ControlPending = g.machinePending(n.ID)
-			nodes = append(nodes, n)
-		}
-	}
-	g.mu.Unlock()
-	sort.Slice(nodes, func(i, j int) bool { return nodeNameLess(nodes[i].Name, nodes[j].Name) })
+	nodes := g.directory(p.UserID)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(nodes)
+}
+
+// sameEnrollment reports whether two registrations carry the same durable
+// enrollment data, ignoring volatile presence fields.
+func sameEnrollment(a, b model.Node) bool {
+	a.Online, b.Online = false, false
+	a.LastSeen, b.LastSeen = time.Time{}, time.Time{}
+	a.UpdateUntil, b.UpdateUntil = time.Time{}, time.Time{}
+	a.ControlPending, b.ControlPending = false, false
+	return string(model.JSON(a)) == string(model.JSON(b))
 }
 
 // nodeNameLess keeps machine lists alphabetical regardless of name casing.
@@ -359,7 +369,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	if !client && g.machineStates[n.ID].Name != "" {
 		n.Name = g.machineStates[n.ID].Name
 	}
-	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, relayQueuePackets), keyID: p.KeyID, userID: p.UserID, heartbeat: hello.GatewayHeartbeat, pong: make(chan string, 1)}
+	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, relayQueuePackets), outData: make(chan *protocol.Packet, relayQueuePackets), keyID: p.KeyID, userID: p.UserID, heartbeat: hello.GatewayHeartbeat, pong: make(chan string, 1)}
 	if !g.allowInstallation(p.KeyID, n) {
 		g.mu.Unlock()
 		_ = ws.Close(websocket.StatusPolicyViolation, "credential does not authorize this registration")
@@ -432,7 +442,19 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	} else {
 		persisted.nodes = []string{n.ID}
 	}
-	if err = g.commit(persisted); err != nil {
+	// A reconnect that changes no enrollment record must not pay a
+	// synchronous commit for volatile Online/LastSeen fields; startup
+	// resets Online for every stored node before serving.
+	durable := previousOwner != n.UserID
+	if client {
+		durable = durable || !previousClient || (n.ID != ownerID && (previousTransportOwner != n.UserID || previousTransport != ownerID))
+	} else {
+		durable = durable || !existed || !sameEnrollment(previous, n)
+	}
+	if durable {
+		err = g.commit(persisted)
+	}
+	if err != nil {
 		if previousOwner == "" {
 			delete(g.owners, ownerID)
 		}
@@ -461,6 +483,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	g.routes[n.ID] = c
 	g.routeMu.Unlock()
 	delete(g.updateStatus, n.ID)
+	if !client {
+		g.publishObservations(n.ID)
+	}
 	g.mu.Unlock()
 	g.counters.connects.Add(1)
 	defer func() {
@@ -477,10 +502,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			if peer.userID != n.UserID {
 				continue
 			}
-			select {
-			case peer.out <- &protocol.Packet{Kind: "offline", From: n.ID}:
-			default:
-			}
+			_ = peer.enqueue(&protocol.Packet{Kind: "offline", From: n.ID})
 		}
 		if latest, exists := g.nodes[n.ID]; exists {
 			latest.Online = false
@@ -494,6 +516,8 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			if err := g.commit(change{nodes: []string{n.ID}}); err != nil {
 				slog.Warn("persist machine disconnect", "node", n.ID, "error", err)
 			}
+			// Presence is volatile even if last-seen persistence failed.
+			g.publishObservations(n.ID)
 		}
 		g.mu.Unlock()
 	}()
@@ -508,8 +532,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	// Sessions whose data was dropped for a full destination queue. Only this
 	// read loop touches it, and the sender's close packet clears an entry.
 	overflowed := map[string]bool{}
+	var reader wsio.Reader
 	for {
-		_, b, e := ws.Read(ctx)
+		_, b, e := reader.Read(ctx, ws)
 		if e != nil {
 			return
 		}

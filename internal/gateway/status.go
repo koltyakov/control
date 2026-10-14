@@ -3,7 +3,6 @@ package gateway
 import (
 	"encoding/json"
 	"net/http"
-	"sort"
 	"time"
 
 	"github.com/koltyakov/control/internal/buildinfo"
@@ -38,14 +37,10 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 		Gateway:    &model.GatewaySnapshot{URL: g.options.PublicURL, Software: software, StartedAt: g.startedAt, System: &info},
 		Nodes:      []model.NodeActivitySnapshot{},
 	}
-	// Read the selected deployment once, before taking the directory lock.
-	// Repository persistence or cleanup must not hold g.mu through this read.
+	// Read committed observation data without waiting behind SQLite writes.
 	deployment := g.updates.Current()
-	g.mu.Lock()
-	for _, n := range g.nodes {
-		if n.UserID != p.UserID {
-			continue
-		}
+	for _, entry := range g.observations(p.UserID) {
+		n := entry.node
 		state := "offline"
 		if n.Online {
 			state = "online" // Directory presence does not imply observed activity.
@@ -53,23 +48,21 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 		snapshot := model.NodeActivitySnapshot{
 			ID: n.ID, Name: n.Name, OS: n.OS, Labels: n.Labels, Online: n.Online,
 			LastSeen: n.LastSeen, Status: state, System: n.System,
-			Software: n.Software, Disabled: n.Disabled, ControlPending: g.machinePending(n.ID),
+			Software: n.Software, Disabled: n.Disabled, ControlPending: n.ControlPending,
 			Active: []model.Activity{}, Recent: []model.Activity{},
 		}
 		// Aggregate health is owner-only. Common peer keys still need the node's
 		// activities.list/system.info permissions for live observation.
-		if c := g.peers[n.ID]; n.Online && c != nil && c.health != nil && (p.Role == "user" || p.Role == "superuser") && time.Since(c.healthAt) < model.NodeHealthTTL {
-			snapshot.Status, snapshot.ObservedAt = "summary", c.healthAt
-			snapshot.ActiveCount, snapshot.Leased = c.health.ActiveCount, c.health.Leased
-			snapshot.System = &c.health.System
+		if n.Online && entry.health != nil && (p.Role == "user" || p.Role == "superuser") && time.Since(entry.healthAt) < model.NodeHealthTTL {
+			snapshot.Status, snapshot.ObservedAt = "summary", entry.healthAt
+			snapshot.ActiveCount, snapshot.Leased = entry.health.ActiveCount, entry.health.Leased
+			snapshot.System = &entry.health.System
 		}
-		if g.nodeUpdating(n, result.ObservedAt, deployment) {
+		if nodeUpdating(n, entry.status, result.ObservedAt, deployment) {
 			snapshot.Status = "update"
 		}
 		result.Nodes = append(result.Nodes, snapshot)
 	}
-	g.mu.Unlock()
-	sort.Slice(result.Nodes, func(i, j int) bool { return nodeNameLess(result.Nodes[i].Name, result.Nodes[j].Name) })
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(result)

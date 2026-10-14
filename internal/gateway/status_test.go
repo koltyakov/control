@@ -22,6 +22,8 @@ func TestMachineListsSortNamesIgnoringCase(t *testing.T) {
 	t.Cleanup(func() { _ = g.Close() })
 	for i, name := range []string{"WinArmVM", "ser5", "tallinn", "vm-win11-02", "worker", "Worker", "WORKER"} {
 		g.nodes[name] = model.Node{ID: name, UserID: legacyUser, Name: name, Online: i%2 == 0}
+		g.owners[name] = legacyUser
+		g.publishObservations(name)
 	}
 	want := []string{"ser5", "tallinn", "vm-win11-02", "WinArmVM", "WORKER", "Worker", "worker"}
 	for _, path := range []string{"/v1/nodes", "/v1/status"} {

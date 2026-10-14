@@ -141,7 +141,44 @@ The activity benchmark has one active task and 100, 10,000, or 100,000 retained 
 
 The gateway benchmark changes one node record under the gateway mutex with SQLite WAL and `synchronous=FULL`, while another goroutine handles directory reads for 100 or 1,000 machines. It reports commits/second, reads/second, and directory p99 latency from a bounded ring of the latest 4,096 reads. HTTP response encoding is included; network I/O, connection proofs, and resource sampling are excluded. Set `CONTROL_BENCH_DIR` to an existing filesystem directory to compare disk with a Linux tmpfs mount. Each run creates and removes only its own benchmark subdirectory. The default uses the Go test temporary directory.
 
-These benchmarks do not establish connection-setup latency under relay saturation, real fleet polling bandwidth, or production storage limits. Before changing gateway mutation ordering or WebSocket scheduling, also measure concurrent connects, status requests, and bulk relay traffic over the actual deployment filesystem and both transports. Adapter benchmarks remain documented in [fleet streaming](streaming.md#verification-and-measurements).
+The following measurements reviewed the pending performance changes on October 13, 2026, using Go 1.27.2 on macOS arm64, Apple M4 Pro, default `GOMAXPROCS=14`, and the test temporary directory on the local filesystem. Each unprofiled benchmark ran for one second, three times. Figures below are medians, not confidence intervals. "Before" means the working-tree implementation at the start of that review, not a previous release.
+
+| Measurement | Before | After |
+| --- | --- | --- |
+| Directory p99 during commits, 100 machines | 1.57 ms | 0.17 ms |
+| Directory p99 during commits, 1,000 machines | 3.95 ms | 0.95 ms |
+| Directory reads/second during commits, 1,000 machines | 447 | 1,774 |
+| Commits/second with directory reads, 1,000 machines | 15,922 | 18,145 |
+| Relay artifact download, 16 MiB | 536 MB/s | 679 MB/s |
+| Allocated bytes per relay artifact download | 161 MB | 46 MB |
+| Allocations per relay artifact download | 96,806 | 35,290 |
+
+The directory change separates the committed observation view from mutation/fsync ordering and maintains sorted fleet membership. Mutation validation and SQLite commits still serialize, and `synchronous=FULL` remains enabled. CPU/mutex/block profiles of the initial 1,000-machine benchmark attributed 94% of mutex delay to the commit-holder benchmark goroutine. Allocation counts in this concurrent benchmark include reader work normalized by writer iterations, so they are not per-commit allocation costs.
+
+`BenchmarkFleetDashboard` starts real in-process gateways, 16 or 64 enrolled nodes, and an authenticated standalone client over the relay. It includes HTTP status, bounded peer RPC fan-out, pinned TLS, decoding, and merging. With 64 machines, a warmed uncached poll took 6.17 ms and allocated 7.38 MB; a cache-hit poll took 0.70 ms and allocated 0.52 MB. These are cache-hit costs, not sustained five-second averages. Automatic polls reuse peer detail for up to five seconds while still reading current gateway status; explicit refresh and direct activity calls bypass reuse. Startup, sampling, and connection warm-up are outside the timer. It verifies every requested peer returned detail, rather than timing an unavailable fallback.
+
+`BenchmarkArtifactDownload` exports a real 16 MiB immutable artifact, downloads it into a checksum writer, and verifies SHA-256 and actual transport. It measures disk reads, TLS/yamux, WebRTC or relay, and receiver hashing; export, startup, and warm-up are outside the timer. The initial combined artifact allocation profile attributed 43% of allocated space to growing `io.ReadAll` buffers. Reusable bounded WebSocket readers and gateway protobuf output buffers reduced relay allocation and improved throughput as shown above. Direct WebRTC remained about 92 MB/s with roughly 264 MB allocated per download; this change does not tune Pion buffering or crypto. Same-process loopback rates are not internet bandwidth predictions, and aggregate allocations are not peak retained memory.
+
+Paired adapter benchmarks isolate the pending relay changes. At 16 KiB, pooled marshal took 0.27 microseconds with zero allocations after warm-up, versus 1.29 microseconds and one 18,432-byte allocation without reuse. Ownership-based receive took 2.00 microseconds versus 2.11 microseconds with a pooled payload copy, about 5% less time in this run, not the earlier inferred 27%. Both receive paths still allocate decoded protobuf payloads. The activity snapshot remained about 0.5 microseconds at 100,000 retained tasks, independent of history size.
+
+`BenchmarkMetadataWrite` compares compact and indented task JSON with the same atomic replacement and file/directory sync. Compact encoding allocated about 7.4 KiB rather than 12.3 KiB, but both took roughly 11 to 13 ms on this filesystem. Encoding is not the durable-write bottleneck here. File sync and directory sync protect different recovery steps; neither was removed. Executable verification also retains byte-for-byte hashing, since size/mtime caches can accept corrupted content with preserved metadata.
+
+Run the measurements:
+
+```sh
+go test ./internal/gateway ./internal/node ./internal/transport ./internal/store ./internal/client -run '^$' -bench 'Benchmark(GatewayCommitWithDirectoryReads|ActivitySnapshot|PacketConnTransfer|RelayDataPacket|RelayMarshal|DuplexTransfer|MetadataWrite|FleetDashboard|ArtifactDownload)$' -benchmem -benchtime=1s -count=3
+```
+
+Capture profiles one package at a time, without running other builds/tests concurrently. Use an existing output directory outside the checkout, replacing `/path/to/profiles`:
+
+```sh
+go test ./internal/gateway -run '^$' -bench '^BenchmarkGatewayCommitWithDirectoryReads/nodes=1000$' -benchtime=3s -o /path/to/profiles/gateway.test -cpuprofile=/path/to/profiles/gateway.cpu -mutexprofile=/path/to/profiles/gateway.mutex -blockprofile=/path/to/profiles/gateway.block
+go test ./internal/client -run '^$' -bench '^BenchmarkArtifactDownload$' -benchtime=3s -o /path/to/profiles/client.test -cpuprofile=/path/to/profiles/artifact.cpu -memprofile=/path/to/profiles/artifact.mem -mutexprofile=/path/to/profiles/artifact.mutex -blockprofile=/path/to/profiles/artifact.block
+go tool pprof -top /path/to/profiles/gateway.mutex
+go tool pprof -top -alloc_space /path/to/profiles/artifact.mem
+```
+
+These fixtures do not establish WAN latency, concurrent enrollment throughput, multi-observer fleet polling bandwidth, control latency behind a saturated socket, or production storage limits. Priority queues cannot preempt an in-progress WebSocket write. Encrypted RPC traffic still shares the relay data queue with bulk traffic; priority applies to gateway signaling and control packets, not per-stream bandwidth guarantees. Durable fleet mutations remain serialized. Measure those separately on the deployment filesystem and both transports before introducing group commit, push observation, or transport tuning. Adapter framing and compatibility tests remain documented in [fleet streaming](streaming.md#verification-and-measurements).
 
 ## Keep a deployment for debugging
 

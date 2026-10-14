@@ -49,7 +49,7 @@ func (n *Node) updateBusy() bool {
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return n.lease != nil && (time.Now().Before(n.lease.Expires) || n.leaseBusy())
+	return n.leasePending || n.lease != nil && (time.Now().Before(n.lease.Expires) || n.leaseBusy())
 }
 
 func (n *Node) pauseForUpdate() bool {

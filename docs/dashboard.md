@@ -72,7 +72,7 @@ control dashboard --once
 control dashboard --json
 ```
 
-`--interval` defaults to two seconds between activity snapshots, with a minimum of 250 milliseconds. `--timeout` defaults to 15 seconds. `--recent` selects 0..64 recent records per machine and defaults to five. `--node` accepts comma-separated names or stable IDs.
+`--interval` defaults to two seconds between gateway snapshots, with a minimum of 250 milliseconds. Automatic polls reuse authorized peer detail for up to five seconds per query and credential scope. Gateway presence, policy, update display, and health remain fresh on every poll; newer health overrides cached work counts and resources. Peer sampling timestamps remain in JSON. Concurrent peer refreshes coalesce and cached results have independent storage. Press `r` to bypass peer-detail reuse. Direct CLI/MCP activity requests are never cached. `--timeout` defaults to 15 seconds. `--recent` selects 0..64 recent records per machine and defaults to five. `--node` accepts comma-separated names or stable IDs.
 
 `--once` prints a plain-text snapshot, including recent completions. `--json` prints one structured snapshot, also retaining recent records. The live view hides recent completions until you press uppercase `R`; `d` does not change their visibility. Redirecting output or using non-terminal input also selects a one-shot view. These modes are suitable for scripts and do not enter the terminal's alternate screen.
 

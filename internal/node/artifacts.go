@@ -16,7 +16,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/koltyakov/control/internal/identity"
@@ -67,7 +66,8 @@ func (n *Node) artifactOwner(ctx context.Context) string {
 	return n.Identity.ID
 }
 
-// holdArtifactLocked records owner on stored content. Caller holds artifactMu.
+// holdArtifactLocked records owner on stored content. Caller holds the
+// artifact's transfer lock.
 func (n *Node) holdArtifactLocked(a storedArtifact, owner string) error {
 	if len(a.Owners) == 0 || slices.Contains(a.Owners, owner) {
 		return nil
@@ -81,29 +81,39 @@ func (n *Node) holdArtifactLocked(a storedArtifact, owner string) error {
 }
 
 type transferLock struct {
-	sync.Mutex
-	refs int
+	taken chan struct{}
+	refs  int
 }
 
 // lockTransfer serializes transfers of one artifact and forgets the lock once
 // no transfer needs it.
-func (n *Node) lockTransfer(id string) func() {
+func (n *Node) lockTransfer(ctx context.Context, id string) (func(), error) {
 	n.artifactMu.Lock()
 	lock := n.transfers[id]
 	if lock == nil {
-		lock = &transferLock{}
+		lock = &transferLock{taken: make(chan struct{}, 1)}
 		n.transfers[id] = lock
 	}
 	lock.refs++
 	n.artifactMu.Unlock()
-	lock.Lock()
-	return func() {
-		lock.Unlock()
+	drop := func() {
 		n.artifactMu.Lock()
 		if lock.refs--; lock.refs == 0 {
 			delete(n.transfers, id)
 		}
 		n.artifactMu.Unlock()
+	}
+	select {
+	case lock.taken <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-lock.taken
+			drop()
+			return nil, err
+		}
+		return func() { <-lock.taken; drop() }, nil
+	case <-ctx.Done():
+		drop()
+		return nil, ctx.Err()
 	}
 }
 
@@ -151,8 +161,14 @@ func (n *Node) importArtifact(ctx context.Context, reader io.Reader, name string
 	}
 	id := hex.EncodeToString(hash.Sum(nil))
 	owner := n.artifactOwner(ctx)
-	n.artifactMu.Lock()
-	defer n.artifactMu.Unlock()
+	// Serialize this artifact on its transfer lock instead of the global
+	// artifactMu, so one import's synced metadata write cannot stall
+	// transfers or imports of unrelated artifacts.
+	unlock, err := n.lockTransfer(ctx, id)
+	if err != nil {
+		return model.Artifact{}, err
+	}
+	defer unlock()
 	if existing, e := n.storedArtifact(id); e == nil {
 		return existing.Artifact, n.holdArtifactLocked(existing, owner)
 	}
@@ -312,17 +328,18 @@ func (n *Node) pullArtifact(ctx context.Context, a model.Artifact) (_ model.Arti
 	if !digestID.MatchString(a.ID) || a.SHA256 != a.ID || a.Size < 0 {
 		return model.Artifact{}, errors.New("invalid artifact reference")
 	}
-	defer n.lockTransfer(a.ID)()
+	unlock, err := n.lockTransfer(ctx, a.ID)
+	if err != nil {
+		return model.Artifact{}, err
+	}
+	defer unlock()
 	owner := n.artifactOwner(ctx)
 	activity.phase("checking local cache")
-	n.artifactMu.Lock()
 	local, err := n.storedArtifact(a.ID)
 	if err == nil {
 		err = n.holdArtifactLocked(local, owner)
-		n.artifactMu.Unlock()
 		return local.Artifact, err
 	}
-	n.artifactMu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(n.artifactPath(a.ID)), 0700); err != nil {
 		return model.Artifact{}, err
 	}
@@ -370,8 +387,8 @@ func (n *Node) pullArtifact(ctx context.Context, a model.Artifact) (_ model.Arti
 	if err = f.Close(); err != nil {
 		return model.Artifact{}, err
 	}
-	n.artifactMu.Lock()
-	defer n.artifactMu.Unlock()
+	// Already serialized on this artifact's transfer lock (see above);
+	// the global artifactMu is not held through the synced write.
 	if err = os.Rename(partial, n.artifactPath(a.ID)); err != nil {
 		return model.Artifact{}, err
 	}
@@ -424,8 +441,11 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 			return nil, errors.New("invalid artifact ID")
 		}
 		owner := n.artifactOwner(ctx)
-		n.artifactMu.Lock()
-		defer n.artifactMu.Unlock()
+		unlock, err := n.lockTransfer(ctx, q.ID)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
 		stored, err := n.storedArtifact(q.ID)
 		if err != nil {
 			return nil, err

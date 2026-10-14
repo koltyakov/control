@@ -28,7 +28,29 @@ func (c *connection) writePackets(ctx context.Context) {
 	defer timer.Stop()
 	var deadline <-chan time.Time
 	var pending string
+	var timerDeadline time.Time
+	priorityBurst := 0
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+		// Liveness must not starve behind a continuous signaling backlog.
+		if pending != "" && !timerDeadline.IsZero() && !time.Now().Before(timerDeadline) {
+			return
+		}
+		// Ready signaling always writes before further bulk relay data.
+		if priorityBurst < 8 {
+			select {
+			case packet := <-c.out:
+				if err := c.writePacket(ctx, packet); err != nil {
+					return
+				}
+				priorityBurst++
+				continue
+			default:
+			}
+		}
+		priorityBurst = 0
 		select {
 		case <-ctx.Done():
 			return
@@ -40,6 +62,10 @@ func (c *connection) writePackets(ctx context.Context) {
 				deadline, pending = nil, ""
 			}
 		case packet := <-c.out:
+			if err := c.writePacket(ctx, packet); err != nil {
+				return
+			}
+		case packet := <-c.outData:
 			if packet.Kind == "data" {
 				c.queued.Add(-int64(len(packet.Data)))
 			}
@@ -56,6 +82,7 @@ func (c *connection) writePackets(ctx context.Context) {
 					return
 				}
 				timer.Reset(10 * time.Second)
+				timerDeadline = time.Now().Add(10 * time.Second)
 				deadline = timer.C
 			} else {
 				ping, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -70,10 +97,14 @@ func (c *connection) writePackets(ctx context.Context) {
 }
 
 func (c *connection) writePacket(ctx context.Context, packet *protocol.Packet) error {
-	data, err := proto.Marshal(packet)
+	if cap(c.writeBuffer) > 128<<10 {
+		c.writeBuffer = nil
+	}
+	data, err := proto.MarshalOptions{}.MarshalAppend(c.writeBuffer[:0], packet)
 	if err != nil {
 		return err
 	}
+	c.writeBuffer = data
 	write, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	return c.ws.Write(write, websocket.MessageBinary, data)

@@ -17,6 +17,10 @@ import (
 	"github.com/koltyakov/control/internal/update"
 )
 
+// updateStatusFreshness bounds how old a node's last update status may
+// be for rollout decisions; nodes report unchanged status every 5..6s.
+const updateStatusFreshness = 8 * time.Second
+
 type Options struct {
 	STUNServers     []string
 	PublicURL       string
@@ -60,6 +64,7 @@ func (g *Gateway) receiveUpdateStatus(n model.Node, c *connection, data []byte) 
 		}
 	}
 	g.updateStatus[n.ID] = status
+	g.publishObservations(n.ID)
 	return true
 }
 
@@ -74,7 +79,11 @@ func updateAppliedAndResumed(d *update.Deployment, status update.Status) bool {
 // Called under g.mu. Display grace never changes routing or rollout readiness.
 func (g *Gateway) nodeUpdating(n model.Node, now time.Time, d *update.Deployment) bool {
 	status := g.updateStatus[n.ID]
-	fresh := n.Online && now.Sub(status.SeenAt) < 8*time.Second
+	return nodeUpdating(n, status, now, d)
+}
+
+func nodeUpdating(n model.Node, status update.Status, now time.Time, d *update.Deployment) bool {
+	fresh := n.Online && now.Sub(status.SeenAt) < updateStatusFreshness
 	if fresh && updateAppliedAndResumed(d, status) {
 		return false
 	}
@@ -226,17 +235,14 @@ func (g *Gateway) StartUpdates(ctx context.Context) {
 	}
 }
 
-func (g *Gateway) control(id, kind string, command update.Command) {
+func (g *Gateway) control(id, kind string, command update.Command) bool {
 	g.mu.Lock()
 	peer := g.peers[id]
 	g.mu.Unlock()
 	if peer == nil || peer.client {
-		return
+		return false
 	}
-	select {
-	case peer.out <- &protocol.Packet{Kind: kind, From: update.GatewaySender, Data: model.JSON(command)}:
-	default:
-	}
+	return peer.enqueue(&protocol.Packet{Kind: kind, From: update.GatewaySender, Data: model.JSON(command)})
 }
 
 type rolloutPeer struct {
@@ -265,7 +271,7 @@ func (g *Gateway) rolloutPeers(d *update.Deployment) []rolloutPeer {
 			continue
 		}
 		status, ok := g.updateStatus[id]
-		peers = append(peers, rolloutPeer{g.nodes[id], status, g.peers[id] != nil && ok && time.Since(status.SeenAt) < 8*time.Second})
+		peers = append(peers, rolloutPeer{g.nodes[id], status, g.peers[id] != nil && ok && time.Since(status.SeenAt) < updateStatusFreshness})
 	}
 	return peers
 }
@@ -304,6 +310,18 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 	var cleanedID string
 	var nextCleanup time.Time
 	requestedRestart := false
+	type commandKey struct{ id, kind string }
+	lastSent := map[commandKey]time.Time{}
+	var sentDeployment string
+	send := func(id, kind string, command update.Command) {
+		key := commandKey{id, kind}
+		if time.Since(lastSent[key]) < 5*time.Second {
+			return
+		}
+		if g.control(id, kind, command) {
+			lastSent[key] = time.Now()
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -316,6 +334,10 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 			d := g.updates.Current()
 			if d == nil {
 				return
+			}
+			if sentDeployment != d.ID {
+				clear(lastSent)
+				sentDeployment = d.ID
 			}
 			if stagedID != d.ID {
 				if time.Now().Before(nextAttempt) {
@@ -331,6 +353,15 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 				requestedRestart = false
 			}
 			peers := g.rolloutPeers(d)
+			retained := make(map[string]bool, len(peers))
+			for _, peer := range peers {
+				retained[peer.node.ID] = true
+			}
+			for key := range lastSent {
+				if !retained[key.id] {
+					delete(lastSent, key)
+				}
+			}
 			allStaged, allIdle, allReady, peersApplied := true, true, true, true
 			for _, peer := range peers {
 				asset, ok := d.Manifest.Asset(peer.node.OS, peer.node.Software.Arch)
@@ -339,10 +370,12 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 					continue
 				}
 				command := update.Command{ID: d.ID, Version: d.Manifest.Version, Asset: asset}
-				g.control(peer.node.ID, "update.offer", command)
 				matching := peer.fresh && peer.status.ID == d.ID
 				applied := matching && update.IsCurrent(peer.status.Software, d.Manifest.Version, asset)
 				staged := matching && (applied || peer.status.State == "staged" || peer.status.State == "ready" || peer.status.State == "busy" || peer.status.State == "restarting")
+				if !staged {
+					send(peer.node.ID, "update.offer", command)
+				}
 				allStaged = allStaged && staged
 				allIdle = allIdle && matching && !peer.status.Busy
 				allReady = allReady && matching && peer.status.Paused && !peer.status.Busy && time.Until(peer.status.LeaseUntil) > 30*time.Second
@@ -350,7 +383,9 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 			}
 			if peersApplied && stagedPath == "" {
 				for _, peer := range peers {
-					g.control(peer.node.ID, "update.resume", update.Command{ID: d.ID})
+					if peer.status.Paused {
+						send(peer.node.ID, "update.resume", update.Command{ID: d.ID})
+					}
 				}
 				if d.Phase != "complete" {
 					if err := g.updates.SetPhase(d.ID, "complete", nil); err != nil {
@@ -371,7 +406,7 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 			}
 			if !allIdle {
 				for _, peer := range peers {
-					g.control(peer.node.ID, "update.resume", update.Command{ID: d.ID})
+					send(peer.node.ID, "update.resume", update.Command{ID: d.ID})
 				}
 				if d.Phase != "waiting-idle" && d.Phase != "installing" {
 					_ = g.updates.SetPhase(d.ID, "waiting-idle", nil)
@@ -380,7 +415,10 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 			}
 			lease := time.Now().Add(2 * time.Minute).UTC()
 			for _, peer := range peers {
-				g.control(peer.node.ID, "update.prepare", update.Command{ID: d.ID, LeaseUntil: lease})
+				ready := peer.fresh && peer.status.ID == d.ID && peer.status.Paused && !peer.status.Busy && time.Until(peer.status.LeaseUntil) > 30*time.Second
+				if !ready {
+					send(peer.node.ID, "update.prepare", update.Command{ID: d.ID, LeaseUntil: lease})
+				}
 			}
 			if !allReady {
 				return
@@ -395,7 +433,7 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 				}
 			}
 			for _, peer := range peers {
-				g.control(peer.node.ID, "update.commit", update.Command{ID: d.ID})
+				send(peer.node.ID, "update.commit", update.Command{ID: d.ID})
 			}
 			// Keep the gateway available until every participating node has restarted
 			// and reported the target version or checksum. Disconnections are never acknowledgments.
@@ -455,7 +493,7 @@ func (g *Gateway) reserveRestart(d *update.Deployment, peers []rolloutPeer) bool
 	for _, peer := range peers {
 		status := g.updateStatus[peer.node.ID]
 		asset, ok := d.Manifest.Asset(status.Software.OS, status.Software.Arch)
-		if !ok || g.peers[peer.node.ID] == nil || status.ID != d.ID || !update.IsCurrent(status.Software, d.Manifest.Version, asset) || !status.Paused || status.Busy || time.Since(status.SeenAt) >= 8*time.Second || time.Until(status.LeaseUntil) <= 30*time.Second {
+		if !ok || g.peers[peer.node.ID] == nil || status.ID != d.ID || !update.IsCurrent(status.Software, d.Manifest.Version, asset) || !status.Paused || status.Busy || time.Since(status.SeenAt) >= updateStatusFreshness || time.Until(status.LeaseUntil) <= 30*time.Second {
 			return false
 		}
 	}

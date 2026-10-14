@@ -29,6 +29,7 @@ type Options struct {
 	Copy             Copy
 	Manage           ManageMachine
 	Rename           RenameMachine
+	Refresh          Fetch // Optional uncached fetch for the user's refresh key.
 }
 
 type result struct {
@@ -58,6 +59,28 @@ type view struct {
 	selectedText          string
 	selectionCopying      bool
 	selectionNotice       string
+	cacheBody             string
+	cacheGeneration       int
+	cacheWidth            int
+	cacheUnix             int64
+	cacheDetails          bool
+	cacheRecent           bool
+	cacheColor            bool
+	cacheStale            bool
+}
+
+// rendered returns the dashboard body, reusing the render from this view
+// update when snapshot, layout, and the current second are unchanged.
+// Update and the following View otherwise rendered the full snapshot twice.
+func (m view) rendered(now time.Time) (string, view) {
+	stale := m.err != nil
+	if m.cacheBody != "" && m.cacheGeneration == m.generation && m.cacheWidth == m.width && m.cacheUnix == now.Unix() && m.cacheDetails == m.details && m.cacheRecent == m.recent && m.cacheColor == m.color && m.cacheStale == stale {
+		return m.cacheBody, m
+	}
+	body := m.body(now)
+	m.cacheBody, m.cacheGeneration, m.cacheWidth, m.cacheUnix = body, m.generation, m.width, now.Unix()
+	m.cacheDetails, m.cacheRecent, m.cacheColor, m.cacheStale = m.details, m.recent, m.color, stale
+	return body, m
 }
 
 func Run(ctx context.Context, fetch Fetch, options Options) error {
@@ -74,6 +97,10 @@ func Run(ctx context.Context, fetch Fetch, options Options) error {
 }
 
 func (m view) poll() tea.Cmd {
+	return m.pollWith(m.fetch)
+}
+
+func (m view) pollWith(fetch Fetch) tea.Cmd {
 	// Only a poll started after redemption can confirm the new connection.
 	// A replacement may share an identity with an older online snapshot.
 	registrationID := 0
@@ -83,7 +110,7 @@ func (m view) poll() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, m.options.Timeout)
 		defer cancel()
-		snapshot, err := m.fetch(ctx)
+		snapshot, err := fetch(ctx)
 		return result{snapshot: snapshot, err: err, registrationID: registrationID}
 	}
 }
@@ -147,6 +174,9 @@ func (m view) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			if !m.busy {
 				m.busy = true
+				if m.options.Refresh != nil {
+					return m, m.pollWith(m.options.Refresh)
+				}
 				return m, m.poll()
 			}
 		case "d":
@@ -197,7 +227,9 @@ func (m view) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.poll()
 		}
 	}
-	lines := strings.Split(m.body(time.Now()), "\n")
+	body, updated := m.rendered(time.Now())
+	m = updated
+	lines := strings.Split(body, "\n")
 	m.offset = max(0, min(m.offset, len(lines)-m.pageSize()))
 	widest := 0
 	for _, line := range lines {
@@ -214,7 +246,8 @@ func (m view) contentView() tea.View {
 	if m.wizard != nil {
 		return m.registrationView()
 	}
-	lines := strings.Split(m.body(time.Now()), "\n")
+	body, _ := m.rendered(time.Now())
+	lines := strings.Split(body, "\n")
 	page := m.pageSize()
 	offset := max(0, min(m.offset, max(0, len(lines)-page)))
 	visible := []string{}

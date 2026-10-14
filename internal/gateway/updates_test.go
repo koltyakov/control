@@ -226,29 +226,31 @@ func TestRolloutSkipsSameVersionWhileBusy(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); g.rolloutLoop(ctx) }()
 	defer func() { cancel(); <-done }()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			t.Fatal("same-version rollout did not complete")
 		case packet := <-out:
-			switch packet.Kind {
-			case "update.prepare", "update.commit":
-				t.Fatalf("same-version rollout requested maintenance: %s", packet.Kind)
-			case "update.resume":
-				// Resume is sent before cleanup finishes under rolloutMu. Wait for
-				// that iteration without opening the blob and blocking Windows deletion.
-				g.rolloutMu.Lock()
-				g.rolloutMu.Unlock()
-				cancel()
-				<-done
-				if current := g.updates.Current(); current.Phase != "complete" || g.restarting {
-					t.Fatalf("same-version rollout was not skipped: %+v", current)
-				}
-				if _, err := os.Stat(g.updates.Blob(obsolete.SHA256)); !errors.Is(err, os.ErrNotExist) {
-					t.Fatalf("successful rollout did not prune obsolete binaries: %v", err)
-				}
-				return
+			t.Fatalf("current, unpaused node received a redundant rollout command: %s", packet.Kind)
+		case <-ticker.C:
+			if g.updates.Current().Phase != "complete" {
+				continue
 			}
+			// Completion commits before cleanup finishes under rolloutMu. Wait
+			// for that iteration before checking files, including on Windows.
+			g.rolloutMu.Lock()
+			g.rolloutMu.Unlock()
+			cancel()
+			<-done
+			if current := g.updates.Current(); current.Phase != "complete" || g.restarting {
+				t.Fatalf("same-version rollout was not skipped: %+v", current)
+			}
+			if _, err := os.Stat(g.updates.Blob(obsolete.SHA256)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("successful rollout did not prune obsolete binaries: %v", err)
+			}
+			return
 		}
 	}
 }

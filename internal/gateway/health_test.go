@@ -71,6 +71,7 @@ func TestHealthIdentityFleetAndFreshness(t *testing.T) {
 	c := g.peers[ai.ID]
 	c.healthAt = time.Now().Add(-model.NodeHealthTTL - time.Second)
 	n := g.nodes[ai.ID]
+	g.publishObservations(ai.ID)
 	g.mu.Unlock()
 	if got := read(a); got.Status != "online" || got.ActiveCount != 0 || got.Leased {
 		t.Fatal("stale health appeared live", got)

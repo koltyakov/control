@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -377,5 +378,35 @@ func TestRefreshHasNoBlinkingIndicatorOrDuplicateHeader(t *testing.T) {
 				t.Fatal("viewport width overflow")
 			}
 		}
+	}
+}
+
+func TestRenderedReusesCacheWithinSameSecond(t *testing.T) {
+	now := time.Now()
+	v := view{width: 120, height: 30}
+	first, cached := v.rendered(now)
+	second, _ := cached.rendered(now)
+	if first == "" || first != second || cached.cacheBody != first {
+		t.Fatalf("render cache not reused: %q vs %q", first, second)
+	}
+	next, _ := cached.rendered(now.Add(2 * time.Second))
+	if next == "" {
+		t.Fatal("re-render after cache expiry returned empty")
+	}
+}
+
+func TestRefreshKeyUsesUncachedFetch(t *testing.T) {
+	called := false
+	v := view{ctx: t.Context(), options: Options{Timeout: time.Second, Refresh: func(context.Context) (model.PoolActivitySnapshot, error) {
+		called = true
+		return model.PoolActivitySnapshot{}, nil
+	}}}
+	_, cmd := v.Update(tea.KeyPressMsg{Code: 'r'})
+	if cmd == nil {
+		t.Fatal("refresh did not request a snapshot")
+	}
+	_ = cmd()
+	if !called {
+		t.Fatal("explicit refresh used the automatic cached fetch")
 	}
 }

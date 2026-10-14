@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -258,5 +259,62 @@ func TestUpdaterWaitsForWorkAndRequiresLiveReservation(t *testing.T) {
 	a.process(ctx, queuedCommand{"update.offer", bad})
 	if a.Snapshot().State != "error" {
 		t.Fatal("accepted truncated update")
+	}
+}
+
+func TestVerifyDetectsChangedFileWithPreservedMetadata(t *testing.T) {
+	data := []byte("cached binary")
+	sum := sha256.Sum256(data)
+	asset := Asset{Size: int64(len(data)), SHA256: hex.EncodeToString(sum[:])}
+	path := filepath.Join(t.TempDir(), "control")
+	if err := os.WriteFile(path, data, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(path, asset); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(path, asset); err != nil {
+		t.Fatal(err)
+	}
+	changed := bytes.Repeat([]byte("x"), len(data))
+	if err := os.WriteFile(path, changed, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(path, asset); err == nil {
+		t.Fatal("Verify accepted different bytes with the original size and mtime")
+	}
+}
+
+func TestUpdaterReportsRetryFailureAndSuppressUnchangedSuccess(t *testing.T) {
+	calls := 0
+	a := &Updater{options: UpdaterOptions{
+		Busy: func() bool { return false },
+		Report: func(context.Context, Status) error {
+			calls++
+			if calls == 1 {
+				return errors.New("disconnected")
+			}
+			return nil
+		},
+	}}
+	a.report(t.Context())
+	a.report(t.Context())
+	a.report(t.Context())
+	if calls != 2 {
+		t.Fatalf("failed report wasn't retried, or successful report wasn't suppressed: %d", calls)
+	}
+	a.lastAt = time.Now().Add(-6 * time.Second)
+	a.report(t.Context())
+	a.set("staged", nil)
+	a.report(t.Context())
+	if calls != 4 {
+		t.Fatalf("heartbeat or changed state wasn't sent: %d", calls)
 	}
 }

@@ -57,6 +57,7 @@ func (g *Gateway) nodeState(w http.ResponseWriter, r *http.Request) {
 		if proof.Revision == state.Revision {
 			c.lifecycleRevision = proof.Revision
 		}
+		g.publishObservations(id)
 	}
 	g.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")

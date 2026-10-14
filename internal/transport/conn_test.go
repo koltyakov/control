@@ -8,6 +8,9 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/koltyakov/control/internal/protocol"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestPacketConnBoundsAndChangingWriteDeadline(t *testing.T) {
@@ -121,5 +124,103 @@ func BenchmarkPacketConnTransfer(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func BenchmarkRelayDataPacket(b *testing.B) {
+	for _, owned := range []bool{false, true} {
+		name := "copied"
+		if owned {
+			name = "owned"
+		}
+		b.Run(name, func(b *testing.B) { benchmarkRelayDataPacket(b, owned) })
+	}
+}
+
+func benchmarkRelayDataPacket(b *testing.B, owned bool) {
+	// One relay hop as the destination peer sees it: decode the gateway
+	// packet, queue its payload, and read it back as a stream.
+	payload := bytes.Repeat([]byte("x"), 16*1024)
+	wire, err := proto.Marshal(&protocol.Packet{Kind: "data", To: "peer", Session: "session", Data: payload})
+	if err != nil {
+		b.Fatal(err)
+	}
+	receiver := newConn(context.Background(), nil, nil)
+	defer func() { _ = receiver.Close() }()
+	out := make([]byte, len(payload))
+	b.SetBytes(int64(len(payload)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		var packet protocol.Packet
+		if err := proto.Unmarshal(wire, &packet); err != nil {
+			b.Fatal(err)
+		}
+		push := receiver.push
+		if owned {
+			push = receiver.pushOwned
+		}
+		if !push(packet.Data) {
+			b.Fatal("packet rejected")
+		}
+		if _, err := io.ReadFull(receiver, out); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestPushOwnedTransfersWithoutCopy(t *testing.T) {
+	c := newConn(context.Background(), nil, nil)
+	defer func() { _ = c.Close() }()
+	data := []byte("packet")
+	if !c.pushOwned(data) {
+		t.Fatal("packet rejected")
+	}
+	// Ownership transferred: the queued bytes are the caller's slice, so
+	// later mutation is visible — push, by contrast, must copy.
+	data[0] = 'P'
+	out := make([]byte, len(data))
+	if _, err := io.ReadFull(c, out); err != nil || string(out) != "Packet" {
+		t.Fatalf("owned packet = %q, %v", out, err)
+	}
+	// A consumed owned buffer must not reappear from the packet pools.
+	if !c.push([]byte("pooled")) {
+		t.Fatal("pooled packet rejected")
+	}
+	out = make([]byte, 6)
+	if _, err := io.ReadFull(c, out); err != nil || string(out) != "pooled" {
+		t.Fatalf("pooled packet = %q, %v", out, err)
+	}
+}
+
+func BenchmarkRelayMarshal(b *testing.B) {
+	for _, pooled := range []bool{false, true} {
+		name := "allocated"
+		if pooled {
+			name = "pooled"
+		}
+		b.Run(name, func(b *testing.B) { benchmarkRelayMarshal(b, pooled) })
+	}
+}
+
+func benchmarkRelayMarshal(b *testing.B, reuse bool) {
+	// The peer send path marshals each relay chunk into a recycled buffer.
+	packet := &protocol.Packet{Kind: "data", To: "peer", Session: "session", Data: bytes.Repeat([]byte("x"), 16*1024)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if !reuse {
+			if _, err := proto.Marshal(packet); err != nil {
+				b.Fatal(err)
+			}
+			continue
+		}
+		pooled := getWriteBuffer()
+		wire, err := proto.MarshalOptions{}.MarshalAppend((*pooled)[:0], packet)
+		if err != nil {
+			b.Fatal(err)
+		}
+		*pooled = wire
+		putWriteBuffer(pooled)
 	}
 }

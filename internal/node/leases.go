@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -39,6 +40,28 @@ func (n *Node) leaseBusy() bool {
 	return false
 }
 
+// lockLeaseSettled returns with n.mu held, so a new mutation cannot start
+// between waiting for persistence and checking admission.
+func (n *Node) lockLeaseSettled(ctx context.Context) error {
+	for {
+		n.mu.Lock()
+		if !n.leasePending {
+			if err := ctx.Err(); err != nil {
+				n.mu.Unlock()
+				return err
+			}
+			return nil
+		}
+		settled := n.leaseSettled
+		n.mu.Unlock()
+		select {
+		case <-settled:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
 func (n *Node) leaseMethod(owner, method string, args json.RawMessage) (any, error) {
 	var q struct {
 		ID         string `json:"id"`
@@ -53,14 +76,26 @@ func (n *Node) leaseMethod(owner, method string, args json.RawMessage) (any, err
 	if q.TTLSeconds < 1 || q.TTLSeconds > 86400 {
 		return nil, errors.New("lease TTL must be 1..86400 seconds")
 	}
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	if method == "leases.get" {
+		n.mu.Lock()
+		defer n.mu.Unlock()
 		if n.lease == nil {
 			return nil, nil
 		}
 		return *n.lease, nil
 	}
+	// Serialize lease mutations on leaseMu so the durable write below can
+	// run without holding n.mu; lease-sensitive callers wait on the
+	// pending flag instead of contending for n.mu through the sync.
+	n.leaseMu.Lock()
+	defer n.leaseMu.Unlock()
+	n.mu.Lock()
+	muHeld := true
+	defer func() {
+		if muHeld {
+			n.mu.Unlock()
+		}
+	}()
 	var next *model.Lease
 	switch method {
 	case "leases.acquire":
@@ -91,8 +126,17 @@ func (n *Node) leaseMethod(owner, method string, args json.RawMessage) (any, err
 			return nil, errors.New("lease still has active tasks")
 		}
 	}
-	if err := store.Write(filepath.Join(n.Config.DataDir, "lease.json"), next); err != nil {
-		return nil, err
+	settled := make(chan struct{})
+	n.leasePending, n.leaseSettled = true, settled
+	n.mu.Unlock()
+	muHeld = false
+	writeErr := store.Write(filepath.Join(n.Config.DataDir, "lease.json"), next)
+	n.mu.Lock()
+	muHeld = true
+	n.leasePending = false
+	close(settled)
+	if writeErr != nil {
+		return nil, writeErr
 	}
 	n.lease = next
 	if next == nil {

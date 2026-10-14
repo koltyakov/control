@@ -140,6 +140,7 @@ func TestUpdateStatusSurvivesDisconnectReconnectAndGatewayRestart(t *testing.T) 
 	g.mu.Lock()
 	n.UpdateUntil = time.Now().Add(-time.Second)
 	g.nodes[id.ID] = n
+	g.publishObservations(id.ID)
 	g.mu.Unlock()
 	if got := read(); got.Status != "offline" {
 		t.Fatal("expired update grace hid offline status", got)
