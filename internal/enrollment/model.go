@@ -15,6 +15,9 @@ import (
 	"github.com/koltyakov/control/internal/update"
 )
 
+// ErrPendingInvitation identifies a name reservation that force may retract.
+var ErrPendingInvitation = errors.New("name has an existing invitation")
+
 type Request struct {
 	Name        string `json:"name"`
 	AutoName    bool   `json:"autoName,omitempty"`
@@ -23,6 +26,7 @@ type Request struct {
 	TTLSeconds  int    `json:"ttlSeconds,omitempty"`
 	Gateway     string `json:"gateway"`
 	ServiceMode string `json:"serviceMode,omitempty"`
+	Force       bool   `json:"force,omitempty"`
 }
 
 type Invitation struct {

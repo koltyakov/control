@@ -103,10 +103,11 @@ const fleetUsage = `
 Your fleet:
   machines add [NAME|auto] --platform macos|windows|linux  Create install command; default uses target hostname
     --service user|system                Choose login-session or boot-time startup
+    --force                              Retract a pending invitation for that name
   machines invites                     List installation status
   machines revoke ID                   Revoke an invitation and its machine key
   machines enable|disable NAME          Enable or disable new work on a machine
-  machines rename NAME NEW_NAME         Change a machine's routing alias
+  machines rename NAME NEW_NAME [--force] Change alias; force retracts a pending invitation
   machines unregister NAME              Unregister a machine and request node uninstall
   keys create NAME                     Issue a common key, shown once
   keys list                            List common keys
@@ -204,12 +205,23 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 		return c.JSON(ctx, "DELETE", "/v1/fleet/installations/"+url.PathEscape(args[1]), nil, nil)
 	}
 	if args[0] == "rename" {
-		if len(args) != 3 {
-			return errors.New("usage: control machines rename NAME NEW_NAME")
+		if len(args) < 3 {
+			return errors.New("usage: control machines rename NAME NEW_NAME [--force]")
+		}
+		f := flag.NewFlagSet("machines rename", flag.ContinueOnError)
+		force := f.Bool("force", false, "retract pending invitations for the new name immediately")
+		if err := f.Parse(args[3:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 {
+			return errors.New("usage: control machines rename NAME NEW_NAME [--force]")
 		}
 		n, err := c.ResolveMachine(ctx, args[1])
 		if err != nil {
 			return err
+		}
+		if *force {
+			return c.ForceRenameMachine(ctx, n.ID, args[2])
 		}
 		return c.RenameMachine(ctx, n.ID, args[2])
 	}
@@ -236,6 +248,7 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 	service := f.String("service", "", "user (login session) or system (boot-time service); omitted keeps platform defaults")
 	ttl := f.Duration("ttl", 15*time.Minute, "installation link lifetime")
 	asJSON := f.Bool("json", false, "print installation JSON")
+	force := f.Bool("force", false, "retract pending invitations for this name immediately")
 	if err := f.Parse(options); err != nil {
 		return err
 	}
@@ -259,7 +272,7 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 	if len(parts) == 2 {
 		arch = parts[1]
 	}
-	link, err := c.Invite(ctx, enrollment.Request{Name: name, OS: parts[0], Arch: arch, ServiceMode: *service, TTLSeconds: int(ttl.Seconds())})
+	link, err := c.Invite(ctx, enrollment.Request{Name: name, OS: parts[0], Arch: arch, ServiceMode: *service, TTLSeconds: int(ttl.Seconds()), Force: *force})
 	if err != nil {
 		return err
 	}

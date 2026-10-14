@@ -483,6 +483,8 @@ func (p *Peer) receive(msg *protocol.Packet) {
 		// The identity left the gateway: stop reusing its authority lookup, and
 		// forget its membership unless a direct link is still carrying traffic.
 		p.evictLookupLocked(msg.From)
+		// Lookups started before this notification must not restore stale entries.
+		p.directoryGeneration++
 		if !p.memberInUseLocked(msg.From) {
 			p.forgetMemberLocked(msg.From)
 		}

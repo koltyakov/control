@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/koltyakov/control/internal/enrollment"
 	"github.com/koltyakov/control/internal/update"
 )
 
@@ -35,6 +36,9 @@ func (c Admin) request(ctx context.Context, method, path string, body io.Reader,
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		text, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if resp.StatusCode == http.StatusConflict && strings.TrimSpace(string(text)) == enrollment.ErrPendingInvitation.Error() {
+			return fmt.Errorf("gateway %s: %w", resp.Status, enrollment.ErrPendingInvitation)
+		}
 		return fmt.Errorf("gateway %s: %s", resp.Status, strings.TrimSpace(string(text)))
 	}
 	if result != nil {

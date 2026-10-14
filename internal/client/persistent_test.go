@@ -188,6 +188,28 @@ func TestPersistentTunnelsSurviveClientsServiceAndWorkerRestart(t *testing.T) {
 			}
 			// A destination restart breaks the reverse multiplexer. Only listeners reconnect.
 			_ = worker.Close()
+			// Close joins local work, not the gateway's asynchronous disconnect.
+			// Wait for offline presence before reconnecting the same identity.
+			for {
+				var nodes []model.Node
+				if err := admin.JSON(ctx, http.MethodGet, "/v1/nodes", nil, &nodes); err != nil {
+					t.Fatal(err)
+				}
+				offline := false
+				for _, n := range nodes {
+					if n.ID == worker.Identity.ID {
+						offline = !n.Online
+					}
+				}
+				if offline {
+					break
+				}
+				select {
+				case <-ctx.Done():
+					t.Fatal("worker did not disconnect before restart", ctx.Err())
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
 			worker, err = node.New(workerCfg)
 			if err != nil {
 				t.Fatal(err)

@@ -2,12 +2,14 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/koltyakov/control/internal/enrollment"
 	"github.com/koltyakov/control/internal/model"
 )
 
@@ -19,6 +21,7 @@ type machineManager struct {
 	selected               int
 	phase, action, message string
 	name                   string
+	force                  bool
 }
 type machineActionResult struct {
 	id  int
@@ -28,10 +31,14 @@ type machineActionResult struct {
 func (m view) manageMachine() tea.Cmd {
 	id, action, generation := m.manager.nodes[m.manager.selected].ID, m.manager.action, m.manager.id
 	name := m.manager.name
+	force := m.manager.force
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, 15*time.Second)
 		defer cancel()
 		if action == "rename" {
+			if force {
+				return machineActionResult{generation, m.options.ForceRename(ctx, id, name)}
+			}
 			return machineActionResult{generation, m.options.Rename(ctx, id, name)}
 		}
 		return machineActionResult{generation, m.options.Manage(ctx, id, action)}
@@ -56,6 +63,9 @@ func (m view) updateManager(msg tea.Msg) (tea.Model, tea.Cmd) {
 		w.phase = "done"
 		if msg.err != nil {
 			w.phase, w.message = "error", msg.err.Error()
+			if w.action == "rename" && !w.force && m.options.ForceRename != nil && errors.Is(msg.err, enrollment.ErrPendingInvitation) {
+				w.phase = "conflict"
+			}
 		}
 		if !m.busy {
 			m.busy = true
@@ -70,8 +80,9 @@ func (m view) updateManager(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch w.phase {
 			case "actions", "confirm":
 				w.phase = "list"
-			case "rename":
+			case "rename", "conflict", "force-confirm":
 				w.phase, w.message = "actions", ""
+				w.force = false
 			default:
 				m.manager = nil
 			}
@@ -128,6 +139,15 @@ func (m view) updateManager(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "confirm":
 			if key == "enter" {
 				w.phase = "pending"
+				return m, m.manageMachine()
+			}
+		case "conflict":
+			if key == "f" {
+				w.phase = "force-confirm"
+			}
+		case "force-confirm":
+			if key == "enter" {
+				w.force, w.phase = true, "pending"
 				return m, m.manageMachine()
 			}
 		case "done", "error":
@@ -189,6 +209,12 @@ func (m view) managerView() tea.View {
 	case "pending":
 		lines = append(lines, paint("Requesting "+w.action+" for "+clean(n.Name)+"…", "36", m.color))
 		footer = ""
+	case "conflict":
+		lines = append(lines, paint("A pending invitation reserves "+clean(w.name)+".", "33", m.color), "Force rename to retract its installation URL immediately.")
+		footer = hint("f", "force rename") + sep + hint("Esc", "cancel")
+	case "force-confirm":
+		lines = append(lines, paint("Retract the invitation and rename to "+clean(w.name)+"?", "33", m.color), "The old installation URL will stop working immediately.", "Running work is unchanged.")
+		footer = hint("Enter", "retract and rename") + sep + hint("Esc", "cancel")
 	case "done":
 		if w.action == "rename" {
 			lines = append(lines, paint("Renamed "+clean(n.Name)+" to "+w.name+".", "32", m.color))

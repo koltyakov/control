@@ -75,6 +75,8 @@ Run each printed installation command on its target. Windows uses PowerShell und
 
 Use `auto`, or omit the name, to select the target's hostname. Invitations are single-use and expire after 15 minutes by default. You can also press `a` in the dashboard. See [platform requirements and worker startup](docs/installation.md#install-workers-on-each-platform).
 
+If a pending invitation reserves a name, use `machines add NAME --platform OS --force` or `machines rename OLD NAME --force` to retract its URL immediately. The dashboard offers `f` and asks for confirmation on this conflict. Force does not take over another enrolled identity.
+
 User context runs with the installing user's files and credentials, but can stop after logout. System context starts at boot and survives logout. Linux/macOS system nodes run as root; Windows uses LocalService. Choose the context deliberately, especially for desktop tools. See [installation and startup](docs/installation.md).
 
 ## Run and inspect work

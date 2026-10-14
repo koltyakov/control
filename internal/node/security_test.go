@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/transport"
 )
 
 func TestCoordinationRequiresLocalDelegation(t *testing.T) {
@@ -86,6 +87,13 @@ func TestArtifactAccessCannotOutliveSignedGrant(t *testing.T) {
 			}
 			var artifact model.Artifact
 			call(t, source, "worker", "artifacts.export", map[string]any{"path": "private.txt"}, &artifact)
+			// Establish the download lane before starting the short grant lifetime.
+			// A cold WebRTC attempt can take five seconds before relay fallback.
+			warm, err := consumer.Peer.OpenLane(ctx, "worker", transport.BulkLane)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = warm.Close()
 			call(t, source, "worker", "artifacts.grant", map[string]any{"id": artifact.ID, "target": "consumer", "ttlSeconds": 3}, &artifact)
 			var proof artifactGrant
 			if !worker.decodeGrant(artifact.Grant, &proof) {

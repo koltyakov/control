@@ -140,6 +140,8 @@ Use a stable supervisor and versioned executables in the state directory rather 
 
 ## D015: Single-machine invitations and per-user host setup
 
+The pending-name reservation guard is extended by [D074](#d074-explicit-atomic-retraction-of-pending-name-invitations), which allows explicit retraction while preserving enrolled identities.
+
 The requirement to reserve every invitation's name before installation is superseded for automatic names by [D034](#d034-target-hostname-for-automatic-installation-names). Fixed-name reservations remain unchanged.
 
 The Windows login-startup choice is superseded by [D021](#d021-automatic-windows-node-service).
@@ -400,6 +402,8 @@ Root execution on Unix gives unrestricted providers root authority and does not 
 
 ## D043: Owner-selected machine routing aliases
 
+The rejection of pending destination-name invitations is superseded for explicit force requests by [D074](#d074-explicit-atomic-retraction-of-pending-name-invitations). Registered and redeemed identity reservations remain unchanged.
+
 Permit fleet owners to rename online and offline registrations through the shared client, CLI, and dashboard, without restarting a node or replacing its credential. Store an optional routing-name override with the gateway's existing identity policy and commit it together with the directory name. Apply it after signed identity and fleet checks on reconnection. Preserve admission revisions, work, identity ownership, and original signed installation proof names. Use the override for enrollment reservations and bound-credential authorization; fresh replacement enrollment clears it transactionally.
 
 Names obey existing enrollment syntax and fleet uniqueness, invitation reservations, and client-name reservations. Notify only connected peers in that fleet with a gateway-only `directory.changed` packet. Compatible peers clear name caches without closing identity-bound sessions, and prevent lookups started before notification from reintroducing stale aliases. Reconnection clears caches when notifications were missed. Older peers can retain cached aliases until restarted. Name-based access rules and scripts need updating; stable IDs do not. This extends D023's owner controls and D026's replacement enrollment without changing their stop or credential-rotation contracts. See [registration management](installation.md#manage-registrations).
@@ -643,3 +647,11 @@ Lease-sensitive admission waits are cancellable and return with the node mutex h
 Executable verification hashes actual bytes every time. Size and modification time can be preserved after a content change, so they cannot authorize cached verification. Existing pinned-asset deduplication within one verification pass remains valid. File and parent-directory sync protect different crash-recovery steps and are both retained. This supersedes the unsafe verification-cache and direct-assignment parts of D072. Regression tests cover preserved-mtime corruption, lease ordering/cancellation, relay ordering/byte bounds, failed report retries, and committed reads during mutations.
 
 Allocation profiles of the 16 MiB artifact benchmark identified growing WebSocket message buffers as the largest allocation source. Gateway and peer readers now reuse borrowed buffers, retaining at most 128 KiB between ordinary reads and discarding larger storage on the next read. Protobuf decoding retains independent payload ownership, and WebSocket message limits are unchanged. The gateway's serial writer reuses its protobuf output buffer too. Explicit dashboard refresh bypasses peer-detail caching; artifact-lock waits are cancellable. See [measurement scope](testing.md#performance-benchmarks).
+
+## D074: Explicit atomic retraction of pending name invitations
+
+Allow fleet owners to force a rename or fixed-name invitation creation when an unredeemed invitation reserves the destination name. Expose `--force` in the CLI and `force: true` in the corresponding gateway requests. The dashboard offers force only after a definite pending-invitation conflict and requires separate confirmation that the old installation URL will stop working. Never retry automatically after an uncertain response.
+
+Under the gateway mutation lock, validate all name and identity constraints before changing records. Commit pending-ticket revocation and the requested mutation together in SQLite, rolling back both on failure. Old URLs reject subsequent script, metadata, binary, and redemption requests immediately after commit, including after restart. Downloads already admitted are not recalled, but their tickets cannot redeem after revocation.
+
+Force cannot steal another registration, revoke a redeemed enrollment, bypass a client-name reservation, or affect another fleet. Same-name creation for an existing machine retains its `replaceId` signature requirement. Automatic invitations reserve no name at creation and cannot force a hostname takeover at redemption. This extends D015 and the owner-selected routing-alias decision without changing identity ownership, accepted work, or credential recovery. See [installation](installation.md) and [protocol](protocol.md#machine-lifecycle).

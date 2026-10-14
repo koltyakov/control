@@ -73,9 +73,13 @@ func dashboardCLI(ctx context.Context, c client.Client, remote client.Admin, arg
 		options.Invite = func(ctx context.Context, name, platform, mode string) (enrollment.Link, error) {
 			return remote.Invite(ctx, enrollment.Request{Name: name, OS: platform, ServiceMode: mode})
 		}
+		options.ForceInvite = func(ctx context.Context, name, platform, mode string) (enrollment.Link, error) {
+			return remote.Invite(ctx, enrollment.Request{Name: name, OS: platform, ServiceMode: mode, Force: true})
+		}
 		options.InvitationStatus = remote.Invitation
 		options.Manage = remote.ManageMachine
 		options.Rename = remote.RenameMachine
+		options.ForceRename = remote.ForceRenameMachine
 	}
 	return dashboard.Run(ctx, fetch, options)
 }

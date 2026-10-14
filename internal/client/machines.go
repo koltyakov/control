@@ -25,6 +25,12 @@ func (c Admin) RenameMachine(ctx context.Context, id, name string) error {
 	return c.renameMachine(ctx, id, name, ".control-scenarios")
 }
 
+// ForceRenameMachine retracts pending invitations for the destination name.
+// Registered identities and redeemed enrollments remain protected.
+func (c Admin) ForceRenameMachine(ctx context.Context, id, name string) error {
+	return c.renameMachineWithForce(ctx, id, name, ".control-scenarios", true)
+}
+
 func (c Admin) ResolveMachine(ctx context.Context, name string) (model.Node, error) {
 	var nodes []model.Node
 	if err := c.JSON(ctx, http.MethodGet, "/v1/nodes", nil, &nodes); err != nil {

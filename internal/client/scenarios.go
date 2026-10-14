@@ -32,8 +32,16 @@ type scenarioEdit struct {
 // and local filesystem cannot commit together: never replay or undo a remote
 // rename when its response or a subsequent local write fails.
 func (c Admin) renameMachine(ctx context.Context, id, name, directory string) error {
+	return c.renameMachineWithForce(ctx, id, name, directory, false)
+}
+
+func (c Admin) renameMachineWithForce(ctx context.Context, id, name, directory string, force bool) error {
 	rename := func() error {
-		return c.JSON(ctx, http.MethodPatch, "/v1/fleet/nodes/"+url.PathEscape(id), map[string]string{"name": name}, nil)
+		q := struct {
+			Name  string `json:"name"`
+			Force bool   `json:"force,omitempty"`
+		}{name, force}
+		return c.JSON(ctx, http.MethodPatch, "/v1/fleet/nodes/"+url.PathEscape(id), q, nil)
 	}
 	info, err := os.Lstat(directory)
 	if errors.Is(err, fs.ErrNotExist) {

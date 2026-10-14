@@ -25,10 +25,12 @@ type Options struct {
 	Output           io.Writer
 	GatewayURL       string
 	Invite           Invite
+	ForceInvite      Invite
 	InvitationStatus InvitationStatus
 	Copy             Copy
 	Manage           ManageMachine
 	Rename           RenameMachine
+	ForceRename      RenameMachine
 	Refresh          Fetch // Optional uncached fetch for the user's refresh key.
 }
 

@@ -173,6 +173,14 @@ If the machine was unregistered first, run a new invitation against the same loc
 
 You can also create an invitation for the machine's current name. That invitation reserves the existing identity and can only be redeemed on that machine's profile. Creating it does not interrupt the existing node. Only one unredeemed invitation can reserve a name at a time. Re-enrollment requires a gateway and installer binary that support replacement.
 
+To replace a waiting invitation, explicitly force creation:
+
+```sh
+control machines add render-01 --platform windows --force
+```
+
+The gateway retracts the old URL and creates the replacement in one transaction. The old URL immediately rejects new downloads and redemption. If creation fails before commit, the old invitation remains valid. Force preserves the existing-identity binding for registered names and does not revoke redeemed credentials. Automatic invitations have no name to retract at creation. In the dashboard, a pending-name conflict offers `f`, followed by an Enter confirmation before replacing the invitation.
+
 Architecture-detecting invitations require both amd64 and arm64 binaries for the selected OS in one published release or development bundle. The gateway and installer binaries must support architecture selection. Publish a current bundle with `make update` before using the wizard on an older deployment. The invitation pins both assets from that bundle, so a later update cannot change either download. Redemption permanently binds the selected architecture.
 
 For an explicitly pinned `OS/ARCH` invitation, the gateway can serve its own matching executable if no bundle is available. Other platforms need an operator-supplied bundle. Only the operator can trigger a release fetch or publish a bundle; ordinary invitations do not initiate a global software rollout.
@@ -238,6 +246,8 @@ control machines unregister worker
 `invites` lists only your fleet's metadata and redeemed identity IDs, without ticket or credential hashes. `revoke` disables your invitation and its issued credential, then disconnects the gateway session. It does not terminate work or an established direct peer session.
 
 Names and stable IDs are accepted. In the dashboard, press `m`, select a machine, and choose `r` to rename, `e` to enable, `d` to disable, or `u` to unregister. The unregister screen confirms which installation will be removed.
+
+If a pending invitation reserves the new alias, use `control machines rename worker render-01 --force`. In the dashboard's conflict dialog, press `f`, then Enter to confirm. This retracts the pending URL and renames the machine atomically, without interrupting running work. Registered machines, redeemed enrollments, and client names remain protected. A failed commit leaves the alias and invitation unchanged. If the response is lost, inspect the directory and `machines invites` rather than replaying the request.
 
 Rename sets a gateway-owned routing alias immediately, including while offline. Names must start with a letter or digit and contain 1..63 letters, digits, dots, hyphens, or underscores. Names already registered or reserved by an invitation or client identity in your fleet are rejected. The alias survives gateway and node restarts without editing the node's local configuration or rotating its credential. The identity, tasks, artifacts, and active streams remain unchanged. The former name is no longer a routing alias; update name-based access rules and scripts, or use stable IDs. Compatible peers invalidate cached names after a gateway notification; older peers may retain the former name until restarted. A new enrollment invitation replaces the alias with that invitation's name.
 
@@ -388,10 +398,10 @@ This registers login startup, gracefully stops and disables the old system servi
 
 | Endpoint | Permission | Purpose |
 | --- | --- | --- |
-| `POST /v1/fleet/installations` | Fleet owner | JSON `name` or `autoName: true` with an empty `name`, plus `os`, `gateway`, optional `arch`, `ttlSeconds`, and `serviceMode: "user"` or `"system"` |
+| `POST /v1/fleet/installations` | Fleet owner | JSON `name` or `autoName: true` with an empty `name`, plus `os`, `gateway`, optional `arch`, `ttlSeconds`, `serviceMode: "user"` or `"system"`, and `force` to retract pending explicit-name invitations |
 | `GET /v1/fleet/installations` | Fleet owner | List own metadata |
 | `DELETE /v1/fleet/installations/{id}` | Fleet owner | Revoke own invitation and credential |
-| `PATCH /v1/fleet/nodes/{id}` | Fleet owner | JSON `disabled` boolean or `name` string, not both; return durable machine policy |
+| `PATCH /v1/fleet/nodes/{id}` | Fleet owner | JSON `disabled` boolean or `name` string, not both; optional `force` only with `name` retracts pending destination-name invitations; return durable machine policy |
 | `DELETE /v1/fleet/nodes/{id}?stop=true` | Fleet owner | Unregister own machine and retire its identity, including connected older nodes |
 | `DELETE /v1/fleet/nodes/{id}` | Fleet owner | Legacy removal of an offline registration |
 | `POST /v1/node/state` | Fresh Ed25519 identity proof | Read and acknowledge only that identity's policy, including after credential revocation |

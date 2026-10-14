@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -26,6 +27,7 @@ type registration struct {
 	err        string
 	checking   bool
 	redeemedID string
+	force      bool
 }
 
 type invitationResult struct {
@@ -53,7 +55,11 @@ func (m view) createInvitation() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
 		defer cancel()
-		link, err := m.options.Invite(ctx, w.name, platformOS[w.platform], startupModes[w.context])
+		invite := m.options.Invite
+		if w.force {
+			invite = m.options.ForceInvite
+		}
+		link, err := invite(ctx, w.name, platformOS[w.platform], startupModes[w.context])
 		return invitationResult{w.id, link, err}
 	}
 }
@@ -98,6 +104,9 @@ func (m view) updateRegistration(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			w.step, w.err = "failed", msg.err.Error()
+			if !w.force && m.options.ForceInvite != nil && errors.Is(msg.err, enrollment.ErrPendingInvitation) {
+				w.step = "conflict"
+			}
 			return m, nil
 		}
 		w.link, w.step = msg.link, "copying"
@@ -141,6 +150,8 @@ func (m view) updateRegistration(msg tea.Msg) (tea.Model, tea.Cmd) {
 				w.step, w.err = "platform", ""
 			case "platform":
 				w.step, w.err = "name", ""
+			case "conflict", "force-confirm":
+				w.step, w.err, w.force = "context", "", false
 			default:
 				m.wizard = nil
 			}
@@ -184,6 +195,15 @@ func (m view) updateRegistration(msg tea.Msg) (tea.Model, tea.Cmd) {
 				w.context = int(key[0] - '1')
 			case "enter":
 				w.step, w.err = "creating", ""
+				return m, m.createInvitation()
+			}
+		case "conflict":
+			if key == "f" {
+				w.step, w.err = "force-confirm", ""
+			}
+		case "force-confirm":
+			if key == "enter" {
+				w.step, w.force, w.err = "creating", true, ""
 				return m, m.createInvitation()
 			}
 		case "done":
@@ -267,6 +287,14 @@ func (m view) registrationView() tea.View {
 	case "creating":
 		add("Creating invitation for "+w.name+"…", "36")
 		footer = ""
+	case "conflict":
+		add("A pending invitation reserves "+w.name+".", "33")
+		add("Force add to retract its URL and create a new invitation.", "2")
+		footer = hint("f", "force add") + separator + hint("Esc", "back")
+	case "force-confirm":
+		add("Replace the pending invitation for "+w.name+"?", "33")
+		add("The old installation URL will stop working immediately.", "2")
+		footer = hint("Enter", "retract and create") + separator + hint("Esc", "cancel")
 	case "copying":
 		add("Copying installation command…", "36")
 		footer = ""

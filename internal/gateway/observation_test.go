@@ -1,15 +1,93 @@
 package gateway
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/protocol"
+	"google.golang.org/protobuf/proto"
 )
+
+func TestOfflineNotificationFollowsObservationPublication(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	g, err := New(t.TempDir(), commonKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = g.Close() }()
+	s := httptest.NewServer(g.Handler())
+	defer s.Close()
+	observerID, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerID, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer := rawPeer(t, s.URL, commonKey, "observer", legacyUser, observerID)
+	defer func() { _ = observer.CloseNow() }()
+	worker := rawPeer(t, s.URL, commonKey, "worker", legacyUser, workerID)
+	defer func() { _ = worker.CloseNow() }()
+
+	// Occupy the sole database connection so disconnect persistence must wait.
+	// Directory reads still return the previous committed online record.
+	dbConn, err := g.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dbConn.Close() }()
+	waits := g.db.Stats().WaitCount
+	notified := make(chan error, 1)
+	go func() {
+		_, data, err := observer.Read(ctx)
+		if err == nil {
+			var packet protocol.Packet
+			err = proto.Unmarshal(data, &packet)
+			if err == nil && (packet.Kind != "offline" || packet.From != workerID.ID) {
+				err = fmt.Errorf("unexpected notification: %v", &packet)
+			}
+		}
+		notified <- err
+	}()
+	_ = worker.CloseNow()
+	for g.db.Stats().WaitCount == waits {
+		select {
+		case <-ctx.Done():
+			t.Fatal("disconnect did not reach persistence", ctx.Err())
+		case <-time.After(time.Millisecond):
+		}
+	}
+	select {
+	case err := <-notified:
+		t.Fatal("notification preceded offline publication", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := dbConn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-notified:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("offline notification not delivered", ctx.Err())
+	}
+	for _, n := range g.directory(legacyUser) {
+		if n.ID == workerID.ID && n.Online {
+			t.Fatal("notified identity still online in directory")
+		}
+	}
+}
 
 func TestObservationReadsDoNotWaitForMutationLock(t *testing.T) {
 	g, err := New(t.TempDir(), commonKey)

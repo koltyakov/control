@@ -498,12 +498,6 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		}
 		g.routeMu.Unlock()
 		delete(g.clients, n.ID)
-		for _, peer := range g.peers {
-			if peer.userID != n.UserID {
-				continue
-			}
-			_ = peer.enqueue(&protocol.Packet{Kind: "offline", From: n.ID})
-		}
 		if latest, exists := g.nodes[n.ID]; exists {
 			latest.Online = false
 			latest.LastSeen = time.Now().UTC()
@@ -518,6 +512,14 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			}
 			// Presence is volatile even if last-seen persistence failed.
 			g.publishObservations(n.ID)
+		}
+		// Readers must see offline presence before this invalidates their cache.
+		// Otherwise a concurrent directory read can cache the old online view.
+		for _, peer := range g.peers {
+			if peer.userID != n.UserID {
+				continue
+			}
+			_ = peer.enqueue(&protocol.Packet{Kind: "offline", From: n.ID})
 		}
 		g.mu.Unlock()
 	}()

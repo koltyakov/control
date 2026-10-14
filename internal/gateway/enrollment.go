@@ -180,6 +180,7 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	count := 0
 	expired := map[string]installation{}
+	retracted := map[string]installation{}
 	for hash, old := range g.installations {
 		if old.UserID != p.UserID {
 			continue
@@ -189,8 +190,11 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if !q.AutoName && g.installationName(old) == q.Name && !old.Revoked && old.RedeemedID == "" {
-			http.Error(w, "name has an existing invitation", http.StatusConflict)
-			return
+			if !q.Force {
+				http.Error(w, enrollment.ErrPendingInvitation.Error(), http.StatusConflict)
+				return
+			}
+			retracted[hash] = old
 		}
 		if !q.AutoName && g.installationName(old) == q.Name && !old.Revoked && old.RedeemedID != "" {
 			i.ReplaceID = old.RedeemedID
@@ -204,6 +208,11 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	hash := enrollment.Hash(ticket)
 	g.installations[hash] = i
 	persisted := change{invitations: []string{hash}}
+	for h, old := range retracted {
+		old.Revoked = true
+		g.installations[h] = old
+		persisted.invitations = append(persisted.invitations, h)
+	}
 	for h := range expired {
 		delete(g.installations, h)
 		persisted.invitations = append(persisted.invitations, h)
@@ -211,6 +220,7 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	if err = g.commit(persisted); err != nil {
 		delete(g.installations, hash)
 		maps.Copy(g.installations, expired)
+		maps.Copy(g.installations, retracted)
 		http.Error(w, "could not persist invitation", 500)
 		return
 	}

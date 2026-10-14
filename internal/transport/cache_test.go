@@ -3,17 +3,20 @@ package transport
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/koltyakov/control/internal/gateway"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/protocol"
 )
 
 func echoPeers(t *testing.T, ctx context.Context, url, token string, relay bool, names ...string) []*Peer {
@@ -80,6 +83,38 @@ func TestLookupCacheEvictedByOfflineNotification(t *testing.T) {
 	})
 	if _, err := alpha.Resolve(ctx, "beta"); err == nil {
 		t.Fatal("offline machine resolved from a stale cache entry")
+	}
+}
+
+func TestOfflineNotificationInvalidatesInFlightLookup(t *testing.T) {
+	n := model.Node{ID: strings.Repeat("a", 64), Name: "beta", UserID: "legacy", Online: true}
+	for _, target := range []string{n.ID, n.Name} {
+		t.Run(target, func(t *testing.T) {
+			p := New(Config{}, nil)
+			p.clientSessions, p.userID = true, n.UserID
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// The response was read while online, but arrives after the
+				// offline notification. It must not repopulate the cache.
+				p.receive(&protocol.Packet{Kind: "offline", From: n.ID})
+				if r.URL.Path == "/v1/nodes" {
+					_ = json.NewEncoder(w).Encode([]model.Node{n})
+				} else {
+					_ = json.NewEncoder(w).Encode(n)
+				}
+			}))
+			defer s.Close()
+			p.cfg.Gateway = s.URL
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := p.Lookup(ctx, target); err != nil {
+				t.Fatal(err)
+			}
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			if len(p.lookups) != 0 {
+				t.Fatal("in-flight lookup restored cache after offline notification")
+			}
+		})
 	}
 }
 

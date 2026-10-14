@@ -3,9 +3,11 @@ package gateway
 import (
 	"crypto/ed25519"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"time"
 
+	"github.com/koltyakov/control/internal/enrollment"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/protocol"
@@ -70,6 +72,7 @@ func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 	var q struct {
 		Disabled *bool   `json:"disabled"`
 		Name     *string `json:"name"`
+		Force    bool    `json:"force,omitempty"`
 	}
 	if json.NewDecoder(r.Body).Decode(&q) != nil || (q.Disabled == nil) == (q.Name == nil) {
 		http.Error(w, "provide either disabled or name", 400)
@@ -77,6 +80,10 @@ func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 	}
 	if q.Name != nil && !validName.MatchString(*q.Name) {
 		http.Error(w, "name must start with a letter or digit and contain 1..63 letters, digits, dots, hyphens or underscores", 400)
+		return
+	}
+	if q.Force && q.Name == nil {
+		http.Error(w, "force requires a name", http.StatusBadRequest)
 		return
 	}
 	id := r.PathValue("id")
@@ -88,7 +95,7 @@ func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if q.Name != nil {
-		g.renameMachine(w, n, *q.Name)
+		g.renameMachine(w, n, *q.Name, q.Force)
 		return
 	}
 	if !n.Managed {
@@ -117,7 +124,7 @@ func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 
 // Called under g.mu. Renaming changes only gateway routing metadata, not work
 // admission or the signed installation proof retained for response recovery.
-func (g *Gateway) renameMachine(w http.ResponseWriter, n model.Node, name string) {
+func (g *Gateway) renameMachine(w http.ResponseWriter, n model.Node, name string, force bool) {
 	if g.clientNameReserved(n.UserID, name) {
 		http.Error(w, "name is reserved for a client identity", http.StatusConflict)
 		return
@@ -128,11 +135,19 @@ func (g *Gateway) renameMachine(w http.ResponseWriter, n model.Node, name string
 			return
 		}
 	}
-	for _, i := range g.installations {
+	retracted := map[string]installation{}
+	for hash, i := range g.installations {
 		if i.UserID == n.UserID && g.installationName(i) == name && !i.Revoked && i.RedeemedID != n.ID && (i.RedeemedID != "" || time.Now().Before(i.ExpiresAt)) {
-			http.Error(w, "name has an existing invitation or enrollment", http.StatusConflict)
-			return
+			if i.RedeemedID != "" {
+				http.Error(w, "name has an existing enrollment", http.StatusConflict)
+				return
+			}
+			retracted[hash] = i
 		}
+	}
+	if len(retracted) > 0 && !force {
+		http.Error(w, enrollment.ErrPendingInvitation.Error(), http.StatusConflict)
+		return
 	}
 	old := g.machineStates[n.ID]
 	state := old
@@ -140,8 +155,15 @@ func (g *Gateway) renameMachine(w http.ResponseWriter, n model.Node, name string
 	updated := n
 	updated.Name = name
 	g.nodes[n.ID], g.machineStates[n.ID] = updated, state
-	if err := g.commit(change{nodes: []string{n.ID}, machineStates: []string{n.ID}}); err != nil {
+	persisted := change{nodes: []string{n.ID}, machineStates: []string{n.ID}}
+	for hash, i := range retracted {
+		i.Revoked = true
+		g.installations[hash] = i
+		persisted.invitations = append(persisted.invitations, hash)
+	}
+	if err := g.commit(persisted); err != nil {
 		g.nodes[n.ID], g.machineStates[n.ID] = n, old
+		maps.Copy(g.installations, retracted)
 		http.Error(w, "could not persist machine name", 500)
 		return
 	}
