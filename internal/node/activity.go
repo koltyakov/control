@@ -229,13 +229,10 @@ func (n *Node) activitySnapshot(query model.ActivityQuery) model.NodeActivitySna
 		s.LeaseOwner, s.LeaseExpires = n.lease.Owner, n.lease.Expires
 	}
 	n.mu.Unlock()
-	for _, mode := range n.Peer.Connections() {
-		if mode == "webrtc" {
-			s.DirectSessions++
-		} else {
-			s.RelaySessions++
-		}
-	}
+	routes := n.Peer.ConnectionRoutes()
+	s.ConnectionRoutes = &routes
+	s.DirectSessions = routes.Direct + routes.TURN + routes.Unknown
+	s.RelaySessions = routes.Relay
 	sort.Slice(s.Active, func(i, j int) bool {
 		if s.Active[i].Started.Equal(s.Active[j].Started) {
 			return s.Active[i].ID < s.Active[j].ID
@@ -329,6 +326,7 @@ func (n *Node) poolActivities(ctx context.Context, caller string, args json.RawM
 				s.Status, s.ObservedAt, s.Active, s.Recent = "ready", remote.ObservedAt, remote.Active, remote.Recent
 				s.ActiveCount, s.Omitted = remote.ActiveCount, remote.Omitted
 				s.DirectSessions, s.RelaySessions = remote.DirectSessions, remote.RelaySessions
+				s.ConnectionRoutes = remote.ConnectionRoutes
 				s.Tunnels = remote.Tunnels
 				if s.Tunnels == nil {
 					s.Tunnels = model.ActiveTunnelCounts(remote.Active)

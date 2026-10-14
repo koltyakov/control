@@ -80,6 +80,15 @@ func TestConcurrentLanesShareCarrierAndSurviveSiblingClose(t *testing.T) {
 			if len(stats) != 3 {
 				t.Fatal("lane sessions duplicated or missing", stats)
 			}
+			wantRoutes := model.ConnectionRouteCounts{Direct: 1}
+			if relay {
+				wantRoutes = model.ConnectionRouteCounts{Relay: 1}
+			}
+			for _, p := range []*Peer{a, b} {
+				if got := p.ConnectionRoutes(); got != wantRoutes {
+					t.Fatalf("lane connections counted more than once or misclassified: %+v", got)
+				}
+			}
 			if !relay {
 				a.mu.Lock()
 				count := len(a.carriers)

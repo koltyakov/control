@@ -48,21 +48,31 @@ type NodeActivitySnapshot struct {
 	// Status is ready for peer activity, summary for fresh owner health,
 	// online for directory-only presence, update during managed updates,
 	// offline, or unavailable.
-	Status          string        `json:"status"`
-	Error           string        `json:"error,omitempty"`
-	ObservedAt      time.Time     `json:"observedAt,omitempty"`
-	Active          []Activity    `json:"active"`
-	Recent          []Activity    `json:"recent"`
-	ActiveCount     int           `json:"activeCount"`
-	Omitted         int           `json:"omitted,omitempty"`
-	DirectSessions  int           `json:"directSessions"`
-	RelaySessions   int           `json:"relaySessions"`
-	Tunnels         *TunnelCounts `json:"tunnels,omitempty"`
-	RetainedTunnels *TunnelCounts `json:"retainedTunnels,omitempty"`
-	LeaseOwner      string        `json:"leaseOwner,omitempty"`
-	LeaseExpires    time.Time     `json:"leaseExpires,omitempty"`
-	Leased          bool          `json:"leased,omitempty"`
-	System          *SystemInfo   `json:"system,omitempty"`
+	Status           string                 `json:"status"`
+	Error            string                 `json:"error,omitempty"`
+	ObservedAt       time.Time              `json:"observedAt,omitempty"`
+	Active           []Activity             `json:"active"`
+	Recent           []Activity             `json:"recent"`
+	ActiveCount      int                    `json:"activeCount"`
+	Omitted          int                    `json:"omitted,omitempty"`
+	DirectSessions   int                    `json:"directSessions"`
+	RelaySessions    int                    `json:"relaySessions"`
+	ConnectionRoutes *ConnectionRouteCounts `json:"connectionRoutes,omitempty"`
+	Tunnels          *TunnelCounts          `json:"tunnels,omitempty"`
+	RetainedTunnels  *TunnelCounts          `json:"retainedTunnels,omitempty"`
+	LeaseOwner       string                 `json:"leaseOwner,omitempty"`
+	LeaseExpires     time.Time              `json:"leaseExpires,omitempty"`
+	Leased           bool                   `json:"leased,omitempty"`
+	System           *SystemInfo            `json:"system,omitempty"`
+}
+
+// ConnectionRouteCounts counts usable peers once across their traffic lanes.
+// DirectSessions retains its legacy WebRTC meaning, including TURN and unknown ICE paths.
+type ConnectionRouteCounts struct {
+	Direct  int `json:"direct"`
+	TURN    int `json:"turn"`
+	Relay   int `json:"relay"`
+	Unknown int `json:"unknown"`
 }
 
 // TunnelCounts separates forward connections from reverse listeners for live

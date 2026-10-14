@@ -66,7 +66,7 @@ At most 32 retained tunnels and 128 simultaneous sockets per tunnel are supporte
 
 ## Dashboard and MCP
 
-The machine table shows live `Tunnels` after `D/R`, as `↑2 ↓1`. Up counts active forward TCP connections; down counts reverse listeners, including idle listeners. These peer-observed counts cover all owners and orchestrator hosts, including foreground and detached processes, not only this service. An idle local forward listener has no worker activity; its connected sockets appear as `tcp.accept`, then move to Recent when closed.
+The machine table shows live `Tunnels` after `D/T/R`, as `↑2 ↓1`. Up counts active forward TCP connections; down counts reverse listeners, including idle listeners. These peer-observed counts cover all owners and orchestrator hosts, including foreground and detached processes, not only this service. An idle local forward listener has no worker activity; its connected sockets appear as `tcp.accept`, then move to Recent when closed.
 
 The separate `P.Tun.` column means permanent tunnels and counts this dashboard host and selected login's retained forward/reverse definitions. It includes definitions waiting to retry, excludes expired definitions, and remains available for offline targets. Details and plain-text output always include it. JSON contains live `tunnels: {forward, reverse}` and local `retainedTunnels: {forward, reverse}`, without tunnel addresses or credentials. A missing or unreadable local tunnel store is shown as unknown where appropriate. Dashboard polling reads the atomic store without starting the tunnel service.
 

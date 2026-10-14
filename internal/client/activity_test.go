@@ -33,8 +33,9 @@ func TestDashboardGatewaySurvivesPeerFailureAndScopesEnrichment(t *testing.T) {
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"result": model.PoolActivitySnapshot{Nodes: []model.NodeActivitySnapshot{
 			{ID: "own", Name: "wrong-name", Online: true, Status: "ready", ActiveCount: 1,
-				Active: []model.Activity{{Kind: "tunnel", Operation: "tcp.listen", Phase: "listening"}},
-				Recent: []model.Activity{{Kind: "tunnel", Operation: "tcp.accept", State: "succeeded"}}},
+				ConnectionRoutes: &model.ConnectionRouteCounts{Direct: 2, TURN: 1, Relay: 3},
+				Active:           []model.Activity{{Kind: "tunnel", Operation: "tcp.listen", Phase: "listening"}},
+				Recent:           []model.Activity{{Kind: "tunnel", Operation: "tcp.accept", State: "succeeded"}}},
 			{ID: "foreign", Name: "foreign-worker", Online: true, Status: "ready"},
 			{ID: "offline", Name: "old-worker", Online: true, Status: "ready"},
 		}}})
@@ -53,6 +54,9 @@ func TestDashboardGatewaySurvivesPeerFailureAndScopesEnrichment(t *testing.T) {
 	}
 	if got.Nodes[0].Tunnels == nil || *got.Nodes[0].Tunnels != (model.TunnelCounts{Reverse: 1}) || got.Nodes[1].Tunnels != nil {
 		t.Fatalf("live listener missing, completed socket counted, or offline counts invented: %+v", got.Nodes)
+	}
+	if routes := got.Nodes[0].ConnectionRoutes; routes == nil || *routes != (model.ConnectionRouteCounts{Direct: 2, TURN: 1, Relay: 3}) || got.Nodes[1].ConnectionRoutes != nil {
+		t.Fatalf("route counts lost or invented for offline peer: %+v", got.Nodes)
 	}
 	mu.Lock()
 	pool.Nodes[0].Status = "update"

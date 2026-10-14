@@ -23,7 +23,7 @@ type column struct {
 }
 
 var machineColumns = []column{
-	{"Node", 18}, {"State", 8}, {"Seen", 6}, {"Work", 4}, {"D/R", 5}, {"Tunnels", 9},
+	{"Node", 18}, {"State", 8}, {"Seen", 6}, {"Work", 4}, {"D/T/R", 8}, {"Tunnels", 9},
 	{"CPU", len("100.0%")}, {"RAM", len("1023.9GiB/1023.9GiB")}, {"Disk free", len("1023.9GiB")},
 	{"P.Tun.", 9}, {"OS", len("windows")}, {"Version", len("v10.2.3*")},
 }

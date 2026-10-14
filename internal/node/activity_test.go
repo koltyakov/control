@@ -134,7 +134,7 @@ func TestPoolAvailabilityAndCachedSystemInfo(t *testing.T) {
 				t.Fatalf("denied node mislabeled: %+v", n)
 			}
 		case "source":
-			if n.Status != "ready" || n.ActiveCount != 0 || n.System == nil {
+			if n.Status != "ready" || n.ActiveCount != 0 || n.System == nil || n.ConnectionRoutes == nil {
 				t.Fatalf("idle node mislabeled: %+v", n)
 			}
 		case "consumer":

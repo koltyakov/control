@@ -176,6 +176,14 @@ func TestStandalonePeerOperations(t *testing.T) {
 			if observed.Nodes[0].Tunnels == nil || *observed.Nodes[0].Tunnels != (model.TunnelCounts{Forward: 1, Reverse: 1}) {
 				t.Fatalf("standalone dashboard lost live tunnel counts: %+v", observed.Nodes[0])
 			}
+			routes := observed.Nodes[0].ConnectionRoutes
+			if routes == nil || routes.TURN != 0 || routes.Unknown != 0 ||
+				routes.Direct+routes.Relay != 2 || relay && routes.Relay != 2 || !relay && routes.Direct != 2 {
+				t.Fatalf("standalone dashboard lost peer route counts: %+v", routes)
+			}
+			if observed.Nodes[0].DirectSessions != routes.Direct || observed.Nodes[0].RelaySessions != routes.Relay {
+				t.Fatal("legacy connection counts changed", observed.Nodes[0])
+			}
 			operations := map[string]model.Activity{}
 			for _, activity := range observed.Nodes[0].Active {
 				operations[activity.Operation] = activity

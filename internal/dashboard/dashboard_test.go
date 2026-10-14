@@ -304,8 +304,8 @@ func TestResponsiveTablesKeepImportantColumnsAndDetails(t *testing.T) {
 	}
 	var short, long strings.Builder
 	opts := renderOptions{width: 80}
-	opts.table(&short, machineColumns, [][]string{{"node", "idle", "now", "0", "0/0", "↑0 ↓0", "0.1%", "1/2", "2", "↑0 ↓0", "linux", "v1"}})
-	opts.table(&long, machineColumns, [][]string{{"node", "busy/leased", "100d", "1000", "10/1", "↑32 ↓32", "100.0%", "100.0GiB/120.0GiB", "10.0GiB", "↑32 ↓32", "linux", "v1.2.3-4-gabcd-dirty"}})
+	opts.table(&short, machineColumns, [][]string{{"node", "idle", "now", "0", "0/0/0", "↑0 ↓0", "0.1%", "1/2", "2", "↑0 ↓0", "linux", "v1"}})
+	opts.table(&long, machineColumns, [][]string{{"node", "busy/leased", "100d", "1000", "10/1/2", "↑32 ↓32", "100.0%", "100.0GiB/120.0GiB", "10.0GiB", "↑32 ↓32", "linux", "v1.2.3-4-gabcd-dirty"}})
 	if strings.Split(short.String(), "\n")[0] != strings.Split(long.String(), "\n")[0] {
 		t.Fatal("changing values moved or hid table columns")
 	}

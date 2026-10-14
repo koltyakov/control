@@ -49,7 +49,7 @@ func TestRenderCompactVersionsAndFullDetails(t *testing.T) {
 		if strings.Count(text, "v0.1.0*") != 1 || strings.Contains(text, "gabc1234") || strings.Contains(text, "Version") {
 			t.Fatalf("gateway version not compact or trailing machine version not hidden:\n%s", text)
 		}
-		text = ansi.Strip(render(snapshot, now, renderOptions{width: 120, color: color}))
+		text = ansi.Strip(render(snapshot, now, renderOptions{width: 128, color: color}))
 		if strings.Count(text, "v0.1.0*") != 2 || strings.Contains(text, "gabc1234") {
 			t.Fatalf("wide compact view lost compact gateway or machine version:\n%s", text)
 		}
@@ -132,10 +132,10 @@ func TestCompactReservedMachineState(t *testing.T) {
 
 func TestMachineColumnsFitFormattedValues(t *testing.T) {
 	var b strings.Builder
-	row := []string{"tj", "disabled", "1000d", "4096", "10/10", "↑32 ↓32", "100.0%", "1023.9GiB/1023.9GiB", "1023.9GiB", "↑1 ↓1", "windows", "v10.2.3*"}
+	row := []string{"tj", "disabled", "1000d", "4096", "10/10/10", "↑32 ↓32", "100.0%", "1023.9GiB/1023.9GiB", "1023.9GiB", "↑1 ↓1", "windows", "v10.2.3*"}
 	renderOptions{width: 140}.table(&b, machineColumns, [][]string{row})
 	lines := strings.Split(b.String(), "\n")
-	for i, start := range []int{0, 10, 20, 28, 34, 41, 52, 60, 81, 92, 103, 112} {
+	for i, start := range []int{0, 10, 20, 28, 34, 44, 55, 63, 84, 95, 106, 115} {
 		if got := strings.Index(lines[0], machineColumns[i].label); got != start {
 			t.Fatalf("%s header starts at %d, want %d: %q", machineColumns[i].label, got, start, lines[0])
 		}
@@ -149,12 +149,13 @@ func TestRenderConnectionsAfterWork(t *testing.T) {
 	now := time.Now()
 	snapshot := model.PoolActivitySnapshot{ObservedAt: now, Nodes: []model.NodeActivitySnapshot{{
 		Name: "worker", Online: true, Status: "ready", ActiveCount: 7,
-		DirectSessions: 2, RelaySessions: 3, OS: "linux",
-		Software:        buildinfo.Info{Version: "v1.2.3"},
-		Tunnels:         &model.TunnelCounts{Forward: 1, Reverse: 2},
-		RetainedTunnels: &model.TunnelCounts{Forward: 3, Reverse: 4},
+		DirectSessions: 3, RelaySessions: 3, OS: "linux",
+		ConnectionRoutes: &model.ConnectionRouteCounts{Direct: 2, TURN: 1, Relay: 3},
+		Software:         buildinfo.Info{Version: "v1.2.3"},
+		Tunnels:          &model.TunnelCounts{Forward: 1, Reverse: 2},
+		RetainedTunnels:  &model.TunnelCounts{Forward: 3, Reverse: 4},
 	}}}
-	for _, options := range []renderOptions{{width: 120}, {width: 120, details: true}} {
+	for _, options := range []renderOptions{{width: 128}, {width: 128, details: true}} {
 		text := render(snapshot, now, options)
 		lines := strings.Split(text, "\n")
 		found := false
@@ -165,10 +166,10 @@ func TestRenderConnectionsAfterWork(t *testing.T) {
 			found = true
 			headers := strings.Fields(line)
 			values := strings.Fields(lines[i+1])
-			if len(headers) < 7 || strings.Join(headers[:7], " ") != "Node State Seen Work D/R Tunnels CPU" || strings.Join(headers[len(headers)-2:], " ") != "OS Version" {
+			if len(headers) < 7 || strings.Join(headers[:7], " ") != "Node State Seen Work D/T/R Tunnels CPU" || strings.Join(headers[len(headers)-2:], " ") != "OS Version" {
 				t.Fatalf("incorrect machine column order: %q", line)
 			}
-			if len(values) < 8 || strings.Join(values[:8], " ") != "worker busy now 7 2/3 ↑1 ↓2 -" || strings.Join(values[len(values)-2:], " ") != "linux v1.2.3" {
+			if len(values) < 8 || strings.Join(values[:8], " ") != "worker busy now 7 2/1/3 ↑1 ↓2 -" || strings.Join(values[len(values)-2:], " ") != "linux v1.2.3" {
 				t.Fatalf("machine values do not match headers: %q", lines[i+1])
 			}
 		}
@@ -178,5 +179,25 @@ func TestRenderConnectionsAfterWork(t *testing.T) {
 		if options.details && (!strings.Contains(text, "P.Tun.") || !strings.Contains(text, "↑3 ↓4")) {
 			t.Fatalf("details lost permanent tunnel counts separate from live activity:\n%s", text)
 		}
+	}
+}
+
+func TestConnectionRatioUnknownAndLegacyRoutes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		node model.NodeActivitySnapshot
+		want string
+	}{
+		{"empty", model.NodeActivitySnapshot{ConnectionRoutes: &model.ConnectionRouteCounts{}}, "0/0/0"},
+		{"turn", model.NodeActivitySnapshot{ConnectionRoutes: &model.ConnectionRouteCounts{TURN: 2}}, "0/2/0"},
+		{"unknown ICE", model.NodeActivitySnapshot{ConnectionRoutes: &model.ConnectionRouteCounts{Direct: 1, Unknown: 1, Relay: 2}}, "?/?/2"},
+		{"legacy WebRTC", model.NodeActivitySnapshot{DirectSessions: 2, RelaySessions: 3}, "?/?/3"},
+		{"legacy relay only", model.NodeActivitySnapshot{RelaySessions: 3}, "0/0/3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := connectionRatio(tc.node); got != tc.want {
+				t.Fatalf("connection ratio = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

@@ -193,6 +193,9 @@ func TestDisconnectedCarrierIsHiddenAndRecoveryCancelsRetirement(t *testing.T) {
 	if len(p.Connections()) != 0 || len(p.SessionStats()) != 0 {
 		t.Fatal("disconnected carrier still reported as reachable")
 	}
+	if got := p.ConnectionRoutes(); got != (model.ConnectionRouteCounts{}) {
+		t.Fatalf("disconnected carrier counted in routes: %+v", got)
+	}
 	p.mu.Lock()
 	stale := c.changed
 	if !c.disconnected {

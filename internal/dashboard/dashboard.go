@@ -405,7 +405,7 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 		}
 		connections := "-"
 		if n.Status == "ready" {
-			connections = fmt.Sprintf("%d/%d", n.DirectSessions, n.RelaySessions)
+			connections = connectionRatio(n)
 		}
 		version := options.version(n.Software.Version)
 		if version == "" {
@@ -519,6 +519,20 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func connectionRatio(n model.NodeActivitySnapshot) string {
+	if routes := n.ConnectionRoutes; routes != nil {
+		if routes.Unknown > 0 {
+			return fmt.Sprintf("?/?/%d", routes.Relay)
+		}
+		return fmt.Sprintf("%d/%d/%d", routes.Direct, routes.TURN, routes.Relay)
+	}
+	// Older nodes report WebRTC totals without the direct/TURN split.
+	if n.DirectSessions > 0 {
+		return fmt.Sprintf("?/?/%d", n.RelaySessions)
+	}
+	return fmt.Sprintf("0/0/%d", n.RelaySessions)
 }
 
 func clean(s string) string {
