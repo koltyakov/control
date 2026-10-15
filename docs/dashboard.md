@@ -78,6 +78,8 @@ control dashboard --json
 
 `--once` prints a plain-text snapshot, including recent completions. `--json` prints one structured snapshot, also retaining recent records. The live view hides recent completions until you press uppercase `R`; `d` does not change their visibility. Redirecting output or using non-terminal input also selects a one-shot view. These modes are suitable for scripts and do not enter the terminal's alternate screen.
 
+The live dashboard suppresses background logs when stderr is a terminal so reconnect messages cannot overwrite the display. Connection failures still appear in dashboard warnings and the footer. To capture diagnostics, including `--debug` output, redirect stderr to a file: `control --debug dashboard 2>dashboard.log`. One-shot modes keep normal logging.
+
 ## Availability is separate from observability
 
 | Display | Meaning |

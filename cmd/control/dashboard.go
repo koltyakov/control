@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -65,6 +66,11 @@ func dashboardCLI(ctx context.Context, c client.Client, remote client.Admin, arg
 		_, err = fmt.Fprintln(os.Stdout, dashboard.Render(snapshot, time.Now()))
 		return err
 	}
+	restoreLogs := suspendDashboardLogs(term.IsTerminal(int(os.Stderr.Fd())))
+	defer restoreLogs()
+	// Stop background peers before restoring terminal logging. Peers are created
+	// lazily by the first poll and capture the default logger at construction.
+	defer func() { _ = c.Close() }()
 	options := dashboard.Options{Interval: *interval, Timeout: *timeout, Output: os.Stdout, GatewayURL: remote.URL, Copy: clipboard.Copy}
 	options.Refresh = func(ctx context.Context) (model.PoolActivitySnapshot, error) {
 		return c.DashboardFresh(ctx, remote, query)
@@ -82,4 +88,16 @@ func dashboardCLI(ctx context.Context, c client.Client, remote client.Admin, arg
 		options.ForceRename = remote.ForceRenameMachine
 	}
 	return dashboard.Run(ctx, fetch, options)
+}
+
+// Bubble Tea owns the live terminal, including the cursor position. Direct
+// stderr logs corrupt its incremental redraws. Redirected diagnostics remain
+// available, and one-shot dashboard output never enters this scope.
+func suspendDashboardLogs(stderrTerminal bool) func() {
+	if !stderrTerminal {
+		return func() {}
+	}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.DiscardHandler))
+	return func() { slog.SetDefault(previous) }
 }
