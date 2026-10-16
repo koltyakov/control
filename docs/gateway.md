@@ -4,6 +4,8 @@
 
 This example uses an Ubuntu or Debian VPS with systemd, a dedicated unprivileged service account, and Caddy for HTTPS. You need sudo access, a domain such as `control.example.com`, and a published Control release. Replace the domain below with your own. Nothing here installs a worker on the VPS.
 
+To use expose instead of Caddy, follow [install Control behind expose](expose.md).
+
 ## 1. Prepare DNS and ports
 
 Point your domain's A record at the VPS. Add an AAAA record only if its IPv6 address is reachable. Allow inbound TCP 80 and 443 in both the VPS firewall and your provider's security rules. Keep SSH available to administrators. Do not expose gateway port 7330 or node API port 7331.

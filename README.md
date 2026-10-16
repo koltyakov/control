@@ -30,6 +30,8 @@ See [architecture](docs/architecture.md) for roles and connections.
 
 Follow the [Linux VPS guide](docs/gateway.md) for Ubuntu/Debian setup with systemd, Caddy HTTPS, and user accounts.
 
+Already running expose? Use the [expose gateway guide](docs/expose.md) instead of Caddy.
+
 Point a domain at the VPS, allow TCP 80/443, and keep the gateway on `127.0.0.1:7330` behind the proxy. Create accounts with `control users create NAME`. Give users their own account keys, never the gateway superuser key.
 
 ## Install the orchestrator CLI
@@ -145,7 +147,7 @@ Compose tests run a gateway, three nodes, and an FFmpeg workflow over WebRTC and
 
 ## Documentation
 
-- [Linux VPS gateway](docs/gateway.md), [installation and enrollment](docs/installation.md), [users and private fleets](docs/users.md), [authority and delegation](docs/delegation.md).
+- [Linux VPS gateway](docs/gateway.md), [gateway behind expose](docs/expose.md), [installation and enrollment](docs/installation.md), [users and private fleets](docs/users.md), [authority and delegation](docs/delegation.md).
 - [Configuration and protocol](docs/protocol.md), [dashboard and metrics](docs/dashboard.md), [managed updates](docs/updates.md).
 - [TCP tunnels](docs/tunnels.md), [connection tests](docs/connections.md), [fleet streaming](docs/streaming.md).
 - [GUI automation](docs/rpa.md), [worker-local secrets](docs/secrets.md), [clipboard pastes](docs/clipboard.md), [local machine scenarios](docs/scenarios.md).
