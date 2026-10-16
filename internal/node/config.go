@@ -37,8 +37,10 @@ type Config struct {
 	// MaxRetainedTasks bounds retained terminal tasks. Zero selects 10000; -1
 	// disables count-based pruning.
 	MaxRetainedTasks int `json:"maxRetainedTasks,omitempty"`
-	// Allow maps enrolled caller IDs or names to capability/method glob patterns.
-	// An omitted map trusts all enrolled nodes. An empty map denies all callers.
+	// Allow maps caller IDs, names, *, or @orchestrator to method glob patterns.
+	// An omitted map permits same-fleet discovery and account-client execution.
+	// An empty map denies incoming calls without a valid instruction/artifact grant.
+	// Neither rules nor grants bypass fleet membership or task ownership.
 	Allow     map[string][]string `json:"allow,omitempty"`
 	Providers map[string]Command  `json:"providers,omitempty"`
 	Agents    map[string]Command  `json:"agents,omitempty"`

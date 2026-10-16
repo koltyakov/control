@@ -400,7 +400,11 @@ Linux user services can stop when the last login session ends. System context pr
 
 Root execution on Unix gives unrestricted providers root authority and does not provide the installing user's desktop or application credentials. The wizard warns about this difference. User mode remains appropriate for personal files and desktop integrations; Linux linger can retain an existing user installation across logout without changing its identity or execution account. Unix user-to-system identity migration is not automatic. This extends D015's Unix startup choice and D038's invitation defaults without changing Windows migration behavior. Native boot/logout behavior still requires runtime verification. See [installation contexts](installation.md#choose-a-startup-context).
 
-## D043: Owner-selected machine routing aliases
+<a id="d043-owner-selected-machine-routing-aliases"></a>
+
+## D043a: Owner-selected machine routing aliases
+
+This entry originally shared D043 with the startup-context decision. The suffix disambiguates it without renumbering later decisions; the original heading anchor remains available.
 
 The rejection of pending destination-name invitations is superseded for explicit force requests by [D074](#d074-explicit-atomic-retraction-of-pending-name-invitations). Registered and redeemed identity reservations remain unchanged.
 
@@ -508,6 +512,8 @@ A disconnected client's execution authority now ends at its offline notification
 
 ## D055: Incremental gateway commits and separate hot paths
 
+The single destination queue is refined by [D072](#d072-prioritized-hot-path-performance-work) and [D073](#d073-committed-observation-views-and-safe-performance-boundaries), which separate bounded signaling/control and relay queues while preserving data/close/offline order. D073 also moves list/status readers to a separate committed observation view.
+
 Each connect, disconnect, and administrative change rewrote every gateway record in one fully synchronous transaction while holding the mutex that also routed every relayed packet. Per-process client transport bindings are permanent, so that cost grew with every CLI invocation, and every node reconnecting after a gateway restart repeated it. Commit only the records a mutation names: upsert present records, delete absent ones, and keep identity and transport bindings insert-only with their immutability checks. Mutations still commit before acknowledgement; the full rewrite remains only for startup migration.
 
 Authenticate bearer credentials through an atomically published index keyed by credential SHA-256, rebuilt after committed user, key, or invitation changes, instead of scanning every credential under the gateway mutex. Credentials are 256-bit random values, so digest lookup leaks nothing useful through timing; the superuser and bootstrap tokens keep constant-time comparison. Route relay packets through a separate read-locked connection map so commits and administration never stall forwarding.
@@ -530,7 +536,7 @@ Task records were written and fsynced while holding the node mutex, and every su
 
 Task records, logs, and workspaces accumulated forever; startup loaded them all and listing copied them all. Remove terminal tasks after `taskRetentionHours` (default 168) and beyond `maxRetainedTasks` (default 10,000), checking at startup and every ten minutes. Queued, running, and reserved tasks, and tasks named by live delegations, are kept. Artifacts are not pruned.
 
-Pruning must not weaken idempotent submission, so a durable tombstone with the ID, owner, specification digest, final state, and timestamps is appended and fsynced before the record is removed. Resubmitting a pruned ID with the same owner and specification returns the tombstone as a terminal `pruned` task without executing; other owners or specifications are rejected. Owners can still reconcile the outcome, but not the result, artifacts list, or logs. Tombstones are kept for 180 days and at most 50,000 per node; reusing an ID after that is a new submission. Workspace removal goes through the filesystem root so links cannot redirect it.
+Pruning must not weaken idempotent submission, so a durable tombstone with the ID, owner, specification digest, final state, and timestamps is appended and fsynced before the record is removed. Resubmitting a pruned ID with the same owner and specification returns the original terminal state with `pruned: true` without executing; other owners or specifications are rejected. Owners can still reconcile the outcome, but not the result, artifacts list, or logs. Startup discards tombstones older than 180 days, and compaction keeps at most 50,000 per node; reusing an ID after its tombstone is removed is a new submission. Workspace removal goes through the filesystem root so links cannot redirect it.
 
 ## D059: Artifact owner holds
 
@@ -543,6 +549,8 @@ Workflows accept optional `maxParallel` from 1 to 16, defaulting to 1 so existin
 Selection preferred the first match by name, sending every selected task to one machine. It now prefers the match with the lowest `activeCount` in owner-visible health summaries and chooses randomly among ties or when summaries are unavailable, as for common keys. This is a placement preference, not a reservation; destination admission is unchanged. Resource-based placement remains future work. This supersedes [D010](#d010-destination-owned-leases-and-a-small-workflow-executor)'s sequential execution and first-match selection.
 
 ## D061: Completed-rollout binary retention and selected-release downloads
+
+Verification under the pruning lock is superseded by [D070](#d070-bounded-recent-activity-and-pinned-binary-verification-outside-shared-locks). Temporary pins now protect assets through verification and durable reference publication without holding the repository or gateway mutex during hashing.
 
 Gateway update uploads and staged binaries accumulated across every development push. Prune obsolete checksum-named entries only after the gateway and online participants acknowledge the selected software and completion is durably recorded. Repeat every minute while complete, including after restart, so expired invitation pins and abandoned uploads are eventually removed. Failed or unfinished rollouts keep their files. Cleanup failure does not turn a successful update into a failed deployment.
 
@@ -613,6 +621,8 @@ Treat all `mcp.discover` requests as execution instructions, including static se
 This refines D045 without changing the peer envelope, gateway persistence, grant limits, or accepted-task durability. Upgrade every execution node to enforce these corrections; existing delegation capability flags do not distinguish this patch from earlier implementations. See [delegation](delegation.md) and [protocol](protocol.md#instruction-bound-delegation).
 
 ## D070: Bounded recent activity and pinned binary verification outside shared locks
+
+The shared reader/mutation lock and no-cache observation choices below are superseded by [D072](#d072-prioritized-hot-path-performance-work) and [D073](#d073-committed-observation-views-and-safe-performance-boundaries). Current list/status readers use a separate committed view, and automatic dashboard polls reuse peer detail for up to five seconds. Explicit refresh bypasses that reuse.
 
 Activity polls with recent completions scanned every retained task and sorted all terminal metadata, even when only five recent records were requested. Maintain an index of the newest 64 terminal task metadata records instead. Update it with terminal state publication, reconstruct it at startup, and refill it after pruning. Poll active tasks separately through the active-task set. Merge task and non-task completions by finish time with deterministic ID ties. Arguments, results, and logs never enter this index, and owner-scoped task control is unchanged. See [dashboard retention](dashboard.md#retention-and-limits) and [performance benchmarks](testing.md#performance-benchmarks).
 

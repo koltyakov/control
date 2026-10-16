@@ -4,13 +4,13 @@
 
 ## Open the dashboard
 
-With a saved host profile, run:
+With a saved gateway login, run:
 
 ```sh
 control dashboard
 ```
 
-The command reads gateway status directly, so the gateway's URL, running version, uptime, and resource metrics remain visible without a local node. With no saved profile:
+The command reads gateway status directly, so the gateway's URL, running version, uptime, and resource metrics remain visible without a local node. With no saved login:
 
 ```sh
 control login --gateway https://control.example.com

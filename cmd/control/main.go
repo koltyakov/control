@@ -589,7 +589,8 @@ Environment: CONTROL_API, CONTROL_TOKEN
   clipboard paste NODE [--reverse] [--dir PATH] [--timeout DURATION]
   session                              Inspect this process's client identity and connections
 
-Global flags precede the command. Remote CLI/MCP calls use a local node when
-available, otherwise a command-scoped peer using your saved gateway login.
-Explicit --api or CONTROL_API selects only that API and disables fallback.
+Global flags precede the command. Remote CLI/MCP calls use an account client
+session with your saved gateway login, even when a local node is running.
+Explicit --api or CONTROL_API selects only that node's local authority.
+Worker credentials permit discovery, not independent peer execution.
 `

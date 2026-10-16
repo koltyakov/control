@@ -21,7 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/koltyakov/control/main/scripts/inst
 /usr/local/bin/control version
 ```
 
-The installer detects amd64/arm64, checks the release checksum, and installs `/usr/local/bin/control`. It also installs the bundled OpenCode skill for the installing account, but the gateway does not need an AI client, MCP configuration, or `control setup`. If releases are not published yet, build with `make build` and copy the Linux binary from a verified release bundle instead.
+The installer detects amd64/arm64, checks the release checksum, and installs `/usr/local/bin/control`. It also installs the bundled OpenCode skill for the installing account, but the gateway does not need an AI client, MCP configuration, or `control setup`. If releases are not published yet, run `make release-local` in a checkout and copy the matching `dist/control_linux_amd64` or `dist/control_linux_arm64` to `/usr/local/bin/control` with executable permissions. `make build` alone produces a binary for the build host, which may not be Linux.
 
 ## 3. Create a service account and private configuration
 

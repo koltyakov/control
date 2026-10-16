@@ -44,9 +44,10 @@ type routing struct {
 	err         error
 }
 
-// WithStandalone selects a backend with a read-only probe before any work is
-// submitted. Only a refused local connection permits fallback. Authentication,
-// timeouts, and uncertain application failures never cause a backend switch.
+// WithStandalone configures command-scoped peer routing. AccountRouting uses an
+// authenticated client session without probing the local API. Other callers
+// probe the API first and fall back only on connection refusal, never after
+// authentication, timeout, or uncertain application failures.
 // Close must be called when the CLI or MCP process finishes.
 func (c Client) WithStandalone(ctx context.Context, cfg StandaloneConfig) Client {
 	c = c.WithLifetime(ctx)

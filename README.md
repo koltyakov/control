@@ -1,7 +1,7 @@
 # Control
 
 <p align="center">
-  <img src="./assets/logo.png" alt="expose logo" width="220" />
+  <img src="./assets/logo.png" alt="Control logo" width="220" />
 </p>
 
 A Go peer execution network for Windows, Linux, and macOS. Connect machines to a gateway and address them by name through CLI or MCP. A local HTTP API handles node-local operations.
@@ -60,7 +60,7 @@ control machines
 control dashboard
 ```
 
-Login saves the validated URL and key. MCP and skill installation is optional; see [other clients](#install-mcp-and-skills). Remote work needs no local node:
+Login saves the validated URL and key. The release installer already installs the OpenCode skill; MCP and other client integrations are optional. See [other clients](#install-mcp-and-skills). Remote work needs no local node:
 
 ```sh
 control exec worker -- hostname
@@ -100,7 +100,7 @@ control task wait worker job-001
 control task cancel worker job-001
 ```
 
-Stopping a wait or log follower does not cancel work. Node restarts do not replay interrupted tasks. Use a new task ID for new work.
+Stopping a wait or log follower does not cancel work. Node restarts do not replay interrupted tasks. Use a new task ID for new work. Finished records, logs, and workspaces are retained for seven days and up to 10,000 tasks by default; [pruning and reconciliation](docs/protocol.md#node-configuration) describe the remaining tombstones.
 
 ```sh
 control system worker

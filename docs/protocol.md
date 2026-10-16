@@ -41,6 +41,25 @@ Running an invitation on an existing profile replaces its enrollment and can ren
 
 Use `CONTROL_TOKEN` or the `token` configuration property for the node's user-scoped credential. `dataDir` and `workDir` resolve relative to the config file. Provider/agent/MCP commands resolve through the node's PATH. A command's optional `dir` resolves relative to its execution workspace unless absolute. `env` adds or overrides environment variables.
 
+Run a handwritten configuration with `control node --config /absolute/path/to/control.json`. This subcommand's `--config` selects the running node's file; the global `--config` before other commands selects their saved client profile. Keep the API on loopback and use a separate state directory for each node.
+
+| Field | Default and meaning |
+| --- | --- |
+| `name`, `gateway`, `token` | Required machine name, gateway URL, and registration credential; the CLI's global `--token` or nonempty `CONTROL_TOKEN` overrides the file token when starting a node |
+| `dataDir` | `.control` relative to the file; identity, task/artifact metadata, and runtime state |
+| `workDir` | `.` relative to the file; filesystem API root and parent of task workspaces |
+| `listen` | `127.0.0.1:7331`; authenticated local HTTP API |
+| `labels` | Optional string map for discovery and selection; labels grant no authority |
+| `relayOnly` | `false`; skips WebRTC when true |
+| `iceServers` | Omitted/null inherits gateway STUN defaults; `[]` selects host-only ICE; nonempty lists replace defaults |
+| `maxTasks` | Four worker slots when omitted or nonpositive; coordination workflows do not consume a slot |
+| `metricsIntervalSeconds` | 15; `1..3600` sets periodic sampling, `-1` disables it, zero restores the default |
+| `taskRetentionHours` | 168; `1..87600` sets terminal-task age retention, `-1` disables it, zero restores the default |
+| `maxRetainedTasks` | 10,000; `1..1000000` sets the terminal-task count limit, `-1` disables it, zero restores the default |
+| `allow` | Optional caller-to-method rules, described below; not an execution grant for workers |
+| `providers`, `agents`, `mcp` | Named command/server maps; see [provider configuration](#subprocess-providers) and [AI CLI and MCP configuration](#ai-cli-and-mcp-configuration) |
+| `rpa` | Absent by default; an explicit helper command enables [GUI automation](rpa.md) |
+
 The configured token can be a user's issued common key or redeemed installation key. The optional gateway bootstrap token belongs only to the legacy fleet. User fleet management uses `CONTROL_USER_KEY`; gateway administration uses a separate `CONTROL_SUPERUSER_KEY`. `GET /v1/auth` returns `role`, `userId`, and management capabilities. Directory records include the authoritative `userId`, and new peers require fleet-aware gateway authentication. See [managed updates](updates.md) for release settings, bundle manifests, and update control messages. Machine registration includes `software` with the running version, OS, architecture, and executable SHA-256. Version JSON and administrative update status also include the embedded `releaseRepo` and UTC `buildTime` when injected. `CONTROL_RELEASE_REPO` overrides the embedded repository; an explicitly empty value disables release polling.
 
 `iceServers` uses Pion's JSON configuration, including `urls`, `username`, and `credential` for TURN. Omitted or `null` inherits the gateway's `stunServers` defaults at each authenticated connection. An explicit `[]` selects host-only connectivity, even when the gateway provides defaults; a nonempty list replaces those defaults. This applies to nodes, standalone CLI/MCP clients, and retained tunnel clients. `relayOnly` skips WebRTC entirely.
@@ -62,6 +81,8 @@ After durable successful completion, gateway update storage is pruned, preservin
 `metricsIntervalSeconds` controls local resource sampling, independently of dashboard activity polls. The default is 15 seconds; 1..3600 changes the interval and `-1` disables periodic collection. Startup, heavy-task completion, and explicit refresh requests can still sample. See [dashboard and system metrics](dashboard.md).
 
 `taskRetentionHours` and `maxRetainedTasks` bound terminal task history. Every ten minutes, and at startup, a node removes terminal task records, logs, and `workDir/tasks/ID` workspaces whose last update is older than the retention period, then the oldest beyond the count limit. Defaults are 168 hours and 10,000 tasks; `-1` disables either rule. Queued, running, and reserved tasks, and tasks named by a live delegation, are kept. Artifacts are not pruned. Each removed task leaves a durable tombstone in `dataDir/tasks/pruned.jsonl` with its ID, owner, specification digest, capability, final state, error, and timestamps. `tasks.get`, `tasks.cancel`, and `tasks.logs` return it to its owner as a terminal task with `pruned: true` and no result, artifacts, or log text. Resubmitting the same ID and specification returns that record without executing again; a different owner or specification is rejected. Tombstones are kept for 180 days, at most 50,000 per node. See [D058](decisions.md#d058-terminal-task-retention-with-tombstones).
+
+Pruning does not introduce a `pruned` state: `state` remains the original terminal state and `pruned` is a separate boolean. Startup discards tombstones older than 180 days, and count compaction keeps the newest 50,000. Once a tombstone is removed, its ID is no longer protected against execution. Use globally unique IDs and keep external outcome records when reconciliation must outlive node retention.
 
 Omitting `allow` permits same-fleet discovery and account-client execution, not independent worker execution. Setting `"allow": {}` denies incoming calls except previously issued valid delegation or artifact grants. Neither grants nor wildcard rules bypass fleet membership. Patterns use Go `path.Match` syntax. `@orchestrator` selects account-authenticated clients. `tasks.start` also requires permission for its capability. Task status and logs remain owner-scoped. The local API can inspect tasks owned by its node or executed locally. See [delegation](delegation.md).
 
@@ -145,6 +166,8 @@ Use `control call NODE METHOD JSON` or `POST /v1/call` on the local API:
 
 Authenticate with `Authorization: Bearer TOKEN`. Responses contain `result` or `error`.
 
+For the local HTTP API, `TOKEN` is that node's configured token, not the saved account login. Empty targets execute locally there; default standalone account routing requires a named target except for `nodes.list`, `nodes.select`, and `activities.pool`. Global flags precede the command, for example `control --api http://127.0.0.1:7331 call '' node.describe` uses the selected profile's node token unless explicitly overridden.
+
 | Method | Parameters |
 | --- | --- |
 | `nodes.list` | `{}` |
@@ -175,7 +198,7 @@ Authenticate with `Authorization: Bearer TOKEN`. Responses contain `result` or `
 | `mcp.request` | `server`, `method`, `params` for resource/prompt operations |
 | `exec.run` | `command`, optional `args`, `env`, `dir`, `stdin` |
 | `agent.run` | Configured `agent` name, `prompt` |
-| `http.request` | `url`, optional `method`, `headers`, text `body`, `headerSecrets`; at most 32 header names mapped to `{secret, prefix?}`, worker-local resolution, masked response text, no redirects with references; see [secrets](secrets.md) |
+| `http.request` | `url`, optional `method`, `headers`, text `body`, `headerSecrets`; defaults to GET; returns `status`, `headers`, base64 `body`, and `encoding: "base64"`; at most 32 secret headers mapped to `{secret, prefix?}`, worker-local resolution, masked response text, no redirects with references; see [secrets](secrets.md) |
 | `files.list` | Optional `path` |
 | `files.read` | `path`, optional byte `offset`, `limit` |
 | `files.write` | `path`, base64 `data`, optional byte `offset`, `truncate` |
@@ -229,7 +252,7 @@ Sessions and connection-test results also include `route`, with `kind` of `direc
 
 Forward metadata contains `id`, `node`, `address`, actual bound `listen`, `activeConnections`, optional `reverse: true`, and optional `lastError`. A successful start means the listener is bound, not that the destination service accepted a connection. No dummy destination connection is opened. Ordinary forwards authorize a separate `tcp.open` for each socket; the worker resolves and dials `address`. Reverse forwards authorize `tcp.listen` when creating the remote listener; the client resolves and dials its configured `address` locally for each received socket. Errors close that socket and update `lastError` without replay. Non-loopback listeners are an explicit choice and expose the service to the listener machine's network without additional listener authentication.
 
-Forwards survive the start tool's request context, but belong to that MCP process until stopped or the process exits. The CLI's `control tunnel NODE HOST:PORT [--reverse] [--listen ADDRESS]` uses the same implementation and stays in the foreground until cancelled. Another process cannot list or stop its listeners, but can independently manage tasks sharing the stable owner. At most 32 forwards and 128 active sockets per forward are retained. Each receiving node also caps reverse listeners at 32. Stop and shutdown cancel pending dials, close sockets, and join copy goroutines. Negotiated duplex streams preserve the response direction after write-side EOF. Errors and cancellation abort both directions; older raw endpoints retain full-close behavior. UDP, PTY sessions, and detached local forwarding daemons are not supported. Closing a forward does not stop its destination service or cancel durable tasks.
+Forwards survive the start tool's request context, but belong to that MCP process until stopped or the process exits. The CLI's `control tunnel NODE HOST:PORT [--reverse] [--listen ADDRESS]` uses the same implementation and stays in the foreground until cancelled. Another process cannot list or stop its listeners, but can independently manage tasks sharing the stable owner. At most 32 forwards and 128 active sockets per forward are retained. Each receiving node also caps reverse listeners at 32. Stop and shutdown cancel pending dials, close sockets, and join copy goroutines. Negotiated duplex streams preserve the response direction after write-side EOF. Errors and cancellation abort both directions; older raw endpoints retain full-close behavior. UDP and PTY sessions are not supported. To detach a listener, use the separate persistent `tunnel start` service described above. Closing a forward does not stop its destination service or cancel durable tasks.
 
 For a dev server on local port 3000, run `control tunnel worker 127.0.0.1:3000 --reverse --listen 127.0.0.1:3000`, then open `http://localhost:3000` on `worker`. WebSocket upgrades and hot reload use the same TCP forward. Reverse mode requires an upgraded receiving node, and an upgraded local node when using its API. Unsupported receivers fail without fallback. No gateway protocol change is needed.
 
@@ -264,6 +287,8 @@ Authority contexts survive client disconnects for accepted tasks but are not per
 ```
 
 Input and output paths are relative to the task's workspace. The filesystem API is rooted at `workDir` and rejects paths or symlinks that escape that root. Commands are unrestricted OS processes and may explicitly select another working directory; declared task outputs still resolve against the original task workspace.
+
+The input reference above illustrates metadata only. A worker fetching another node's artifact also needs a source-signed, recipient-bound `grant`; obtain one with `artifacts.grant`, or use a planned workflow so the shared client prepares access. A content hash alone does not authorize a worker download. See [delegated artifact inputs](delegation.md#run-work-through-another-worker).
 
 Tasks move through `queued`, `running`, and a terminal state of `succeeded`, `failed`, `cancelled`, or `interrupted`. A submitted ID must be 1..128 ASCII letters, digits, underscores, or hyphens. Omit it to generate one, although generating it before submission makes uncertain network outcomes easier to reconcile.
 
@@ -308,6 +333,28 @@ The runtime starts one subprocess per invocation and writes this JSON to stdin:
 ```
 
 The process writes one JSON result to stdout, diagnostics to stderr, and exits zero on success. Cancellation terminates the process tree using process groups on Unix and `taskkill /T` on Windows. Providers own argument validation against their advertised schemas. Use artifacts for large outputs.
+
+### AI CLI and MCP configuration
+
+`agents` maps names to installed AI CLI commands. `agent.run` sends `prompt` to the selected command's stdin and returns its exit code, stdout, stderr, and truncation flag. Configure the CLI for noninteractive operation yourself; Control does not add vendor-specific flags or authenticate it.
+
+`mcp` maps server names to a stdio command or a Streamable HTTP `url`. If `url` is nonempty it takes precedence over `command`. For example, merge the relevant entries into the node configuration and replace the placeholder commands and paths:
+
+```json
+{
+  "agents": {
+    "reviewer": { "command": "/absolute/path/to/ai-cli", "args": ["NONINTERACTIVE_FLAG"] }
+  },
+  "mcp": {
+    "local-tools": { "command": "python3", "args": ["/absolute/path/to/server.py"], "description": "Worker-local tools" },
+    "network-tools": { "url": "http://127.0.0.1:8000/mcp" }
+  }
+}
+```
+
+Commands accept optional `args`, `env`, and `dir`. Stdio MCP servers run from `workDir` unless `dir` overrides it, and stay attached to the node rather than an individual task. Sessions are initialized lazily with a 15-second deadline, reused, removed when disconnected, and closed on node shutdown. A later request can establish a new session; failed tool calls are not replayed.
+
+`mcp.discover` without `server` lists configured names and descriptions. Selecting a server returns its tools, schemas, and negotiated capabilities. `mcp.request` supports only `resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`, and `prompts/get`, with the corresponding MCP parameters. This worker-side configuration is separate from [installing Control as an orchestrator's MCP server](installation.md#mcp-and-skills).
 
 ## Limits and retention
 

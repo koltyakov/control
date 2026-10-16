@@ -1,6 +1,6 @@
 // Package client implements the orchestrator's CLI/MCP component, routing calls
 // through a local node API or a standalone authenticated client session.
-// Standalone clients are not enrolled fleet machines and cannot execute work.
+// Standalone clients are not enrolled fleet machines and expose no execution capabilities.
 package client
 
 import (

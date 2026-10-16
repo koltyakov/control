@@ -1,6 +1,6 @@
 # Working on Control
 
-Control is a Go peer execution network for Windows, Linux, and macOS. Every node can request work, execute capabilities, and exchange artifacts with other nodes. AI agents and application-specific tools are optional providers.
+Control is a Go peer execution network for Windows, Linux, and macOS. Account-authenticated clients initiate work; nodes execute capabilities and request peer work under instruction-bound delegation. Nodes exchange artifacts directly. AI agents and application-specific tools are optional providers.
 
 These instructions apply throughout the repository.
 
@@ -21,13 +21,16 @@ Follow [Terminology](docs/terminology.md) in documentation, code, CLI/dashboard 
 - [Managed updates](docs/updates.md): superuser keys, release bundles, idle reservations, and service restarts.
 - [Installation and enrollment](docs/installation.md): host profiles, MCP/skills, user startup, and one-time installation links.
 - [Users and private fleets](docs/users.md): account provisioning, isolation, SQLite ownership, and migration.
+- [Authority and delegation](docs/delegation.md): account-client execution, instruction-bound worker grants, expiry, and revocation.
+
+For feature-specific work, also read [gateway deployment](docs/gateway.md), [expose deployment](docs/expose.md), [peer streaming](docs/streaming.md), [connection tests](docs/connections.md), [persistent tunnels](docs/tunnels.md), [clipboard pastes](docs/clipboard.md), [GUI automation](docs/rpa.md), [worker-local secrets](docs/secrets.md), or [local scenarios](docs/scenarios.md).
 
 ## Repository map
 
 | Path | Responsibility |
 | --- | --- |
 | `cmd/control` | Binary entry point, CLI commands, gateway/node startup |
-| `internal/client` | Shared local API client and AI-facing MCP server |
+| `internal/client` | Shared account-client/local API routing, delegation preparation, forwards, persistent tunnel service, and MCP server |
 | `internal/enrollment`, `internal/installation` | Invitation contracts/scripts, host profiles, agent configuration, and user startup |
 | `internal/dashboard` | Interactive and plain-text pool activity views |
 | `internal/system` | Periodic, completion-triggered, and requested resource sampling |
@@ -36,6 +39,8 @@ Follow [Terminology](docs/terminology.md) in documentation, code, CLI/dashboard 
 | `internal/identity` | Persistent Ed25519 identity and pinned peer TLS |
 | `internal/transport` | WebRTC/relay connections and multiplexed peer sessions |
 | `internal/node` | Providers, access checks, tasks, artifacts, leases, workflows |
+| `internal/clipboard`, `internal/rpa`, `internal/secrets` | Desktop clipboard access, GUI action contracts, and worker-local credential storage |
+| `internal/wire`, `internal/wsio` | Peer JSON framing and bounded reusable WebSocket reads |
 | `internal/model` | Shared application types |
 | `internal/protocol` | Protobuf routing envelope and generated Go bindings |
 | `internal/store` | Atomic metadata writes and platform-specific directory sync |
@@ -45,13 +50,14 @@ Follow [Terminology](docs/terminology.md) in documentation, code, CLI/dashboard 
 
 ## Implementation rules
 
-- Keep the core in Go, compatible with Go 1.27 and the three supported operating systems. Preserve CGO-free builds.
+- Keep the core in Go, using the Go 1.27.2 minimum in `go.mod` and the three supported operating systems. Preserve CGO-free builds.
 - Keep execution in nodes and connection handling in the transport package. Add application integrations through providers or MCP.
 - Share client behavior through `internal/client`; keep CLI and MCP adapters consistent.
 - Propagate contexts and cancellation. Bound queues and buffers, and shut down owned goroutines, streams, subprocesses, and files.
 - Preserve task acceptance durability, owner checks, and idempotent submission semantics. Never retry an uncertain side effect automatically.
 - Preserve peer identity checks and equivalent authorization on both transports. Keep artifact grants bound to their recipient, artifact, and expiry.
 - Derive fleet ownership from authenticated credentials. Scope discovery, signaling, relay, enrollment, and management to that user. Preserve immutable identity ownership and receiver membership checks, including before artifact grants. Persist gateway account and enrollment changes transactionally in SQLite before acknowledging them.
+- Keep account-client authority separate from worker identity and local API credentials. Require destination-owned, instruction-bound grants for worker execution, including self-targeted coordinated work. Preserve expiry and revocation on admitted tasks and streams.
 - Use streamed artifacts for large results. Keep bulk bytes out of orchestration messages and avoid routing transfers through the orchestrator unnecessarily.
 - Keep OS-specific process and filesystem behavior in platform-specific files. Do not assume a Unix shell exists on a remote node.
 - Edit `internal/protocol/control.proto`, then regenerate bindings with `make proto`. Do not hand-edit `control.pb.go`.
@@ -99,5 +105,7 @@ Keep responsibilities separate:
 - `docs/updates.md` documents administrative keys, release assets, development pushes, and managed restart behavior.
 - `docs/installation.md` documents host setup, MCP/skills, user startup, and machine invitations.
 - `docs/users.md` documents user accounts, fleet boundaries, SQLite persistence, and migration.
+- `docs/delegation.md` documents account-client authority, worker instruction grants, revocation, and upgrade boundaries.
+- Feature guides cover deployment, streaming, connection tests, tunnels, clipboard, GUI automation, secrets, and local scenarios. Keep their examples and limits aligned with the protocol reference.
 
 Distinguish implemented behavior from proposed work. Preserve links between these documents and the README when adding or moving documentation.

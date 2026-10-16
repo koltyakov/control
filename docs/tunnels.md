@@ -20,7 +20,7 @@ control tunnel dispose qa-content
 
 The reverse frontend listener is on `tj-vm`; its connections reach Vite on this orchestrator. The ordinary QA listeners are on this orchestrator; the destination machine dials their QA hosts. Use `127.0.0.1:5173` instead of `[::1]:5173` if Vite listens on IPv4.
 
-TCP forwarding does not rewrite HTTP headers or provide TLS termination. The example's local HTTP-to-HTTPS proxy remains a separate application. Its TLS SNI and Host header still need the upstream QA hostname, and that proxy needs its own lifetime management if it must survive a restart.
+TCP forwarding does not rewrite HTTP headers or provide TLS termination. If you need an HTTP-to-HTTPS proxy, run it as a separate application. Its TLS SNI and Host header still need the upstream QA hostname, and that proxy needs its own lifetime management if it must survive a restart.
 
 An explicit ID makes uncertain starts reconcilable. The CLI prints the ID before requesting creation. Repeating an existing ID with the same specification returns the retained definition without replacing it or renewing its TTL. A changed specification fails. When a request fails, list the tunnels before retrying; do not create a replacement with a new ID automatically. Generated IDs are used when `--id` is omitted.
 

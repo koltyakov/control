@@ -17,14 +17,15 @@ control users create bob
 
 Each command returns a user record and a random account key, shown once. Give each user only their own account key. Account registration is operator-provisioned; there is no public signup or password-login endpoint.
 
-On each of Alice's host machines:
+On Alice's orchestrator machine:
 
 ```sh
 control login --gateway https://control.example.com
-control setup --name alice-laptop --client opencode
+control machines
+control dashboard
 ```
 
-Enter Alice's account key at the login prompt, or supply it through `CONTROL_USER_KEY`. Login persists it for future commands; setup reuses it and issues a common key for that host's node. Use a different machine name for her second host. Both hosts join Alice's fleet and can manage its installations:
+Enter Alice's account key at the login prompt, or supply it through `CONTROL_USER_KEY`. Login persists it for future commands. The client needs no local node or machine enrollment. Alice can add workers to her fleet:
 
 ```sh
 control machines add render --platform windows
@@ -34,14 +35,16 @@ control dashboard
 
 Bob follows the same flow with his account key. He can also name a machine `render`; names are unique within a fleet. He sees only his own registrations, invitations, keys, and activity. Knowing Alice's machine ID does not grant access.
 
+To also execute requested work on an orchestrator machine, run `control setup --name alice-laptop --client opencode`. Setup reuses the account login, issues a separate common key for the node, and installs its background startup. Use a different name on each machine. See [startup contexts](installation.md#choose-a-startup-context) before selecting a service account.
+
 ## Credential roles
 
 | Credential | Scope |
 | --- | --- |
-| User account key | Manage that user's invitations, common keys, and registrations; enroll and discover machines in that fleet |
+| User account key | Manage that user's invitations, common keys, and registrations; enroll and discover machines; initiate execution through account-client sessions, subject to destination access rules |
 | Common key | Enroll and discover machines in its owning fleet; no account, fleet-management, or update administration |
 | Redeemed installation key | Common permissions, with registration restricted to its bound identity, name, OS, and architecture |
-| Gateway superuser | Provision/disable accounts and publish gateway-wide software updates; fleet commands operate only on the operator's legacy fleet |
+| Gateway superuser | Provision/disable accounts and publish gateway-wide software updates; fleet management and account-client execution operate only on the operator's legacy fleet |
 
 Users issue, list, and revoke their own common keys with `control keys create|list|revoke`. They cannot issue account keys for other users, change credential ownership, publish executable updates, or inspect gateway-wide rollout status. Fleet-management commands appear in user-account help. Gateway administration appears only for the superuser. Common-key help exposes neither.
 
