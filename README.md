@@ -1,5 +1,9 @@
 # Control
 
+<p align="center">
+  <img src="./assets/logo.png" alt="expose logo" width="220" />
+</p>
+
 A Go peer execution network for Windows, Linux, and macOS. Connect machines to a gateway, then address them by name through the CLI, MCP, or local HTTP API.
 
 An orchestrator coordinates work through a client. Worker nodes execute it and exchange files directly. The gateway handles enrollment, discovery, signaling, encrypted relay fallback, and fleet administration. Orchestrator and worker are operation roles, not fixed machine types. AI agents are optional callers or providers.
@@ -15,6 +19,12 @@ An orchestrator coordinates work through a client. Worker nodes execute it and e
 - Leases, bounded parallel workflows, a live dashboard, and idle-only managed updates.
 
 Account-authenticated clients initiate execution. Workers can request peer work only through instruction-bound orchestrator delegation. Fleet membership alone permits discovery, not execution. See [authority and delegation](docs/delegation.md).
+
+## Architecture
+
+![Architecture](./assets/architecture.svg)
+
+See [architecture](docs/architecture.md) for a detailed overview of roles, components, and peer-to-peer communication.
 
 ## Install the gateway on a Linux VPS
 

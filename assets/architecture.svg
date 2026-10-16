@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 640" width="1000" height="640" role="img" aria-labelledby="title desc">
+  <title id="title">Control components and connections</title>
+  <desc id="desc">A client and two worker nodes each keep an outbound WebSocket to the gateway. Work and artifacts travel on direct WebRTC sessions between them, protected by pinned TLS. If WebRTC fails, the same TLS stream is relayed over the gateway WebSockets.</desc>
+  <style>
+    svg {
+      --bg: #f4f6f5; --surface: #ffffff; --chip: #eaefed; --fg: #18211e; --muted: #5a6762;
+      --line-strong: #6f7d77; --accent: #0a7565; --relay: #a85a12; --relay-wash: #f8ebdc;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      svg {
+        --bg: #111614; --surface: #19201d; --chip: #222b28; --fg: #e2e9e6; --muted: #92a19b;
+        --line-strong: #7d8c86; --accent: #3cc2aa; --relay: #e49a55; --relay-wash: #33261a;
+      }
+    }
+    text { font-family: var(--sans); }
+    .bg { fill: var(--bg); }
+    .zone { fill: none; stroke: var(--line-strong); stroke-width: 1; stroke-dasharray: 5 4; }
+    .box { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1.25; }
+    .box-strong { fill: var(--surface); stroke: var(--fg); stroke-width: 1.75; }
+    .row { fill: var(--chip); }
+    .row-relay { fill: var(--relay-wash); stroke: var(--relay); stroke-width: 1; }
+    .row-store { fill: none; stroke: var(--line-strong); stroke-width: 1; }
+    .t { fill: var(--fg); font-size: 14px; font-weight: 600; }
+    .tl { fill: var(--fg); font-size: 13px; font-weight: 500; }
+    .s { fill: var(--muted); font-size: 12px; }
+    .m { fill: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+    .eb { fill: var(--muted); font-family: var(--mono); font-size: 11px; letter-spacing: .08em; }
+    .ta { fill: var(--accent); font-size: 13px; font-weight: 600; }
+    .tr { fill: var(--relay); font-size: 12.5px; font-weight: 600; }
+    .edge { fill: none; stroke: var(--line-strong); stroke-width: 1.5; }
+    .direct { fill: none; stroke: var(--accent); stroke-width: 3; }
+    .ah { fill: var(--line-strong); }
+    .ah-a { fill: var(--accent); }
+  </style>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="aa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path class="ah-a" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1000" height="640" rx="8"/>
+
+  <!-- Orchestrator machine -->
+  <rect class="zone" x="20" y="20" width="300" height="230" rx="6"/>
+  <text class="eb" x="36" y="44">ORCHESTRATOR MACHINE</text>
+  <rect class="box" x="44" y="58" width="252" height="54" rx="4"/>
+  <text class="tl" x="60" y="81">AI agent · script · person</text>
+  <text class="s" x="60" y="99">coordinates the work</text>
+  <line class="edge" x1="170" y1="112" x2="170" y2="140" marker-end="url(#ah)"/>
+  <text class="m" x="182" y="130">MCP stdio / CLI</text>
+  <rect class="box-strong" x="44" y="142" width="252" height="88" rx="4"/>
+  <text class="t" x="60" y="166">client</text>
+  <text class="m" x="60" y="184">internal/client</text>
+  <text class="s" x="60" y="203">account login, stable owner key</text>
+  <text class="s" x="60" y="220">no local node required</text>
+
+  <!-- Gateway -->
+  <rect class="box" x="640" y="20" width="340" height="270" rx="6"/>
+  <text class="eb" x="656" y="44">GATEWAY</text>
+  <text class="m" x="964" y="44" text-anchor="end">internal/gateway</text>
+  <rect class="row" x="656" y="58" width="308" height="30" rx="3"/>
+  <text class="tl" x="668" y="78">enrollment · invitations · fleet admin</text>
+  <rect class="row" x="656" y="94" width="308" height="30" rx="3"/>
+  <text class="tl" x="668" y="114">identity directory, scoped per fleet</text>
+  <rect class="row" x="656" y="130" width="308" height="30" rx="3"/>
+  <text class="tl" x="668" y="150">WebRTC signaling · trickle ICE</text>
+  <rect class="row-relay" x="656" y="166" width="308" height="30" rx="3"/>
+  <text class="tr" x="668" y="186">encrypted relay (opaque TLS bytes)</text>
+  <rect class="row" x="656" y="202" width="308" height="30" rx="3"/>
+  <text class="tl" x="668" y="222">health reports · status · update rollout</text>
+  <rect class="row-store" x="656" y="244" width="308" height="32" rx="3"/>
+  <text class="tl" x="668" y="265">SQLite</text>
+  <text class="s" x="722" y="265">accounts, keys, ownership, policy</text>
+
+  <!-- client -> gateway -->
+  <line class="edge" x1="296" y1="186" x2="638" y2="186" marker-end="url(#ah)"/>
+  <text class="tl" x="468" y="176" text-anchor="middle">outbound WSS</text>
+  <text class="m" x="468" y="204" text-anchor="middle">/v1/client/connect</text>
+  <text class="s" x="468" y="221" text-anchor="middle">account key + signed challenge</text>
+
+  <!-- client <-> first, direct -->
+  <line class="direct" x1="170" y1="234" x2="170" y2="376" marker-start="url(#aa)" marker-end="url(#aa)"/>
+  <text class="ta" x="184" y="290">WebRTC data channel</text>
+  <text class="m" x="184" y="308">TLS 1.3 pinned · yamux</text>
+  <text class="s" x="184" y="326">tasks, logs, tunnels</text>
+
+  <!-- first -> gateway -->
+  <polyline class="edge" points="360,380 360,352 660,352 660,292" marker-end="url(#ah)"/>
+  <text class="tl" x="510" y="343" text-anchor="middle">outbound WSS · /v1/connect</text>
+  <text class="s" x="510" y="370" text-anchor="middle">signaling, relay, health every 5 s</text>
+
+  <!-- second -> gateway -->
+  <line class="edge" x1="880" y1="380" x2="880" y2="292" marker-end="url(#ah)"/>
+  <text class="tl" x="868" y="330" text-anchor="end">outbound WSS</text>
+  <text class="s" x="868" y="347" text-anchor="end">Ed25519 challenge</text>
+
+  <!-- Node: first -->
+  <rect class="box" x="20" y="380" width="400" height="240" rx="6"/>
+  <text class="eb" x="36" y="404">WORKER NODE · first</text>
+  <text class="m" x="36" y="422">internal/node · enrolled identity</text>
+  <rect class="row" x="36" y="436" width="204" height="46" rx="3"/>
+  <text class="tl" x="48" y="455">providers</text>
+  <text class="s" x="48" y="472">exec, agent, mcp, rpa, workflow</text>
+  <rect class="row" x="248" y="436" width="156" height="46" rx="3"/>
+  <text class="tl" x="260" y="455">tasks</text>
+  <text class="s" x="260" y="472">persisted, idempotent</text>
+  <rect class="row" x="36" y="488" width="204" height="46" rx="3"/>
+  <text class="tl" x="48" y="507">artifacts</text>
+  <text class="s" x="48" y="524">SHA-256 · signed grants</text>
+  <rect class="row" x="248" y="488" width="156" height="46" rx="3"/>
+  <text class="tl" x="260" y="507">access checks</text>
+  <text class="s" x="260" y="524">authority · delegation</text>
+  <rect class="row" x="36" y="540" width="204" height="46" rx="3"/>
+  <text class="tl" x="48" y="559">leases · workgate</text>
+  <text class="s" x="48" y="576">exclusive runs, idle admission</text>
+  <rect class="row" x="248" y="540" width="156" height="46" rx="3"/>
+  <text class="tl" x="260" y="559">update supervisor</text>
+  <text class="s" x="260" y="576">verified binaries</text>
+  <text class="s" x="36" y="607">local API on loopback, node token</text>
+
+  <!-- first <-> second, direct -->
+  <line class="direct" x1="424" y1="470" x2="576" y2="470" marker-start="url(#aa)" marker-end="url(#aa)"/>
+  <text class="ta" x="500" y="458" text-anchor="middle">direct peer session</text>
+  <text class="m" x="500" y="490" text-anchor="middle">grant-bound</text>
+  <text class="s" x="500" y="507" text-anchor="middle">artifacts · peers.call</text>
+  <text class="s" x="500" y="523" text-anchor="middle">bypasses orchestrator</text>
+
+  <!-- Node: second -->
+  <rect class="box" x="580" y="380" width="400" height="240" rx="6"/>
+  <text class="eb" x="596" y="404">WORKER NODE · second</text>
+  <text class="m" x="596" y="422">same binary, either role</text>
+  <rect class="row" x="596" y="436" width="204" height="46" rx="3"/>
+  <text class="tl" x="608" y="455">providers</text>
+  <text class="s" x="608" y="472">exec, agent, mcp, rpa, workflow</text>
+  <rect class="row" x="808" y="436" width="156" height="46" rx="3"/>
+  <text class="tl" x="820" y="455">tasks</text>
+  <text class="s" x="820" y="472">persisted, idempotent</text>
+  <rect class="row" x="596" y="488" width="204" height="46" rx="3"/>
+  <text class="tl" x="608" y="507">artifacts</text>
+  <text class="s" x="608" y="524">SHA-256 · signed grants</text>
+  <rect class="row" x="808" y="488" width="156" height="46" rx="3"/>
+  <text class="tl" x="820" y="507">access checks</text>
+  <text class="s" x="820" y="524">authority · delegation</text>
+  <rect class="row" x="596" y="540" width="204" height="46" rx="3"/>
+  <text class="tl" x="608" y="559">leases · workgate</text>
+  <text class="s" x="608" y="576">exclusive runs, idle admission</text>
+  <rect class="row" x="808" y="540" width="156" height="46" rx="3"/>
+  <text class="tl" x="820" y="559">update supervisor</text>
+  <text class="s" x="820" y="576">verified binaries</text>
+  <text class="s" x="596" y="607">local API on loopback, node token</text>
+</svg>

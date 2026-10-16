@@ -6,17 +6,9 @@
 
 An orchestrator coordinates work through a CLI or MCP client. A worker is a node executing requested work. The gateway handles enrollment, discovery, signaling, encrypted relay fallback, and fleet administration, not application execution. A node can perform both orchestrator and worker roles. AI agents are optional callers or providers, not Control service types. See [terminology](terminology.md) for naming rules.
 
-```text
-Account-authenticated client / CLI
-      |
-      +------------ WebRTC / TLS / yamux -------- Node B
-      |                                            |
-      +---- outbound WSS ---- Gateway ---- WSS ----+
-                              |
-                        identity directory
-                        WebRTC signaling
-                        encrypted relay
-```
+![Control components and connections: the client and worker nodes keep outbound WebSockets to the gateway, while work and artifacts travel on direct pinned-TLS peer sessions](../assets/architecture.svg)
+
+Every party dials out to the gateway; work travels peer to peer over the thick green edges. If WebRTC cannot connect, the same pinned TLS stream travels over the existing gateway WebSockets through the relay, so the gateway forwards ciphertext it cannot read. The client reaches `second` the same way it reaches `first`.
 
 The client connects to the gateway and worker without enrolling its own machine or running a local node. Nodes use the same peer transport for orchestrator-delegated work and direct artifact exchange. An explicitly selected local API provides local execution and peer discovery, not independent peer execution.
 
