@@ -16,6 +16,7 @@ import (
 )
 
 func TestCoordinationRequiresLocalDelegation(t *testing.T) {
+	t.Parallel()
 	for _, relay := range []bool{true, false} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			source, worker, _ := cluster(t, relay, func(i int, cfg *Config) {
@@ -77,8 +78,10 @@ func TestCoordinationRequiresLocalDelegation(t *testing.T) {
 }
 
 func TestArtifactAccessCannotOutliveSignedGrant(t *testing.T) {
+	t.Parallel()
 	for _, relay := range []bool{true, false} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
+			t.Parallel()
 			source, worker, consumer := cluster(t, relay, nil)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -140,6 +143,7 @@ func TestArtifactAccessCannotOutliveSignedGrant(t *testing.T) {
 }
 
 func TestMCPDiscoveryRequiresExecutionAuthority(t *testing.T) {
+	t.Parallel()
 	for _, relay := range []bool{true, false} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			source, worker, _ := cluster(t, relay, func(i int, cfg *Config) {

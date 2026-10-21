@@ -116,7 +116,9 @@ Attach `dist/control-manifest.json`, `dist/checksums.txt`, and all six `dist/con
 
 The gateway ignores drafts and prereleases. It skips a release already selected, and a release published before the current deployment's creation time. This prevents periodic checks from immediately replacing a newer development push with an older release. A development push can explicitly select an older bundle. The gateway rejects a different deployment while installation is in progress.
 
-The configured GitHub repository and its release publishers are trusted to supply executable code. The updater and installers currently enforce checksums, not cosign identity verification. The published signature bundles allow separate verification of release metadata.
+The CLI self-updater and gateway release fetcher require `control-manifest.json.sigstore.json`. They verify the exact manifest bytes, a Sigstore transparency-log entry and trusted signing time, with the certificate issuer `https://token.actions.githubusercontent.com` and exact identity `https://github.com/OWNER/REPO/.github/workflows/release.yml@refs/tags/TAG`. Sigstore trust roots are fetched through TUF using the library's embedded trust anchor. Verification failure stops before executable download or validation. Unsigned historical releases are rejected, including a same-version CLI check. The gateway may skip an already selected release without downloading it again.
+
+Development bundles remain explicitly superuser-published. Node runtime downloads trust the gateway's authenticated selected manifest and verify bytes against it. Bootstrap shell installers retain their checksum-based trust model; runtime signature verification does not authenticate a first installation script. Manual GitHub publication must include a signature from the exact tagged release workflow above.
 
 ## Common keys and hidden administration help
 

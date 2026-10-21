@@ -39,6 +39,10 @@ func (g *Gateway) releaseRequest(ctx context.Context, target, accept string) (*h
 }
 
 func (g *Gateway) fetchRelease(ctx context.Context) (*update.Deployment, error) {
+	return g.fetchReleaseVerified(ctx, update.VerifyReleaseManifest)
+}
+
+func (g *Gateway) fetchReleaseVerified(ctx context.Context, verify func(context.Context, string, string, []byte, []byte) error) (*update.Deployment, error) {
 	if g.options.ReleaseRepo == "" {
 		return nil, errors.New("release repository is not configured")
 	}
@@ -90,11 +94,40 @@ func (g *Gateway) fetchRelease(ctx context.Context) (*update.Deployment, error) 
 		return nil, fmt.Errorf("release manifest: %s", response.Status)
 	}
 	var manifest update.Manifest
-	if err = json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&manifest); err != nil {
+	data, err := io.ReadAll(io.LimitReader(response.Body, (64<<10)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > 64<<10 {
+		return nil, errors.New("release manifest exceeds 64 KiB")
+	}
+	if err = json.Unmarshal(data, &manifest); err != nil {
 		return nil, err
 	}
 	if manifest.Version != latest.Tag {
 		return nil, errors.New("release tag and manifest version differ")
+	}
+	proofURL := assets["control-manifest.json.sigstore.json"]
+	if proofURL == "" {
+		return nil, errors.New("release lacks signed manifest bundle")
+	}
+	if err = validateReleaseURL(base, proofURL); err != nil {
+		return nil, err
+	}
+	proofResp, err := g.releaseRequest(ctx, proofURL, "application/octet-stream")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = proofResp.Body.Close() }()
+	if proofResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("release signature: %s", proofResp.Status)
+	}
+	proof, err := io.ReadAll(io.LimitReader(proofResp.Body, (1<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if err = verify(ctx, g.options.ReleaseRepo, latest.Tag, data, proof); err != nil {
+		return nil, err
 	}
 	manifest.CreatedAt = latest.Published
 	if err = g.validatePlatforms(manifest); err != nil {

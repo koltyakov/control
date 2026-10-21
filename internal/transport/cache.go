@@ -69,6 +69,7 @@ func newWebRTCAPI(direct time.Duration, trickle bool) *webrtc.API {
 
 func webRTCSettings(direct time.Duration, trickle bool) webrtc.SettingEngine {
 	var settings webrtc.SettingEngine
+	settings.DetachDataChannels()
 	gather := max(minSTUNGather, min(maxSTUNGather, direct*2/5))
 	if trickle {
 		// Gathering no longer delays SDP. Keep slow candidates available while

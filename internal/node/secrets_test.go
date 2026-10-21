@@ -111,6 +111,7 @@ func TestHTTPSecretInjection(t *testing.T) {
 }
 
 func TestSecretPeerTaskRetention(t *testing.T) {
+	t.Parallel()
 	for _, relay := range []bool{true, false} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			source, worker, _ := cluster(t, relay, func(i int, cfg *Config) {

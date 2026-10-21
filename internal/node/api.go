@@ -12,6 +12,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/transport"
+	"github.com/koltyakov/control/internal/wire"
 )
 
 type APICall = model.APICall
@@ -43,10 +44,10 @@ func (n *Node) Handler() http.Handler {
 		err := n.Call(r.Context(), call.Target, call.Method, call.Params, &result)
 		response := model.Response{Result: result}
 		if err != nil {
-			response.Error = err.Error()
+			response = model.ErrorResponse(err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(wire.BoundResponse(response))
 	})
 	mux.HandleFunc("POST /v1/download", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)

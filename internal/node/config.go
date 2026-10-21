@@ -37,6 +37,11 @@ type Config struct {
 	// MaxRetainedTasks bounds retained terminal tasks. Zero selects 10000; -1
 	// disables count-based pruning.
 	MaxRetainedTasks int `json:"maxRetainedTasks,omitempty"`
+	// Zero preserves unlimited artifact storage; a positive value caps blobs,
+	// import staging and resumable partials together. Owned content is never evicted.
+	MaxArtifactBytes      int64  `json:"maxArtifactBytes,omitempty"`
+	ArtifactReserveBytes  uint64 `json:"artifactReserveBytes,omitempty"`
+	PartialRetentionHours int    `json:"partialRetentionHours,omitempty"`
 	// Allow maps caller IDs, names, *, or @orchestrator to method glob patterns.
 	// An omitted map permits same-fleet discovery and account-client execution.
 	// An empty map denies incoming calls without a valid instruction/artifact grant.
@@ -122,6 +127,18 @@ func (c *Config) defaults() error {
 	}
 	if c.MaxRetainedTasks < -1 || c.MaxRetainedTasks > 1000000 {
 		return errors.New("maxRetainedTasks must be -1 or 1..1000000; zero selects the 10000-task default")
+	}
+	if c.MaxArtifactBytes < 0 {
+		return errors.New("maxArtifactBytes must be nonnegative")
+	}
+	if c.ArtifactReserveBytes == 0 {
+		c.ArtifactReserveBytes = 256 << 20
+	}
+	if c.PartialRetentionHours == 0 {
+		c.PartialRetentionHours = 168
+	}
+	if c.PartialRetentionHours < 1 || c.PartialRetentionHours > 87600 {
+		return errors.New("partialRetentionHours must be 1..87600")
 	}
 	if err = os.MkdirAll(c.DataDir, 0700); err != nil {
 		return err

@@ -20,6 +20,8 @@ Orchestrators coordinate work; worker nodes execute it and exchange files direct
 
 Account-authenticated clients initiate execution. Workers need instruction-bound delegation to request peer work; fleet membership permits discovery only. See [authority and delegation](docs/delegation.md).
 
+For bounded task listings use `control task list NODE --limit 100`, then pass the returned `nextCursor` with `--cursor`. `control task reconcile NODE ID` inspects an interrupted workflow's child tasks without replaying them. `control diagnostics NODE` reports storage, cleanup, MCP and transport counts. See [task recovery and limits](docs/protocol.md#bounded-task-results-and-recovery), [artifact budgets](docs/protocol.md#node-configuration), and [signed release verification](docs/updates.md#publish-github-releases).
+
 ## Architecture
 
 ![Architecture](./assets/architecture.svg)
@@ -129,7 +131,7 @@ For other MCP clients, configure a stdio server running `/absolute/path/to/contr
 
 ## Build and test
 
-Requires Go 1.27.2 or newer. No CGO dependency.
+Requires Go 1.27.3 or newer. No CGO dependency.
 
 ```sh
 make build

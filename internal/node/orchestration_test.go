@@ -79,6 +79,7 @@ func TestNodeDirectoryLock(t *testing.T) {
 }
 
 func TestTaskSurvivesSubmitterDisconnect(t *testing.T) {
+	t.Parallel()
 	source, worker, _ := cluster(t, true, nil)
 	var task model.Task
 	call(t, source, "worker", "tasks.start", model.TaskSpec{ID: "survive-disconnect", Capability: "exec.run", Args: model.JSON(executable(t, "delayed"))}, &task)

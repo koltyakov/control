@@ -15,6 +15,7 @@ import (
 )
 
 func TestRelayReprobePreservesStreamsAndSharesFailureBackoff(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	const token = "relay-reprobe-test-token-1234567890"

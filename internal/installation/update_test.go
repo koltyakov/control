@@ -55,12 +55,14 @@ func main() {
 		name, version, requested, wantError string
 		corrupt, missing, cancelled         bool
 		unchanged                           bool
+		rejectSignature                     bool
 	}{
 		{name: "latest", version: "v2"},
 		{name: "pinned", version: "v2", requested: "v2"},
 		{name: "same version different checksum", version: "v2", unchanged: true},
 		{name: "same pinned version different checksum", version: "v2", requested: "v2", unchanged: true},
 		{name: "corrupt", version: "v2", corrupt: true, wantError: "checksum mismatch"},
+		{name: "invalid signature", version: "v2", rejectSignature: true, wantError: "release signature bundle"},
 		{name: "wrong executable version", version: "v3", wantError: "does not match"},
 		{name: "wrong release tag", version: "v2", requested: "v3", wantError: "tag and manifest"},
 		{name: "missing release", missing: true, wantError: "404"},
@@ -102,6 +104,8 @@ func main() {
 					base = "/download/" + tc.requested
 				}
 				switch r.URL.Path {
+				case "/download/" + tc.version + "/control-manifest.json.sigstore.json":
+					_, _ = w.Write([]byte("fixture proof"))
 				case base + "/control-manifest.json":
 					_ = json.NewEncoder(w).Encode(update.Manifest{Version: tc.version, Assets: []update.Asset{asset}})
 				case "/download/" + tc.version + "/" + asset.File:
@@ -126,8 +130,20 @@ func main() {
 			if tc.unchanged {
 				currentVersion = "v2"
 			}
-			result, err := updateSelf(ctx, path, server.URL, tc.requested, currentVersion, server.Client())
+			verify := func(_ context.Context, _, tag string, manifest, proof []byte) error {
+				if tag != tc.version || len(manifest) == 0 || string(proof) != "fixture proof" {
+					t.Fatal("wrong verifier inputs")
+				}
+				if tc.rejectSignature {
+					return update.VerifyReleaseManifest(ctx, "owner/repo", tag, manifest, proof)
+				}
+				return nil
+			}
+			result, err := updateSelfVerified(ctx, path, server.URL, tc.requested, currentVersion, server.Client(), verify)
 			if tc.wantError != "" {
+				if tc.rejectSignature && downloads.Load() != 0 {
+					t.Fatal("downloaded executable before authenticating manifest")
+				}
 				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
 					t.Fatalf("got %v, want %s", err, tc.wantError)
 				}
@@ -153,7 +169,7 @@ func main() {
 			if err = update.ValidateExecutable(ctx, path, "v2", asset); err != nil {
 				t.Fatal(err)
 			}
-			result, err = updateSelf(ctx, path, server.URL, tc.requested, "v2", server.Client())
+			result, err = updateSelfVerified(ctx, path, server.URL, tc.requested, "v2", server.Client(), verify)
 			if err != nil || result.Changed || downloads.Load() != 1 {
 				t.Fatalf("repeat update: %+v, %v; downloads=%d", result, err, downloads.Load())
 			}

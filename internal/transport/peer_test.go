@@ -16,6 +16,7 @@ import (
 )
 
 func TestGatewayRestartAndDirectSessionContinuity(t *testing.T) {
+	t.Parallel()
 	for _, relay := range []bool{true, false} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			const token = "reconnect-test-token-123456"
@@ -35,19 +36,31 @@ func TestGatewayRestartAndDirectSessionContinuity(t *testing.T) {
 					t.Fatal(err)
 				}
 				p := New(Config{Gateway: server.URL, Token: token, Identity: id, Node: model.Node{ID: id.ID, Name: name, PublicKey: id.Public}, RelayOnly: relay}, func(remote string, conn net.Conn) { _, _ = io.Copy(conn, conn) })
+				// Exercise gateway recovery independently of host VPN adapters and
+				// network changes. A relay fallback cannot prove direct continuity.
+				p.api, p.trickleAPI = loopbackWebRTCAPI(p.cfg.DirectTimeout, false), loopbackWebRTCAPI(p.cfg.DirectTimeout, true)
+				p.networkSnapshot = func() (string, error) { return "unchanged", nil }
 				if err = p.Start(ctx); err != nil {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() { _ = p.Close() })
 				return p
 			}
-			a, _ := makePeer("alpha"), makePeer("beta")
-			echo := func() {
+			a, b := makePeer("alpha"), makePeer("beta")
+			echo := func(phase string) {
+				t.Helper()
 				stream, err := a.Open(ctx, "beta")
 				if err != nil {
-					t.Fatal(err)
+					t.Fatal(phase, err)
 				}
 				defer func() { _ = stream.Close() }()
+				want := "webrtc"
+				if relay {
+					want = "relay"
+				}
+				if mode := stream.(*sessionStream).mode; mode != want {
+					t.Fatalf("%s: expected %s, got %s", phase, want, mode)
+				}
 				_ = stream.SetDeadline(time.Now().Add(3 * time.Second))
 				if _, err = stream.Write([]byte("ping")); err != nil {
 					t.Fatal(err)
@@ -57,13 +70,13 @@ func TestGatewayRestartAndDirectSessionContinuity(t *testing.T) {
 					t.Fatalf("echo: %q %v", b, err)
 				}
 			}
-			echo()
+			echo("before restart")
 			if err = g.Close(); err != nil {
 				t.Fatal(err)
 			}
 			server.Close()
 			if !relay {
-				echo()
+				echo("gateway offline")
 			} // Cached direct sessions do not consult the gateway.
 			restarted, err := gateway.New(dir, token)
 			if err != nil {
@@ -83,7 +96,9 @@ func TestGatewayRestartAndDirectSessionContinuity(t *testing.T) {
 			defer ticker.Stop()
 			for {
 				nodes, err := a.Nodes(ctx)
-				if err == nil && len(nodes) == 2 && nodes[0].Online && nodes[1].Online {
+				// Online directory entries precede each peer consuming its ready
+				// acknowledgement. Wait for local reconnect completion as well.
+				if err == nil && len(nodes) == 2 && nodes[0].Online && nodes[1].Online && a.Stats().GatewayReconnects > 0 && b.Stats().GatewayReconnects > 0 {
 					break
 				}
 				select {
@@ -92,7 +107,7 @@ func TestGatewayRestartAndDirectSessionContinuity(t *testing.T) {
 				case <-ticker.C:
 				}
 			}
-			echo()
+			echo("after restart")
 		})
 	}
 }

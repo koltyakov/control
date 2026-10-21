@@ -143,7 +143,7 @@ func (c *activityConn) CloseWrite() error { return transport.CloseWrite(c.Conn) 
 func trackOperation(method string) bool {
 	// Exclude observation requests so the dashboard never monitors its own polls.
 	switch method {
-	case "nodes.list", "nodes.select", "node.describe", "system.info", "capabilities.list", "activities.list", "activities.pool", "tasks.start", "tasks.get", "tasks.list", "tasks.logs", "leases.get", "artifacts.list", "artifacts.pull":
+	case "diagnostics.get", "nodes.list", "nodes.select", "node.describe", "system.info", "capabilities.list", "activities.list", "activities.pool", "tasks.start", "tasks.get", "tasks.list", "tasks.page", "tasks.logs", "leases.get", "artifacts.list", "artifacts.pull":
 		return false
 	default:
 		return true

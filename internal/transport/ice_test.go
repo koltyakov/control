@@ -28,9 +28,11 @@ func loopbackWebRTCAPI(direct time.Duration, trickle bool) *webrtc.API {
 }
 
 func TestTrickleICEConnectsBeforeSlowGatheringAndLegacyFallback(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"trickle", "older-gateway", "older-peer"} {
 		legacy := name != "trickle"
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			// A local STUN endpoint that never answers, with no internet dependency.

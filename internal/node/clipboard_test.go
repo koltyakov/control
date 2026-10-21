@@ -29,6 +29,7 @@ func clipboardFinish(t *testing.T, conn net.Conn) {
 }
 
 func TestClipboardPeers(t *testing.T) {
+	t.Parallel()
 	for _, relay := range []bool{false, true} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			source, worker, consumer := cluster(t, relay, func(i int, cfg *Config) {

@@ -136,6 +136,31 @@ The Dockerfile downloads Go dependencies while building the image. The running t
 
 ## Performance benchmarks
 
+### Native test runtime
+
+`make test` runs the complete native suite, including local gateways, nodes, and peer transports. Independent long-running fixtures use `t.Parallel()` with their own temporary state, credentials, and listeners. Lifecycle, artifact-expiry, persistent-tunnel, and ICE compatibility cases also run their isolated subtests concurrently. Process-global environment and working-directory changes must stay in serial tests. Call `t.Parallel()` before creating fixture contexts so queueing does not consume their deadlines, and keep shared parent resources alive with `t.Cleanup` if adding parallel children.
+
+The in-memory carrier-retirement test uses `testing/synctest` to exercise the production timer just before and at its deadline without a wall-clock wait. Socket-based heartbeat, startup-timeout, and signed-grant tests still exercise real timers. Production intervals and test coverage are unchanged.
+
+The gateway-restart and simulated network-switch fixtures pin WebRTC to loopback and use stable network samples, keeping host VPN and interface changes out of their recovery scenarios. The restart fixture asserts the expected transport before, during, and after the outage; a relay fallback cannot satisfy the direct-session continuity check. After the gateway returns, it waits for both peers to finish reconnecting as well as for online directory entries.
+
+An October 20, 2026 comparison on macOS arm64 with Go 1.27.3 used `go test -json ./... -count=1 -timeout=180s`. All 367 top-level tests passed in the baseline and final runs. Package execution times were:
+
+| Package | Before | After |
+| --- | ---: | ---: |
+| `internal/node` | 80.4 s | 30.9 s |
+| `internal/client` | 35.0 s | 13.4 s |
+| `internal/transport` | 25.2 s | 8.2 s |
+| `internal/gateway` | 24.9 s | 24.5 s |
+
+The interval from the first package start to the last result fell from 80.4 to 31.0 seconds, about 61%. This excludes initial compilation; it is a local comparison, not a CI runtime guarantee. The gateway fixture was not changed in this optimization and still includes a 15-second application-heartbeat expiry test.
+
+Go bounds parallel tests per package with `-parallel`, which defaults to `GOMAXPROCS`. On resource-constrained hosts, use `go test ./... -parallel=4 -timeout=180s`; `-p=1` also serializes packages. For a serial diagnostic run, use `-parallel=1 -p=1`. These flags preserve coverage. `-short` does not currently select a smaller internal suite.
+
+### Throughput and allocation benchmarks
+
+Reliability tests cover corrupt interior tombstones without journal rewriting, cleanup retry across restart, bounded owner-scoped pages, artifact-backed results, quota accounting, reader pins, independent MCP startup, relay fairness and close/offline ordering, cache eviction with retained identity ownership, fresh resource constraints, and read-only workflow reconciliation. Signature tests use a local virtual Sigstore authority to check exact repository/tag identity and artifact bytes. Update-path tests also verify that invalid signatures stop before executable downloads. They need no live signing service.
+
 Measure local observation and gateway commit contention separately from integration flows:
 
 ```sh
@@ -148,6 +173,8 @@ The activity benchmark has one active task and 100, 10,000, or 100,000 retained 
 The gateway benchmark changes one node record under the gateway mutex with SQLite WAL and `synchronous=FULL`, while another goroutine handles directory reads for 100 or 1,000 machines. It reports commits/second, reads/second, and directory p99 latency from a bounded ring of the latest 4,096 reads. HTTP response encoding is included; network I/O, connection proofs, and resource sampling are excluded. Set `CONTROL_BENCH_DIR` to an existing filesystem directory to compare disk with a Linux tmpfs mount. Each run creates and removes only its own benchmark subdirectory. The default uses the Go test temporary directory.
 
 The following measurements reviewed the performance changes now recorded in [D073](decisions.md#d073-committed-observation-views-and-safe-performance-boundaries) on October 13, 2026, using Go 1.27.2 on macOS arm64, Apple M4 Pro, default `GOMAXPROCS=14`, and the test temporary directory on the local filesystem. Each unprofiled benchmark ran for one second, three times. Figures below are medians, not confidence intervals. "Before" means the working-tree implementation at the start of that review, not a previous release.
+
+A separate October 20 check compared detached WebRTC reads with the previous callback implementation using a temporary Go overlay, on the same machine and toolchain. Across three one-second runs per variant, median allocation per 16 MiB download fell from 266.4 MB to 244.7 MB, about 8%. Median throughput was 81.9 versus 81.0 MB/s; this does not establish a speed increase. Current relay runs after adding session scheduling measured 504–560 MB/s and 46.2–47.0 MB allocated per download. These are aggregate allocation and loopback measurements, not peak memory or WAN predictions. An initial 2 MiB session queue was rejected because it could overflow a valid 4 MiB bulk window; the 6 MiB limit has a regression test including TLS framing.
 
 | Measurement | Before | After |
 | --- | --- | --- |
@@ -231,7 +258,7 @@ Separate jobs cover:
 - Both Compose transport modes.
 - govulncheck, also run by itself every Monday at 06:00 UTC.
 
-Linux containers on Docker Desktop do not verify Windows process handling or macOS filesystem behavior, so container testing complements the native matrix. The Compose image uses Go 1.27.2. Keep its version synchronized with `go.mod` when updating Go.
+Linux containers on Docker Desktop do not verify Windows process handling or macOS filesystem behavior, so container testing complements the native matrix. The Compose image uses Go 1.27.3. Keep its version synchronized with `go.mod` when updating Go.
 
 ## Local development commands
 

@@ -119,6 +119,7 @@ func TestOfflineNotificationInvalidatesInFlightLookup(t *testing.T) {
 }
 
 func TestPeersNegotiateLargePackets(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		relay   bool

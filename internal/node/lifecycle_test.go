@@ -19,8 +19,10 @@ import (
 )
 
 func TestMachineLifecycleBlocksSchedulingAndStopsNode(t *testing.T) {
+	t.Parallel()
 	for _, relay := range []bool{false, true} {
 		t.Run(fmt.Sprint("relay=", relay), func(t *testing.T) {
+			t.Parallel()
 			const adminKey = "machine-lifecycle-superuser-123456789"
 			g, err := gateway.New(t.TempDir(), testToken, gateway.Options{SuperuserKey: adminKey})
 			if err != nil {

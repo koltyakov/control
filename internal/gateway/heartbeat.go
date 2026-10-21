@@ -30,6 +30,10 @@ func (c *connection) writePackets(ctx context.Context) {
 	var pending string
 	var timerDeadline time.Time
 	priorityBurst := 0
+	var relayReady <-chan struct{}
+	if c.relay != nil {
+		relayReady = c.relay.ready
+	}
 	for {
 		if ctx.Err() != nil {
 			return
@@ -66,6 +70,17 @@ func (c *connection) writePackets(ctx context.Context) {
 				return
 			}
 		case packet := <-c.outData:
+			if packet.Kind == "data" {
+				c.queued.Add(-int64(len(packet.Data)))
+			}
+			if err := c.writePacket(ctx, packet); err != nil {
+				return
+			}
+		case <-relayReady:
+			packet := c.relay.pop()
+			if packet == nil {
+				continue
+			}
 			if packet.Kind == "data" {
 				c.queued.Add(-int64(len(packet.Data)))
 			}

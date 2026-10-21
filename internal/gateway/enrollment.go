@@ -297,6 +297,7 @@ func (g *Gateway) installBinary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
+	defer g.trimIdentityCache()
 	w.Header().Set("Cache-Control", "no-store")
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	ticket := r.PathValue("ticket")
@@ -325,6 +326,10 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	if !time.Now().Before(i.ExpiresAt) {
 		http.Error(w, "invitation expired", http.StatusGone)
+		return
+	}
+	if err := g.loadIdentityLocked(id); err != nil {
+		http.Error(w, "could not verify identity", http.StatusInternalServerError)
 		return
 	}
 	if owner := g.owners[id]; owner != "" && owner != i.UserID {

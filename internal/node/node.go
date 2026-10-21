@@ -26,6 +26,7 @@ import (
 	"github.com/koltyakov/control/internal/system"
 	"github.com/koltyakov/control/internal/transport"
 	"github.com/koltyakov/control/internal/update"
+	"github.com/koltyakov/control/internal/wire"
 	"github.com/koltyakov/control/internal/workgate"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -73,8 +74,13 @@ type Node struct {
 	wg                  sync.WaitGroup
 	mcpMu               sync.Mutex
 	mcpSessions         map[string]*mcp.ClientSession
+	mcpPending          map[string]*mcpSetup
 	artifactMu          sync.Mutex
 	transfers           map[string]*transferLock
+	artifactBudgetMu    sync.Mutex
+	artifactUsed        int64
+	artifactStaging     map[string]bool
+	artifactReaders     map[string]int
 	lease               *model.Lease
 	leaseMu             sync.Mutex // Serializes durable lease writes.
 	leasePending        bool       // A lease write is in flight outside mu.
@@ -142,6 +148,11 @@ func New(cfg Config) (*Node, error) {
 	n.clipboardSlots = make(chan struct{}, 8)
 	n.connectionTests = make(chan struct{}, 2)
 	n.delegations = map[string]*delegationState{}
+	n.artifactStaging = make(map[string]bool)
+	if err = n.loadArtifactUsage(); err != nil {
+		_ = root.Close()
+		return nil, err
+	}
 	if err = n.loadMachineState(); err != nil {
 		_ = root.Close()
 		return nil, err
@@ -389,11 +400,13 @@ func (n *Node) handle(caller string, conn net.Conn) {
 	result, err := n.dispatch(ctx, caller, request.Method, request.Params)
 	response := model.Response{}
 	if err != nil {
-		response.Error = err.Error()
+		response = model.ErrorResponse(err)
 	} else {
 		response.Result = model.JSON(result)
 	}
-	_ = writeFrame(conn, response)
+	if writeErr := writeFrame(conn, wire.BoundResponse(response)); writeErr != nil {
+		slog.Debug("peer response", "method", request.Method, "error", writeErr)
+	}
 	slog.Debug("peer request", "caller", caller, "method", request.Method, "error", err)
 }
 
@@ -516,6 +529,8 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		return n.activitySnapshot(q), nil
 	case "activities.pool":
 		return n.poolActivities(ctx, caller, args)
+	case "diagnostics.get":
+		return n.diagnostics(), nil
 	case "nodes.list":
 		return n.Peer.Nodes(ctx)
 	case "nodes.select":
@@ -542,7 +557,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 			return nil, err
 		}
 		return n.startTaskContext(ctx, owner, spec)
-	case "tasks.get", "tasks.cancel", "tasks.logs", "tasks.list":
+	case "tasks.get", "tasks.cancel", "tasks.logs", "tasks.list", "tasks.page":
 		return n.taskMethod(ctx, owner, method, args)
 	case "leases.acquire", "leases.renew", "leases.release", "leases.get":
 		return n.leaseMethod(owner, method, args)

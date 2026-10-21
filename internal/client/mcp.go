@@ -71,13 +71,15 @@ func (c Client) MCPServer() *mcp.Server {
 	add("control_activities", "Read a pool-wide activity snapshot, including all registered machines, availability, tasks from all owners, transfers, tunnels, direct/TURN/gateway-relay connection counts, and cached system metrics. Unavailable nodes are reported individually. Requires activities.list permission on the observed nodes.", "activities.pool", map[string]any{"nodes": map[string]any{"type": "array", "items": text}, "recent": map[string]any{"type": "integer", "minimum": 0, "maximum": 64}}, nil, normal)
 	add("control_system", "Read OS, CPU, RAM, and disk usage from a node's cached system sample. Set refresh to request a new sample.", "system.info", map[string]any{"node": text, "refresh": map[string]any{"type": "boolean"}}, []string{"node"}, normal)
 	add("control_describe", "Inspect a node and discover capability input schemas.", "node.describe", map[string]any{"node": text}, []string{"node"}, normal)
-	add("control_select", "Find an online, enabled machine matching labels and a capability. Machines awaiting a policy acknowledgement are excluded.", "nodes.select", map[string]any{"labels": object, "capability": text}, nil, normal)
+	add("control_select", "Select an online enabled machine by capability, labels and fresh resources. Excludes known leases and update reservations. Resource constraints require fresh health; selection does not reserve capacity.", "nodes.select", map[string]any{"labels": object, "capability": text, "minMemoryBytes": map[string]any{"type": "integer", "minimum": 0}, "minDiskBytes": map[string]any{"type": "integer", "minimum": 0}, "maxCpuPercent": map[string]any{"type": "number", "minimum": 0, "maximum": 100}, "requireFresh": map[string]any{"type": "boolean"}}, nil, normal)
+	add("control_diagnostics", "Read bounded task cleanup, artifact budget, MCP startup and transport diagnostics. Uses cached system samples and excludes task arguments and credentials.", "diagnostics.get", map[string]any{"node": text}, []string{"node"}, normal)
 	add("control_call", "Call a node method or capability with structured params. Discover capabilities first. Also supports artifacts.list, artifacts.pull, artifacts.grant, tasks.list, and mcp.request.", "", map[string]any{"node": text, "method": text, "params": object}, []string{"method"}, nested("params"))
 	add("control_task_start", "Submit a tracked task. task has capability, args, optional id, timeoutSeconds, inputs [{artifact,path}], and outputs [relative paths]. Reuse the task ID to reconcile an uncertain submission.", "tasks.start", map[string]any{"node": text, "task": object}, []string{"node", "task"}, nested("task"))
 	add("control_delegate", "Execute one orchestrator-authorized JSON instruction on target through worker node. Prepares a destination-owned, instruction-bound grant. Worker credentials alone cannot execute peer commands. Use tasks.start with an explicit ID for durable child work; synchronous instructions are single-use.", "peers.call", map[string]any{"node": text, "target": text, "method": text, "params": object}, []string{"node", "target", "method", "params"}, normal)
 	add("control_access_list", "List this orchestrator owner's instruction-bound grants at node, including idle expiry. Does not list other owners' grants.", "access.list", map[string]any{"node": text}, []string{"node"}, normal)
 	add("control_access_revoke", "Revoke this owner's grant at node and cancel associated tasks and streams. Cannot undo completed effects. Idempotent when the grant is absent.", "access.revoke", map[string]any{"node": text, "id": text}, []string{"node", "id"}, normal)
 	add("control_task_get", "Read task status, result, and artifact references. Set waitSeconds (up to 60) to wait for completion instead of polling; a non-terminal result means the wait elapsed. Older nodes answer immediately.", "tasks.get", map[string]any{"node": text, "id": text, "waitSeconds": map[string]any{"type": "integer", "minimum": 0, "maximum": 60}}, []string{"node", "id"}, normal)
+	add("control_tasks", "List bounded task summaries. Continue with nextCursor. Use tasks.get for arguments, results and artifact references.", "tasks.page", map[string]any{"node": text, "cursor": text, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 200}}, []string{"node"}, normal)
 	add("control_task_cancel", "Cancel a queued or running task.", "tasks.cancel", map[string]any{"node": text, "id": text}, []string{"node", "id"}, normal)
 	add("control_task_logs", "Read task logs from a byte offset. Returns the next offset.", "tasks.logs", map[string]any{"node": text, "id": text, "offset": map[string]any{"type": "integer"}}, []string{"node", "id"}, normal)
 	add("control_mcp_discover", "List configured MCP servers, or discover a server's tools and input schemas. Requires execution authority; selecting a server may start its configured process or remote session.", "mcp.discover", map[string]any{"node": text, "server": text}, []string{"node"}, normal)
@@ -104,6 +106,16 @@ func (c Client) MCPServer() *mcp.Server {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(model.JSON(result))}}}, nil
 		})
 	}
+	local("control_workflow_reconcile", "Inspect a retained workflow plan and query its stable child IDs after interruption or uncertainty. Reports unavailable children without replaying work or recreating grants.", map[string]any{"node": text, "id": text}, []string{"node", "id"}, func(ctx context.Context, args json.RawMessage) (any, error) {
+		var q struct {
+			Node string `json:"node"`
+			ID   string `json:"id"`
+		}
+		if err := json.Unmarshal(args, &q); err != nil {
+			return nil, err
+		}
+		return c.ReconcileWorkflow(ctx, q.Node, q.ID)
+	})
 	local("control_session", "Inspect this orchestrator process's role, stable task owner, live transport identity, connections, and port forwards. Does not enroll a fleet machine.", map[string]any{}, nil, func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return c.Session(ctx)
 	})
@@ -173,5 +185,5 @@ func (c Client) MCPServer() *mcp.Server {
 }
 
 func toolError(err error) *mcp.CallToolResult {
-	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}
+	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: string(model.JSON(model.OperationError(err, "unknown")))}}}
 }

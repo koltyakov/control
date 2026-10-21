@@ -62,6 +62,7 @@ CREATE INDEX invitations_user ON invitations(user_id);
 CREATE TABLE machine_states (id TEXT PRIMARY KEY REFERENCES identities(id), data BLOB NOT NULL);
 CREATE TABLE client_identities (id TEXT PRIMARY KEY REFERENCES identities(id), data BLOB NOT NULL);
 CREATE TABLE client_transports (id TEXT PRIMARY KEY REFERENCES identities(id), owner_id TEXT NOT NULL REFERENCES client_identities(id), data BLOB NOT NULL);
+CREATE INDEX client_identity_prefix ON client_identities(substr(id,1,16));
 PRAGMA user_version=4;`); err != nil {
 			return err
 		}
@@ -119,10 +120,13 @@ PRAGMA user_version=4;`); err != nil {
 	g.nodes = map[string]model.Node{}
 	g.installations = map[string]installation{}
 	g.machineStates = map[string]model.MachineState{}
-	if err = readRecords(g.db, "client_identities", "id", g.clientOwners); err != nil {
+	if _, err = g.db.Exec(`CREATE INDEX IF NOT EXISTS client_identity_prefix ON client_identities(substr(id,1,16))`); err != nil {
 		return err
 	}
-	if err = readRecords(g.db, "client_transports", "id", g.clientTransports); err != nil {
+	if err = readRecords(g.db, "(SELECT * FROM client_identities ORDER BY id DESC LIMIT 4096)", "id", g.clientOwners); err != nil {
+		return err
+	}
+	if err = readRecords(g.db, "(SELECT * FROM client_transports ORDER BY id DESC LIMIT 4096)", "id", g.clientTransports); err != nil {
 		return err
 	}
 	if err = readRecords(g.db, "machine_states", "id", g.machineStates); err != nil {
@@ -140,7 +144,7 @@ PRAGMA user_version=4;`); err != nil {
 	if err = readRecords(g.db, "invitations", "hash", g.installations); err != nil {
 		return err
 	}
-	rows, err := g.db.Query(`SELECT id,user_id FROM identities`)
+	rows, err := g.db.Query(`SELECT id,user_id FROM identities WHERE (id NOT IN (SELECT id FROM client_identities) AND id NOT IN (SELECT id FROM client_transports)) OR id IN (SELECT id FROM client_identities ORDER BY id DESC LIMIT 4096) OR id IN (SELECT id FROM client_transports ORDER BY id DESC LIMIT 4096)`)
 	if err != nil {
 		return err
 	}

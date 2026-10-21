@@ -87,6 +87,9 @@ func TestSavedLoginExecWithoutLocalService(t *testing.T) {
 	if err := run(ctx, []string{"session"}); err != nil {
 		t.Fatal("session inspection", err)
 	}
+	if err := run(ctx, []string{"diagnostics", "worker"}); err != nil {
+		t.Fatal("login-only diagnostics failed", err)
+	}
 	// Explicit API configuration must never silently use gateway credentials.
 	api := httptest.NewServer(w.Handler())
 	address := api.URL
@@ -94,8 +97,14 @@ func TestSavedLoginExecWithoutLocalService(t *testing.T) {
 	if err := run(ctx, []string{"--api", address, "call", "worker", "node.describe"}); err == nil {
 		t.Fatal("explicit API unexpectedly fell back to the gateway")
 	}
+	if err := run(ctx, []string{"--api", address, "diagnostics", "worker"}); err == nil {
+		t.Fatal("explicit diagnostics API unexpectedly fell back to the gateway")
+	}
 	t.Setenv("CONTROL_API", address)
 	if err := run(ctx, []string{"call", "worker", "node.describe"}); err == nil {
 		t.Fatal("CONTROL_API unexpectedly fell back to the gateway")
+	}
+	if err := run(ctx, []string{"diagnostics", "worker"}); err == nil {
+		t.Fatal("diagnostics CONTROL_API unexpectedly fell back to the gateway")
 	}
 }

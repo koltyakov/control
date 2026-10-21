@@ -42,6 +42,7 @@ func execSpec(t *testing.T, id, mode string) model.TaskSpec {
 }
 
 func TestBlockingTaskGetWakesOnCompletion(t *testing.T) {
+	t.Parallel()
 	n := localNode(t, nil)
 	ctx := context.Background()
 	brief, err := n.startTaskContext(ctx, "owner", execSpec(t, "brief", "brief"))
@@ -260,6 +261,7 @@ func TestArtifactOwnersScopeListingAndDeletion(t *testing.T) {
 }
 
 func TestWorkflowRunsIndependentStepsInParallel(t *testing.T) {
+	t.Parallel()
 	source, _, _ := cluster(t, true, nil)
 	steps := []WorkflowStep{
 		{Name: "a", Target: "worker", Task: execSpec(t, "", "delayed")},

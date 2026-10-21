@@ -46,7 +46,7 @@ func (p *Peer) OpenRPC(ctx context.Context, target, method string, params any) (
 	}
 	conn, err := p.OpenLane(ctx, target, lane)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, model.OperationError(err, "not_sent")
 	}
 	stop := context.AfterFunc(ctx, func() {
 		// yamux Close sends FIN but can leave reads waiting for the peer.
@@ -64,16 +64,20 @@ func (p *Peer) OpenRPC(ctx context.Context, target, method string, params any) (
 	}
 	if err = wire.WriteFrame(conn, request); err != nil {
 		_ = conn.Close()
-		return nil, nil, err
+		outcome := "unknown"
+		if errors.Is(err, wire.ErrFrameTooLarge) {
+			outcome = "not_sent"
+		}
+		return nil, nil, model.OperationError(err, outcome)
 	}
 	var response model.Response
 	if err = wire.ReadFrame(conn, &response); err != nil {
 		_ = conn.Close()
-		return nil, nil, err
+		return nil, nil, model.OperationError(err, "unknown")
 	}
 	if response.Error != "" {
 		_ = conn.Close()
-		return nil, nil, errors.New(response.Error)
+		return nil, nil, response.Err()
 	}
 	return conn, response.Result, nil
 }
@@ -105,12 +109,12 @@ func (p *Peer) OpenTCP(ctx context.Context, target, address string) (net.Conn, e
 // Among matching machines it prefers the one reporting the fewest active
 // operations, choosing randomly among ties or when load is not visible.
 func (p *Peer) Select(ctx context.Context, args json.RawMessage) (model.Node, error) {
-	var query struct {
-		Labels     map[string]string `json:"labels"`
-		Capability string            `json:"capability"`
-	}
+	var query model.NodeSelector
 	if err := json.Unmarshal(args, &query); err != nil {
 		return model.Node{}, err
+	}
+	if query.MaxCPUPercent != nil && (*query.MaxCPUPercent < 0 || *query.MaxCPUPercent > 100) {
+		return model.Node{}, errors.New("maxCpuPercent must be 0..100")
 	}
 	nodes, err := p.Nodes(ctx)
 	if err != nil {
@@ -138,7 +142,7 @@ func (p *Peer) Select(ctx context.Context, args json.RawMessage) (model.Node, er
 	if len(candidates) == 0 {
 		return model.Node{}, errors.New("no online enabled node matches the selector")
 	}
-	return leastLoaded(candidates, p.activeCounts(ctx)), nil
+	return resourcePlacement(candidates, p.placementHealth(ctx), query, time.Now())
 }
 
 // leastLoaded treats load as a placement preference, not a reservation;
@@ -162,7 +166,7 @@ func leastLoaded(candidates []model.Node, loads map[string]int) model.Node {
 
 // activeCounts reads the owner-visible health summaries the gateway already
 // caches. Credentials without summary access, or any failure, yield no counts.
-func (p *Peer) activeCounts(ctx context.Context) map[string]int {
+func (p *Peer) placementHealth(ctx context.Context) map[string]model.NodeActivitySnapshot {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, gateway.URL(p.cfg.Gateway, "/v1/status"), nil)
@@ -179,10 +183,10 @@ func (p *Peer) activeCounts(ctx context.Context) map[string]int {
 	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&status) != nil {
 		return nil
 	}
-	counts := map[string]int{}
+	counts := map[string]model.NodeActivitySnapshot{}
 	for _, n := range status.Nodes {
-		if !n.ObservedAt.IsZero() && n.ActiveCount >= 0 {
-			counts[n.ID] = n.ActiveCount
+		if n.Status == "update" || (!n.ObservedAt.IsZero() && n.ActiveCount >= 0) {
+			counts[n.ID] = n
 		}
 	}
 	return counts

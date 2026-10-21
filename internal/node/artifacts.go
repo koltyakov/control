@@ -34,13 +34,17 @@ func (n *Node) artifactPath(id string) string {
 // or one with more owners than are tracked.
 type storedArtifact struct {
 	model.Artifact
-	Owners []string `json:"owners,omitempty"`
+	Owners   []string `json:"owners,omitempty"`
+	Deleting bool     `json:"deleting,omitempty"`
 }
 
 const maxArtifactOwners = 256
 
 func (n *Node) artifact(id string) (model.Artifact, error) {
 	stored, err := n.storedArtifact(id)
+	if err == nil && stored.Deleting {
+		err = errors.New("artifact deletion is pending")
+	}
 	return stored.Artifact, err
 }
 
@@ -69,11 +73,14 @@ func (n *Node) artifactOwner(ctx context.Context) string {
 // holdArtifactLocked records owner on stored content. Caller holds the
 // artifact's transfer lock.
 func (n *Node) holdArtifactLocked(a storedArtifact, owner string) error {
+	if a.Deleting {
+		return errors.New("artifact deletion is pending")
+	}
 	if len(a.Owners) == 0 || slices.Contains(a.Owners, owner) {
 		return nil
 	}
 	if len(a.Owners) >= maxArtifactOwners {
-		a.Owners = nil
+		return errors.New("artifact owner limit reached; existing holds were preserved")
 	} else {
 		a.Owners = append(a.Owners, owner)
 	}
@@ -146,10 +153,19 @@ func (n *Node) importArtifact(ctx context.Context, reader io.Reader, name string
 	if err != nil {
 		return model.Artifact{}, err
 	}
-	defer func() { _ = os.Remove(f.Name()) }()
+	n.artifactBudgetMu.Lock()
+	n.artifactStaging[filepath.Base(f.Name())] = true
+	n.artifactBudgetMu.Unlock()
+	defer func() {
+		_ = n.removeArtifactData(f.Name())
+		n.artifactBudgetMu.Lock()
+		delete(n.artifactStaging, filepath.Base(f.Name()))
+		n.artifactBudgetMu.Unlock()
+	}()
 	defer func() { _ = f.Close() }()
 	hash := sha256.New()
-	size, err := io.Copy(activityWriter{writer: io.MultiWriter(f, hash), counter: &activity.bytes}, contextReader{ctx, reader})
+	budget := &artifactBudgetWriter{node: n, writer: f}
+	size, err := io.Copy(activityWriter{writer: io.MultiWriter(budget, hash), counter: &activity.bytes}, contextReader{ctx, reader})
 	if err != nil {
 		return model.Artifact{}, err
 	}
@@ -171,6 +187,11 @@ func (n *Node) importArtifact(ctx context.Context, reader io.Reader, name string
 	defer unlock()
 	if existing, e := n.storedArtifact(id); e == nil {
 		return existing.Artifact, n.holdArtifactLocked(existing, owner)
+	} else if !errors.Is(e, os.ErrNotExist) {
+		return model.Artifact{}, e
+	}
+	if err = n.removeArtifactData(n.artifactPath(id)); err != nil {
+		return model.Artifact{}, err
 	}
 	if err = os.Rename(f.Name(), n.artifactPath(id)); err != nil {
 		return model.Artifact{}, err
@@ -235,6 +256,13 @@ func (n *Node) serveArtifact(ctx context.Context, caller string, conn net.Conn, 
 	}
 	var a model.Artifact
 	if err == nil {
+		var unpin func()
+		unpin, err = n.pinArtifact(ctx, q.ID)
+		if err == nil {
+			defer unpin()
+		}
+	}
+	if err == nil {
 		a, err = n.artifact(q.ID)
 	}
 	if err == nil && (q.Offset < 0 || q.Offset > a.Size) {
@@ -285,6 +313,11 @@ func (n *Node) Download(ctx context.Context, a model.Artifact, offset int64, des
 	activity.progress(offset, a.Size)
 	dest = activityWriter{writer: dest, counter: &activity.bytes}
 	if a.Node == n.Identity.ID || a.Node == n.Config.Name {
+		unpin, err := n.pinArtifact(ctx, a.ID)
+		if err != nil {
+			return err
+		}
+		defer unpin()
 		stored, err := n.artifact(a.ID)
 		if err != nil {
 			return err
@@ -340,6 +373,12 @@ func (n *Node) pullArtifact(ctx context.Context, a model.Artifact) (_ model.Arti
 		err = n.holdArtifactLocked(local, owner)
 		return local.Artifact, err
 	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return model.Artifact{}, err
+	}
+	if a.Node == n.Identity.ID || a.Node == n.Config.Name {
+		return model.Artifact{}, err
+	}
 	if err := os.MkdirAll(filepath.Dir(n.artifactPath(a.ID)), 0700); err != nil {
 		return model.Artifact{}, err
 	}
@@ -357,6 +396,9 @@ func (n *Node) pullArtifact(ctx context.Context, a model.Artifact) (_ model.Arti
 		if err = f.Truncate(0); err != nil {
 			return model.Artifact{}, err
 		}
+		n.artifactBudgetMu.Lock()
+		n.artifactUsed -= offset
+		n.artifactBudgetMu.Unlock()
 		offset = 0
 	}
 	// Hash while receiving so a completed download is not read a second time.
@@ -372,13 +414,13 @@ func (n *Node) pullArtifact(ctx context.Context, a model.Artifact) (_ model.Arti
 		}
 	}
 	activity.phase("receiving")
-	if err = n.Download(ctx, a, offset, io.MultiWriter(f, hash)); err != nil {
+	if err = n.Download(ctx, a, offset, io.MultiWriter(&artifactBudgetWriter{node: n, writer: f}, hash)); err != nil {
 		return model.Artifact{}, fmt.Errorf("transfer paused at resumable partial: %w", err)
 	}
 	activity.phase("verifying checksum")
 	if hex.EncodeToString(hash.Sum(nil)) != a.SHA256 {
 		_ = f.Close()
-		_ = os.Remove(partial)
+		_ = n.removeArtifactData(partial)
 		return model.Artifact{}, errors.New("artifact checksum mismatch")
 	}
 	if err = f.Sync(); err != nil {
@@ -389,6 +431,9 @@ func (n *Node) pullArtifact(ctx context.Context, a model.Artifact) (_ model.Arti
 	}
 	// Already serialized on this artifact's transfer lock (see above);
 	// the global artifactMu is not held through the synced write.
+	if err = n.removeArtifactData(n.artifactPath(a.ID)); err != nil {
+		return model.Artifact{}, err
+	}
 	if err = os.Rename(partial, n.artifactPath(a.ID)); err != nil {
 		return model.Artifact{}, err
 	}
@@ -431,7 +476,7 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 			if err = store.Read(path, &a); err != nil {
 				return nil, err
 			}
-			if a.visibleTo(owner, n.Identity.ID) {
+			if !a.Deleting && a.visibleTo(owner, n.Identity.ID) {
 				artifacts = append(artifacts, a.Artifact)
 			}
 		}
@@ -458,13 +503,21 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 			stored.Owners = slices.DeleteFunc(stored.Owners, func(o string) bool { return o == owner })
 			return nil, store.Write(n.artifactPath(q.ID)+".json", stored)
 		}
-		if err := os.Remove(n.artifactPath(q.ID) + ".json"); err != nil {
-			return nil, err
+		if n.artifactReferenced(q.ID) {
+			return nil, errors.New("artifact is referenced by retained tasks; prune those tasks before deleting it")
 		}
-		return nil, os.Remove(n.artifactPath(q.ID))
+		if n.artifactGranted(q.ID) || n.artifactReading(q.ID) {
+			return nil, errors.New("artifact has an active grant or reader")
+		}
+		return nil, n.deleteArtifactLocked(stored)
 	case "artifacts.pull":
 		return n.pullArtifact(ctx, q.Artifact)
 	case "artifacts.grant", "artifacts.deliver":
+		unpin, err := n.pinArtifact(ctx, q.ID)
+		if err != nil {
+			return nil, err
+		}
+		defer unpin()
 		if caller == n.Identity.ID {
 			if _, ok := ctx.Value(authorityContextKey{}).(authority); !ok {
 				return nil, errors.New("artifact delegation requires an orchestrator instruction")

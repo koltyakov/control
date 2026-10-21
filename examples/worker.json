@@ -6,6 +6,9 @@
   "workDir": "work/worker",
   "labels": { "role": "worker", "media": "ffmpeg" },
   "maxTasks": 4,
+  "maxArtifactBytes": 21474836480,
+  "artifactReserveBytes": 268435456,
+  "partialRetentionHours": 168,
   "agents": {
     "claude": {
       "command": "claude",

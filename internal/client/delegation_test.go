@@ -85,6 +85,7 @@ func delegationClusterWithTimeout(t *testing.T, relay bool, timeout time.Duratio
 }
 
 func TestInstructionDelegation(t *testing.T) {
+	t.Parallel()
 	for _, relay := range []bool{true, false} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			ctx, c, workers, admin := delegationCluster(t, relay)
@@ -142,6 +143,7 @@ func TestInstructionDelegation(t *testing.T) {
 }
 
 func TestAccountRoutingUsesCurrentNamedDestination(t *testing.T) {
+	t.Parallel()
 	for _, relay := range []bool{true, false} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			ctx, c, workers, admin := delegationCluster(t, relay)
@@ -180,6 +182,7 @@ func TestAccountRoutingUsesCurrentNamedDestination(t *testing.T) {
 }
 
 func TestDelegatedTaskRevocation(t *testing.T) {
+	t.Parallel()
 	for _, relay := range []bool{true, false} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			ctx, c, workers, admin := delegationCluster(t, relay)
@@ -221,6 +224,7 @@ func TestDelegatedTaskRevocation(t *testing.T) {
 }
 
 func TestDelegatedWorkflowAndDelivery(t *testing.T) {
+	t.Parallel()
 	for _, relay := range []bool{true, false} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			ctx, c, workers, _ := delegationCluster(t, relay)

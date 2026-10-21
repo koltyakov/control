@@ -125,7 +125,7 @@ func run(ctx context.Context, args []string) error {
 			c.Token = cfg.Token
 		}
 		switch args[0] {
-		case "mcp", "system", "call", "exec", "task", "artifact", "tunnel", "session", "clipboard", "dashboard", "speedtest":
+		case "mcp", "system", "call", "exec", "task", "artifact", "tunnel", "session", "clipboard", "dashboard", "speedtest", "diagnostics":
 			if !explicitAPI && os.Getenv("CONTROL_API") == "" {
 				var override *string
 				if explicitToken {
@@ -330,6 +330,11 @@ func run(ctx context.Context, args []string) error {
 			}
 		}
 		return callPrint(ctx, c, args[1], args[2], params)
+	case "diagnostics":
+		if len(args) != 2 {
+			return errors.New("usage: control diagnostics NODE")
+		}
+		return callPrint(ctx, c, args[1], "diagnostics.get", map[string]any{})
 	case "exec":
 		return execCLI(ctx, c, args[1:])
 	case "session":
@@ -352,7 +357,24 @@ func run(ctx context.Context, args []string) error {
 		}
 		method, target := args[1], args[2]
 		if method == "list" {
-			return callPrint(ctx, c, target, "tasks.list", map[string]any{})
+			f := flag.NewFlagSet("task list", flag.ContinueOnError)
+			limit := f.Int("limit", 100, "maximum task summaries, 1..200")
+			cursor := f.String("cursor", "", "nextCursor from the previous page")
+			if err := f.Parse(args[3:]); err != nil {
+				return err
+			}
+			if f.NArg() != 0 {
+				return errors.New("unexpected task list arguments")
+			}
+			return callPrint(ctx, c, target, "tasks.page", map[string]any{"limit": *limit, "cursor": *cursor})
+		}
+		if method == "reconcile" && len(args) == 4 {
+			report, err := c.ReconcileWorkflow(ctx, target, args[3])
+			if err != nil {
+				return err
+			}
+			printJSON(report)
+			return nil
 		}
 		if len(args) < 4 {
 			return errors.New("task ID or specification is required")
@@ -577,7 +599,9 @@ Environment: CONTROL_API, CONTROL_TOKEN
   task start NODE JSON|@file            Submit a durable task
   task get|wait|cancel|logs NODE ID      Inspect or manage a task
   task logs NODE ID [--follow] [--offset BYTES]
-  task list NODE                       List tasks owned by this client or local node
+  task list NODE [--limit N --cursor ID] Page through task summaries
+  task reconcile NODE ID               Inspect a workflow and its stable child IDs
+  diagnostics NODE                     Read bounded operational counters
   artifact list NODE
   artifact export NODE PATH
   artifact deliver NODE ID DEST_NODE   Peer-to-peer transfer

@@ -45,6 +45,7 @@ func (ownerProvider) Run(_ context.Context, _ json.RawMessage, e node.Execution)
 }
 
 func TestStandalonePeerOperations(t *testing.T) {
+	t.Parallel()
 	for _, relay := range []bool{false, true} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)

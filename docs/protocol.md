@@ -31,6 +31,9 @@ Running an invitation on an existing profile replaces its enrollment and can ren
   "metricsIntervalSeconds": 15,
   "taskRetentionHours": 168,
   "maxRetainedTasks": 10000,
+  "maxArtifactBytes": 0,
+  "artifactReserveBytes": 268435456,
+  "partialRetentionHours": 168,
   "iceServers": [{ "urls": ["stun:your-stun-server.example.com:3478"] }],
   "allow": {
     "@orchestrator": ["*"],
@@ -56,6 +59,9 @@ Run a handwritten configuration with `control node --config /absolute/path/to/co
 | `metricsIntervalSeconds` | 15; `1..3600` sets periodic sampling, `-1` disables it, zero restores the default |
 | `taskRetentionHours` | 168; `1..87600` sets terminal-task age retention, `-1` disables it, zero restores the default |
 | `maxRetainedTasks` | 10,000; `1..1000000` sets the terminal-task count limit, `-1` disables it, zero restores the default |
+| `maxArtifactBytes` | Zero leaves artifact bytes unlimited; positive values cap blobs, import staging and resumable partials together |
+| `artifactReserveBytes` | 268,435,456; zero restores the default 256 MiB free-space guard |
+| `partialRetentionHours` | 168; `1..87600` sets the age for abandoned imports, partials and unpublished blobs |
 | `allow` | Optional caller-to-method rules, described below; not an execution grant for workers |
 | `providers`, `agents`, `mcp` | Named command/server maps; see [provider configuration](#subprocess-providers) and [AI CLI and MCP configuration](#ai-cli-and-mcp-configuration) |
 | `rpa` | Absent by default; an explicit helper command enables [GUI automation](rpa.md) |
@@ -80,11 +86,15 @@ After durable successful completion, gateway update storage is pruned, preservin
 
 `metricsIntervalSeconds` controls local resource sampling, independently of dashboard activity polls. The default is 15 seconds; 1..3600 changes the interval and `-1` disables periodic collection. Startup, heavy-task completion, and explicit refresh requests can still sample. See [dashboard and system metrics](dashboard.md).
 
-`taskRetentionHours` and `maxRetainedTasks` bound terminal task history. Every ten minutes, and at startup, a node removes terminal task records, logs, and `workDir/tasks/ID` workspaces whose last update is older than the retention period, then the oldest beyond the count limit. Defaults are 168 hours and 10,000 tasks; `-1` disables either rule. Queued, running, and reserved tasks, and tasks named by a live delegation, are kept. Artifacts are not pruned. Each removed task leaves a durable tombstone in `dataDir/tasks/pruned.jsonl` with its ID, owner, specification digest, capability, final state, error, and timestamps. `tasks.get`, `tasks.cancel`, and `tasks.logs` return it to its owner as a terminal task with `pruned: true` and no result, artifacts, or log text. Resubmitting the same ID and specification returns that record without executing again; a different owner or specification is rejected. Tombstones are kept for 180 days, at most 50,000 per node. See [D058](decisions.md#d058-terminal-task-retention-with-tombstones).
+`taskRetentionHours` and `maxRetainedTasks` bound terminal task history. Every ten minutes, and at startup, a node removes terminal task records, logs, and `workDir/tasks/ID` workspaces whose last update is older than the retention period, then the oldest beyond the count limit. Defaults are 168 hours and 10,000 tasks; `-1` disables either rule. Queued, running, and reserved tasks, and tasks named by a live delegation, are kept. Task pruning does not delete artifacts. Each removed task leaves a durable tombstone in `dataDir/tasks/pruned.jsonl` with its ID, owner, specification digest, capability, final state, error, and timestamps. `tasks.get`, `tasks.cancel`, and `tasks.logs` return it to its owner as a terminal task with `pruned: true` and no result, artifacts, or log text. Resubmitting the same ID and specification returns that record without executing again; a different owner or specification is rejected. Completed-cleanup tombstones are kept for 180 days, within a 50,000-entry target; pending cleanup may exceed it. See [D075](decisions.md#d075-bounded-task-data-and-durable-cleanup).
 
 Pruning does not introduce a `pruned` state: `state` remains the original terminal state and `pruned` is a separate boolean. Startup discards tombstones older than 180 days, and count compaction keeps the newest 50,000. Once a tombstone is removed, its ID is no longer protected against execution. Use globally unique IDs and keep external outcome records when reconciliation must outlive node retention.
 
 Omitting `allow` permits same-fleet discovery and account-client execution, not independent worker execution. Setting `"allow": {}` denies incoming calls except previously issued valid delegation or artifact grants. Neither grants nor wildcard rules bypass fleet membership. Patterns use Go `path.Match` syntax. `@orchestrator` selects account-authenticated clients. `tasks.start` also requires permission for its capability. Task status and logs remain owner-scoped. The local API can inspect tasks owned by its node or executed locally. See [delegation](delegation.md).
+
+New tombstones carry a SHA-256 checksum and durable `cleanupPending` intent. Startup rejects malformed complete lines, invalid fields, checksum mismatches and conflicting IDs without rewriting the journal. Only a torn final append may be discarded. Cleanup retries at startup and every ten minutes; pending entries survive TTL and count compaction until removal succeeds. Legacy checksum-free records remain readable.
+
+Artifact accounting includes active imports and resumable partials. Writes stop before exceeding the configured logical budget. A free-space check at admission and each MiB protects metadata headroom, but does not reserve disk against external writers. Owned blobs are never evicted to satisfy the budget. Cleanup removes old unowned staging, partial and unpublished files, and retries pending deletions. Retained task inputs, outputs and result artifacts protect content. Adding a 257th owner fails without turning an owned artifact into a shared record.
 
 ## Operations
 
@@ -164,14 +174,14 @@ Use `control call NODE METHOD JSON` or `POST /v1/call` on the local API:
 }
 ```
 
-Authenticate with `Authorization: Bearer TOKEN`. Responses contain `result` or `error`.
+Authenticate with `Authorization: Bearer TOKEN`. Responses contain `result` or `error`. JSON RPC errors also carry `code` and `outcome`. `not_sent` means no application request was sent; `unknown` means the operation may have taken effect. Neither authorizes automatic replay. Transport cancellation and deadlines retain their Go error causes. An oversized response returns bounded `result_too_large` with outcome `unknown` instead of silently closing the stream.
 
 For the local HTTP API, `TOKEN` is that node's configured token, not the saved account login. Empty targets execute locally there; default standalone account routing requires a named target except for `nodes.list`, `nodes.select`, and `activities.pool`. Global flags precede the command, for example `control --api http://127.0.0.1:7331 call '' node.describe` uses the selected profile's node token unless explicitly overridden.
 
 | Method | Parameters |
 | --- | --- |
 | `nodes.list` | `{}` |
-| `nodes.select` | `labels`, optional `capability`; returns an online, enabled, policy-acknowledged match, preferring the lowest `activeCount` in owner-visible health summaries and choosing randomly among ties or without summaries; clients are not in this directory |
+| `nodes.select` | `labels`, optional `capability`, `minMemoryBytes`, `minDiskBytes`, `maxCpuPercent` in 0..100, and `requireFresh`; excludes known leases and updates, prefers low active work per CPU plus low CPU/memory pressure, and randomizes ties. Resource constraints require health and resource samples no older than 20 seconds. Without constraints, missing health permits directory-only selection. Selection does not reserve capacity |
 | `node.describe` | `{}`; returns ID, capabilities, connections, lane/session stream counts, cumulative `transport` counters, configured agent/MCP names |
 | `connection.test` | `target`, optional `bytes` 1..268435456 per direction and `samples` 1..100; shared client prepares an exact destination-owned `connection.open` grant for the initiating worker; not a task capability |
 | `system.info` | Optional `refresh`; otherwise returns the cached OS, CPU, RAM, and disk sample |
@@ -182,14 +192,16 @@ For the local HTTP API, `TOKEN` is that node's configured token, not the saved a
 | `tasks.get` | `id`, optional `waitSeconds`; with a wait, returns when the task is terminal or after `min(waitSeconds, 60)` seconds, ending at least one second before the request deadline. Older nodes ignore the wait and answer at once |
 | `tasks.cancel` | `id` |
 | `tasks.logs` | `id`, optional byte `offset`; returns `text`, next `offset`, `terminal`; streaming clients can use peer-only `follow: true` negotiation |
-| `tasks.list` | `{}`; owner-scoped |
+| `tasks.list` | `{}`; owner-scoped lightweight array without arguments, results or artifact manifests; errors above 100 records |
+| `tasks.page` | Optional `limit` in 1..200, default 100, and task-ID `cursor`; returns `tasks` summaries and optional `nextCursor` in lexicographic ID order. Errors are truncated to 1 KiB with `errorTruncated`. Pages are live reads, not a frozen snapshot |
+| `diagnostics.get` | `{}`; bounded cleanup, artifact budget, MCP startup and transport counters, plus cached sanitized system metrics. Requires execution authority and method permission |
 | `leases.acquire` | Optional `ttlSeconds`, default 300 |
 | `leases.renew` | `id`, optional `ttlSeconds` |
 | `leases.release` | `id`; fails while its tasks remain active |
 | `leases.get` | `{}` |
 | `artifacts.export` | `path` relative to `workDir` |
 | `artifacts.list` | `{}`; artifacts held by the caller's task owner, plus shared records; the node's own identity sees all |
-| `artifacts.delete` | `id`; releases the caller's hold and removes the content when no other owner holds it |
+| `artifacts.delete` | `id`; releases the caller's hold. Final deletion rejects retained-task references, active readers and live grants. Durable deletion intent allows failed cleanup to retry |
 | `artifacts.grant` | `id`, recipient `target`, optional `ttlSeconds` |
 | `artifacts.pull` | Full `artifact` reference; resumes an existing partial |
 | `artifacts.deliver` | `id`, recipient `target`, optional `ttlSeconds` |
@@ -294,6 +306,14 @@ Tasks move through `queued`, `running`, and a terminal state of `succeeded`, `fa
 
 Active tasks also expose a `phase`, such as waiting for a worker slot, fetching inputs, executing, or publishing outputs. Phase updates support observation; they do not change task state or restart semantics.
 
+## Bounded task results and recovery
+
+New task specifications allow at most 1 MiB of arguments, 128 inputs, 128 outputs and 2 MiB total JSON. Task errors are capped at 4 KiB. Results above 1 MiB are stored as JSON in `resultArtifact`; `result` is omitted and output artifact indexes retain their meaning. Download the reference with the artifact API. Legacy retained task records are not rewritten automatically.
+
+`control task list NODE --limit 100 --cursor ID` and MCP `control_tasks` use `tasks.page`. `control task reconcile NODE ID` and `control_workflow_reconcile` read a retained workflow plan and query its stable child IDs under the account owner's authority. They report child summaries and query errors without starting work, recreating grants or changing the parent. `complete` means every observed child succeeded. A missing child or unavailable worker is unresolved, not permission to replay. Pruned parents cannot be reconciled from their tombstones.
+
+`control diagnostics NODE` and MCP `control_diagnostics` expose `diagnostics.get`. Counts omit task arguments, results, credentials and local paths. MCP errors include JSON `code`, `outcome` and `message`.
+
 ## Shared-pool leases
 
 Select a machine, acquire its lease, then include the returned ID on every task submitted while holding it:
@@ -367,6 +387,6 @@ Commands accept optional `args`, `env`, and `dir`. Stdio MCP servers run from `w
 - Coordination workflows do not consume a worker slot, so a workflow can run a local step with `maxTasks: 1`.
 - Task timeouts and artifact/lease TTLs are at most 24 hours. A task defaults to one hour.
 - At most 100 steps per workflow, and at most 16 running at once through `maxParallel`. Steps launch in dependency order.
-- Terminal task records, logs, and workspaces are pruned after `taskRetentionHours` (default 168) and beyond `maxRetainedTasks` (default 10,000), leaving tombstones for 180 days and at most 50,000 IDs. Artifacts remain until removed; `artifacts.delete` releases the caller's hold and removes content no other owner holds.
+- Terminal task records, logs, and workspaces are pruned after `taskRetentionHours`, default 168, and beyond `maxRetainedTasks`, default 10,000. Tombstones target 180 days and 50,000 entries; pending cleanup survives these limits. Owned artifacts remain until explicit removal; active references and grants prevent final deletion. Unpublished blobs and abandoned partials follow `partialRetentionHours`.
 
 The runtime enforces concurrency and message-size bounds, but does not implement per-user billing, CPU/memory isolation, or disk quotas.

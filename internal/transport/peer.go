@@ -542,7 +542,9 @@ func (p *Peer) receive(msg *protocol.Packet) {
 	switch msg.Kind {
 	case "data":
 		if l.mode == "relay" && !l.conn.pushOwned(msg.Data) {
-			p.overflow(l)
+			if len(msg.Data) > 0 && len(msg.Data) <= largePacketSize {
+				p.overflow(l)
+			}
 			go func() { _ = l.conn.Close() }()
 		}
 	case "answer":
@@ -670,6 +672,9 @@ func (p *Peer) bindDataChannel(l *link, dc *webrtc.DataChannel) {
 // overflow records a receive queue that filled faster than TLS consumed it.
 // The link closes; logging is limited so a burst cannot flood the log.
 func (p *Peer) overflow(l *link) {
+	if l.conn.ctx.Err() != nil {
+		return
+	}
 	p.stats.linkOverflows.Add(1)
 	now := time.Now().UnixNano()
 	last := p.stats.lastOverflowLog.Load()
@@ -704,16 +709,44 @@ func (p *Peer) bindReliableChannel(l *link, dc *webrtc.DataChannel) {
 		}
 		return dc.Send(b)
 	}
-	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		if msg.IsString || !l.conn.push(msg.Data) {
-			if !msg.IsString {
-				p.overflow(l)
-			}
-			go func() { _ = l.conn.Close() }()
-		}
-	})
 	dc.OnClose(func() { go func() { _ = l.conn.Close() }() })
-	dc.OnOpen(func() { l.readyOnce.Do(func() { close(l.ready) }) })
+	dc.OnOpen(func() {
+		raw, err := dc.DetachWithDeadline()
+		if err != nil {
+			_ = l.conn.Close()
+			return
+		}
+		p.mu.Lock()
+		if p.closed || l.conn.ctx.Err() != nil {
+			p.mu.Unlock()
+			_ = raw.Close()
+			return
+		}
+		p.wg.Add(1)
+		p.mu.Unlock()
+		go func() {
+			defer p.wg.Done()
+			defer func() { _ = l.conn.Close() }()
+			stop := context.AfterFunc(l.conn.ctx, func() { _ = raw.Close() })
+			defer stop()
+			defer func() { _ = raw.Close() }()
+			// Pion's callback loop allocates a fresh message for every read.
+			// Detached reads reuse this bounded buffer; push copies into the
+			// existing size-class pools until TLS consumes each packet.
+			buffer := make([]byte, largePacketSize+1)
+			l.readyOnce.Do(func() { close(l.ready) })
+			for {
+				count, text, readErr := raw.ReadDataChannel(buffer)
+				if readErr != nil || text || count == 0 || count > largePacketSize {
+					return
+				}
+				if !l.conn.push(buffer[:count]) {
+					p.overflow(l)
+					return
+				}
+			}
+		}()
+	})
 }
 
 func (p *Peer) accept(ctx context.Context, msg *protocol.Packet) {

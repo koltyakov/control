@@ -73,6 +73,8 @@ Authenticated CLI/MCP client sessions belong to an account but are not fleet mac
 
 Derived client identity names remain reserved within their account after disconnecting. A machine or installation invitation cannot claim that name and impersonate a client trusted by a node's name-based access rule. Prefer full identity IDs for access rules.
 
+The gateway initially loads at most 4,096 client owner records and 4,096 transport bindings. It hydrates evicted identities from SQLite before identity/role checks and uses an indexed name-prefix lookup for reservations. Cache trimming retains live clients and their owners, so live-session counts can exceed the cache target. Eviction never deletes immutable account or role history from SQLite.
+
 The first startup imports existing `nodes.json`, `keys.json`, and `installations.json` into a single `legacy` fleet in one transaction. Old records cannot identify separate users, so migration never guesses ownership. Legacy files are retained but ignored after the database migration commits. Failed migration leaves them intact and can be retried.
 
 Schema version 2 adds `machine_states` for disabled policies and unregistration tombstones, referencing the existing permanent identities. Upgrading schema version 1 creates this table transactionally. Older gateways reject the newer schema; do not point them at the upgraded database. Node policy changes and directory removal commit together, and disconnect cleanup never recreates a removed node.

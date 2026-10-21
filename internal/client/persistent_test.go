@@ -77,8 +77,10 @@ func checkTunnelEcho(t *testing.T, address string) {
 }
 
 func TestPersistentTunnelsSurviveClientsServiceAndWorkerRestart(t *testing.T) {
+	t.Parallel()
 	for _, relay := range []bool{false, true} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
+			t.Parallel()
 			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 			defer cancel()
 			const key = "persistent-tunnel-superuser-1234567890"

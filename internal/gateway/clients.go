@@ -48,6 +48,9 @@ func (g *Gateway) validateClient(n model.Node, p principal, ownerID string) erro
 			return errors.New("client identity name conflicts with another client")
 		}
 	}
+	if conflict, err := g.storedClientName(p.UserID, n.Name, ownerID); err != nil || conflict {
+		return errors.New("client name reservation cannot be satisfied")
+	}
 	count := 0
 	for _, c := range g.peers {
 		if c.client && c.userID == p.UserID {
@@ -68,7 +71,8 @@ func (g *Gateway) clientNameReserved(user, name string) bool {
 			return true
 		}
 	}
-	return false
+	reserved, err := g.storedClientName(user, name, "")
+	return reserved || err != nil
 }
 
 // lookupPeer is only for peer authentication, never machine discovery. Client

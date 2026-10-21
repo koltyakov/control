@@ -1,5 +1,9 @@
 # Architecture
 
+Task history uses checksummed tombstones with durable cleanup intent. Bounded task pages omit payloads, and large results live in separate artifacts. Artifact accounting includes staging and partial transfers; retained tasks, grants and readers protect final deletion. See [task and storage contracts](protocol.md#bounded-task-results-and-recovery) and [D075 through D078](decisions.md#d075-bounded-task-data-and-durable-cleanup).
+
+WebRTC receive loops reuse bounded detached-channel buffers. The gateway drains relay sessions round-robin with per-session limits and offline ordering barriers. Permanent client identity history remains in SQLite behind bounded caches. Resource selection uses fresh owner-visible health when available, while explicit workflow reconciliation queries persisted child IDs without replay. GitHub release ingestion authenticates the signed manifest before executable validation.
+
 [Contributor guide](../AGENTS.md) · [Engineering principles](principles.md) · [Design decisions](decisions.md) · [Protocol reference](protocol.md)
 
 ## Roles and components

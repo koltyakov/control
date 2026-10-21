@@ -112,16 +112,17 @@ type TaskLogChunk struct {
 }
 
 type Task struct {
-	ID        string          `json:"id"`
-	Owner     string          `json:"owner"`
-	Spec      TaskSpec        `json:"spec"`
-	State     string          `json:"state"`
-	Phase     string          `json:"phase,omitempty"`
-	Created   time.Time       `json:"created"`
-	Updated   time.Time       `json:"updated"`
-	Result    json.RawMessage `json:"result,omitempty"`
-	Artifacts []Artifact      `json:"artifacts,omitempty"`
-	Error     string          `json:"error,omitempty"`
+	ID             string          `json:"id"`
+	Owner          string          `json:"owner"`
+	Spec           TaskSpec        `json:"spec"`
+	State          string          `json:"state"`
+	Phase          string          `json:"phase,omitempty"`
+	Created        time.Time       `json:"created"`
+	Updated        time.Time       `json:"updated"`
+	Result         json.RawMessage `json:"result,omitempty"`
+	ResultArtifact *Artifact       `json:"resultArtifact,omitempty"`
+	Artifacts      []Artifact      `json:"artifacts,omitempty"`
+	Error          string          `json:"error,omitempty"`
 	// Pruned marks a terminal task whose record, logs, result, and workspace
 	// were removed by retention. Its ID still cannot be resubmitted.
 	Pruned bool `json:"pruned,omitempty"`
@@ -142,8 +143,10 @@ type Request struct {
 }
 
 type Response struct {
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  string          `json:"error,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   string          `json:"error,omitempty"`
+	Code    string          `json:"code,omitempty"`
+	Outcome string          `json:"outcome,omitempty"`
 }
 
 func JSON(v any) json.RawMessage {

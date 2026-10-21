@@ -19,6 +19,7 @@ import (
 )
 
 func TestNodeStartupRecoversGatewayFailure(t *testing.T) {
+	t.Parallel()
 	for _, path := range []string{"/v1/node/state", "/v1/auth", "/v1/connect"} {
 		t.Run(path, func(t *testing.T) {
 			g, err := gateway.New(t.TempDir(), testToken)
@@ -124,6 +125,7 @@ func TestNodeStartupPolicyFailure(t *testing.T) {
 }
 
 func TestNodeStartupAppliesPolicyAfterOutage(t *testing.T) {
+	t.Parallel()
 	for _, retired := range []bool{false, true} {
 		t.Run(map[bool]string{false: "disabled", true: "unregistered"}[retired], func(t *testing.T) {
 			g, err := gateway.New(t.TempDir(), testToken)
@@ -181,6 +183,7 @@ func TestNodeStartupAppliesPolicyAfterOutage(t *testing.T) {
 }
 
 func TestNodeStartupRecoversPolicyRequestTimeout(t *testing.T) {
+	t.Parallel()
 	g, err := gateway.New(t.TempDir(), testToken)
 	if err != nil {
 		t.Fatal(err)
@@ -260,6 +263,7 @@ func TestNodeStartupCancellationWhileGatewayUnavailable(t *testing.T) {
 }
 
 func TestNodeStartupRechecksPolicyAfterConnectionWait(t *testing.T) {
+	t.Parallel()
 	g, err := gateway.New(t.TempDir(), testToken)
 	if err != nil {
 		t.Fatal(err)
@@ -303,6 +307,7 @@ func TestNodeStartupRechecksPolicyAfterConnectionWait(t *testing.T) {
 }
 
 func TestNodeStartupBlocksWorkDuringPolicyRefresh(t *testing.T) {
+	t.Parallel()
 	g, err := gateway.New(t.TempDir(), testToken)
 	if err != nil {
 		t.Fatal(err)

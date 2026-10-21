@@ -15,8 +15,11 @@ import (
 type workContextKey struct{}
 
 func observational(method string) bool {
+	if method == "diagnostics.get" {
+		return true
+	}
 	switch method {
-	case "nodes.list", "nodes.select", "node.describe", "system.info", "capabilities.list", "activities.list", "activities.pool", "tasks.get", "tasks.list", "tasks.logs", "leases.get", "artifacts.list", "access.list":
+	case "nodes.list", "nodes.select", "node.describe", "system.info", "capabilities.list", "activities.list", "activities.pool", "tasks.get", "tasks.list", "tasks.page", "tasks.logs", "leases.get", "artifacts.list", "access.list":
 		return true
 	default:
 		return false

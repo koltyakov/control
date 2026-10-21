@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -63,6 +64,7 @@ func TestNetworkMonitorChangesAndSamplingFailures(t *testing.T) {
 }
 
 func TestNetworkSwitchReconnectsAndDoesNotReplayStreams(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ relay, receiver bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
 		t.Run(fmt.Sprintf("relay=%v/receiver=%v", tc.relay, tc.receiver), func(t *testing.T) {
 			relay := tc.relay
@@ -94,6 +96,7 @@ func TestNetworkSwitchReconnectsAndDoesNotReplayStreams(t *testing.T) {
 						}
 					}
 				})
+				p.api, p.trickleAPI = loopbackWebRTCAPI(p.cfg.DirectTimeout, false), loopbackWebRTCAPI(p.cfg.DirectTimeout, true)
 				p.networkSnapshot = func() (string, error) { return "unchanged", nil }
 				if err := p.Start(ctx); err != nil {
 					t.Fatal(err)
@@ -245,28 +248,38 @@ func TestNetworkResetCancelsSetupsAndRejectsOldSessions(t *testing.T) {
 }
 
 func TestDisconnectedCarrierRetiresEveryLaneAfterGrace(t *testing.T) {
-	p := New(Config{}, nil)
-	p.ctx, p.cancel = context.WithCancel(context.Background())
-	defer func() { _ = p.Close() }()
-	c := &rtcCarrier{remote: "remote", links: map[string]*link{}, changed: make(chan struct{})}
-	p.carriers[c.remote] = c
-	for _, lane := range []Lane{ControlLane, BulkLane, InteractiveLane} {
-		l := &link{id: string(lane), carrier: c, conn: newConn(p.ctx, nil, nil)}
-		c.links[l.id], p.links[l.id] = l, l
-	}
-	p.carrierStateChanged(c, webrtc.PeerConnectionStateDisconnected)
-	ctx, cancel := context.WithTimeout(p.ctx, carrierDisconnectGrace+2*time.Second)
-	defer cancel()
-	for _, l := range c.links {
-		select {
-		case <-l.conn.ctx.Done():
-		case <-ctx.Done():
-			t.Fatalf("%s lane survived disconnect grace", l.id)
+	synctest.Test(t, func(t *testing.T) {
+		p := New(Config{}, nil)
+		p.ctx, p.cancel = context.WithCancel(context.Background())
+		defer func() { _ = p.Close() }()
+		c := &rtcCarrier{remote: "remote", links: map[string]*link{}, changed: make(chan struct{})}
+		p.carriers[c.remote] = c
+		for _, lane := range []Lane{ControlLane, BulkLane, InteractiveLane} {
+			l := &link{id: string(lane), carrier: c, conn: newConn(p.ctx, nil, nil)}
+			c.links[l.id], p.links[l.id] = l, l
 		}
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !c.closed || p.carriers[c.remote] != nil {
-		t.Fatal("disconnected carrier remained cached")
-	}
+		p.carrierStateChanged(c, webrtc.PeerConnectionStateDisconnected)
+		// Let the retirement goroutine arm its real production timer. The bubble
+		// advances virtual time only after all of its goroutines are blocked.
+		synctest.Wait()
+		time.Sleep(carrierDisconnectGrace - time.Nanosecond)
+		synctest.Wait()
+		for _, l := range c.links {
+			if l.conn.ctx.Err() != nil {
+				t.Fatalf("%s lane retired before disconnect grace", l.id)
+			}
+		}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		for _, l := range c.links {
+			if l.conn.ctx.Err() == nil {
+				t.Fatalf("%s lane survived disconnect grace", l.id)
+			}
+		}
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if !c.closed || p.carriers[c.remote] != nil {
+			t.Fatal("disconnected carrier remained cached")
+		}
+	})
 }

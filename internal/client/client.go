@@ -112,7 +112,7 @@ func (c Client) Call(ctx context.Context, target, method string, params any, res
 		return err
 	}
 	if response.Error != "" {
-		return errors.New(response.Error)
+		return response.Err()
 	}
 	if result == nil {
 		return nil

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -115,13 +116,17 @@ func TestReleaseFetchChecksManifestAndDoesNotReplaceNewerDevelopment(t *testing.
 	manifest := update.Manifest{Version: "v2", Assets: []update.Asset{asset}}
 	published := time.Now().Add(-time.Hour).UTC()
 	var base string
+	var downloads atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/owner/repo/releases/latest":
-			_ = json.NewEncoder(w).Encode(release{Tag: "v2", Published: published, Assets: []releaseAsset{{"control-manifest.json", base + "/manifest"}, {asset.File, base + "/binary"}}})
+			_ = json.NewEncoder(w).Encode(release{Tag: "v2", Published: published, Assets: []releaseAsset{{"control-manifest.json", base + "/manifest"}, {"control-manifest.json.sigstore.json", base + "/proof"}, {asset.File, base + "/binary"}}})
+		case "/proof":
+			_, _ = w.Write([]byte("fixture proof"))
 		case "/manifest":
 			_ = json.NewEncoder(w).Encode(manifest)
 		case "/binary":
+			downloads.Add(1)
 			_, _ = w.Write(data)
 		default:
 			http.NotFound(w, r)
@@ -134,7 +139,16 @@ func TestReleaseFetchChecksManifestAndDoesNotReplaceNewerDevelopment(t *testing.
 		t.Fatal(err)
 	}
 	defer func() { _ = g.Close() }()
-	d, err := g.fetchRelease(context.Background())
+	if _, err = g.fetchRelease(t.Context()); err == nil || downloads.Load() != 0 {
+		t.Fatal("unverified release reached binary download", err)
+	}
+	verify := func(_ context.Context, repo, tag string, data, proof []byte) error {
+		if repo != "owner/repo" || tag != "v2" || len(data) == 0 || string(proof) != "fixture proof" {
+			t.Fatal("wrong verifier inputs")
+		}
+		return nil
+	}
+	d, err := g.fetchReleaseVerified(context.Background(), verify)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +163,7 @@ func TestReleaseFetchChecksManifestAndDoesNotReplaceNewerDevelopment(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err = g.fetchRelease(context.Background())
+	d, err = g.fetchReleaseVerified(context.Background(), verify)
 	if err != nil {
 		t.Fatal(err)
 	}

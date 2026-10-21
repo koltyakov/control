@@ -28,6 +28,7 @@ func (g *Gateway) machinePending(id string) bool {
 }
 
 func (g *Gateway) nodeState(w http.ResponseWriter, r *http.Request) {
+	defer g.trimIdentityCache()
 	w.Header().Set("Cache-Control", "no-store")
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	var proof model.MachineStateProof
@@ -37,6 +38,11 @@ func (g *Gateway) nodeState(w http.ResponseWriter, r *http.Request) {
 	}
 	id := identity.ID(proof.PublicKey)
 	g.mu.Lock()
+	if err := g.loadIdentityLocked(id); err != nil {
+		g.mu.Unlock()
+		http.Error(w, "could not verify identity", http.StatusInternalServerError)
+		return
+	}
 	if g.clientOwners[id] || g.clientTransports[id] != "" {
 		g.mu.Unlock()
 		http.NotFound(w, r)

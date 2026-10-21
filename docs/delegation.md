@@ -26,6 +26,10 @@ Workflow grants permit only the planned task specification. Dynamic inputs must 
 
 Grants travel in invocation contexts, including the contexts of durable tasks. They are not stored as worker-wide permissions or inserted into provider environments. An arbitrary script or AI CLI invoking `control` on a worker does not inherit permission to invent peer commands. Use `peers.call` or a planned workflow for that work. Nested delegated workflows and delegated grant-management operations are rejected. `peers.call` accepts JSON instructions, not raw streaming methods.
 
+## Reconcile an interrupted workflow
+
+Run `control task reconcile COORDINATOR PARENT_ID`, or MCP `control_workflow_reconcile`, from the account client that owns the workflow. It reads the retained parent plan and queries each persisted child ID directly under that owner's authority. The report separates successful, failed, interrupted and unresolved children through their summaries or query errors. It does not replay steps, recreate grants or mark the parent successful. A missing record or unreachable worker remains unresolved. Fetch a child's retained result with `tasks.get`; large results use `resultArtifact`.
+
 ## Inspect and revoke access
 
 ```sh

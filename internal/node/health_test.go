@@ -14,6 +14,7 @@ import (
 )
 
 func TestOwnerHealthWithoutLocalObserver(t *testing.T) {
+	t.Parallel()
 	const adminKey = "owner-health-test-superuser-key-123456789"
 	g, err := gateway.New(t.TempDir(), testToken, gateway.Options{SuperuserKey: adminKey})
 	if err != nil {

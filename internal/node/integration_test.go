@@ -129,6 +129,7 @@ func executable(t *testing.T, mode string) Command {
 }
 
 func TestThreeNodeExecutionAndDelivery(t *testing.T) {
+	t.Parallel()
 	for _, relay := range []bool{true, false} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			source, worker, consumer := cluster(t, relay, nil)

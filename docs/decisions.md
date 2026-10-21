@@ -534,15 +534,21 @@ Task records were written and fsynced while holding the node mutex, and every su
 
 ## D058: Terminal task retention with tombstones
 
+Journal validation and cleanup retries are refined by [D075](#d075-bounded-task-data-and-durable-cleanup).
+
 Task records, logs, and workspaces accumulated forever; startup loaded them all and listing copied them all. Remove terminal tasks after `taskRetentionHours` (default 168) and beyond `maxRetainedTasks` (default 10,000), checking at startup and every ten minutes. Queued, running, and reserved tasks, and tasks named by live delegations, are kept. Artifacts are not pruned.
 
 Pruning must not weaken idempotent submission, so a durable tombstone with the ID, owner, specification digest, final state, and timestamps is appended and fsynced before the record is removed. Resubmitting a pruned ID with the same owner and specification returns the original terminal state with `pruned: true` without executing; other owners or specifications are rejected. Owners can still reconcile the outcome, but not the result, artifacts list, or logs. Startup discards tombstones older than 180 days, and compaction keeps at most 50,000 per node; reusing an ID after its tombstone is removed is a new submission. Workspace removal goes through the filesystem root so links cannot redirect it.
 
 ## D059: Artifact owner holds
 
+Owner overflow and deletion protection are superseded by [D076](#d076-artifact-budgets-and-reference-protection).
+
 Any authorized caller could list every artifact on a node and delete content another owner's task still needed. Record the task owners holding each content-addressed artifact in its local metadata, not in artifact references. Listing returns the caller's holdings and shared records; deletion releases only the caller's hold and removes content when no other owner holds it. The node's own identity keeps full visibility. Records written before this change, and records exceeding 256 owners, are shared and keep the previous behavior. Streaming access by grant or authorization is unchanged, since content IDs are already unguessable digests.
 
 ## D060: Bounded parallel workflows and load-preferring selection
+
+Placement and explicit recovery are extended by [D078](#d078-resource-placement-explicit-reconciliation-and-release-signatures).
 
 Workflows accept optional `maxParallel` from 1 to 16, defaulting to 1 so existing workflows keep their sequential order. Ready steps launch in the same dependency order as before, up to the limit. After a failure no further step starts, but steps already running finish rather than being cancelled mid-effect; the result includes every started step. Each worker still admits its step through its own slots, leases, and maintenance gate.
 
@@ -665,3 +671,33 @@ Allow fleet owners to force a rename or fixed-name invitation creation when an u
 Under the gateway mutation lock, validate all name and identity constraints before changing records. Commit pending-ticket revocation and the requested mutation together in SQLite, rolling back both on failure. Old URLs reject subsequent script, metadata, binary, and redemption requests immediately after commit, including after restart. Downloads already admitted are not recalled, but their tickets cannot redeem after revocation.
 
 Force cannot steal another registration, revoke a redeemed enrollment, bypass a client-name reservation, or affect another fleet. Same-name creation for an existing machine retains its `replaceId` signature requirement. Automatic invitations reserve no name at creation and cannot force a hostname takeover at redemption. This extends D015 and the owner-selected routing-alias decision without changing identity ownership, accepted work, or credential recovery. See [installation](installation.md) and [protocol](protocol.md#machine-lifecycle).
+
+## D075: Bounded task data and durable cleanup
+
+Reject corrupt complete tombstone records instead of skipping them and allowing task-ID reuse. Add checksums to new records while accepting valid legacy records. Keep durable cleanup intent through failed removals and restart, exempting pending entries from tombstone eviction. Compaction updates the in-memory index only after its file replacement succeeds.
+
+Add `tasks.page` with bounded metadata and stable task-ID cursors. Keep legacy listings array-shaped but summary-only, rejecting more than 100 records. Bound new task specifications and store results above 1 MiB as separate JSON result artifacts, preserving workflow output indexes. Oversized RPC responses return a bounded structured error with unknown outcome. Neither transport errors nor reconciliation trigger automatic replay. See [protocol limits and recovery](protocol.md#bounded-task-results-and-recovery).
+
+MCP setup coalesces per configured server under the node lifetime. Waiters can cancel independently, unrelated servers initialize concurrently, and shutdown owns setup and session-wait goroutines.
+
+## D076: Artifact budgets and reference protection
+
+Account for blob, staging and resumable-partial bytes together. A configurable logical cap rejects writes instead of evicting owned content; zero retains unlimited storage. Check actual free space periodically with a default 256 MiB metadata reserve. This is a guard, not a reservation against external disk use. Reclaim abandoned unpublished files after a configurable age under per-artifact transfer locks, rechecking age after lock acquisition.
+
+Reject owner overflow rather than weakening ownership. Retained task references, live grants and active readers prevent final deletion. Persist deletion intent before removing content and metadata, then retry failed removals. Existing shared legacy records remain shared. This refines D058/D059 without changing content digests or direct artifact delivery.
+
+## D077: Bounded transport buffers and identity caches
+
+Detach Pion data channels and run peer-owned receive loops with reusable bounded buffers. TLS still consumes independently owned pooled packets; authentication, packet-size negotiation and receive bounds stay intact. Count overflow only for valid packets rejected by a live queue.
+
+Schedule gateway relay sessions round-robin, with at most 768 queued packets and 6 MiB per session inside the existing 1,024-packet, 8 MiB destination bound. The session limit accommodates a 4 MiB bulk window plus framing while leaving capacity for other sessions. Preserve data/close order within each session and treat offline notifications as FIFO barriers. Signaling retains bounded priority bursts. This refines D073's destination-wide FIFO without promising bandwidth QoS or preemption of an in-progress write.
+
+Keep permanent client identity and transport history in SQLite. Load bounded caches, hydrate before identity checks and query reserved names through an index. Keep live client records pinned; inactive cache eviction never changes immutable fleet ownership or client roles.
+
+## D078: Resource placement, explicit reconciliation and release signatures
+
+Selection excludes fresh known leases and update state, then scores active work per logical CPU plus CPU and memory pressure. Explicit memory, disk, CPU and freshness constraints reject missing or stale health. Unconstrained discovery can use directory-only candidates. Selection remains advisory; destination admission and leases own reservations.
+
+Expose explicit account-client workflow reconciliation by reading the persisted plan and querying stable child IDs. Return bounded summaries and unresolved query errors. Do not reconstruct grants, resume interrupted parents, or resubmit children. This extends D060 without treating absence as proof that execution never happened.
+
+The gateway release fetcher and CLI updater verify the signed manifest with Sigstore, TUF trust roots, a transparency-log entry, trusted signing time and the exact GitHub release workflow identity at the requested tag. Reject unsigned or mismatched metadata before downloading or executing binaries. This replaces runtime checksum-only GitHub release trust. Superuser development publication and bootstrap installation retain their distinct trust paths. See [release verification](updates.md#publish-github-releases).

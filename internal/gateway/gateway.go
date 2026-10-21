@@ -92,6 +92,7 @@ type connection struct {
 	ws                *websocket.Conn
 	out               chan *protocol.Packet
 	outData           chan *protocol.Packet
+	relay             *relayScheduler
 	writeBuffer       []byte       // Owned exclusively by writePackets.
 	queued            atomic.Int64 // Relay payload bytes waiting in out.
 	keyID             string
@@ -292,6 +293,7 @@ func (g *Gateway) connectClient(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client bool) {
+	defer g.trimIdentityCache()
 	g.mu.Lock()
 	if g.closed || g.restarting {
 		g.mu.Unlock()
@@ -351,6 +353,14 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	}
 	g.mu.Lock()
 	p := g.authenticateLocked(bearer(r))
+	if err := g.loadIdentityLocked(n.ID); err != nil {
+		g.mu.Unlock()
+		return
+	}
+	if err := g.loadIdentityLocked(ownerID); err != nil {
+		g.mu.Unlock()
+		return
+	}
 	if p.UserID == "" || (n.UserID != "" && n.UserID != p.UserID) || (g.owners[n.ID] != "" && g.owners[n.ID] != p.UserID) {
 		g.mu.Unlock()
 		return
@@ -370,6 +380,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		n.Name = g.machineStates[n.ID].Name
 	}
 	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, relayQueuePackets), outData: make(chan *protocol.Packet, relayQueuePackets), keyID: p.KeyID, userID: p.UserID, heartbeat: hello.GatewayHeartbeat, pong: make(chan string, 1)}
+	c.relay = newRelayScheduler()
 	if !g.allowInstallation(p.KeyID, n) {
 		g.mu.Unlock()
 		_ = ws.Close(websocket.StatusPolicyViolation, "credential does not authorize this registration")
@@ -478,6 +489,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	if client {
 		g.clients[n.ID] = n
 	}
+	g.trimIdentityCacheLocked()
 	g.peers[n.ID] = c
 	g.routeMu.Lock()
 	g.routes[n.ID] = c

@@ -94,7 +94,11 @@ func (n *Node) loadTasks() error {
 		n.tasks[task.ID] = &task
 		n.recordRecentTaskLocked(&task)
 	}
-	return n.loadTombstones()
+	if err := n.loadTombstones(); err != nil {
+		return err
+	}
+	n.rebuildRecentTasksLocked()
+	return nil
 }
 
 // cloneTask copies a task so callers never share mutable slices with n.tasks.
@@ -104,6 +108,10 @@ func cloneTask(task *model.Task) model.Task {
 	t.Spec.Inputs = slices.Clone(task.Spec.Inputs)
 	t.Spec.Outputs = slices.Clone(task.Spec.Outputs)
 	t.Result = bytes.Clone(task.Result)
+	if task.ResultArtifact != nil {
+		a := *task.ResultArtifact
+		t.ResultArtifact = &a
+	}
 	t.Artifacts = slices.Clone(task.Artifacts)
 	return t
 }
@@ -172,6 +180,9 @@ func (n *Node) startTaskContext(parent context.Context, owner string, spec model
 		return model.Task{}, err
 	}
 	spec.Args = model.JSON(normalized)
+	if len(spec.Args) > 1<<20 || len(spec.Inputs) > 128 || len(spec.Outputs) > 128 || len(model.JSON(spec)) > 2<<20 {
+		return model.Task{}, errors.New("task specification exceeds limits: 1 MiB arguments, 128 inputs/outputs, 2 MiB total; use artifacts for bulk data")
+	}
 	if spec.TimeoutSeconds == 0 {
 		spec.TimeoutSeconds = 3600
 	}
@@ -409,14 +420,29 @@ func (n *Node) runTask(ctx context.Context, id string, notifier *taskNotifier) {
 }
 
 func (n *Node) finishTask(id string, ctx context.Context, result any, artifacts []model.Artifact, err error) {
+	var resultJSON json.RawMessage
+	var resultArtifact *model.Artifact
+	if result != nil {
+		resultJSON = model.JSON(result)
+		if len(resultJSON) > 1<<20 {
+			a, e := n.importArtifact(ctx, bytes.NewReader(resultJSON), "result.json")
+			if e != nil {
+				err = errors.Join(err, fmt.Errorf("store task result: %w", e))
+			} else {
+				resultArtifact = &a
+			}
+			resultJSON = nil
+		}
+	}
 	final := func(task *model.Task) {
 		task.Phase = ""
 		task.State, task.Updated, task.Artifacts = "succeeded", time.Now().UTC(), artifacts
-		if result != nil {
-			task.Result = model.JSON(result)
-		}
+		task.Result, task.ResultArtifact = resultJSON, resultArtifact
 		if err != nil {
 			task.State, task.Error = "failed", err.Error()
+			if len(task.Error) > 4096 {
+				task.Error = task.Error[:4096] + " [truncated]"
+			}
 		}
 		if ctx.Err() != nil {
 			task.State, task.Error = "cancelled", ctx.Err().Error()
@@ -453,7 +479,9 @@ func (n *Node) taskMethod(ctx context.Context, owner, method string, args json.R
 		Offset int64  `json:"offset"`
 		// WaitSeconds makes tasks.get block until the task is terminal or the
 		// wait elapses. Older nodes ignore it and answer immediately.
-		WaitSeconds int `json:"waitSeconds"`
+		WaitSeconds int    `json:"waitSeconds"`
+		Limit       int    `json:"limit"`
+		Cursor      string `json:"cursor"`
 	}
 	if err := json.Unmarshal(args, &query); err != nil {
 		return nil, err
@@ -461,29 +489,40 @@ func (n *Node) taskMethod(ctx context.Context, owner, method string, args json.R
 	if method == "tasks.get" && query.WaitSeconds > 0 {
 		return n.waitTask(ctx, owner, query.ID, time.Duration(query.WaitSeconds)*time.Second)
 	}
+	if method == "tasks.page" {
+		return n.taskPage(ctx, owner, query.Cursor, query.Limit)
+	}
 	n.mu.Lock()
-	defer n.mu.Unlock()
 	if method == "tasks.list" {
 		tasks := []model.Task{}
 		for _, task := range n.tasks {
 			if task.Owner == owner || owner == n.Identity.ID {
-				tasks = append(tasks, cloneTask(task))
+				if len(tasks) == 100 {
+					n.mu.Unlock()
+					return nil, errors.New("task listing exceeds 100 records; use tasks.page with limit and cursor")
+				}
+				tasks = append(tasks, model.Task{ID: task.ID, Owner: task.Owner, Spec: model.TaskSpec{ID: task.ID, Capability: task.Spec.Capability}, State: task.State, Phase: task.Phase, Created: task.Created, Updated: task.Updated})
 			}
 		}
+		n.mu.Unlock()
 		sort.Slice(tasks, func(i, j int) bool { return tasks[i].Created.Before(tasks[j].Created) })
 		return tasks, nil
 	}
 	task, err := n.ownedTaskLocked(owner, query.ID)
 	if err != nil {
+		n.mu.Unlock()
 		return nil, err
 	}
+	if method == "tasks.cancel" {
+		if cancel := n.cancels[query.ID]; cancel != nil {
+			cancel()
+		}
+	}
+	n.mu.Unlock()
 	switch method {
 	case "tasks.get":
 		return task, nil
 	case "tasks.cancel":
-		if cancel := n.cancels[query.ID]; cancel != nil {
-			cancel()
-		}
 		return task, nil
 	case "tasks.logs":
 		if query.Offset < 0 {

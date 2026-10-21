@@ -12,6 +12,7 @@ import (
 )
 
 func TestConnectionTests(t *testing.T) {
+	t.Parallel()
 	for _, relay := range []bool{false, true} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			// This fixture runs several bidirectional bulk tests, not just RPCs.

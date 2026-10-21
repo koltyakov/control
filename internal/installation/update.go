@@ -50,6 +50,10 @@ func UpdateSelf(ctx context.Context, repository, version string) (UpdateResult, 
 }
 
 func updateSelf(ctx context.Context, path, releases, version, currentVersion string, client *http.Client) (UpdateResult, error) {
+	return updateSelfVerified(ctx, path, releases, version, currentVersion, client, update.VerifyReleaseManifest)
+}
+
+func updateSelfVerified(ctx context.Context, path, releases, version, currentVersion string, client *http.Client, verify func(context.Context, string, string, []byte, []byte) error) (UpdateResult, error) {
 	result := UpdateResult{Path: path}
 	if version != "" && !releaseTagPattern.MatchString(version) {
 		return result, errors.New("invalid release tag")
@@ -95,6 +99,27 @@ func updateSelf(ctx context.Context, path, releases, version, currentVersion str
 	}
 	if version != "" && manifest.Version != version {
 		return result, errors.New("release tag and manifest version differ")
+	}
+	proofURL := releases + "/download/" + manifest.Version + "/control-manifest.json.sigstore.json"
+	proofReq, err := http.NewRequestWithContext(ctx, http.MethodGet, proofURL, nil)
+	if err != nil {
+		return result, err
+	}
+	proofResp, err := client.Do(proofReq)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = proofResp.Body.Close() }()
+	if proofResp.StatusCode != http.StatusOK {
+		return result, fmt.Errorf("release signature: %s", proofResp.Status)
+	}
+	proof, err := io.ReadAll(io.LimitReader(proofResp.Body, (1<<20)+1))
+	if err != nil {
+		return result, err
+	}
+	repo := strings.TrimSuffix(strings.TrimPrefix(releases, "https://github.com/"), "/releases")
+	if err = verify(ctx, repo, manifest.Version, data, proof); err != nil {
+		return result, err
 	}
 	asset, ok := manifest.Asset(runtime.GOOS, runtime.GOARCH)
 	if !ok {

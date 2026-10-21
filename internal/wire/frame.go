@@ -6,9 +6,22 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+
+	"github.com/koltyakov/control/internal/model"
 )
 
 const MaxFrame = 8 << 20
+
+var ErrFrameTooLarge = errors.New("control message exceeds 8 MiB")
+
+// BoundResponse lets both peer and local API callers receive an actionable
+// error even when a provider returns more than the control protocol can carry.
+func BoundResponse(response model.Response) model.Response {
+	if len(model.JSON(response)) <= MaxFrame {
+		return response
+	}
+	return model.ErrorResponse(&model.RPCError{Code: "result_too_large", Outcome: "unknown", Message: "response exceeds 8 MiB; the operation may have completed; use a task with an artifact result"})
+}
 
 func WriteFrame(w io.Writer, value any) error {
 	b, err := json.Marshal(value)
@@ -16,7 +29,7 @@ func WriteFrame(w io.Writer, value any) error {
 		return err
 	}
 	if len(b) > MaxFrame {
-		return errors.New("control message exceeds 8 MiB")
+		return ErrFrameTooLarge
 	}
 	// One write keeps the prefix and body in one multiplexer frame and packet.
 	frame := make([]byte, 4, 4+len(b))

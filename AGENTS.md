@@ -50,7 +50,7 @@ For feature-specific work, also read [gateway deployment](docs/gateway.md), [exp
 
 ## Implementation rules
 
-- Keep the core in Go, using the Go 1.27.2 minimum in `go.mod` and the three supported operating systems. Preserve CGO-free builds.
+- Keep the core in Go, using the Go 1.27.3 minimum in `go.mod` and the three supported operating systems. Preserve CGO-free builds.
 - Keep execution in nodes and connection handling in the transport package. Add application integrations through providers or MCP.
 - Share client behavior through `internal/client`; keep CLI and MCP adapters consistent.
 - Propagate contexts and cancellation. Bound queues and buffers, and shut down owned goroutines, streams, subprocesses, and files.
