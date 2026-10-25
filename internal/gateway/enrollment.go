@@ -22,6 +22,9 @@ import (
 type installation struct {
 	enrollment.Invitation
 	CredentialHash string `json:"credentialHash,omitempty"`
+	// Cleared hides a redeemed invitation from listings. The record stays
+	// because it holds the enrolled machine's credential.
+	Cleared bool `json:"cleared,omitempty"`
 }
 
 func (g *Gateway) installationRoutes(mux *http.ServeMux) {
@@ -30,7 +33,7 @@ func (g *Gateway) installationRoutes(mux *http.ServeMux) {
 		g.mu.Lock()
 		list := []enrollment.Invitation{}
 		for _, i := range g.installations {
-			if i.UserID == p.UserID {
+			if i.UserID == p.UserID && !i.Cleared {
 				list = append(list, i.Invitation)
 			}
 		}
@@ -477,34 +480,47 @@ func (g *Gateway) revokeInstallation(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// clearInstallations removes invitations that can no longer enroll or
-// authenticate: revoked ones and unredeemed ones past expiry. A redeemed,
-// unrevoked invitation holds its machine's credential, and a pending one still
-// works, so both stay.
+// clearInstallations tidies the invitation list. Revoked invitations and
+// unredeemed ones past expiry are deleted. Redeemed, unrevoked invitations hold
+// their machine's credential, so they are hidden instead and the machine keeps
+// working. Pending invitations still work and stay listed.
 func (g *Gateway) clearInstallations(w http.ResponseWriter, r *http.Request) {
 	p := g.requestPrincipal(r)
 	now := time.Now()
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	removed := map[string]installation{}
+	previous := map[string]installation{}
 	persisted := change{}
+	removed, hidden := 0, 0
 	for hash, i := range g.installations {
-		if i.UserID == p.UserID && (i.Revoked || (i.RedeemedID == "" && !now.Before(i.ExpiresAt))) {
-			removed[hash] = i
-			delete(g.installations, hash)
-			persisted.invitations = append(persisted.invitations, hash)
+		if i.UserID != p.UserID {
+			continue
 		}
+		old := i
+		switch {
+		case i.Revoked || (i.RedeemedID == "" && !now.Before(i.ExpiresAt)):
+			delete(g.installations, hash)
+			removed++
+		case i.RedeemedID != "" && !i.Cleared:
+			i.Cleared = true
+			g.installations[hash] = i
+			hidden++
+		default:
+			continue
+		}
+		previous[hash] = old
+		persisted.invitations = append(persisted.invitations, hash)
 	}
-	if len(removed) > 0 {
-		persisted.audit = []AuditEvent{g.auditEventLocked(r, "", "invitation.clear", "", "", fmt.Sprintf("removed %d revoked or expired", len(removed)))}
+	if len(previous) > 0 {
+		persisted.audit = []AuditEvent{g.auditEventLocked(r, "", "invitation.clear", "", "", fmt.Sprintf("removed %d revoked or expired, hid %d redeemed", removed, hidden))}
 		if err := g.commit(persisted); err != nil {
-			maps.Copy(g.installations, removed)
+			maps.Copy(g.installations, previous)
 			http.Error(w, "could not clear invitations", 500)
 			return
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]int{"removed": len(removed)})
+	_ = json.NewEncoder(w).Encode(map[string]int{"removed": removed, "hidden": hidden})
 }
 
 // Called under g.mu. Keep the original signed invitation name unchanged while

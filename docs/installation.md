@@ -403,7 +403,7 @@ This registers login startup, gracefully stops and disables the old system servi
 | --- | --- | --- |
 | `POST /v1/fleet/installations` | Fleet owner | JSON `name` or `autoName: true` with an empty `name`, plus `os`, `gateway`, optional `arch`, `ttlSeconds`, `serviceMode: "user"` or `"system"`, and `force` to retract pending explicit-name invitations |
 | `GET /v1/fleet/installations` | Fleet owner | List own metadata |
-| `DELETE /v1/fleet/installations` | Fleet owner | Remove own revoked invitations and unredeemed ones past expiry; keep pending and redeemed ones, which back enrolled machines; return `removed` |
+| `DELETE /v1/fleet/installations` | Fleet owner | Delete own revoked invitations and unredeemed ones past expiry, and hide redeemed ones from listings while keeping the machine credentials they hold; pending invitations stay; return `removed` and `hidden` |
 | `DELETE /v1/fleet/installations/{id}` | Fleet owner | Revoke own invitation and credential |
 | `PATCH /v1/fleet/nodes/{id}` | Fleet owner | JSON `disabled` boolean or `name` string, not both; optional `force` only with `name` retracts pending destination-name invitations; return durable machine policy |
 | `DELETE /v1/fleet/nodes/{id}?stop=true` | Fleet owner | Unregister own machine and retire its identity, including connected older nodes |

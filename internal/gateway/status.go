@@ -48,7 +48,7 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 		snapshot := model.NodeActivitySnapshot{
 			ID: n.ID, Name: n.Name, OS: n.OS, Labels: n.Labels, Online: n.Online,
 			LastSeen: n.LastSeen, Status: state, System: n.System,
-			Software: n.Software, Disabled: n.Disabled, ControlPending: n.ControlPending,
+			Software: n.Software, Disabled: n.Disabled, ControlPending: n.ControlPending, RunAs: n.RunAs,
 			Active: []model.Activity{}, Recent: []model.Activity{},
 		}
 		// Aggregate health is owner-only. Common peer keys still need the node's

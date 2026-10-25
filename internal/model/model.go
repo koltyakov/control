@@ -35,6 +35,9 @@ type Node struct {
 	PeerChannels   bool              `json:"peerChannels,omitempty"`
 	TrickleICE     bool              `json:"trickleICE,omitempty"`
 	WakeInterfaces []WakeInterface   `json:"wakeInterfaces,omitempty"`
+	// RunAs is "system" for a boot-time service account and "user" for a login
+	// session. Older nodes omit it.
+	RunAs string `json:"runAs,omitempty"`
 	// LargePackets advertises that this receiver accepts 64 KiB carrier packets.
 	LargePackets bool `json:"largePackets,omitempty"`
 	// ExecutionAuthority is assigned by the gateway, never by enrollment metadata.

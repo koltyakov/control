@@ -176,9 +176,9 @@ func TestClearInstallationsKeepsUsableInvitations(t *testing.T) {
 	}
 	g.mu.Unlock()
 
-	var result struct{ Removed int }
-	if err := operator.JSON(ctx, "DELETE", "/v1/admin/installations", nil, &result); err != nil || result.Removed != 2 {
-		t.Fatalf("cleared %d invitations: %v", result.Removed, err)
+	var result struct{ Removed, Hidden int }
+	if err := operator.JSON(ctx, "DELETE", "/v1/admin/installations", nil, &result); err != nil || result.Removed != 2 || result.Hidden != 1 {
+		t.Fatalf("removed %d and hid %d invitations: %v", result.Removed, result.Hidden, err)
 	}
 	var remaining []struct{ ID string }
 	if err := operator.JSON(ctx, "GET", "/v1/admin/installations", nil, &remaining); err != nil {
@@ -189,10 +189,18 @@ func TestClearInstallationsKeepsUsableInvitations(t *testing.T) {
 		ids = append(ids, i.ID)
 	}
 	slices.Sort(ids)
-	want := []string{pending.ID, redeemed.ID}
-	slices.Sort(want)
-	if !slices.Equal(ids, want) {
-		t.Fatalf("remaining invitations = %v, want %v", ids, want)
+	if !slices.Equal(ids, []string{pending.ID}) {
+		t.Fatalf("listed invitations = %v, want only the pending one", ids)
+	}
+	// The hidden redeemed record still backs its machine's credential.
+	g.mu.Lock()
+	kept := false
+	for _, i := range g.installations {
+		kept = kept || (i.ID == redeemed.ID && i.Cleared && !i.Revoked)
+	}
+	g.mu.Unlock()
+	if !kept {
+		t.Fatal("redeemed invitation was deleted instead of hidden")
 	}
 	var theirs []struct{ ID string }
 	if err := alice.JSON(ctx, "GET", "/v1/fleet/installations", nil, &theirs); err != nil || len(theirs) != 1 {

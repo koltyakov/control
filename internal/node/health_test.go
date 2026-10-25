@@ -11,6 +11,7 @@ import (
 
 	"github.com/koltyakov/control/internal/gateway"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/processutil"
 )
 
 func TestOwnerHealthWithoutLocalObserver(t *testing.T) {
@@ -75,6 +76,9 @@ func TestOwnerHealthWithoutLocalObserver(t *testing.T) {
 	})
 	if got.System.CPUUsagePercent == nil || len(got.Active) != 0 || len(got.Recent) != 0 {
 		t.Fatal("owner did not get a resource-only summary")
+	}
+	if got.RunAs != processutil.RunAs() || got.RunAs == "" {
+		t.Fatalf("status run-as context = %q, want %q", got.RunAs, processutil.RunAs())
 	}
 	if got.Work == nil || got.Work.Exec != 1 || got.ConnectionRoutes == nil || got.LastActive.IsZero() {
 		t.Fatal("owner did not get aggregate work and connection counts", got)

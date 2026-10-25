@@ -400,6 +400,17 @@ function platformText(node) {
 function diskUsage(sys) {
   return sys?.disks?.find((disk) => disk.totalBytes > 0);
 }
+// Older nodes do not report their execution context, so they get no tag.
+const runAsLabels = {
+  system: ["System", "System service, starts at boot"],
+  user: ["User", "User session, runs while signed in"],
+};
+function runAsTag(node) {
+  const label = runAsLabels[node.runAs];
+  return label
+    ? `<span class="context-tag ${node.runAs}" title="${label[1]}">${label[0]}</span>`
+    : "";
+}
 function plural(count, noun) {
   return count + " " + noun + (count === 1 ? "" : "s");
 }
@@ -507,7 +518,7 @@ function machineRows(nodes) {
     const platformIcon =
       { darwin: "laptop", windows: "windows", linux: "gateway" }[n.os] ||
       "machine";
-    return `<tr data-id="${esc(n.id)}"><td class="name-column"><div class="machine-cell"><span class="os-icon">${icon(platformIcon)}</span><div class="machine-text"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.name)}">${esc(n.name)}</button><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version"> · ${esc(n.software?.version || "Unknown version")}</span></small></div></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(n)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${n.system?.logicalCPUs ? `<small>${plural(n.system.logicalCPUs, "core")}</small>` : ""}</td><td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
+    return `<tr data-id="${esc(n.id)}"><td class="name-column"><div class="machine-cell"><span class="os-icon">${icon(platformIcon)}</span><div class="machine-text"><div class="machine-title"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.name)}">${esc(n.name)}</button>${runAsTag(n)}</div><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version"> · ${esc(n.software?.version || "Unknown version")}</span></small></div></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(n)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${n.system?.logicalCPUs ? `<small>${plural(n.system.logicalCPUs, "core")}</small>` : ""}</td><td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
   });
 }
 function machineMatches(n) {
@@ -616,13 +627,23 @@ function renderOverview() {
     `<a class="stat ${tone}" href="#machines" data-action="filter-machines" data-filter="${filter}"><span class="stat-label">${tone ? '<span class="status-dot"></span>' : ""}${label}</span><span class="stat-value">${value}</span></a>`;
   return `${gatewayPanel()}<div class="fleet-summary">${stat("Online", online, "online", online ? "good" : "")}${stat("Offline", offline, "offline", offline ? "bad" : "")}${stat("Active work", work, "busy", work ? "warn" : "")}</div>${machinePanel(true)}`;
 }
-// Matches the gateway: revoked invitations and unredeemed ones past expiry.
+// Everything but pending invitations: the gateway deletes revoked and expired
+// ones and hides redeemed ones, which keep their machine's credential.
 function clearable(items) {
   return items.filter(
     (i) =>
-      i.revoked ||
-      (!i.redeemedId && Date.now() > new Date(i.expiresAt).getTime()),
+      i.revoked || i.redeemedId || Date.now() > new Date(i.expiresAt).getTime(),
   );
+}
+// A redeemed invitation is managed through its machine, not revoked here.
+function inviteAction(i, status) {
+  if (status === "Redeemed")
+    return state.snapshot?.nodes.some((n) => n.id === i.redeemedId)
+      ? `<button class="secondary compact" data-action="details" data-id="${esc(i.redeemedId)}">Open machine</button>`
+      : "";
+  return status === "Pending"
+    ? `<button class="secondary compact" data-action="revoke-invite" data-id="${esc(i.id)}">Revoke</button>`
+    : "";
 }
 function renderInvitations(items) {
   const startup = { user: "User", system: "System" };
@@ -634,7 +655,7 @@ function renderInvitations(items) {
         : Date.now() > new Date(i.expiresAt).getTime()
           ? "Expired"
           : "Pending";
-    return `<tr><td><strong>${esc(i.name || "Target hostname")}</strong>${i.autoName ? '<small class="muted"> · Automatic name</small>' : ""}</td><td>${esc(osName(i.asset?.os))}</td><td>${badge(status)}</td><td>${esc(startup[i.serviceMode] || i.serviceMode || "Platform default")}</td><td class="muted">${esc(date(i.expiresAt))}</td><td class="action-column">${!i.revoked ? `<button class="secondary compact" data-action="revoke-invite" data-id="${esc(i.id)}">Revoke</button>` : ""}</td></tr>`;
+    return `<tr><td><strong>${esc(i.name || "Target hostname")}</strong>${i.autoName ? '<small class="muted"> · Automatic name</small>' : ""}</td><td>${esc(osName(i.asset?.os))}</td><td>${badge(status)}</td><td>${esc(startup[i.serviceMode] || i.serviceMode || "Platform default")}</td><td class="muted">${esc(date(i.expiresAt))}</td><td class="action-column">${inviteAction(i, status)}</td></tr>`;
   });
   return panel(
     "Installation invitations",
@@ -1308,7 +1329,7 @@ function machineDetails(id) {
             `<div class="disk-usage">${meter(percent(disk.usedBytes, disk.totalBytes), "Disk utilization for " + disk.path)}<small class="muted mono">${esc(disk.path)}</small><small class="muted">${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small></div>`,
         )
         .join("") || meter(null, "Disk utilization")
-    }</dd><dt>Processor</dt><dd>${esc(sys.cpuModel || "Unknown")}${sys.logicalCPUs ? " · " + esc(sys.logicalCPUs) + " cores" : ""}</dd><dt>Sampled</dt><dd>${esc(date(sys.sampledAt))}${n.online ? "" : `<small class="muted">Cached while offline</small>`}</dd></dl></section>${activitySection(n)}<section class="drawer-section"><h3>System</h3><dl class="metadata"><dt>Platform</dt><dd>${esc(platformText(n) || "Unknown")}</dd><dt>Version</dt><dd>${esc(n.software?.version || "Unknown")}</dd><dt>Labels</dt><dd>${labels.length ? `<span class="labels">${labels.map(([k, v]) => `<span class="label-chip">${esc(k)}=${esc(v)}</span>`).join("")}</span>` : "None"}</dd>${n.online ? "" : `<dt>Last seen</dt><dd>${esc(date(n.lastSeen))}</dd>`}<dt>Identity</dt><dd class="mono">${esc(n.id)}</dd></dl></section><div class="drawer-actions"><button class="secondary" data-action="rename" data-id="${esc(n.id)}">Rename</button><button class="secondary" data-action="toggle" data-id="${esc(n.id)}">${n.disabled ? "Enable" : "Disable"}</button><button class="danger" data-action="unregister" data-id="${esc(n.id)}">Unregister</button></div>`,
+    }</dd><dt>Processor</dt><dd>${esc(sys.cpuModel || "Unknown")}${sys.logicalCPUs ? " · " + esc(sys.logicalCPUs) + " cores" : ""}</dd><dt>Sampled</dt><dd>${esc(date(sys.sampledAt))}${n.online ? "" : `<small class="muted">Cached while offline</small>`}</dd></dl></section>${activitySection(n)}<section class="drawer-section"><h3>System</h3><dl class="metadata"><dt>Platform</dt><dd>${esc(platformText(n) || "Unknown")}</dd>${n.runAs ? `<dt>Runs as</dt><dd>${runAsLabels[n.runAs][1]}</dd>` : ""}<dt>Version</dt><dd>${esc(n.software?.version || "Unknown")}</dd><dt>Labels</dt><dd>${labels.length ? `<span class="labels">${labels.map(([k, v]) => `<span class="label-chip">${esc(k)}=${esc(v)}</span>`).join("")}</span>` : "None"}</dd>${n.online ? "" : `<dt>Last seen</dt><dd>${esc(date(n.lastSeen))}</dd>`}<dt>Identity</dt><dd class="mono">${esc(n.id)}</dd></dl></section><div class="drawer-actions"><button class="secondary" data-action="rename" data-id="${esc(n.id)}">Rename</button><button class="secondary" data-action="toggle" data-id="${esc(n.id)}">${n.disabled ? "Enable" : "Disable"}</button><button class="danger" data-action="unregister" data-id="${esc(n.id)}">Unregister</button></div>`,
     "machine-drawer",
   );
 }
@@ -1490,10 +1511,13 @@ document.addEventListener("click", async (event) => {
       const count = clearable(state.auxiliary || []).length;
       formDialog(
         "Clear invitation history",
-        `<p>Remove ${esc(plural(count, "revoked or expired invitation"))} from this list. Pending invitations and those backing enrolled machines stay.</p>`,
+        `<p>Clear ${esc(plural(count, "invitation"))} from this list. Revoked and expired invitations are deleted. Redeemed ones are hidden, and their machines keep working; manage them from Machines. Pending invitations stay.</p>`,
         async () => {
           const result = await api("fleet/installations", "DELETE");
-          toast("Removed " + plural(result.removed, "invitation"));
+          toast(
+            "Cleared " +
+              plural(result.removed + (result.hidden || 0), "invitation"),
+          );
         },
         "Clear history",
         true,

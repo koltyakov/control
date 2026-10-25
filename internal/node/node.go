@@ -23,6 +23,7 @@ import (
 	"github.com/koltyakov/control/internal/clipboard"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/processutil"
 	"github.com/koltyakov/control/internal/system"
 	"github.com/koltyakov/control/internal/transport"
 	"github.com/koltyakov/control/internal/update"
@@ -182,7 +183,7 @@ func New(cfg Config) (*Node, error) {
 	}
 	n.Peer = transport.New(transport.Config{
 		Gateway: cfg.Gateway, Token: cfg.Token, Identity: id, RelayOnly: cfg.RelayOnly, ICEServers: cfg.ICEServers,
-		Node: model.Node{ID: id.ID, Name: cfg.Name, PublicKey: id.Public, OS: runtime.GOOS, Labels: cfg.Labels, Capabilities: n.Capabilities()},
+		Node: model.Node{ID: id.ID, Name: cfg.Name, PublicKey: id.Public, OS: runtime.GOOS, Labels: cfg.Labels, Capabilities: n.Capabilities(), RunAs: processutil.RunAs()},
 	}, n.handle)
 	ready = true
 	return n, nil
