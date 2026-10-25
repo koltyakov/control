@@ -13,6 +13,19 @@ func powershellLiteral(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
+// Installation helpers use Windows PowerShell's built-in modules, not a
+// PSModulePath inherited from PowerShell 7 or an unrelated application.
+func powerShellEnvironment(environment []string, modules string) []string {
+	values := make([]string, 0, len(environment)+1)
+	for _, value := range environment {
+		name, _, _ := strings.Cut(value, "=")
+		if !strings.EqualFold(name, "PSModulePath") {
+			values = append(values, value)
+		}
+	}
+	return append(values, "PSModulePath="+modules)
+}
+
 // PowerShell's encoded commands use UTF-16LE, including surrogate pairs.
 func encodedPowerShell(script string) string {
 	units := utf16.Encode([]rune(script))

@@ -146,18 +146,8 @@ textarea:focus-visible {
   display: inline-block;
   width: 24px;
   height: 24px;
-  border-radius: 6px;
-  background: var(--action);
-  color: var(--action-text);
-  position: relative;
-}
-.brand-mark::after {
-  content: "";
-  position: absolute;
-  inset: 7px;
-  border: 2px solid currentColor;
-  border-right: 0;
-  border-radius: 2px 0 0 2px;
+  flex-shrink: 0;
+  background: url("/console/static/brand-icon.png") center / contain no-repeat;
 }
 /* The header is a dark bar in both themes; its colors come from --header tokens. */
 .console-header {
@@ -1007,6 +997,9 @@ td strong {
   font-weight: 400;
   line-height: 17px;
   white-space: nowrap;
+}
+.context-choice.offline {
+  text-decoration: line-through;
 }
 .machine-name {
   display: block;

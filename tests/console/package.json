@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "icons": "node generate-icons.mjs",
     "test": "node smoke.mjs"
   },
   "devDependencies": {

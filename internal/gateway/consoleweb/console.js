@@ -320,6 +320,7 @@ function osName(os) {
   );
 }
 function machineState(node) {
+  if (node.contexts?.length > 1) node = hostStatusContext(node);
   if (node.controlPending) return node.disabled ? "Disabling" : "Enabling";
   if (node.disabled) return "Disabled";
   if (node.status === "update") return "Updating";
@@ -329,6 +330,7 @@ function machineState(node) {
   return node.activeCount > 0 ? "Busy" : "Idle";
 }
 function statusDetail(node) {
+  if (node.contexts?.length > 1) node = hostStatusContext(node);
   if (!node.online)
     return age(node.lastSeen) === "Unknown"
       ? ""
@@ -341,6 +343,18 @@ function statusDetail(node) {
   return known(node.lastActive)
     ? "Active " + age(node.lastActive).split(" ")[0] + " ago"
     : "";
+}
+// Host status follows connected contexts, not the context selected for metrics
+// and actions. Prefer active work over idle reports and newer observations
+// when statuses match. This never changes routing.
+function hostStatusContext(node) {
+  const online = node.contexts.filter((context) => context.online),
+    candidates = online.length ? online : node.contexts,
+    priority = ["Updating", "Busy", "Reserved", "Enabling", "Online", "Idle", "Disabling", "Disabled", "Offline"];
+  return [...candidates].sort((a, b) =>
+    priority.indexOf(machineState(a)) - priority.indexOf(machineState(b)) ||
+    (Date.parse(b.lastSeen) || 0) - (Date.parse(a.lastSeen) || 0),
+  )[0];
 }
 function known(value) {
   return !!value && !String(value).startsWith("0001");
@@ -549,7 +563,7 @@ function contextChips(node) {
   if (!node.hybridId) return runAsTag(node);
   return [...node.contexts]
     .sort((a, b) => (a.hybridRole === "user" ? -1 : 1) - (b.hybridRole === "user" ? -1 : 1))
-    .map((context) => `<button class="context-tag context-choice" data-action="context" data-id="${esc(context.id)}" aria-pressed="${node.id === context.id}" title="${esc(context.name)} · ${context.online ? "Online" : "Offline"}${context.hybridRole === "system" ? " · For operations requiring elevation" : " · Default execution context"}">${context.hybridRole === "user" ? "User" : "System"}</button>`)
+    .map((context) => `<button class="context-tag context-choice${context.online ? "" : " offline"}" data-action="context" data-id="${esc(context.id)}" aria-pressed="${node.id === context.id}" aria-description="${context.online ? "Online" : "Offline"}" title="${esc(context.name)} · ${context.online ? "Online" : "Offline"}${context.hybridRole === "system" ? " · For operations requiring elevation" : " · Default execution context"}">${context.hybridRole === "user" ? "User" : "System"}</button>`)
     .join("");
 }
 function machineMatches(n) {

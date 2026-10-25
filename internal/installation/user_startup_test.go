@@ -2,10 +2,31 @@ package installation
 
 import (
 	"encoding/base64"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf16"
 )
+
+func TestPowerShellEnvironmentUsesBuiltInModules(t *testing.T) {
+	inherited := []string{
+		`PATH=C:\Windows\System32`,
+		`PSModulePath=C:\Program Files\PowerShell\7\Modules`,
+		`psmodulepath=C:\custom\Modules`,
+		`PSExecutionPolicyPreference=AllSigned`,
+		`CONTROL_HOME=C:\Users\test\Control`,
+	}
+	original := slices.Clone(inherited)
+	modules := `C:\Windows\System32\WindowsPowerShell\v1.0\Modules`
+	got := powerShellEnvironment(inherited, modules)
+	want := []string{inherited[0], inherited[3], inherited[4], "PSModulePath=" + modules}
+	if !slices.Equal(got, want) {
+		t.Fatalf("helper environment: got %q, want %q", got, want)
+	}
+	if !slices.Equal(inherited, original) {
+		t.Fatal("changed the caller's environment")
+	}
+}
 
 func TestEncodedPowerShell(t *testing.T) {
 	for _, script := range []string{"", "Write-Output 'hello'", "Write-Output '用户 😀'"} {

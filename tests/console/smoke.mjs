@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir, readFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -161,6 +161,56 @@ async function assertContextChips(page) {
   assert.equal(system.style.borderTopStyle, "solid");
   assert.equal(system.style.height, "19px");
   assert.equal(system.style.whiteSpace, "nowrap");
+}
+
+async function assertBrandAssets(page) {
+  const source = await readFile(path.join(root, "internal/gateway/consoleweb/favicon-32.png"));
+  const favicon = await page.request.get(base + "/console/static/favicon-32.png");
+  assert.equal(favicon.ok(), true);
+  assert.match(favicon.headers()["content-type"], /image\/png/);
+  assert.deepEqual(await favicon.body(), source, "The favicon must match the generated artwork");
+  assert.equal(await page.locator('link[rel="icon"][type="image/png"]').getAttribute("sizes"), "32x32");
+  assert.equal(await page.locator('link[rel="apple-touch-icon"]').getAttribute("sizes"), "180x180");
+  const dimensions = await page.evaluate(async () => {
+    const paths = ["/console/static/favicon-32.png", "/console/static/apple-touch-icon.png", "/console/static/brand-icon.png"];
+    return Promise.all(paths.map(async (path) => {
+      const image = new Image();
+      image.src = path;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d");
+      context.drawImage(image, 0, 0);
+      const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+      let left = canvas.width, right = -1;
+      for (let y = 0; y < canvas.height; y++) {
+        for (let x = 0; x < canvas.width; x++) {
+          if (data[(y * canvas.width + x) * 4 + 3] > 128) {
+            left = Math.min(left, x);
+            right = Math.max(right, x);
+          }
+        }
+      }
+      if (data[3] !== 0 || (right - left + 1) / canvas.width < 0.9) {
+        throw new Error("Icons must have transparent corners and tightly cropped content: " + path);
+      }
+      return [image.naturalWidth, image.naturalHeight];
+    }));
+  });
+  assert.deepEqual(dimensions, [[32, 32], [180, 180], [64, 64]]);
+  const ico = await page.request.get(base + "/console/static/favicon.ico");
+  assert.equal(ico.ok(), true);
+  const bytes = await ico.body();
+  assert.equal(bytes.readUInt16LE(2), 1);
+  assert.equal(bytes.readUInt16LE(4), 3);
+  assert.deepEqual([bytes[6], bytes[22], bytes[38]], [16, 32, 48]);
+  const marks = await page.locator(".brand-mark").evaluateAll((elements) => elements.map((element) => ({
+    image: getComputedStyle(element).backgroundImage,
+    overlay: getComputedStyle(element, "::after").content,
+  })));
+  assert.equal(marks.length, 2);
+  assert.ok(marks.every((mark) => mark.image.includes("/console/static/brand-icon.png") && mark.overlay === "none"));
 }
 
 async function assertResourceIcons(page, gateway = false) {
@@ -389,7 +439,7 @@ async function assertStartupCommands(page, snapshot) {
 }
 
 async function assertHybridGrouping(page, snapshot) {
-  const baseNode = snapshot.nodes[0],
+  const baseNode = { ...snapshot.nodes[0], status: "summary", activeCount: 0, leased: false, disabled: false, controlPending: false },
     user = { ...baseNode, id: "paired-user", name: "paired-host", hybridId: "pair-1", hybridRole: "user", runAs: "user", online: false },
     system = { ...baseNode, id: "paired-system", name: "paired-host-system", hybridId: "pair-1", hybridRole: "system", runAs: "system", online: true, system: { ...baseNode.system, cpuUsagePercent: 71 } },
     ordinary = { ...baseNode, id: "ordinary-system", name: "unpaired-system", runAs: "system", online: true };
@@ -403,10 +453,22 @@ async function assertHybridGrouping(page, snapshot) {
   const row = page.locator(".machine-table tbody tr").filter({ has: page.getByRole("button", { name: "paired-host", exact: true }) });
   assert.equal(await row.getAttribute("data-id"), user.id, "User remains the default even when System is the only online context");
   assert.equal(await row.getByRole("button", { name: "User", exact: true }).getAttribute("aria-pressed"), "true");
+  assert.equal(await row.locator(".status-column .badge").textContent(), "Idle", "Host status must include the online System context while User is selected");
+  assert.equal(await row.locator(".cpu-column meter").count(), 0, "Host availability must not substitute System metrics for offline User metrics");
+  const assertOfflineChip = async (label, offline) => {
+    await page.waitForFunction(({ id, offline }) => {
+      const chip = document.querySelector(`.machine-table .context-choice[data-id="${id}"]`);
+      return chip?.getAttribute("aria-description") === (offline ? "Offline" : "Online") &&
+        getComputedStyle(chip).textDecorationLine === (offline ? "line-through" : "none");
+    }, { id: label === "User" ? user.id : system.id, offline });
+  };
+  await assertOfflineChip("User", true);
+  await assertOfflineChip("System", false);
   await assertContextChips(page);
   await row.getByRole("button", { name: "System", exact: true }).click();
   await assertContextChips(page);
   assert.equal(await row.getAttribute("data-id"), system.id);
+  assert.equal(await row.locator(".status-column .badge").textContent(), "Idle");
   assert.match(await row.locator(".cpu-column").textContent(), /71%/);
   await page.waitForFunction(() => !state.busy);
   await page.evaluate(() => refresh(true));
@@ -417,6 +479,50 @@ async function assertHybridGrouping(page, snapshot) {
   await row.getByRole("button", { name: "User", exact: true }).click();
   assert.equal(await row.getAttribute("data-id"), user.id);
   assert.equal(await page.locator('.stat[data-filter="online"] .stat-value').textContent(), "2", "Online counts hosts, not execution profiles");
+  const refresh = async () => {
+    await page.waitForFunction(() => !state.busy);
+    await page.evaluate(() => refresh(true));
+  };
+  system.activeCount = 2;
+  system.work = { exec: 2 };
+  await refresh();
+  assert.equal(await row.locator(".status-column .badge").textContent(), "Busy", "Work in System must remain visible while User is selected");
+  assert.match(await row.locator(".status-column small").textContent(), /2 exec sessions/);
+  await pageLink(page, "machines");
+  await page.locator('[data-action="filter-state"][data-filter="online"]').click();
+  assert.equal(await row.count(), 1);
+  await page.locator('[data-action="filter-state"][data-filter="offline"]').click();
+  assert.equal(await row.count(), 0, "A host with an online context must not appear in Offline");
+  await page.locator('[data-action="filter-state"][data-filter="all"]').click();
+  await row.getByRole("button", { name: "paired-host", exact: true }).click();
+  await page.getByRole("dialog", { name: user.name, exact: true }).waitFor();
+  assert.equal(await page.locator("dialog .badge").first().textContent(), "Offline", "The drawer must retain the selected context's own status");
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  system.online = false;
+  system.lastSeen = "2026-01-02T00:00:00Z";
+  user.lastSeen = "2026-01-01T00:00:00Z";
+  await refresh();
+  assert.equal(await row.locator(".status-column .badge").textContent(), "Offline");
+  assert.equal(await row.locator(".status-column small").textContent(), await page.evaluate((lastSeen) => "Seen " + age(lastSeen).split(" ")[0] + " ago", system.lastSeen), "Offline host age uses the most recently seen context");
+  await assertOfflineChip("User", true);
+  await assertOfflineChip("System", true);
+  await page.locator('[data-action="filter-state"][data-filter="offline"]').click();
+  assert.equal(await row.count(), 1);
+  await page.locator('[data-action="filter-state"][data-filter="all"]').click();
+  user.online = true;
+  await row.getByRole("button", { name: "System", exact: true }).click();
+  await refresh();
+  assert.equal(await row.getAttribute("data-id"), system.id, "An offline System selection must not switch to User automatically");
+  assert.equal(await row.locator(".status-column .badge").textContent(), "Idle");
+  await assertOfflineChip("User", false);
+  await assertOfflineChip("System", true);
+  system.online = true;
+  await row.getByRole("button", { name: "User", exact: true }).click();
+  await refresh();
+  assert.equal(await row.locator(".status-column .badge").textContent(), "Busy", "An idle User context must not hide System work");
+  await assertOfflineChip("User", false);
+  await assertOfflineChip("System", false);
+  await page.locator('.brand[href="#overview"]').click();
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -498,6 +604,7 @@ try {
       errors.push(message.text());
   });
   await login(page, "browser-owner");
+  await assertBrandAssets(page);
   await page
     .getByRole("button", { name: "browser-worker", exact: true })
     .waitFor();

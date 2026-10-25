@@ -250,7 +250,7 @@ func TestConsoleExpiryThrottlingAndHeaders(t *testing.T) {
 		b.request(t, "GET", "/console/api/session", nil, 401)
 	}
 	b := testBrowser{URL: s.URL}
-	for _, path := range []string{"/login", "/console/static/console.js", "/console/static/console.css", "/console/static/tokens.css", "/console/static/favicon.svg"} {
+	for _, path := range []string{"/login", "/console/static/console.js", "/console/static/console.css", "/console/static/tokens.css", "/console/static/brand-icon.png", "/console/static/favicon-32.png", "/console/static/favicon.ico"} {
 		_, headers := b.request(t, "GET", path, nil, 200)
 		if headers.Get("Cache-Control") != "no-store" || headers.Get("Content-Security-Policy") == "" || headers.Get("Referrer-Policy") != "no-referrer" || headers.Get("X-Content-Type-Options") != "nosniff" {
 			t.Fatal("missing security headers", path, headers)

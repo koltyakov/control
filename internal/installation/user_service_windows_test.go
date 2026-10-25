@@ -3,6 +3,7 @@ package installation
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,29 @@ import (
 
 	"github.com/koltyakov/control/internal/store"
 )
+
+func TestUserPowerShellIgnoresInheritedModulePath(t *testing.T) {
+	root := t.TempDir()
+	module := filepath.Join(root, "contaminated", "Microsoft.PowerShell.Security")
+	if err := os.MkdirAll(module, 0700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "@{ ModuleVersion = '99.0'; GUID = 'e97a7897-3427-429f-a46b-c5f95c84ec8e'; RootModule = 'security.psm1'; FunctionsToExport = @('Get-Acl') }"
+	if err := os.WriteFile(filepath.Join(module, "Microsoft.PowerShell.Security.psd1"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(module, "security.psm1"), []byte("throw 'inherited security module was loaded'"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PSModulePath", filepath.Dir(module))
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	// Read an ACL only. Never change permissions, services, or scheduled tasks.
+	output, err := userPowerShellOutput(ctx, "Get-Acl -LiteralPath "+powershellLiteral(root)+" | Out-Null\nif ($env:PSModulePath -like '*contaminated*') { throw 'inherited module path leaked' }; Write-Output 'Ready'")
+	if err != nil || output != "Ready" {
+		t.Fatalf("native security module unavailable: %q, %v", output, err)
+	}
+}
 
 func TestUserPowerShellOutput(t *testing.T) {
 	for _, tc := range []struct {

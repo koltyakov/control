@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/koltyakov/control/internal/node"
@@ -50,9 +51,14 @@ func userPowerShellOutput(ctx context.Context, script string) (string, error) {
 	// with text output selected. Catch failures and bypass its error stream.
 	// Suppress module-loading progress so it cannot obscure task state or errors.
 	script = "$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\ntry {\n" + script + "\n} catch {\n[Console]::Error.WriteLine($_.ToString())\nexit 1\n}"
-	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-EncodedCommand", encodedPowerShell(script))
+	system, err := windows.GetSystemDirectory()
+	if err != nil {
+		return "", fmt.Errorf("locate Windows PowerShell: %w", err)
+	}
+	home := filepath.Join(system, "WindowsPowerShell", "v1.0")
+	cmd := exec.CommandContext(ctx, filepath.Join(home, "powershell.exe"), "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-EncodedCommand", encodedPowerShell(script))
 	processutil.HideWindow(cmd)
-	cmd.Env = cleanEnvironment()
+	cmd.Env = powerShellEnvironment(cleanEnvironment(), filepath.Join(home, "Modules"))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("Windows login startup: %w: %s", err, strings.TrimSpace(string(output)))
