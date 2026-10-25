@@ -25,6 +25,12 @@ const icons = {
     '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',
   gateway:
     '<rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M16 6.5h2M16 17.5h2"/>',
+  cpu:
+    '<rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3m6-3v3M9 19v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3"/>',
+  memory:
+    '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10v4m5-4v4m5-4v4M7 18v3m5-3v3m5-3v3"/>',
+  disk:
+    '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 14h18m-5 2.5h.01m2.99 0h.01"/>',
   theme:
     '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"/>',
   refresh:
@@ -211,6 +217,7 @@ async function api(path, method = "GET", body) {
 }
 
 function showLogin() {
+  closeMachineMenu();
   state.session = null;
   state.snapshot = null;
   state.auxiliary = null;
@@ -458,15 +465,15 @@ const machineColumns = [
   ["Machine", "name"],
   ["Status", "status"],
   ["Connections", "peers"],
-  ["CPU", "cpu"],
-  ["Memory", "memory"],
-  ["Disk", "disk"],
+  ["CPU", "cpu", "cpu"],
+  ["Memory", "memory", "memory"],
+  ["Disk", "disk", "disk"],
 ];
 function machineTable(rows) {
   const head = machineColumns
-    .map(([label, key]) => {
+    .map(([label, key, resourceIcon]) => {
       const selected = state.sort === key;
-      return `<th scope="col" aria-sort="${selected ? (state.descending ? "descending" : "ascending") : "none"}"><button class="sort-button${selected ? " sorted" : ""}" data-action="sort" data-sort="${key}">${label}<span aria-hidden="true">${selected ? (state.descending ? "↓" : "↑") : "↕"}</span></button></th>`;
+      return `<th scope="col" aria-sort="${selected ? (state.descending ? "descending" : "ascending") : "none"}"><button class="sort-button${selected ? " sorted" : ""}" data-action="sort" data-sort="${key}">${resourceIcon ? icon(resourceIcon) : ""}${label}<span aria-hidden="true">${selected ? (state.descending ? "↓" : "↑") : "↕"}</span></button></th>`;
     })
     .join("");
   return `<div class="table-wrap machine-table" role="region" aria-label="Machines" tabindex="0"><table><thead><tr>${head}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
@@ -518,7 +525,7 @@ function machineRows(nodes) {
     const platformIcon =
       { darwin: "laptop", windows: "windows", linux: "gateway" }[n.os] ||
       "machine";
-    return `<tr data-id="${esc(n.id)}"><td class="name-column"><div class="machine-cell"><span class="os-icon">${icon(platformIcon)}</span><div class="machine-text"><div class="machine-title"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.name)}">${esc(n.name)}</button>${runAsTag(n)}</div><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version"> · ${esc(n.software?.version || "Unknown version")}</span></small></div></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(n)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${n.system?.logicalCPUs ? `<small>${plural(n.system.logicalCPUs, "core")}</small>` : ""}</td><td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
+    return `<tr data-id="${esc(n.id)}"><td class="name-column"><div class="machine-cell"><span class="os-icon">${icon(platformIcon)}</span><div class="machine-text"><div class="machine-title"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.name)}">${esc(n.name)}</button>${runAsTag(n)}</div><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version"> · ${esc(n.software?.version || "Unknown version")}</span></small></div><button class="icon-button machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="Actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(n)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${n.system?.logicalCPUs ? `<small>${plural(n.system.logicalCPUs, "core")}</small>` : ""}</td><td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
   });
 }
 function machineMatches(n) {
@@ -611,9 +618,9 @@ function gatewayPanel() {
     uptime !== "Unknown" && "Up " + esc(uptime),
     sampleStale && `<span class="warn-text">Sampled ${esc(sampled)} ago</span>`,
   ].filter(Boolean);
-  const metric = (name, value, text) =>
-    `<div class="gateway-metric"><div class="metric-heading"><span>${esc(name)}</span><strong>${esc(text)}</strong></div>${value == null ? '<div class="metric-empty" aria-hidden="true"></div>' : meter(value, name)}</div>`;
-  return `<section class="gateway-card" aria-label="Gateway health"><div class="gateway-identity"><span class="gateway-icon">${icon("gateway")}</span><div><span class="gateway-label">Gateway</span><strong>${esc(g.url || location.host)}</strong>${facts.length ? `<small>${facts.join(" · ")}</small>` : ""}</div></div><div class="gateway-metrics" title="${sampled === "Unknown" ? "Sample time unknown" : "Sampled " + esc(sampled) + " ago"}">${metric("CPU", sys.cpuUsagePercent, sys.cpuUsagePercent == null ? "Unknown" : Math.round(sys.cpuUsagePercent) + "%")}${metric("Memory", percent(sys.memoryUsedBytes, sys.memoryTotalBytes), sys.memoryTotalBytes ? bytes(sys.memoryUsedBytes) + " of " + bytes(sys.memoryTotalBytes) : "Unknown")}${metric("State disk", percent(disk?.usedBytes, disk?.totalBytes), disk?.totalBytes ? bytes(disk.usedBytes) + " of " + bytes(disk.totalBytes) : "Unknown")}</div></section>`;
+  const metric = (name, resourceIcon, value, text) =>
+    `<div class="gateway-metric"><div class="metric-heading"><span class="resource-label">${icon(resourceIcon)}${esc(name)}</span><strong>${esc(text)}</strong></div>${value == null ? '<div class="metric-empty" aria-hidden="true"></div>' : meter(value, name)}</div>`;
+  return `<section class="gateway-card" aria-label="Gateway health"><div class="gateway-identity"><span class="gateway-icon">${icon("gateway")}</span><div><span class="gateway-label">Gateway</span><strong>${esc(g.url || location.host)}</strong>${facts.length ? `<small>${facts.join(" · ")}</small>` : ""}</div></div><div class="gateway-metrics" title="${sampled === "Unknown" ? "Sample time unknown" : "Sampled " + esc(sampled) + " ago"}">${metric("CPU", "cpu", sys.cpuUsagePercent, sys.cpuUsagePercent == null ? "Unknown" : Math.round(sys.cpuUsagePercent) + "%")}${metric("Memory", "memory", percent(sys.memoryUsedBytes, sys.memoryTotalBytes), sys.memoryTotalBytes ? bytes(sys.memoryUsedBytes) + " of " + bytes(sys.memoryTotalBytes) : "Unknown")}${metric("State disk", "disk", percent(disk?.usedBytes, disk?.totalBytes), disk?.totalBytes ? bytes(disk.usedBytes) + " of " + bytes(disk.totalBytes) : "Unknown")}</div></section>`;
 }
 function renderOverview() {
   const nodes = state.snapshot?.nodes || [],
@@ -646,7 +653,7 @@ function inviteAction(i, status) {
     : "";
 }
 function renderInvitations(items) {
-  const startup = { user: "User", system: "System" };
+  const startup = { user: "User", system: "System", hybrid: "Hybrid" };
   const rows = items.map((i) => {
     const status = i.revoked
       ? "Revoked"
@@ -898,6 +905,7 @@ function render() {
     replacement.focus({ preventScroll: true });
     if (selection) replacement.setSelectionRange(...selection);
   }
+  syncMachineMenu();
 }
 function clock(value) {
   return new Date(value).toLocaleTimeString([], {
@@ -958,6 +966,7 @@ async function refresh(manual = false) {
 }
 function navigate() {
   if (!state.session) return;
+  closeMachineMenu();
   let page = location.hash.slice(1) || "overview";
   if (
     !pages[page] ||
@@ -991,6 +1000,150 @@ function navigate() {
 }
 let pendingRefresh = false;
 window.addEventListener("hashchange", navigate);
+
+// One popover outside the polled table keeps an open menu and its focus alive.
+let machineMenuTarget = null;
+function machineMenuSource() {
+  return (
+    machineMenuTarget &&
+    $(
+      `.machine-table [data-action="${machineMenuTarget.action}"][data-id="${CSS.escape(machineMenuTarget.id)}"]`,
+    )
+  );
+}
+function closeMachineMenu(restoreFocus = false) {
+  const menu = $("#machine-menu");
+  if (!menu.matches(":popover-open")) return;
+  const source = machineMenuSource();
+  menu.hidePopover();
+  if (restoreFocus) source?.focus({ preventScroll: true });
+}
+function syncMachineMenu() {
+  const menu = $("#machine-menu");
+  if (!menu.matches(":popover-open")) return;
+  const node = state.snapshot?.nodes.find((n) => n.id === machineMenuTarget.id);
+  if (!node || !machineMenuSource()) {
+    closeMachineMenu();
+    return;
+  }
+  const item = (action, label, danger = false) =>
+    `<button role="menuitem" tabindex="-1" class="menu-item${danger ? " destructive" : ""}" data-action="${action}" data-id="${esc(node.id)}">${label}</button>`;
+  const html =
+    item("details", "View details") +
+    item("rename", "Rename") +
+    (!node.online && node.wakeVia ? item("wake", "Wake") : "") +
+    item("toggle", node.disabled ? "Enable" : "Disable") +
+    '<div role="separator" class="menu-separator"></div>' +
+    item("unregister", "Unregister", true);
+  if (menu.innerHTML !== html) {
+    const focused = menu.contains(document.activeElement),
+      action = document.activeElement.dataset.action;
+    menu.innerHTML = html;
+    if (focused)
+      (
+        $(`[data-action="${action}"]`, menu) || $("[role=menuitem]", menu)
+      ).focus();
+  }
+  menu.setAttribute("aria-label", "Actions for " + node.name);
+  const trigger = $(`.machine-menu-button[data-id="${CSS.escape(node.id)}"]`);
+  trigger?.setAttribute("aria-expanded", "true");
+}
+function openMachineMenu(source, point) {
+  closeMachineMenu();
+  document
+    .querySelectorAll("[popover]:popover-open")
+    .forEach((popover) => popover.hidePopover());
+  machineMenuTarget = { id: source.dataset.id, action: source.dataset.action };
+  const menu = $("#machine-menu"),
+    box = source.getBoundingClientRect();
+  menu.showPopover();
+  syncMachineMenu();
+  if (!menu.matches(":popover-open")) return;
+  menu.style.left =
+    Math.max(
+      8,
+      Math.min(point?.x ?? box.left, innerWidth - menu.offsetWidth - 8),
+    ) + "px";
+  menu.style.top =
+    Math.max(
+      8,
+      Math.min(point?.y ?? box.bottom + 4, innerHeight - menu.offsetHeight - 8),
+    ) + "px";
+  $("[role=menuitem]", menu).focus({ preventScroll: true });
+}
+$("#machine-menu").addEventListener("beforetoggle", (event) => {
+  if (event.newState !== "closed") return;
+  document
+    .querySelectorAll('.machine-menu-button[aria-expanded="true"]')
+    .forEach((button) => button.setAttribute("aria-expanded", "false"));
+});
+// Native light-dismiss can close a context menu on its opening right-button
+// release. Use a manual popover and dismiss only on a new primary press outside.
+document.addEventListener(
+  "pointerdown",
+  (event) => {
+    if (
+      event.button !== 0 ||
+      event.ctrlKey ||
+      event.target.closest("#machine-menu, .machine-menu-button")
+    )
+      return;
+    closeMachineMenu();
+  },
+  true,
+);
+$("#machine-menu").addEventListener("pointermove", () => {
+  delete document.documentElement.dataset.keyboard;
+});
+$("#machine-menu").addEventListener("keydown", (event) => {
+  const items = [...event.currentTarget.querySelectorAll("[role=menuitem]")],
+    index = items.indexOf(document.activeElement),
+    moves = {
+      ArrowDown: (index + 1) % items.length,
+      ArrowUp: (index + items.length - 1) % items.length,
+      Home: 0,
+      End: items.length - 1,
+    };
+  if (event.key in moves) {
+    event.preventDefault();
+    items[moves[event.key]].focus();
+  } else if (event.key === "Escape" || event.key === "Tab") {
+    if (event.key === "Escape") event.preventDefault();
+    closeMachineMenu(true);
+  }
+});
+document.addEventListener("contextmenu", (event) => {
+  const row = event.target.closest(".machine-table tbody tr");
+  if (!row || event.shiftKey) return;
+  event.preventDefault();
+  openMachineMenu($(".machine-name", row), {
+    x: event.clientX,
+    y: event.clientY,
+  });
+});
+document.addEventListener("keydown", (event) => {
+  const source = event.target.closest(".machine-name, .machine-menu-button");
+  if (!source) return;
+  if (
+    event.key === "ContextMenu" ||
+    (event.shiftKey && event.key === "F10") ||
+    (source.dataset.action === "machine-menu" &&
+      ["ArrowDown", "ArrowUp"].includes(event.key))
+  ) {
+    event.preventDefault();
+    openMachineMenu(source);
+    if (event.key === "ArrowUp")
+      $("#machine-menu [role=menuitem]:last-child").focus();
+  }
+});
+document.addEventListener(
+  "scroll",
+  (event) => {
+    if (!$("#machine-menu").contains(event.target)) closeMachineMenu();
+  },
+  true,
+);
+window.addEventListener("resize", () => closeMachineMenu());
 document.addEventListener("input", (event) => {
   if (event.target.id !== "machine-search") return;
   state.search = event.target.value;
@@ -1171,6 +1324,7 @@ $("#dialog").addEventListener("cancel", (event) => {
   closeDialog();
 });
 function dialog(title, html, className = "") {
+  closeMachineMenu();
   $("#dialog").className = className;
   $("#dialog-title").textContent = title;
   $("#dialog-body").innerHTML = html;
@@ -1239,7 +1393,7 @@ function addMachine() {
   state.invitation = null;
   formDialog(
     "Add a machine",
-    `<p>Create a one-time installation command for the target machine.</p><label>Machine name<input name="name" placeholder="Use target hostname" maxlength="63" pattern="[a-zA-Z0-9]([a-zA-Z0-9._]|-){0,62}"></label><p class="field-help">Leave blank to use the target's hostname. Existing names create a replacement enrollment.</p><div class="form-grid"><label>Platform<select name="os"><option value="linux">Linux</option><option value="darwin">macOS</option><option value="windows">Windows</option></select></label><label>Startup context<select name="serviceMode"><option value="user">User context</option><option value="system">System context</option></select></label></div><p class="field-help">User context uses the installing user's files and may stop at logout. System context starts at boot. It runs as root on Unix or LocalService on Windows and requires elevation.</p><div class="notice">The gateway needs published amd64 and arm64 installers for the selected platform. This invitation expires after 15 minutes.</div>`,
+    `<p>Create a one-time installation command for the target machine.</p><label>Machine name<input name="name" placeholder="Use target hostname" maxlength="63" pattern="[a-zA-Z0-9]([a-zA-Z0-9._]|-){0,62}"></label><p class="field-help">Leave blank to use the target's hostname. Existing names create a replacement enrollment.</p><div class="form-grid"><label>Platform<select name="os"><option value="linux">Linux</option><option value="darwin">macOS</option><option value="windows">Windows</option></select></label><label>Startup context<select name="serviceMode"><option value="user">User context</option><option value="system">System context</option><option value="hybrid">Hybrid</option></select></label></div><p class="field-help">User uses your files and desktop session and may stop at logout. System starts at boot as root on Unix or LocalService on Windows. Hybrid installs both as isolated profiles, with a NAME-system companion running as root or Windows LocalSystem. Explicit System work requires an instruction grant; failures never trigger elevation. Hybrid names allow 56 characters. Run Hybrid as your user on Unix, or in Administrator PowerShell on Windows.</p><div class="notice">The gateway needs published amd64 and arm64 installers for the selected platform. This invitation expires after 15 minutes.</div>`,
     async (fields) => {
       const name = fields.name.trim(),
         automatic = !name || name === "auto";
@@ -1373,6 +1527,16 @@ document.addEventListener("click", async (event) => {
     name = button.dataset.name;
   const node = state.snapshot?.nodes.find((n) => n.id === id);
   try {
+    if (action === "machine-menu") {
+      if (
+        machineMenuTarget?.id === id &&
+        $("#machine-menu").matches(":popover-open")
+      )
+        closeMachineMenu(true);
+      else openMachineMenu(button);
+      return;
+    }
+    if (button.closest("#machine-menu")) closeMachineMenu(true);
     if (action === "theme") {
       // The sign-in page has a single toggle instead of the menu's choices.
       themeChoice =

@@ -41,7 +41,7 @@ func delegationCluster(t *testing.T, relay bool) (context.Context, Client, []*no
 	return delegationClusterWithTimeout(t, relay, 45*time.Second)
 }
 
-func delegationClusterWithTimeout(t *testing.T, relay bool, timeout time.Duration) (context.Context, Client, []*node.Node, Admin) {
+func delegationClusterWithTimeout(t *testing.T, relay bool, timeout time.Duration, instructionOnly ...bool) (context.Context, Client, []*node.Node, Admin) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	t.Cleanup(cancel)
@@ -56,7 +56,12 @@ func delegationClusterWithTimeout(t *testing.T, relay bool, timeout time.Duratio
 	t.Cleanup(server.Close)
 	workers := []*node.Node{}
 	for _, name := range []string{"first", "second", "third"} {
-		w, err := node.New(node.Config{Name: name, Gateway: server.URL, Token: common, DataDir: t.TempDir(), WorkDir: t.TempDir(), RelayOnly: relay})
+		cfg := node.Config{Name: name, Gateway: server.URL, Token: common, DataDir: t.TempDir(), WorkDir: t.TempDir(), RelayOnly: relay}
+		if name == "second" && len(instructionOnly) != 0 && instructionOnly[0] {
+			cfg.InstructionOnly = true
+			cfg.Labels = map[string]string{"context": "system"}
+		}
+		w, err := node.New(cfg)
 		if err != nil {
 			t.Fatal(err)
 		}

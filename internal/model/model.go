@@ -39,7 +39,8 @@ type Node struct {
 	LANPeers       []LANPeer         `json:"lanPeers,omitempty"`
 	// RunAs is "system" for a boot-time service account and "user" for a login
 	// session. Older nodes omit it.
-	RunAs string `json:"runAs,omitempty"`
+	RunAs           string `json:"runAs,omitempty"`
+	InstructionOnly bool   `json:"instructionOnly,omitempty"`
 	// GatewayWake means the node accepts wake requests relayed by the gateway
 	// for its fleet owner, because its allow rules let account clients call
 	// network.wake. Older nodes omit it and are never selected.

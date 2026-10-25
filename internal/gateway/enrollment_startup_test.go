@@ -13,7 +13,7 @@ import (
 func TestInvitationStartupContext(t *testing.T) {
 	g, server := installationFixture(t)
 	admin := testAdmin{URL: server.URL, Key: superKey}
-	for _, mode := range []string{"user", "system"} {
+	for _, mode := range []string{"user", "system", "hybrid"} {
 		var link enrollment.Link
 		q := enrollment.Request{Name: "worker-" + mode, OS: "linux", Arch: "amd64", Gateway: server.URL, ServiceMode: mode}
 		if err := admin.JSON(context.Background(), "POST", "/v1/fleet/installations", q, &link); err != nil {

@@ -76,6 +76,9 @@ func (n *Node) acceptAuthority(ctx context.Context, caller string, request model
 		if !peer.ExecutionAuthority {
 			return ctx, nil, errors.New("peer execution requires an account-authenticated orchestrator or an instruction-bound delegation")
 		}
+		if n.Config.InstructionOnly && request.Method != "access.grant" && request.Method != "access.list" && request.Method != "access.revoke" {
+			return ctx, nil, errors.New("system execution requires an exact instruction-bound delegation; upgrade the client or use peers.call")
+		}
 		ctx = context.WithValue(ctx, authorityContextKey{}, authority{owner: n.Peer.Owner(caller)})
 		return ctx, func() {}, nil
 	}
@@ -237,7 +240,7 @@ func (n *Node) delegationMethod(ctx context.Context, caller, method string, para
 		if err != nil {
 			return nil, err
 		}
-		if subject.ClientOwner != "" || subject.ExecutionAuthority {
+		if (subject.ClientOwner != "" || subject.ExecutionAuthority) && (!n.Config.InstructionOnly || subject.ID != caller) {
 			return nil, errors.New("delegation subject must be a worker node")
 		}
 		for _, input := range q.InputsFrom {

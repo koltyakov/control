@@ -104,7 +104,7 @@ const fleetUsage = `
 Your fleet:
   console password [USER] [--password-stdin] Set a browser password; operators may select a user
   machines add [NAME|auto] --platform macos|windows|linux  Create install command; default uses target hostname
-    --service user|system                Choose login-session or boot-time startup
+    --service user|system|hybrid         Choose User, System, or paired contexts
     --force                              Retract a pending invitation for that name
   machines invites [clear]             List installation status, or remove revoked and expired ones
   machines revoke ID                   Revoke an invitation and its machine key
@@ -288,7 +288,7 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 	}
 	f := flag.NewFlagSet("machines add", flag.ContinueOnError)
 	platform := f.String("platform", "", "macos, windows, or linux; architecture is detected by the installer")
-	service := f.String("service", "", "user (login session) or system (boot-time service); omitted keeps platform defaults")
+	service := f.String("service", "", "user (login session), system (boot-time service), or hybrid (isolated User and System profiles)")
 	ttl := f.Duration("ttl", 15*time.Minute, "installation link lifetime")
 	asJSON := f.Bool("json", false, "print installation JSON")
 	force := f.Bool("force", false, "retract pending invitations for this name immediately")
@@ -298,8 +298,8 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 	if f.NArg() != 0 {
 		return errors.New("usage: control machines add [NAME|auto] --platform macos|windows|linux")
 	}
-	if *service != "" && *service != "user" && *service != "system" {
-		return errors.New("service must be user or system")
+	if *service != "" && *service != "user" && *service != "system" && *service != "hybrid" {
+		return errors.New("service must be user, system, or hybrid")
 	}
 	parts := strings.Split(strings.ToLower(*platform), "/")
 	if len(parts) > 2 || *ttl < time.Minute || *ttl > 24*time.Hour {

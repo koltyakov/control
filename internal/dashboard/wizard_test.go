@@ -106,7 +106,7 @@ func TestRegistrationSelectsStartupContextBeforeCreating(t *testing.T) {
 				}
 				apply(tea.KeyPressMsg{Code: rune('1' + selection), Text: string(rune('1' + selection))})
 				text := ansi.Strip(m.registrationView().Content)
-				if !strings.Contains(text, "User context") || !strings.Contains(text, "System context") || !strings.Contains(text, "logout") {
+				if !strings.Contains(text, "User context") || !strings.Contains(text, "System context") || !strings.Contains(text, "Hybrid") || !strings.Contains(text, "logout") {
 					t.Fatal("context selection omitted choices or logout warning")
 				}
 				apply(tea.KeyPressMsg{Code: tea.KeyEscape})

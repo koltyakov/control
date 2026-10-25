@@ -86,6 +86,7 @@ Setup reuses your login and installs node startup, MCP, and the skill. On Window
 control machines add win-worker --platform windows --service user
 control machines add mac-worker --platform macos --service user
 control machines add linux-worker --platform linux --service system
+control machines add workstation --platform linux --service hybrid
 ```
 
 Run each printed command on its target under the intended user. Windows uses PowerShell and requests UAC for firewall setup. macOS uses Bash; Linux system mode needs sudo and systemd. Installers detect amd64/arm64, verify the binary, and enroll and start the node without an account key. Verify with `control machines` and `control call win-worker node.describe`.
@@ -95,6 +96,8 @@ Use `auto` or omit the name for the target's hostname. Invitations are single-us
 Use `--force` when adding or renaming to retract a conflicting pending invitation, never an enrolled identity.
 
 User context has the installing user's files and credentials but may stop at logout. System context starts at boot as root on Linux/macOS or LocalService on Windows. See [startup contexts](docs/installation.md#choose-a-startup-context).
+
+Hybrid installs isolated User and System profiles. Address `workstation` for User work or explicitly choose `workstation-system` for System work. The System companion runs as root or Windows LocalSystem and requires exact instruction grants. It is never selected automatically or used as a fallback. See [Hybrid installation](docs/installation.md#hybrid-user-and-system-contexts).
 
 ## Run and inspect work
 

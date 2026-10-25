@@ -189,11 +189,12 @@ Set `CONTROL_PUBLIC_URL` on the gateway if installation links must use a differe
 
 ### Choose a startup context
 
-The dashboard wizard defaults to User context. The CLI exposes the same choice:
+The dashboard wizard defaults to User context. User, System, and Hybrid are available through the CLI and web console too:
 
 ```sh
 control machines add auto --platform linux --service user
 control machines add auto --platform linux --service system
+control machines add workstation --platform windows --service hybrid
 ```
 
 User context uses the installing user's service manager, files, and application credentials. It can stop when that user logs out. On Linux, a `systemd --user` node can remain online through logout and start at boot if an administrator enables linger for that user:
@@ -213,6 +214,28 @@ Explicit invitation context takes precedence over `CONTROL_SERVICE_MODE`. Omitti
 Unix system installation uses a separate root-owned profile. It does not migrate a user installation's identity or files automatically. Stop and uninstall the old user startup before installing a replacement to avoid competing on the local API port. A same-name invitation reserves the old identity and cannot be redeemed by a new root profile. Use linger to retain the existing Linux installation, or unregister the old machine before creating a new system installation for that name. Old files remain intact. To manage a generated system profile, supply its configuration path, for example `sudo control --config /var/lib/control/node.json service stop`.
 
 Upgrade the gateway and publish installer binaries with system-mode support before using this option. The client rejects an older gateway that does not confirm `serviceMode`; it does not retry the invitation. Older Unix installers reject `--service system` before redeeming it.
+
+### Hybrid User and System contexts
+
+`machines add NAME --platform linux|windows|macos --service hybrid` creates two invitations in one gateway transaction. The generated command installs an isolated System companion first, then a User profile. `NAME` remains the User target; `NAME-system` is the explicit System target. Names and automatic hostnames must leave room for that suffix, so their maximum is 56 characters. Both contexts appear separately in machine lists and the dashboard, with their actual User/System execution context. They have independent identities, credentials, workspaces, tasks, startup registrations, and managed updates. There is no shared writable runtime or privileged API credential in the User profile.
+
+Run the Unix command from the intended user's shell, not `sudo bash`. Only the companion installer uses sudo. Its root-owned profile is `/var/lib/control/hybrid/ID` on Linux or `/Library/Application Support/control/hybrid/ID` on macOS. Its executable is under `/usr/local/lib/control/ID` or `/Library/PrivilegedHelperTools/Control/ID`. Linux uses a systemd system unit; macOS uses a LaunchDaemon. The User profile retains the normal user service manager and desktop-session requirements.
+
+On Windows, run the command in Administrator PowerShell under the intended user's account. The User task still uses that user's limited interactive token. Unlike ordinary System mode's LocalService service, the Hybrid companion runs as LocalSystem. Its executable, profile, and state are under `%ProgramFiles%\Control Hybrid\ID`, with write access restricted to Administrators and SYSTEM. Installation rejects writable privileged paths and reparse points. Hybrid does not grant the ordinary User process administrator privileges.
+
+The User API uses its normal port, usually `127.0.0.1:7331`; the System companion uses `127.0.0.1:7332`. An occupied port fails readiness rather than replacing another node. Only the privileged account can read the System profile's local API credential. The System companion requires an exact destination-owned instruction grant even from account clients. Current CLI and MCP clients obtain that grant before sending explicitly targeted System work, preserving its original owner, arguments, cancellation, and task ID. Workers can reach it only through an orchestrator-prepared `peers.call` or workflow grant. Coordinate workflows on the User profile, with explicit System steps, rather than using the companion as a workflow coordinator.
+
+```sh
+control exec workstation -- whoami
+control exec workstation-system -- whoami
+control call workstation peers.call '{"target":"workstation-system","method":"exec.run","params":{"command":"whoami"}}'
+```
+
+Automatic worker selection excludes instruction-only companions. A failed or unavailable User operation never retries as System. After logout the User context follows the OS session lifecycle; System remains available only by explicit targeting. System startup does not preserve the user's desktop session. Providers still have their execution account's full OS authority, not a sandbox.
+
+If System installation succeeds but User installation fails, rerunning the still-pending User installation command starts the existing companion or resumes its persisted enrollment without creating another identity. Completed installation links retain the normal single-use behavior. Revoking the Hybrid User invitation also revokes its companion; force-replacing pending Hybrid invitations retracts both pending tickets. Enrolled contexts are disabled, renamed, unregistered, updated, or stopped independently. A companion name already enrolled is not replaced automatically. Use the System profile's explicit path and elevation for its service commands.
+
+Hybrid is a composite invitation installation, not a single-profile `service --mode` value. Use `machines add --service hybrid`, not `setup --service hybrid` or a startup-mode migration. Upgrade the gateway and publish matching new installers first. The System script passes `--hybrid-system`, which older binaries reject before consuming its invitation; the gateway also rejects a companion registration without instruction-only System execution.
 
 ## Single use and recovery
 

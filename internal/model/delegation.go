@@ -8,7 +8,8 @@ import (
 )
 
 // Delegation permits one instruction, or the lifecycle of one named task.
-// It is bound to its destination, requesting worker and orchestrator owner.
+// It is bound to its destination, subject and orchestrator owner. Instruction-only
+// destinations can also bind a direct grant to the requesting account client.
 type Delegation struct {
 	ID         string           `json:"id"`
 	Target     string           `json:"target"`

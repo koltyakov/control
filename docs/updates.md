@@ -6,6 +6,8 @@ The gateway accepts development bundles and can poll GitHub Releases. It distrib
 
 CLI/MCP client sessions are not managed fleet nodes. Their platforms do not constrain the release bundle, they do not receive update commands, and they are excluded from rollout participants and the gateway's machine-reservation count. Work accepted on their destination nodes is still included in those nodes' idle checks. Upgrade the CLI with `control update`. The gateway and target nodes must both support client sessions before standalone execution can use them; see [standalone usage](installation.md#standalone-cli-and-mcp) and [terminology](terminology.md).
 
+[Hybrid installations](installation.md#hybrid-user-and-system-contexts) have two managed node profiles. Each owns its idle reservation, staged binaries, supervisor, task state, and restart. Updating one context does not restart the other, and an offline User context is not replaced by System execution. Publish new installers with `--hybrid-system` support before offering Hybrid invitations.
+
 ## Update the local CLI
 
 ```sh

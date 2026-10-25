@@ -45,6 +45,19 @@ func CheckServiceProfile(config, mode string) error {
 	return checkServiceProfile(config, mode)
 }
 
+// CheckHybridSystem verifies the privileged install's ownership and startup
+// context before consuming an invitation or registering a privileged service.
+func CheckHybridSystem(ctx context.Context, binary, config, mode string) error {
+	var err error
+	if binary, err = filepath.Abs(binary); err != nil {
+		return err
+	}
+	if config, err = filepath.Abs(config); err != nil {
+		return err
+	}
+	return checkHybridSystem(ctx, binary, config, mode)
+}
+
 func Service(ctx context.Context, operation, binary, config, mode string) error {
 	if err := ValidateServiceMode(mode); err != nil {
 		return err
@@ -76,6 +89,14 @@ func Service(ctx context.Context, operation, binary, config, mode string) error 
 	}
 	c := client.Client{URL: API(cfg), Token: cfg.Token}
 	if operation == "start" {
+		if cfg.HybridSystem {
+			if !cfg.InstructionOnly {
+				return errors.New("hybrid system profiles require instruction-only execution")
+			}
+			if err = CheckHybridSystem(ctx, binary, config, mode); err != nil {
+				return err
+			}
+		}
 		if err = CheckServiceProfile(config, mode); err != nil {
 			return err
 		}
@@ -160,6 +181,9 @@ func Service(ctx context.Context, operation, binary, config, mode string) error 
 
 // ValidateServiceMode rejects unknown startup modes on every platform.
 func ValidateServiceMode(mode string) error {
+	if mode == "hybrid" {
+		return errors.New("hybrid uses separate User and System profiles; install them with control machines add --service hybrid")
+	}
 	if mode != "" && mode != "auto" && mode != "user" && mode != "system" && mode != "process" {
 		return errors.New("service mode must be auto, user, system, or process")
 	}

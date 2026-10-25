@@ -55,7 +55,7 @@ func (c Client) openClipboard(ctx context.Context, target, method string, q clip
 	var conn net.Conn
 	var data json.RawMessage
 	if peer != nil {
-		conn, data, err = peer.OpenRPC(ctx, target, method, q)
+		conn, data, err = openPeerRPC(ctx, peer, target, method, q)
 	} else {
 		u := strings.TrimRight(c.URL, "/") + "/v1/clipboard?" + url.Values{"target": {target}, "method": {method}}.Encode()
 		u = strings.Replace(strings.Replace(u, "https://", "wss://", 1), "http://", "ws://", 1)

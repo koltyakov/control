@@ -20,9 +20,13 @@ type Command struct {
 }
 
 type Config struct {
-	Name                   string             `json:"name"`
-	Gateway                string             `json:"gateway"`
-	Token                  string             `json:"token,omitempty"`
+	Name    string `json:"name"`
+	Gateway string `json:"gateway"`
+	Token   string `json:"token,omitempty"`
+	// InstructionOnly requires an exact grant even from account clients.
+	// Hybrid system profiles enable it and retain a private local API.
+	InstructionOnly        bool               `json:"instructionOnly,omitempty"`
+	HybridSystem           bool               `json:"hybridSystem,omitempty"`
 	DataDir                string             `json:"dataDir"`
 	WorkDir                string             `json:"workDir"`
 	Listen                 string             `json:"listen,omitempty"`
@@ -86,6 +90,9 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func (c *Config) defaults() error {
+	if c.HybridSystem && !c.InstructionOnly {
+		return errors.New("hybridSystem requires instructionOnly")
+	}
 	if c.Name == "" || c.Gateway == "" || c.Token == "" {
 		return errors.New("name, gateway, and token are required")
 	}

@@ -16,10 +16,13 @@ import (
 )
 
 func TestWindowsInstallerParsesAndLoadsWholeResponse(t *testing.T) {
-	for _, mode := range []string{"", "user", "system"} {
+	for _, mode := range []string{"", "user", "system", "hybrid", "hybrid-system"} {
 		for _, link := range []string{"https://gateway.example/install/token", "https://gateway.example/日本'$path/install/token"} {
 			t.Run(mode+"/"+link, func(t *testing.T) {
 				invitation := Invitation{ServiceMode: mode, AutoName: true, Asset: update.Asset{OS: "windows", Arch: "amd64", SHA256: strings.Repeat("a", 64)}}
+				if mode == "hybrid-system" {
+					invitation.ServiceMode, invitation.HybridRole, invitation.HybridID = "system", "system", "fixture"
+				}
 				script, err := Script(invitation, link)
 				if err != nil {
 					t.Fatal(err)

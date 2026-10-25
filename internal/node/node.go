@@ -183,7 +183,7 @@ func New(cfg Config) (*Node, error) {
 	}
 	n.Peer = transport.New(transport.Config{
 		Gateway: cfg.Gateway, Token: cfg.Token, Identity: id, RelayOnly: cfg.RelayOnly, ICEServers: cfg.ICEServers,
-		Node: model.Node{ID: id.ID, Name: cfg.Name, PublicKey: id.Public, OS: runtime.GOOS, Labels: cfg.Labels, Capabilities: n.Capabilities(), RunAs: processutil.RunAs(), GatewayWake: accountMayCall(cfg.Allow, "network.wake")},
+		Node: model.Node{ID: id.ID, Name: cfg.Name, PublicKey: id.Public, OS: runtime.GOOS, Labels: cfg.Labels, Capabilities: n.Capabilities(), RunAs: processutil.RunAs(), InstructionOnly: cfg.InstructionOnly, GatewayWake: !cfg.InstructionOnly && accountMayCall(cfg.Allow, "network.wake")},
 	}, n.handle)
 	ready = true
 	return n, nil

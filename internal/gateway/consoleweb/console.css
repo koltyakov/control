@@ -314,6 +314,38 @@ main {
 .menu-item .icon {
   color: var(--muted);
 }
+.machine-menu {
+  width: 192px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+}
+.machine-menu .menu-item {
+  background: transparent;
+}
+:where(:root:not([data-keyboard])) .machine-menu .menu-item:hover,
+:where([data-keyboard]) .machine-menu .menu-item:focus-visible {
+  background: var(--soft);
+}
+.machine-menu .destructive {
+  color: var(--red);
+}
+:where(:root:not([data-keyboard])) .machine-menu .destructive:hover,
+:where([data-keyboard]) .machine-menu .destructive:focus-visible {
+  background: var(--red-soft);
+}
+.menu-separator {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--border);
+}
+.machine-menu-button {
+  margin-left: auto;
+}
+.machine-menu-button[aria-expanded="true"] {
+  background: var(--soft);
+  color: var(--text);
+}
 .menu-theme {
   display: flex;
   align-items: center;
@@ -756,6 +788,17 @@ meter:-moz-meter-sub-sub-optimum::-moz-meter-bar {
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
+.resource-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.resource-label .icon,
+.sort-button > .icon {
+  width: 14px;
+  height: 14px;
+}
 .gateway-metric .resource span {
   display: none;
 }
@@ -951,13 +994,19 @@ td strong {
   min-width: 0;
 }
 .context-tag {
+  display: inline-flex;
+  align-items: center;
   flex-shrink: 0;
+  height: 19px;
   padding: 0 6px;
   border: 1px solid var(--border);
   border-radius: 4px;
+  background: transparent;
   color: var(--muted);
   font-size: 11px;
+  font-weight: 400;
   line-height: 17px;
+  white-space: nowrap;
 }
 .machine-name {
   display: block;

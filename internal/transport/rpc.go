@@ -122,7 +122,7 @@ func (p *Peer) Select(ctx context.Context, args json.RawMessage) (model.Node, er
 	}
 	candidates := []model.Node{}
 	for _, peer := range nodes {
-		if !peer.Online || peer.Disabled || peer.ControlPending {
+		if !peer.Online || peer.Disabled || peer.ControlPending || peer.InstructionOnly {
 			continue
 		}
 		matches := true

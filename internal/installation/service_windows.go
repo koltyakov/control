@@ -157,11 +157,15 @@ func platformService(ctx context.Context, operation, binary, config, mode string
 			return true, err
 		}
 		if s == nil {
+			account := `NT AUTHORITY\LocalService`
+			if cfg.HybridSystem {
+				account = "LocalSystem"
+			}
 			s, err = m.CreateService(WindowsServiceName(config), binary, mgr.Config{
 				DisplayName:      "Control node: " + cfg.Name,
 				Description:      "Control peer execution node",
 				StartType:        mgr.StartAutomatic,
-				ServiceStartName: `NT AUTHORITY\LocalService`,
+				ServiceStartName: account,
 				SidType:          windows.SERVICE_SID_TYPE_UNRESTRICTED,
 			}, "__service", config)
 			if err != nil {
@@ -173,6 +177,9 @@ func platformService(ctx context.Context, operation, binary, config, mode string
 		if err != nil {
 			return true, err
 		}
+		if cfg.HybridSystem && serviceConfig.ServiceStartName != "LocalSystem" {
+			return true, errors.New("hybrid system service must use LocalSystem; refusing to reuse another service account")
+		}
 		if serviceConfig.StartType != mgr.StartAutomatic || serviceConfig.SidType != windows.SERVICE_SID_TYPE_UNRESTRICTED {
 			serviceConfig.StartType = mgr.StartAutomatic
 			serviceConfig.SidType = windows.SERVICE_SID_TYPE_UNRESTRICTED
@@ -180,8 +187,10 @@ func platformService(ctx context.Context, operation, binary, config, mode string
 				return true, err
 			}
 		}
-		if err = grantServiceSelfRemoval(ctx, s, binary, config); err != nil {
-			return true, err
+		if !cfg.HybridSystem {
+			if err = grantServiceSelfRemoval(ctx, s, binary, config); err != nil {
+				return true, err
+			}
 		}
 		if err = s.SetRecoveryActions([]mgr.RecoveryAction{
 			{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
@@ -304,6 +313,11 @@ func prepareServiceFiles(ctx context.Context, binary, config string, cfg node.Co
 	}
 	if err = f.Close(); err != nil {
 		return err
+	}
+	if cfg.HybridSystem {
+		// LocalSystem needs no LocalService write grants. In particular, another
+		// LocalService process must not be able to replace this executable.
+		return nil
 	}
 	// Grant only the runtime files, never admin.json or the whole user profile.
 	for _, path := range []string{filepath.Dir(config), binary, config} {

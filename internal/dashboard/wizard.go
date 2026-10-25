@@ -48,7 +48,7 @@ type invitationStatusResult struct {
 var registrationName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
 var platformNames = []string{"macOS", "Windows", "Linux"}
 var platformOS = []string{"darwin", "windows", "linux"}
-var startupModes = []string{"user", "system"}
+var startupModes = []string{"user", "system", "hybrid"}
 
 func (m view) createInvitation() tea.Cmd {
 	w := *m.wizard
@@ -189,9 +189,11 @@ func (m view) updateRegistration(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "context":
 			switch key {
-			case "up", "down", "k", "j", "tab":
+			case "up", "k":
+				w.context = (w.context + len(startupModes) - 1) % len(startupModes)
+			case "down", "j", "tab":
 				w.context = (w.context + 1) % len(startupModes)
-			case "1", "2":
+			case "1", "2", "3":
 				w.context = int(key[0] - '1')
 			case "enter":
 				w.step, w.err = "creating", ""
@@ -264,7 +266,7 @@ func (m view) registrationView() tea.View {
 	case "context":
 		add("Startup context for "+w.name+" on "+platformNames[w.platform], "37")
 		add("", "")
-		for i, name := range []string{"User context", "System context"} {
+		for i, name := range []string{"User context", "System context", "Hybrid"} {
 			prefix, style := "  ", "37"
 			if i == w.context {
 				prefix, style = paint("❯ ", "1;35", m.color), "1;36"
@@ -272,10 +274,20 @@ func (m view) registrationView() tea.View {
 			add(prefix+paint(fmt.Sprintf("%d  %s", i+1, name), style, m.color), "")
 		}
 		add("", "")
-		if w.context == 0 {
+		switch w.context {
+		case 0:
 			add("Runs as your user, with access to your files and credentials.", "2")
 			add("May go offline after logout. Linux needs linger to stay online.", "33")
-		} else {
+		case 2:
+			add("User by default, plus an isolated System companion.", "2")
+			add("System work needs an exact instruction grant. No automatic fallback.", "2")
+			add("User may stop after logout; System remains an explicit target.", "2")
+			if w.platform == 1 {
+				add("Requires Administrator PowerShell. System runs as LocalSystem.", "33")
+			} else {
+				add("Run as your user. Only the System installer uses sudo.", "33")
+			}
+		default:
 			add("Starts at boot and stays online after logout.", "2")
 			if w.platform == 1 {
 				add("Requires Administrator PowerShell. Runs as LocalService.", "33")
@@ -307,7 +319,7 @@ func (m view) registrationView() tea.View {
 		shell := "Bash"
 		if w.platform == 1 {
 			shell = "PowerShell as the intended user"
-			if w.context == 1 {
+			if w.context != 0 {
 				shell = "Administrator PowerShell"
 			}
 		}

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/gofrs/flock"
@@ -20,6 +21,7 @@ import (
 	"github.com/koltyakov/control/internal/enrollment"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/installation"
+	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/node"
 	"github.com/koltyakov/control/internal/store"
 	"golang.org/x/term"
@@ -187,6 +189,7 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 	link := f.String("url", "", "one-time installation URL")
 	requireAutoName := f.Bool("auto-name", false, "require an automatic-name invitation")
 	firewall := f.Bool("firewall", false, "configure Windows firewall rules, requesting UAC elevation if needed")
+	hybridSystem := f.Bool("hybrid-system", false, "require a protected Hybrid System companion invitation")
 	mode := f.String("service", os.Getenv("CONTROL_SERVICE_MODE"), "auto, user (at login), system (at boot), or process; defaults to saved mode")
 	if err := f.Parse(args); err != nil {
 		return err
@@ -222,6 +225,12 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 	pending, err := prepareEnrollment(ctx, config, *link, *requireAutoName)
 	if err != nil {
 		return err
+	}
+	if *hybridSystem != (pending.Invitation.HybridRole == "system") {
+		return errors.New("hybrid system invitations require --hybrid-system and the generated protected installer")
+	}
+	if *hybridSystem && *mode != "system" && (runtime.GOOS != "windows" || *mode != "auto") {
+		return errors.New("hybrid system enrollment requires system startup")
 	}
 	c := client.Admin{URL: strings.TrimRight(*link, "/")}
 	if _, err := os.Stat(config); os.IsNotExist(err) {
@@ -280,9 +289,18 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 	}
 	// Keep a durable executable for recovery before consuming the ticket. The
 	// shell installer deletes its temporary download even when this request fails.
-	binary, err := installation.InstallSelf(ctx)
+	installSelf := installation.InstallSelf
+	if *hybridSystem {
+		installSelf = installation.InstallSystemSelf
+	}
+	binary, err := installSelf(ctx)
 	if err != nil {
 		return err
+	}
+	if *hybridSystem {
+		if err = installation.CheckHybridSystem(ctx, binary, config, *mode); err != nil {
+			return err
+		}
 	}
 	if err = c.JSON(ctx, "POST", "/redeem", q, nil); err != nil {
 		return fmt.Errorf("enrollment pending; resume with control enroll --url using the same link: %w", err)
@@ -293,6 +311,12 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 		}
 		cfg, err = node.LoadConfig(config)
 		if err != nil {
+			return err
+		}
+	}
+	if pending.Invitation.HybridRole == "system" {
+		// Never reuse User state or expose the privileged API on the User port.
+		if cfg, err = configureHybridSystem(config); err != nil {
 			return err
 		}
 	}
@@ -309,6 +333,28 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 	}
 	fmt.Printf("%s is registered and online. Installed %s\n", cfg.Name, binary)
 	return nil
+}
+
+func configureHybridSystem(config string) (node.Config, error) {
+	data, err := os.ReadFile(config)
+	if err != nil {
+		return node.Config{}, err
+	}
+	var fields map[string]json.RawMessage
+	if err = json.Unmarshal(data, &fields); err != nil {
+		return node.Config{}, err
+	}
+	if fields == nil {
+		return node.Config{}, errors.New("hybrid system profile must be a JSON object")
+	}
+	if string(fields["hybridSystem"]) != "true" {
+		fields["listen"] = model.JSON("127.0.0.1:7332")
+	}
+	fields["instructionOnly"], fields["hybridSystem"] = model.JSON(true), model.JSON(true)
+	if err = store.Write(config, fields); err != nil {
+		return node.Config{}, err
+	}
+	return node.LoadConfig(config)
 }
 
 // Preserve all profile fields, including unknown provider settings and an

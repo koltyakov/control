@@ -112,8 +112,12 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	if q.TTLSeconds == 0 {
 		q.TTLSeconds = 900
 	}
-	if q.ServiceMode != "" && q.ServiceMode != "user" && q.ServiceMode != "system" {
-		http.Error(w, "serviceMode must be user, system, or omitted", http.StatusBadRequest)
+	if q.ServiceMode != "" && q.ServiceMode != "user" && q.ServiceMode != "system" && q.ServiceMode != "hybrid" {
+		http.Error(w, "serviceMode must be user, system, hybrid, or omitted", http.StatusBadRequest)
+		return
+	}
+	if q.ServiceMode == "hybrid" && !q.AutoName && len(enrollment.SystemName(q.Name)) > 63 {
+		http.Error(w, "hybrid names must be at most 56 characters to leave room for -system", http.StatusBadRequest)
 		return
 	}
 	if q.TTLSeconds < 60 || q.TTLSeconds > 86400 {
@@ -171,6 +175,17 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	ticket := base64.RawURLEncoding.EncodeToString(secret[:])
 	now := time.Now().UTC()
 	i := installation{Invitation: enrollment.Invitation{UserID: p.UserID, ID: identity.NewID(), Name: q.Name, AutoName: q.AutoName, ServiceMode: q.ServiceMode, Gateway: base, Asset: asset, Assets: assets, Version: version, CreatedAt: now, ExpiresAt: now.Add(time.Duration(q.TTLSeconds) * time.Second)}}
+	var companion installation
+	companionHash := ""
+	if q.ServiceMode == "hybrid" {
+		i.HybridID, i.HybridRole = i.ID, "user"
+		companion = i
+		companion.ID, companion.ServiceMode, companion.HybridRole = identity.NewID(), "system", "system"
+		if !q.AutoName {
+			companion.Name = enrollment.SystemName(q.Name)
+		}
+		companionHash = enrollment.Hash(enrollment.SystemTicket(ticket))
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.clientNameReserved(p.UserID, q.Name) {
@@ -180,6 +195,10 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	for _, n := range g.nodes {
 		if n.UserID == p.UserID && n.Name == q.Name {
 			i.ReplaceID = n.ID
+		}
+		if companionHash != "" && !q.AutoName && n.UserID == p.UserID && n.Name == companion.Name {
+			http.Error(w, "hybrid companion name is already registered; manage that context separately", http.StatusConflict)
+			return
 		}
 	}
 	count := 0
@@ -193,6 +212,17 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 			expired[hash] = old
 			continue
 		}
+		if companionHash != "" && !q.AutoName && g.installationName(old) == companion.Name && !old.Revoked {
+			if old.RedeemedID != "" {
+				http.Error(w, "hybrid companion name is already enrolled; manage that context separately", http.StatusConflict)
+				return
+			}
+			if !q.Force {
+				http.Error(w, enrollment.ErrPendingInvitation.Error(), http.StatusConflict)
+				return
+			}
+			retracted[hash] = old
+		}
 		if !q.AutoName && g.installationName(old) == q.Name && !old.Revoked && old.RedeemedID == "" {
 			if !q.Force {
 				http.Error(w, enrollment.ErrPendingInvitation.Error(), http.StatusConflict)
@@ -205,12 +235,31 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 		}
 		count++
 	}
-	if count >= 4096 {
+	// Replacing a pending Hybrid invitation also retracts its pending companion.
+	for _, previous := range retracted {
+		if previous.HybridRole != "user" {
+			continue
+		}
+		for h, candidate := range g.installations {
+			if candidate.UserID == p.UserID && candidate.HybridID == previous.HybridID && !candidate.Revoked && candidate.RedeemedID == "" {
+				retracted[h] = candidate
+			}
+		}
+	}
+	if count >= 4096 || (companionHash != "" && count >= 4095) {
 		http.Error(w, "installation registry limit reached", http.StatusConflict)
 		return
 	}
 	hash := enrollment.Hash(ticket)
 	g.installations[hash] = i
+	if companionHash != "" {
+		if !q.AutoName && g.clientNameReserved(p.UserID, companion.Name) {
+			delete(g.installations, hash)
+			http.Error(w, "hybrid companion name is reserved for a client identity", http.StatusConflict)
+			return
+		}
+		g.installations[companionHash] = companion
+	}
 	target, detail := i.Name, osName(q.OS)
 	if i.AutoName {
 		target = "target hostname"
@@ -222,6 +271,9 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 		detail += ", replaced a pending invitation"
 	}
 	persisted := change{invitations: []string{hash}, audit: []AuditEvent{g.auditEventLocked(r, "", "invitation.create", target, i.ID, detail)}}
+	if companionHash != "" {
+		persisted.invitations = append(persisted.invitations, companionHash)
+	}
 	for h, old := range retracted {
 		old.Revoked = true
 		g.installations[h] = old
@@ -233,6 +285,7 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	if err = g.commit(persisted); err != nil {
 		delete(g.installations, hash)
+		delete(g.installations, companionHash)
 		maps.Copy(g.installations, expired)
 		maps.Copy(g.installations, retracted)
 		http.Error(w, "could not persist invitation", 500)
@@ -461,20 +514,34 @@ func (g *Gateway) revokeInstallation(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	i := old
-	i.Revoked = true
-	g.installations[hash] = i
-	err := g.commit(change{invitations: []string{hash}, audit: []AuditEvent{g.auditEventLocked(r, "", "invitation.revoke", g.installationName(i), i.ID, "")}})
-	if err != nil {
-		g.installations[hash] = old
+	previous := map[string]installation{hash: old}
+	if old.HybridRole == "user" {
+		for h, candidate := range g.installations {
+			if candidate.UserID == p.UserID && candidate.HybridID == old.HybridID {
+				previous[h] = candidate
+			}
+		}
 	}
-	peer := g.peers[i.RedeemedID]
+	persisted := change{audit: []AuditEvent{g.auditEventLocked(r, "", "invitation.revoke", g.installationName(old), old.ID, "")}}
+	peers := []*connection{}
+	for h, candidate := range previous {
+		candidate.Revoked = true
+		g.installations[h] = candidate
+		persisted.invitations = append(persisted.invitations, h)
+		if peer := g.peers[candidate.RedeemedID]; peer != nil {
+			peers = append(peers, peer)
+		}
+	}
+	err := g.commit(persisted)
+	if err != nil {
+		maps.Copy(g.installations, previous)
+	}
 	g.mu.Unlock()
 	if err != nil {
 		http.Error(w, "could not persist revocation", 500)
 		return
 	}
-	if peer != nil {
+	for _, peer := range peers {
 		_ = peer.ws.CloseNow()
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -542,6 +609,9 @@ func (g *Gateway) allowInstallation(keyID string, n model.Node) bool {
 		}
 		if keyID == "install:"+i.ID {
 			if i.Revoked || i.RedeemedID != n.ID || g.installationName(i) != n.Name || i.Asset.OS != n.OS || i.Asset.Arch != n.Software.Arch {
+				return false
+			}
+			if i.HybridRole == "system" && (!n.InstructionOnly || n.RunAs != "system") {
 				return false
 			}
 			allowed = true

@@ -203,7 +203,7 @@ func peerCall(ctx context.Context, peer *transport.Peer, target, method string, 
 		}
 		data = model.JSON(value)
 	} else {
-		conn, response, err := peer.OpenRPC(ctx, target, method, params)
+		conn, response, err := openPeerRPC(ctx, peer, target, method, params)
 		if err != nil {
 			return err
 		}
@@ -220,7 +220,7 @@ func peerDownload(ctx context.Context, peer *transport.Peer, a model.Artifact, o
 	if a.Node == "" || offset < 0 || offset > a.Size {
 		return errors.New("invalid artifact node or offset")
 	}
-	conn, data, err := peer.OpenRPC(ctx, a.Node, "artifacts.open", map[string]any{"id": a.ID, "offset": offset, "grant": a.Grant})
+	conn, data, err := openPeerRPC(ctx, peer, a.Node, "artifacts.open", map[string]any{"id": a.ID, "offset": offset, "grant": a.Grant})
 	if err != nil {
 		return err
 	}

@@ -41,6 +41,8 @@ Open the gateway's HTTPS URL and sign in with the fleet account's exact, case-se
 
 A pending invitation name conflict offers an explicit checkbox to retract the existing invitation on the next submission. It never forces or retries a request automatically. A lost mutation response instructs the user to refresh and inspect state before submitting again.
 
+Right-click a machine row on Overview or Machines, or use its three-dot Actions button, to view details, rename, enable/disable, wake when eligible, or unregister. Rename and lifecycle actions keep their existing confirmations, including the typed name for unregister. Shift+F10 or the Context Menu key opens the menu from a focused machine name; arrow keys, Home, and End move between actions, and Escape closes it. Shift+right-click keeps the browser's native context menu.
+
 The console does not submit tasks, open peer connections, read task logs/results, stream artifacts, or manage host-local tunnels. Account views contain only their fleet. The operator can administer users and gateway-wide updates, but its machine view and machine actions remain scoped to the legacy operator fleet, not all users' machines.
 
 ## Refresh and accessibility

@@ -3,6 +3,7 @@ package enrollment
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,20 +31,24 @@ type Request struct {
 }
 
 type Invitation struct {
-	UserID      string         `json:"userId,omitempty"`
-	ID          string         `json:"id"`
-	Name        string         `json:"name"`
-	AutoName    bool           `json:"autoName,omitempty"` // Hostname selected and signed by the target installer.
-	Gateway     string         `json:"gateway"`
-	ServiceMode string         `json:"serviceMode,omitempty"`
-	Asset       update.Asset   `json:"asset"`            // Selected binary; first candidate until architecture selection.
-	Assets      []update.Asset `json:"assets,omitempty"` // Pinned candidates for architecture-detecting installers.
-	Version     string         `json:"version"`
-	ExpiresAt   time.Time      `json:"expiresAt"`
-	CreatedAt   time.Time      `json:"createdAt"`
-	RedeemedID  string         `json:"redeemedId,omitempty"`
-	ReplaceID   string         `json:"replaceId,omitempty"` // Existing identity reserved by a same-name invitation.
-	Revoked     bool           `json:"revoked"`
+	UserID      string `json:"userId,omitempty"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	AutoName    bool   `json:"autoName,omitempty"` // Hostname selected and signed by the target installer.
+	Gateway     string `json:"gateway"`
+	ServiceMode string `json:"serviceMode,omitempty"`
+	// HybridID links independently enrolled User and System contexts. The
+	// companion uses a separate ticket, credential, identity, and profile.
+	HybridID   string         `json:"hybridId,omitempty"`
+	HybridRole string         `json:"hybridRole,omitempty"`
+	Asset      update.Asset   `json:"asset"`            // Selected binary; first candidate until architecture selection.
+	Assets     []update.Asset `json:"assets,omitempty"` // Pinned candidates for architecture-detecting installers.
+	Version    string         `json:"version"`
+	ExpiresAt  time.Time      `json:"expiresAt"`
+	CreatedAt  time.Time      `json:"createdAt"`
+	RedeemedID string         `json:"redeemedId,omitempty"`
+	ReplaceID  string         `json:"replaceId,omitempty"` // Existing identity reserved by a same-name invitation.
+	Revoked    bool           `json:"revoked"`
 }
 
 type Link struct {
@@ -65,6 +70,15 @@ func Hash(secret string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// SystemTicket derives a separate, unguessable companion ticket without storing
+// either installation URL in the gateway database.
+func SystemTicket(ticket string) string {
+	h := sha256.Sum256([]byte("control-hybrid-system-v1\x00" + ticket))
+	return base64.RawURLEncoding.EncodeToString(h[:])
+}
+
+func SystemName(name string) string { return name + "-system" }
+
 func Message(ticket string, r Redemption) []byte {
 	b, _ := json.Marshal(struct {
 		Purpose, Ticket, Credential string
@@ -83,9 +97,15 @@ func (i Invitation) ResolveName(hostname string) (string, error) {
 	name := i.Name
 	if i.AutoName {
 		name = hostname
+		if i.HybridRole == "system" {
+			name = SystemName(name)
+		}
 	}
 	if !machineName.MatchString(name) {
 		return "", fmt.Errorf("machine name %q must be 1..63 letters, digits, dots, underscores, or hyphens and start with a letter or digit; use an explicit invitation name if the hostname is invalid", name)
+	}
+	if i.HybridRole == "user" && len(SystemName(name)) > 63 {
+		return "", errors.New("hybrid machine names must be at most 56 characters to leave room for -system")
 	}
 	return name, nil
 }

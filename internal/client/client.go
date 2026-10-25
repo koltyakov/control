@@ -195,7 +195,7 @@ func (c Client) Tunnel(ctx context.Context, target, address string) (net.Conn, e
 		if target == "" {
 			return nil, errors.New("standalone tunnels require a target machine")
 		}
-		conn, err = peer.OpenTCP(ctx, target, address)
+		conn, err = openPeerTCP(ctx, peer, target, address)
 		if err != nil {
 			return nil, err
 		}

@@ -21,9 +21,25 @@ func writeManaged(path string, content []byte) error {
 	return store.Bytes(path, content, 0600)
 }
 func InstallSelf(ctx context.Context) (string, error) {
+	return installSelf(ctx, true)
+}
+
+// InstallSystemSelf installs a private service executable without adding its
+// administrator-only directory to the interactive user's PATH.
+func InstallSystemSelf(ctx context.Context) (string, error) {
+	return installSelf(ctx, false)
+}
+
+func installSelf(ctx context.Context, userPath bool) (string, error) {
 	dest, err := BinPath()
 	if err != nil {
 		return "", err
+	}
+	finish := func() (string, error) {
+		if userPath {
+			return dest, addUserPath(filepath.Dir(dest))
+		}
+		return dest, nil
 	}
 	source, err := os.Executable()
 	if err != nil {
@@ -34,7 +50,7 @@ func InstallSelf(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if source == dest {
-		return dest, addUserPath(filepath.Dir(dest))
+		return finish()
 	}
 	info := buildinfo.Current()
 	if old, err := os.Stat(dest); err == nil {
@@ -46,7 +62,7 @@ func InstallSelf(ctx context.Context) (string, error) {
 			return "", errors.New("existing executable is not a Control installation: " + dest)
 		}
 		if prior.SHA256 == info.SHA256 {
-			return dest, addUserPath(filepath.Dir(dest))
+			return finish()
 		}
 	} else if !os.IsNotExist(err) {
 		return "", err
@@ -64,5 +80,5 @@ func InstallSelf(ctx context.Context) (string, error) {
 	if err = update.SaveBinary(f, dest, a); err != nil {
 		return "", err
 	}
-	return dest, addUserPath(filepath.Dir(dest))
+	return finish()
 }

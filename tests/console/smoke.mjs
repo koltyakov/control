@@ -136,6 +136,62 @@ async function pageLink(page, hash) {
   );
 }
 
+async function assertContextChips(page) {
+  const chips = await page.locator(".machine-table .context-tag").evaluateAll(
+    (elements) => elements.map((element) => {
+      const computed = getComputedStyle(element);
+      const properties = [
+        "backgroundColor", "color", "borderTopColor", "borderTopWidth",
+        "borderTopStyle", "borderRadius", "height", "paddingLeft",
+        "paddingRight", "fontSize", "fontWeight", "lineHeight", "whiteSpace",
+      ];
+      return {
+        label: element.textContent,
+        style: Object.fromEntries(properties.map((key) => [key, computed[key]])),
+      };
+    }),
+  );
+  const system = chips.find((chip) => chip.label === "System");
+  const user = chips.find((chip) => chip.label === "User");
+  assert.ok(system && user, "Both execution contexts should have chips");
+  assert.deepEqual(system.style, user.style, "System and User chips should share the same outlined treatment");
+  assert.equal(system.style.backgroundColor, "rgba(0, 0, 0, 0)");
+  assert.equal(system.style.borderTopWidth, "1px");
+  assert.equal(system.style.borderTopStyle, "solid");
+  assert.equal(system.style.height, "19px");
+  assert.equal(system.style.whiteSpace, "nowrap");
+}
+
+async function assertResourceIcons(page, gateway = false) {
+  const labels = page.locator(
+    gateway
+      ? ".gateway-metrics .resource-label"
+      : ".machine-table .sort-button:has(svg)",
+  );
+  assert.deepEqual(
+    await labels.evaluateAll((elements) => elements.map((element) => {
+      const svg = element.firstElementChild;
+      return {
+        label: element.childNodes[1].textContent,
+        icon: svg.tagName,
+        hidden: svg.getAttribute("aria-hidden"),
+        width: getComputedStyle(svg).width,
+        height: getComputedStyle(svg).height,
+        visible: getComputedStyle(svg).opacity,
+      };
+    })),
+    ["CPU", "Memory", gateway ? "State disk" : "Disk"].map((label) => ({
+      label,
+      icon: "svg",
+      hidden: "true",
+      width: "14px",
+      height: "14px",
+      visible: "1",
+    })),
+    "Resource labels should have leading decorative icons",
+  );
+}
+
 try {
   start(
     [
@@ -213,14 +269,159 @@ try {
     .getByRole("button", { name: "browser-worker", exact: true })
     .waitFor();
   assert.equal(await page.locator("#operator-nav").isVisible(), false);
+  await assertResourceIcons(page, true);
+  await assertResourceIcons(page);
   await pageLink(page, "machines");
+  await assertResourceIcons(page);
   await page.locator("#machine-search").fill("not-a-real-machine");
   await page.getByText("No matching machines", { exact: true }).waitFor();
   await page.locator("#machine-search").fill("browser-worker");
-  await page
-    .getByRole("button", { name: "browser-worker", exact: true })
+  const worker = page.getByRole("button", {
+      name: "browser-worker",
+      exact: true,
+    }),
+    actions = page.getByRole("button", {
+      name: "Actions for browser-worker",
+      exact: true,
+    }),
+    machineMenu = page.getByRole("menu", {
+      name: "Actions for browser-worker",
+      exact: true,
+    });
+  let machineMutations = 0;
+  page.on("request", (request) => {
+    if (
+      request.url().includes("/console/api/fleet/nodes/") &&
+      request.method() !== "GET"
+    )
+      machineMutations++;
+  });
+  await worker.click({ button: "right" });
+  await machineMenu.waitFor();
+  await page.keyboard.press("Escape");
+  // Some browsers fire contextmenu while the secondary button is still down.
+  // Releasing that opening press must not light-dismiss the new menu.
+  const workerBox = await worker.boundingBox();
+  await page.mouse.move(
+    workerBox.x + workerBox.width / 2,
+    workerBox.y + workerBox.height / 2,
+  );
+  await page.mouse.down({ button: "right" });
+  await worker.dispatchEvent("contextmenu", {
+    clientX: workerBox.x + workerBox.width / 2,
+    clientY: workerBox.y + workerBox.height / 2,
+    button: 2,
+  });
+  await machineMenu.waitFor();
+  await page.mouse.up({ button: "right" });
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  assert.equal(
+    await machineMenu.isVisible(),
+    true,
+    "Releasing the right button dismissed the menu",
+  );
+  assert.deepEqual(await machineMenu.getByRole("menuitem").allTextContents(), [
+    "View details",
+    "Rename",
+    "Disable",
+    "Unregister",
+  ]);
+  const highlightedActions = () =>
+    machineMenu.getByRole("menuitem").evaluateAll((items) =>
+      items
+        .filter((item) => getComputedStyle(item).backgroundColor !== "rgba(0, 0, 0, 0)")
+        .map((item) => item.textContent),
+    );
+  await machineMenu
+    .getByRole("menuitem", { name: "Rename", exact: true })
+    .hover();
+  assert.deepEqual(
+    await highlightedActions(),
+    ["Rename"],
+    "Mouse hover should not leave View details highlighted",
+  );
+  await page.keyboard.press("End");
+  assert.deepEqual(
+    await highlightedActions(),
+    ["Unregister"],
+    "Keyboard focus should be the only highlighted action",
+  );
+  await machineMenu
+    .getByRole("menuitem", { name: "Disable", exact: true })
+    .hover();
+  assert.deepEqual(
+    await highlightedActions(),
+    ["Disable"],
+    "Pointer movement should clear the old keyboard highlight",
+  );
+  await page.keyboard.press("Home");
+  assert.equal(await page.locator("#dialog").isVisible(), false);
+  assert.equal(
+    await machineMenu
+      .getByRole("menuitem", { name: "Wake", exact: true })
+      .count(),
+    0,
+  );
+  // Polling replaces the table but must preserve the open menu and its focus.
+  await page.evaluate(() => refresh(true));
+  assert.equal(await machineMenu.isVisible(), true);
+  assert.equal(await actions.getAttribute("aria-expanded"), "true");
+  await page.keyboard.press("Escape");
+  assert.equal(
+    await worker.evaluate((element) => element === document.activeElement),
+    true,
+  );
+  await worker.press("Shift+F10");
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.getByLabel("Type browser-worker to confirm").waitFor();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.equal(
+    machineMutations,
+    0,
+    "Opening or cancelling a menu action mutated the machine",
+  );
+  await actions.click();
+  await machineMenu.waitFor();
+  await actions.click();
+  assert.equal(
+    await machineMenu.isVisible(),
+    false,
+    "The actions button should toggle the menu closed",
+  );
+  await actions.click();
+  await machineMenu
+    .getByRole("menuitem", { name: "Disable", exact: true })
     .click();
-  await page.getByRole("button", { name: "Rename", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Disable machine", exact: true })
+    .click();
+  await page
+    .locator(".machine-table")
+    .getByText("Disabled", { exact: true })
+    .waitFor();
+  await actions.click();
+  await machineMenu
+    .getByRole("menuitem", { name: "Enable", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Enable machine", exact: true })
+    .click();
+  await page
+    .locator(".machine-table")
+    .getByText("Disabled", { exact: true })
+    .waitFor({ state: "hidden" });
+  assert.equal(
+    machineMutations,
+    2,
+    "Lifecycle actions should each submit once",
+  );
+  await worker.click({ button: "right" });
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await page
+    .getByRole("dialog", { name: "Rename browser-worker", exact: true })
+    .waitFor();
   await page.locator("#modal-form input[name=name]").fill("renamed-worker");
   await page.locator("#modal-form button[type=submit]").click();
   await page.locator("#dialog").waitFor({ state: "hidden" });
@@ -394,7 +595,9 @@ try {
       id: "visual-fixture-" + i,
       name,
       os: ["linux", "darwin", "windows"][i % 3],
+      runAs: i === 5 ? undefined : i % 2 === 0 ? "system" : "user",
       online: i !== 3,
+      wakeVia: i === 3 ? "build-linux-01" : undefined,
       status: i === 3 ? "offline" : "summary",
       activeCount: i === 2 ? 3 : 0,
       disabled: i === 4,
@@ -416,6 +619,7 @@ try {
     .getByRole("button", { name: "build-linux-01", exact: true })
     .waitFor();
   await page.locator("#toast").waitFor({ state: "hidden" });
+  await assertContextChips(page);
   await page.locator('[data-action="sort"][data-sort="cpu"]').click();
   assert.equal(
     await page.locator(".machine-name").first().textContent(),
@@ -437,6 +641,30 @@ try {
     "workstation",
   );
   await page.locator('[data-action="sort"][data-sort="name"]').click();
+  const offline = page.getByRole("button", {
+    name: "staging-linux",
+    exact: true,
+  });
+  await offline.dispatchEvent("contextmenu", { clientX: 1438, clientY: 998 });
+  await page.getByRole("menuitem", { name: "Wake", exact: true }).waitFor();
+  const menuBox = await page.locator("#machine-menu").boundingBox();
+  assert.ok(
+    menuBox.x >= 8 &&
+      menuBox.y >= 8 &&
+      menuBox.x + menuBox.width <= 1432 &&
+      menuBox.y + menuBox.height <= 992,
+    "Context menu extends beyond the viewport",
+  );
+  await page.keyboard.press("Escape");
+  await page
+    .getByRole("button", {
+      name: "Actions for test-runner-with-a-long-routing-name",
+      exact: true,
+    })
+    .click();
+  await page.getByRole("menuitem", { name: "Enable", exact: true }).waitFor();
+  await page.locator("#page-title").click();
+  assert.equal(await page.locator("#machine-menu").isVisible(), false);
   if (process.env.CONTROL_CONSOLE_SCREENSHOTS) {
     await mkdir(process.env.CONTROL_CONSOLE_SCREENSHOTS, { recursive: true });
     await page.screenshot({
@@ -450,6 +678,9 @@ try {
   await page.locator("#account-button").click();
   await page.locator('#account-menu [data-theme-choice="light"]').click();
   assert.equal(await page.locator("html").getAttribute("data-theme"), "light");
+  await assertContextChips(page);
+  await assertResourceIcons(page, true);
+  await assertResourceIcons(page);
   await page.keyboard.press("Escape");
   await page.locator("#account-menu").waitFor({ state: "hidden" });
   if (process.env.CONTROL_CONSOLE_SCREENSHOTS)
@@ -470,6 +701,14 @@ try {
     );
   }
   await page.setViewportSize({ width: 390, height: 844 });
+  await page
+    .getByRole("button", { name: "Actions for build-linux-01", exact: true })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "View details", exact: true })
+    .click();
+  await page.locator("dialog.machine-drawer").waitFor();
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
   assert.equal(await page.locator(".profile").isVisible(), true);
   assert.equal(
     await page.locator(".machine-table .cpu-column").first().isVisible(),
@@ -544,7 +783,7 @@ try {
   await page.getByText("Selected version", { exact: true }).waitFor();
   assert.deepEqual(errors, []);
   console.log(
-    "Console browser smoke passed: login, fleet isolation, search, rename, escaped keys, enrollment commands, confirmed invitation replacement, stale views, themes, mobile layout, password change, logout, and operator pages.",
+    "Console browser smoke passed: login, fleet isolation, search, machine context menus, confirmed lifecycle actions, rename, escaped keys, enrollment commands, confirmed invitation replacement, stale views, themes, mobile layout, password change, logout, and operator pages.",
   );
 } catch (error) {
   console.error(logs.join(""));

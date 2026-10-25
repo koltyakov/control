@@ -20,7 +20,7 @@ func (c Client) reverseListener(ctx context.Context, target, listen string) (net
 	var conn net.Conn
 	var address string
 	if peer != nil {
-		conn, address, err = peer.OpenTCPListener(ctx, target, listen)
+		conn, address, err = openPeerListener(ctx, peer, target, listen)
 		if err != nil {
 			return nil, err
 		}
