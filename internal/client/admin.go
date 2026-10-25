@@ -59,18 +59,26 @@ func (c Admin) Role(ctx context.Context) string {
 // AuthRole preserves authentication and connection errors for explicit commands.
 // Role is used by help, where unavailable credentials simply hide management.
 func (c Admin) AuthRole(ctx context.Context) (string, error) {
+	role, _, err := c.Account(ctx)
+	return role, err
+}
+
+// Account returns the credential's role and the browser username of a management
+// key. Gateways older than the username field return an empty name.
+func (c Admin) Account(ctx context.Context) (role, username string, err error) {
 	if c.Key == "" {
-		return "", fmt.Errorf("gateway credential is not configured; run control login --gateway URL")
+		return "", "", fmt.Errorf("gateway credential is not configured; run control login --gateway URL")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	var info struct {
-		Role string `json:"role"`
+		Role     string `json:"role"`
+		Username string `json:"username"`
 	}
 	if err := c.request(ctx, http.MethodGet, "/v1/auth", nil, 0, "application/json", &info); err != nil {
-		return "", fmt.Errorf("authenticate with gateway %s: %w", c.URL, err)
+		return "", "", fmt.Errorf("authenticate with gateway %s: %w", c.URL, err)
 	}
-	return info.Role, nil
+	return info.Role, info.Username, nil
 }
 
 func (c Admin) JSON(ctx context.Context, method, path string, params, result any) error {

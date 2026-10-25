@@ -38,6 +38,7 @@ const icons = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   close: '<path d="m6 6 12 12M6 18 18 6"/>',
   arrow: '<path d="M4 12h16m-6-6 6 6-6 6"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>',
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   search: '<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/>',
   chevron: '<path d="m7 10 5 5 5-5"/>',
@@ -234,6 +235,7 @@ function showLogin() {
   $("#page-content").replaceChildren();
   $("#app").hidden = true;
   $("#login").hidden = false;
+  drawMesh();
   history.replaceState(null, "", "/login");
   $("#login-form input[name=password]").value = "";
   $("#login-form input[name=username]").focus();
@@ -263,6 +265,9 @@ $("#login-form").addEventListener("submit", async (event) => {
     button = $("button[type=submit]", form);
   const fields = new FormData(form);
   button.disabled = true;
+  form.setAttribute("aria-busy", "true");
+  $(".login-submit", form).textContent = "Signing in…";
+  form.classList.remove("rejected");
   $("#login-error").textContent = "";
   try {
     const session = await api("login", "POST", {
@@ -273,9 +278,310 @@ $("#login-form").addEventListener("submit", async (event) => {
     showApp(session);
   } catch (error) {
     $("#login-error").textContent = error.message;
+    form.classList.add("rejected");
   } finally {
     button.disabled = false;
+    form.removeAttribute("aria-busy");
+    $(".login-submit", form).textContent = "Sign in";
   }
+});
+$("#login-form").addEventListener("animationend", (event) => {
+  if (event.animationName === "shake")
+    event.currentTarget.classList.remove("rejected");
+});
+
+// The sign-in backdrop is a new random peer mesh on every view. A few hubs are
+// scattered away from the card; node density falls off from them as a sum of
+// Gaussians. Variable-radius Poisson-disk sampling places nodes, dense near
+// hubs and sparse between them, and links form their relative neighborhood
+// graph, which is connected and planar, so sparse regions get long bridges.
+// Packets favor busy links near hubs and stay outside the card.
+const svgNS = "http://www.w3.org/2000/svg";
+const meshFlows = 8;
+
+function svgElement(name, attributes) {
+  const element = document.createElementNS(svgNS, name);
+  for (const [key, value] of Object.entries(attributes))
+    element.setAttribute(key, value);
+  return element;
+}
+
+// Dart throwing around active samples (Bridson) with a spacing that varies
+// by position. Meshes stay under a few hundred nodes, so a direct scan is fast.
+function poissonDisk(width, height, spacing, seeds) {
+  const points = [...seeds],
+    active = [...seeds];
+  const fits = (point) =>
+    points.every(
+      (other) =>
+        Math.hypot(other[0] - point[0], other[1] - point[1]) >=
+        (spacing(point) + spacing(other)) / 2,
+    );
+  while (active.length) {
+    const index = Math.floor(Math.random() * active.length),
+      [x, y] = active[index],
+      radius = spacing([x, y]);
+    let placed = false;
+    for (let attempt = 0; attempt < 30 && !placed; attempt++) {
+      const angle = Math.random() * 2 * Math.PI,
+        distance = radius * (1 + Math.random()),
+        point = [
+          x + distance * Math.cos(angle),
+          y + distance * Math.sin(angle),
+        ];
+      if (
+        point[0] >= 0 &&
+        point[0] < width &&
+        point[1] >= 0 &&
+        point[1] < height &&
+        fits(point)
+      ) {
+        points.push(point);
+        active.push(point);
+        placed = true;
+      }
+    }
+    if (!placed) active.splice(index, 1);
+  }
+  return points;
+}
+
+// An edge survives when no third node is closer to both of its endpoints.
+function neighborhoodGraph(points) {
+  const distance = (a, b) =>
+    Math.hypot(points[a][0] - points[b][0], points[a][1] - points[b][1]);
+  const edges = [];
+  for (let a = 0; a < points.length; a++)
+    for (let b = a + 1; b < points.length; b++) {
+      const length = distance(a, b);
+      let empty = true;
+      for (let c = 0; c < points.length && empty; c++)
+        if (
+          c !== a &&
+          c !== b &&
+          Math.max(distance(a, c), distance(b, c)) < length
+        )
+          empty = false;
+      if (empty) edges.push({ a, b, length });
+    }
+  return edges;
+}
+
+function drawMesh() {
+  const [base, motion] = document.querySelectorAll(".login-backdrop");
+  // Layout offsets ignore the entrance transforms still running on the layers
+  // and card. The layers extend 16px past the page on every side.
+  const page = $("#login"),
+    main = $(".login-main", page),
+    card = $(".login-card", page);
+  if (!page.clientWidth || !page.clientHeight) return;
+  const width = page.clientWidth + 32,
+    height = page.clientHeight + 32;
+  for (const layer of [base, motion])
+    layer.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  const left = main.offsetLeft + card.offsetLeft + 16 - 24,
+    top = main.offsetTop + card.offsetTop + 16 - 24,
+    right = left + card.offsetWidth + 48,
+    bottom = top + card.offsetHeight + 48;
+  const underCard = ([x, y]) => x > left && x < right && y > top && y < bottom;
+
+  const diagonal = Math.hypot(width, height),
+    sigma = diagonal * 0.11,
+    separation = Math.min(width, height) * 0.38;
+  const hubs = [];
+  for (let attempt = 0; attempt < 400 && hubs.length < 4; attempt++) {
+    const hub = [
+      width * (0.06 + Math.random() * 0.88),
+      height * (0.08 + Math.random() * 0.84),
+    ];
+    if (
+      !underCard(hub) &&
+      hubs.every(
+        (other) =>
+          Math.hypot(other[0] - hub[0], other[1] - hub[1]) > separation,
+      )
+    )
+      hubs.push(hub);
+  }
+  const influence = ([x, y]) =>
+    Math.max(
+      0,
+      ...hubs.map(([hx, hy]) =>
+        Math.exp(-((x - hx) ** 2 + (y - hy) ** 2) / (2 * sigma * sigma)),
+      ),
+    );
+  const near = diagonal * 0.032,
+    far = diagonal * 0.13,
+    spacing = (point) => far - (far - near) * influence(point);
+  // Nodes may sit just outside the layer so links run off every edge.
+  const margin = far,
+    points = poissonDisk(
+      width + margin * 2,
+      height + margin * 2,
+      ([x, y]) => spacing([x - margin, y - margin]),
+      hubs.map(([x, y]) => [x + margin, y + margin]),
+    ).map(([x, y]) => [x - margin, y - margin]);
+  const weight = points.map(influence),
+    edges = neighborhoodGraph(points);
+
+  // Packets prefer busy links near hubs; no two share an endpoint.
+  const visible = ([x, y]) =>
+    x > 24 && x < width - 24 && y > 24 && y < height - 24 && !underCard([x, y]);
+  const candidates = edges
+    .filter(({ a, b, length }) => {
+      if (length < near * 1.2) return false;
+      for (let t = 0; t <= 1; t += 0.1)
+        if (
+          !visible([
+            points[a][0] + (points[b][0] - points[a][0]) * t,
+            points[a][1] + (points[b][1] - points[a][1]) * t,
+          ])
+        )
+          return false;
+      return true;
+    })
+    .map((edge) => ({
+      edge,
+      key: Math.random() ** (1 / (0.15 + weight[edge.a] + weight[edge.b])),
+    }))
+    .sort((x, y) => y.key - x.key)
+    .map(({ edge }) => edge);
+  const flows = new Set(),
+    used = new Set();
+  for (const edge of candidates) {
+    if (flows.size === meshFlows) break;
+    if (used.has(edge.a) || used.has(edge.b)) continue;
+    flows.add(edge);
+    used.add(edge.a);
+    used.add(edge.b);
+  }
+
+  // Soft color pools and dot fields mark each hub's neighborhood.
+  const pools = [],
+    fields = [];
+  hubs.forEach(([x, y], index) => {
+    const position = { cx: x.toFixed(1), cy: y.toFixed(1) };
+    pools.push(
+      svgElement("circle", {
+        ...position,
+        r: (sigma * 2.2).toFixed(1),
+        fill: `url(#login-glow-${index % 2 ? "b" : "a"})`,
+      }),
+    );
+    fields.push(
+      svgElement("circle", {
+        ...position,
+        r: (sigma * 1.6).toFixed(1),
+        fill: "url(#login-dot-fade)",
+      }),
+    );
+  });
+
+  const links = [],
+    nodes = [],
+    packets = [],
+    peers = [],
+    targets = new Map();
+  let order = 0;
+  for (const edge of edges) {
+    const from = points[edge.a],
+      to = points[edge.b],
+      strength = (weight[edge.a] + weight[edge.b]) / 2;
+    links.push(
+      svgElement("line", {
+        x1: from[0].toFixed(1),
+        y1: from[1].toFixed(1),
+        x2: to[0].toFixed(1),
+        y2: to[1].toFixed(1),
+        "stroke-opacity": (0.14 + strength * 0.4).toFixed(2),
+        class: edge.a < hubs.length || edge.b < hubs.length ? "spoke" : "",
+      }),
+    );
+    if (!flows.has(edge)) continue;
+    // Traffic mostly heads toward the busier end.
+    const toward = weight[edge.b] > weight[edge.a] ? edge.b : edge.a,
+      target = Math.random() < 0.7 ? toward : edge.a + edge.b - toward,
+      source = edge.a + edge.b - target;
+    // Staggered starts with independent periods keep packets out of step.
+    const timing = {
+      "--t": (5.5 + Math.random() * 4).toFixed(2) + "s",
+      "--d": (0.8 + order++ * 0.7 + Math.random() * 0.6).toFixed(2) + "s",
+    };
+    const packet = svgElement("line", {
+      pathLength: 100,
+      x1: points[source][0].toFixed(1),
+      y1: points[source][1].toFixed(1),
+      x2: points[target][0].toFixed(1),
+      y2: points[target][1].toFixed(1),
+    });
+    packets.push([packet, timing]);
+    if (!targets.has(target)) targets.set(target, []);
+    targets.get(target).push(timing);
+  }
+  points.forEach(([x, y], index) => {
+    const position = { cx: x.toFixed(1), cy: y.toFixed(1) };
+    if (index < hubs.length) {
+      nodes.push(svgElement("circle", { ...position, r: 22, class: "halo" }));
+      nodes.push(svgElement("circle", { ...position, r: 7, class: "hub" }));
+    }
+    const timings = targets.get(index);
+    if (timings) {
+      for (const timing of timings)
+        peers.push([
+          svgElement("circle", { ...position, r: 5, class: "ping" }),
+          timing,
+        ]);
+      peers.push([
+        svgElement("circle", { ...position, r: 4.5, class: "peer" }),
+        timings[0],
+      ]);
+    } else if (index >= hubs.length)
+      nodes.push(
+        svgElement("circle", {
+          ...position,
+          r: (2 + weight[index] * 2.5).toFixed(1),
+          class: weight[index] > 0.55 ? "busy" : "",
+        }),
+      );
+  });
+  for (const [element, timing] of [...packets, ...peers])
+    for (const [property, value] of Object.entries(timing))
+      element.style.setProperty(property, value);
+  $(".net-pools", base).replaceChildren(...pools);
+  $("#login-dot-mask", base).replaceChildren(...fields);
+  $(".net-links", base).replaceChildren(...links);
+  $(".net-nodes", base).replaceChildren(...nodes);
+  $(".net-flows", motion).replaceChildren(
+    ...packets.map(([element]) => element),
+  );
+  $(".net-peers", motion).replaceChildren(
+    ...peers.map(([element]) => element),
+  );
+}
+
+let meshTimer = 0;
+addEventListener("resize", () => {
+  clearTimeout(meshTimer);
+  meshTimer = setTimeout(() => {
+    if (!$("#login").hidden) drawMesh();
+  }, 250);
+});
+
+// The sign-in backdrop leans slightly toward the pointer. Moving the layers
+// directly keeps style recalculation off the rest of the page.
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+let parallaxFrame = 0;
+$("#login").addEventListener("pointermove", (event) => {
+  if (reducedMotion.matches || event.pointerType !== "mouse" || parallaxFrame)
+    return;
+  parallaxFrame = requestAnimationFrame(() => {
+    parallaxFrame = 0;
+    const x = ((event.clientX / innerWidth) * 2 - 1) * -12,
+      y = ((event.clientY / innerHeight) * 2 - 1) * -12;
+    document.querySelectorAll(".login-backdrop").forEach((layer) => {
+      layer.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
+    });
+  });
 });
 
 function bytes(value) {
@@ -1788,7 +2094,9 @@ document.addEventListener("click", async (event) => {
     if (action === "add") addMachine();
     if (action === "copy") {
       try {
-        await navigator.clipboard.writeText($("#secret-value").textContent);
+        await navigator.clipboard.writeText(
+          $(button.dataset.copy || "#secret-value").textContent,
+        );
         toast("Copied to clipboard");
       } catch {
         toast("Clipboard unavailable. Select and copy the displayed value.");

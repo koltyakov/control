@@ -1,6 +1,7 @@
 :root {
   color-scheme: dark;
   --bg: #0f141a;
+  --login-bg: #0c1116;
   --sidebar: #121820;
   --panel: #151c25;
   --input: #10161e;
@@ -26,6 +27,7 @@
   --red-soft: #ed969214;
   --focus: #91b7ed;
   --shadow: 0 1px 2px #00000033;
+  --elevated: 0 1px 2px #00000040, 0 32px 80px -28px #000000b3;
   --overlay: #05080db3;
   --header: #19212b;
   --header-text: #e6ecf3;
@@ -40,6 +42,7 @@
 :root[data-theme="light"] {
   color-scheme: light;
   --bg: #f5f7fa;
+  --login-bg: #dde3eb;
   --sidebar: #ffffff;
   --panel: #ffffff;
   --input: #ffffff;
@@ -65,6 +68,7 @@
   --red-soft: #b63f390f;
   --focus: #3065ad;
   --shadow: 0 1px 2px #18222f0d;
+  --elevated: 0 1px 2px #18222f0d, 0 32px 72px -32px #18222f47;
   --overlay: #18222f66;
   --header: #334155;
   --header-text: #f8fafc;

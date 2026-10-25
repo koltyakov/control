@@ -66,6 +66,13 @@ func redeemRequest(t *testing.T, link enrollment.Link) (enrollment.Redemption, s
 func TestInvitationSingleIdentityAtomicRedemptionAndRevocation(t *testing.T) {
 	g, s := installationFixture(t)
 	link := invite(t, s, "new-worker")
+	ticket := link.URL[strings.LastIndex(link.URL, "/")+1:]
+	if len(ticket) != 8 || !strings.Contains(link.Command, link.URL) {
+		t.Fatal("installation command did not use an 8-character ticket")
+	}
+	if role, _ := g.role(ticket); role != "" {
+		t.Fatal("installation ticket authenticated as a node credential")
+	}
 	for _, suffix := range []string{"", "/info", "/binary"} {
 		resp, err := http.Get(link.URL + suffix)
 		if err != nil {
@@ -108,7 +115,6 @@ func TestInvitationSingleIdentityAtomicRedemptionAndRevocation(t *testing.T) {
 	if successes != 1 {
 		t.Fatalf("redeemed %d identities", successes)
 	}
-	ticket := link.URL[strings.LastIndex(link.URL, "/")+1:]
 	g.mu.Lock()
 	saved := g.installations[enrollment.Hash(ticket)]
 	g.mu.Unlock()

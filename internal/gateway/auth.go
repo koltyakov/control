@@ -115,7 +115,17 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		case "user":
 			capabilities = []string{"keys.manage", "installations.manage", "machines.manage"}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"role": p.Role, "userId": p.UserID, "capabilities": capabilities, "nodeHealth": true, "clientSessions": true, "clientOwners": true, "peerChannels": true, "delegation": true, "largePackets": true, "nodeBytes": true, "gatewayHeartbeat": true, "trickleICE": true, "lanDiscovery": true, "stunServers": g.options.STUNServers})
+		// Management keys learn the browser username their console password applies to.
+		username := ""
+		switch p.Role {
+		case "superuser":
+			username = "@operator"
+		case "user":
+			g.mu.Lock()
+			username = g.users[p.UserID].Name
+			g.mu.Unlock()
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"role": p.Role, "userId": p.UserID, "username": username, "capabilities": capabilities, "nodeHealth": true, "clientSessions": true, "clientOwners": true, "peerChannels": true, "delegation": true, "largePackets": true, "nodeBytes": true, "gatewayHeartbeat": true, "trickleICE": true, "lanDiscovery": true, "stunServers": g.options.STUNServers})
 	}))
 	create := func(w http.ResponseWriter, r *http.Request) {
 		p := g.requestPrincipal(r)

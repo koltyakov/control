@@ -70,7 +70,7 @@ func Hash(secret string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// SystemTicket derives a separate, unguessable companion ticket without storing
+// SystemTicket derives a separate companion ticket without storing
 // either installation URL in the gateway database.
 func SystemTicket(ticket string) string {
 	h := sha256.Sum256([]byte("control-hybrid-system-v1\x00" + ticket))

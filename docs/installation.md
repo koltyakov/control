@@ -241,9 +241,9 @@ The [web console's Startup context action](console.md#change-an-installed-user-n
 
 ## Single use and recovery
 
-The owning user can create invitations for their fleet. For an explicit name, the gateway reserves that name within the fleet. Automatic invitations defer the name claim to redemption. The gateway persists the ticket hash in SQLite. A live ticket permits script, metadata, and binary downloads until expiry or redemption. Fetching a URL does not consume it.
+The owning user can create invitations for their fleet. For an explicit name, the gateway reserves that name within the fleet. Automatic invitations defer the name claim to redemption. New installation URLs use an 8-character base64url ticket generated from six cryptographically random bytes, with 48 bits of entropy. The gateway checks for collisions across all retained invitations before committing and persists only the ticket hash in SQLite. Existing 43-character links and derived Hybrid companion tickets remain supported. A live ticket permits script, metadata, and binary downloads until expiry or redemption. Fetching a URL does not consume it.
 
-The target generates its Ed25519 identity and a random credential locally. Signed redemption binds the credential hash to the inviting user, one identity, name, OS, and architecture. Concurrent redemption by a second identity fails. Existing identities cannot change fleet ownership. After redemption, script and download requests return HTTP 410.
+The target generates its Ed25519 identity and a separate 256-bit random credential locally, encoded as `ctl_` followed by 43 base64url characters. The short URL ticket never becomes the node's registration or local API credential. Signed redemption binds the credential hash to the inviting user, one identity, name, OS, and architecture. Concurrent redemption by a second identity fails. Existing identities cannot change fleet ownership. After redemption, script and download requests return HTTP 410.
 
 The target saves pending enrollment before redeeming. If the response is lost, the same identity and credential can repeat the signed request, including after the original expiry. This recovers the same installation. Revocation prevents recovery. Resume with the existing executable and original URL:
 
@@ -255,7 +255,7 @@ If startup fails, inspect `node.log` or the service logs. Retry enrollment with 
 
 A new valid invitation from the same gateway and fleet replaces an unfinished enrollment, including one whose ticket expired or was revoked. The installer validates the new invitation and pinned executable before replacing pending recovery state. It retains the profile settings and selected identity, including a fresh identity saved during replacement of a retired node. A new invitation rotates the credential; repeating the same invitation keeps the saved credential and resolved name. Invalid invitations leave the previous pending enrollment and active profile intact. This requires an installer binary with pending-replacement support; publish a current bundle and create a new invitation to use it.
 
-Treat installation links as temporary bearer credentials and avoid recording them in reverse-proxy access logs.
+Treat installation links as temporary bearer credentials and avoid recording them in reverse-proxy access logs. Short tickets have less guessing resistance than permanent credentials. Keep the default 15-minute lifetime unless a longer installation window is necessary.
 
 ## Manage registrations
 

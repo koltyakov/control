@@ -1477,131 +1477,332 @@ dialog.machine-drawer {
 
 /* Login */
 .login-layout {
+  --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
   position: relative;
   min-height: 100dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  isolation: isolate;
+  background: var(--login-bg);
 }
 .login-layout > :not(.login-backdrop) {
   position: relative;
 }
+/* Each backdrop is one composited layer; console.js moves it for parallax.
+   Only the small motion layer repaints continuously. */
 .login-backdrop {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+  inset: -16px;
+  z-index: -1;
+  width: calc(100% + 32px);
+  height: calc(100% + 32px);
   pointer-events: none;
+  will-change: transform;
+  transition: transform 0.6s var(--ease-out);
+  animation: mesh-in 1.4s 0.1s var(--ease-out) both;
+}
+@keyframes mesh-in {
+  from {
+    opacity: 0;
+    scale: 1.03;
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
 }
 .login-backdrop pattern circle {
-  fill: var(--border);
+  fill: var(--subtle);
 }
+.net-dots {
+  opacity: 0.45;
+}
+/* Color pools around hubs; console.js alternates the two gradients. */
 #login-glow-a stop {
   stop-color: var(--action);
-  stop-opacity: 0.14;
+  stop-opacity: 0.2;
 }
 #login-glow-b stop {
   stop-color: var(--accent);
-  stop-opacity: 0.12;
+  stop-opacity: 0.18;
 }
-#login-glow-a stop + stop,
-#login-glow-b stop + stop {
+#login-glow-a stop:nth-child(2),
+#login-glow-b stop:nth-child(2) {
+  stop-opacity: 0.07;
+}
+#login-glow-a stop:last-child,
+#login-glow-b stop:last-child {
   stop-opacity: 0;
 }
-/* Rings turn around the card; packets stream along two of them. */
-.orbit {
-  transform-box: view-box;
-  transform-origin: 720px 450px;
-  animation: orbit 180s linear infinite;
-}
-.orbit-2 {
-  animation-duration: 240s;
-  animation-direction: reverse;
-}
-.orbit-3 {
-  animation-duration: 320s;
-}
-.orbit-4 {
-  animation-duration: 420s;
-  animation-direction: reverse;
-}
-@keyframes orbit {
-  to {
-    transform: rotate(360deg);
-  }
-}
-.orbit .ring {
-  fill: none;
+/* Link opacity comes from console.js, stronger near hubs. */
+.net-links line {
   stroke: var(--subtle);
-  stroke-opacity: 0.28;
   stroke-width: 1;
 }
-.orbit-2 .ring,
-.orbit-4 .ring {
-  stroke-dasharray: 3 7;
-}
-.orbit .ring-flow {
-  fill: none;
+.net-links .spoke {
   stroke: var(--action);
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-dasharray: 1 47;
-  animation: ring-flow 6s linear infinite;
+  stroke-width: 1.25;
 }
-.orbit-3 .ring-flow {
-  stroke-dasharray: 1 61;
-  animation: ring-flow-wide 9s linear infinite reverse;
-}
-@keyframes ring-flow {
-  to {
-    stroke-dashoffset: -96;
-  }
-}
-@keyframes ring-flow-wide {
-  to {
-    stroke-dashoffset: -124;
-  }
-}
-.orbit circle:not(.ring, .ring-flow) {
-  fill: var(--bg);
+.net-nodes circle {
+  fill: var(--login-bg);
   stroke: var(--subtle);
   stroke-width: 1.25;
 }
-.orbit circle.hub {
+.net-nodes .busy {
+  stroke: var(--action);
+}
+.net-nodes .hub {
+  fill: var(--action);
+  stroke: var(--login-bg);
+  stroke-width: 3;
+}
+.net-nodes .halo {
+  fill: color-mix(in srgb, var(--action) 10%, transparent);
+  stroke: var(--action);
+  stroke-opacity: 0.35;
+  stroke-dasharray: 2 4;
+}
+/* Packets travel along direct peer links and ping on arrival. */
+.net-flows line {
+  fill: none;
+  stroke: var(--action);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-dasharray: 12 188;
+  stroke-dashoffset: 12;
+  animation: packet var(--t) var(--d) ease-in-out infinite;
+}
+@keyframes packet {
+  0% {
+    stroke-dashoffset: 12;
+  }
+  45%,
+  100% {
+    stroke-dashoffset: -100;
+  }
+}
+.net-peers circle {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.net-peers .peer {
   fill: var(--action);
   stroke: var(--action);
-  stroke-opacity: 0.18;
-  stroke-width: 10;
+  stroke-opacity: 0.2;
+  stroke-width: 8;
   paint-order: stroke;
+  animation: node-hit var(--t) var(--d) ease-out infinite;
+}
+@keyframes node-hit {
+  0%,
+  40%,
+  100% {
+    transform: scale(1);
+  }
+  46% {
+    transform: scale(1.4);
+  }
+}
+.net-peers .ping {
+  fill: none;
+  stroke: var(--action);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  opacity: 0;
+  animation: ping var(--t) var(--d) ease-out infinite;
+}
+@keyframes ping {
+  0%,
+  42% {
+    opacity: 0;
+    transform: scale(1);
+  }
+  45% {
+    opacity: 0.8;
+  }
+  75%,
+  100% {
+    opacity: 0;
+    transform: scale(5);
+  }
 }
 .login-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 16px 32px;
+  animation: fade-in 0.8s 0.2s ease-out both;
 }
 .login-main {
   display: grid;
   place-items: center;
   flex: 1;
-  padding: 24px 16px 15vh;
+  padding: 24px 16px 10vh;
 }
 .login-card {
   width: 100%;
   max-width: 400px;
   padding: 32px;
-  background: var(--panel);
+  /* Translucent without backdrop-filter, which made Safari repaint every frame. */
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: var(--shadow);
+  border-radius: 16px;
+  box-shadow: var(--elevated);
+  animation: card-in 0.8s 0.15s var(--ease-out) both;
+}
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.98);
+  }
+}
+/* Keeps card-in in the list so removing the shake does not replay the entrance. */
+.login-card.rejected {
+  animation:
+    card-in 0.8s 0.15s var(--ease-out) both,
+    shake 0.4s ease-in-out;
+}
+@keyframes shake {
+  20%,
+  60% {
+    transform: translateX(-6px);
+  }
+  40%,
+  80% {
+    transform: translateX(6px);
+  }
+}
+.login-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+/* The brand key drops in, then presses once. */
+.login-key {
+  display: block;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  background: url("/console/static/apple-touch-icon.png") center / contain
+    no-repeat;
+  filter: drop-shadow(0 6px 10px #0000002e);
+  animation:
+    key-in 0.7s 0.35s var(--ease-out) both,
+    key-press 0.5s 1.15s ease-in-out;
+}
+@keyframes key-in {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+}
+@keyframes key-press {
+  40% {
+    transform: translateY(3px) scale(0.96);
+    filter: drop-shadow(0 2px 3px #0000002e);
+  }
+}
+.login-card input {
+  min-height: 42px;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+.login-card input:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent);
 }
 .login-card .primary {
+  min-height: 42px;
   margin-top: 24px;
+  transition:
+    filter 0.15s,
+    transform 0.15s,
+    box-shadow 0.15s;
+}
+.login-card .primary:hover {
+  box-shadow: 0 6px 18px -6px var(--action);
+}
+.login-card .primary:active {
+  transform: translateY(1px);
+}
+.login-card[aria-busy="true"] .primary {
+  opacity: 0.85;
+}
+.login-card[aria-busy="true"] .primary::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
 }
 .login-help {
   margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
   font-size: 12px;
   color: var(--muted);
+}
+.login-help summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 500;
+}
+.login-help summary::-webkit-details-marker {
+  display: none;
+}
+.login-help summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-left: 4px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 0.15s;
+}
+.login-help[open] summary::after {
+  transform: translateY(1px) rotate(-135deg);
+}
+.login-help summary:hover {
+  color: var(--text);
+}
+.login-help p {
+  margin-top: 10px;
+}
+.login-help p code {
+  font-size: 11px;
+  color: var(--text);
+}
+.login-command {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 4px 4px 4px 12px;
+  background: var(--input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.login-command code {
+  flex: 1;
+  color: var(--text);
+  user-select: all;
+}
+.login-footer {
+  padding: 0 16px 24px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--subtle);
+  animation: fade-in 0.8s 0.6s ease-out both;
 }
 
 @media (max-width: 1100px) {

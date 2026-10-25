@@ -140,6 +140,8 @@ Use a stable supervisor and versioned executables in the state directory rather 
 
 ## D015: Single-machine invitations and per-user host setup
 
+Installation ticket length is refined by [D090](#d090-short-one-time-installation-tickets). Permanent credentials and signed redemption remain unchanged.
+
 The pending-name reservation guard is extended by [D074](#d074-explicit-atomic-retraction-of-pending-name-invitations), which allows explicit retraction while preserving enrolled identities.
 
 The requirement to reserve every invitation's name before installation is superseded for automatic names by [D034](#d034-target-hostname-for-automatic-installation-names). Fixed-name reservations remain unchanged.
@@ -783,3 +785,9 @@ Windows User to System migration can run only when the installed node already ha
 Refine D087's console presentation to show one host row with selectable User and System chips. Derive pairing from redeemed, fleet-owned invitation metadata, not a name suffix or a node assertion. Count that host once in machine and availability counters while retaining real per-context work counts. Online means at least one context is online; selecting a chip chooses which context's metrics and lifecycle actions are shown.
 
 Default to User even when only System is online. Keep explicit System targets and exact instruction grants for authorized work requiring elevation. Client and AI guidance may select that privileged alternative when the requested operation requires it, but must inspect failure and partial effects rather than automatically replay User commands. Presentation does not merge identities, storage, tasks, updates, or retirement, and selecting a chip changes no CLI/MCP routing.
+
+## D090: Short one-time installation tickets
+
+Generate installation URL tickets from six cryptographically random bytes encoded as eight unpadded base64url characters. This shortens copy-and-run commands without changing the target's separate 256-bit credential or Ed25519 identity. The ticket has 48 bits of entropy, less guessing resistance than a permanent credential, and remains a temporary bearer credential with the existing default 15-minute expiry, revocation, and single-identity redemption. Retain the existing lifetime override and signed response-recovery behavior.
+
+Check both the ticket hash and any derived Hybrid companion hash against all retained gateway invitations under the mutation lock. Retry random collisions at most eight times, then fail without changing records. Never overwrite another fleet's invitation or a redeemed credential. Continue accepting existing 43-character tickets and keep Hybrid companion derivation unchanged. Persist hashes only. This refines D015's ticket generation without changing fleet ownership, download pinning, or node authentication. See [installation and recovery](installation.md#single-use-and-recovery).

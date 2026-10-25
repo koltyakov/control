@@ -91,7 +91,7 @@ control machines add workstation --platform linux --service hybrid
 
 Run each printed command on its target under the intended user. Windows uses PowerShell and requests UAC for firewall setup. macOS uses Bash; Linux system mode needs sudo and systemd. Installers detect amd64/arm64, verify the binary, and enroll and start the node without an account key. Verify with `control machines` and `control call win-worker node.describe`.
 
-Use `auto` or omit the name for the target's hostname. Invitations are single-use and expire after 15 minutes by default. Press `a` in the dashboard to add a machine. See [platform requirements](docs/installation.md#install-workers-on-each-platform).
+Use `auto` or omit the name for the target's hostname. Installation URLs use an 8-character, single-use ticket and expire after 15 minutes by default. Nodes generate separate full-length security credentials. Press `a` in the dashboard to add a machine. See [platform requirements](docs/installation.md#install-workers-on-each-platform).
 
 Use `--force` when adding or renaming to retract a conflicting pending invitation, never an enrolled identity.
 

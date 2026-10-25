@@ -23,6 +23,9 @@ func TestHybridInvitationPair(t *testing.T) {
 		t.Fatal("incorrect User-first Hybrid installation", link)
 	}
 	ticket := link.URL[strings.LastIndex(link.URL, "/")+1:]
+	if len(ticket) != 8 {
+		t.Fatal("Hybrid command did not use an 8-character ticket")
+	}
 	hash := enrollment.Hash(enrollment.SystemTicket(ticket))
 	g.mu.Lock()
 	system, ok := g.installations[hash]

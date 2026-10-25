@@ -32,12 +32,24 @@ func consoleCLI(ctx context.Context, c client.Admin, args []string) error {
 	if f.NArg() != 0 {
 		return errors.New(usage)
 	}
-	role, err := c.AuthRole(ctx)
+	role, account, err := c.Account(ctx)
 	if err != nil {
 		return err
 	}
 	if role != "user" && role != "superuser" {
 		return errors.New("browser password provisioning requires an account or superuser key")
+	}
+	// An omitted USER selects the credential's own login.
+	if username != "" {
+		account = username
+	} else if account == "" && role == "superuser" {
+		account = "@operator"
+	}
+	if account != "" {
+		fmt.Fprintf(os.Stderr, "Setting the browser password for %s at %s.\n", account, c.URL)
+	} else {
+		// Gateways before the username field do not report it.
+		account = "your fleet account name"
 	}
 	var password []byte
 	if *stdin {
@@ -68,12 +80,6 @@ func consoleCLI(ctx context.Context, c client.Admin, args []string) error {
 	if err := c.JSON(ctx, http.MethodPut, "/v1/console/password", map[string]string{"username": username, "password": string(password)}, nil); err != nil {
 		return err
 	}
-	if username == "" && role == "superuser" {
-		username = "@operator"
-	}
-	if username == "" {
-		username = "your fleet account name"
-	}
-	fmt.Printf("Browser password saved. Sign in at %s as %s. Existing browser sessions were revoked.\n", c.URL, username)
+	fmt.Printf("Browser password saved. Sign in at %s as %s. Existing browser sessions were revoked.\n", c.URL, account)
 	return nil
 }

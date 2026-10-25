@@ -91,7 +91,7 @@ func TestNewInvitationReplacesPendingEnrollment(t *testing.T) {
 			if err != nil {
 				t.Fatal("new invitation was blocked by the previous attempt", err)
 			}
-			if pending.URL != server.URL+"/install/new" || pending.Credential == previous.Credential || pending.Credential == "" || pending.Invitation.Name != "replacement" {
+			if pending.URL != server.URL+"/install/new" || pending.Credential == previous.Credential || len(pending.Credential) != 47 || !strings.HasPrefix(pending.Credential, "ctl_") || pending.Invitation.Name != "replacement" {
 				t.Fatal("new invitation did not replace pending enrollment")
 			}
 			if stage == "replacement-retired" {

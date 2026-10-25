@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"os"
@@ -25,6 +27,33 @@ type installation struct {
 	// Cleared hides a redeemed invitation from listings. The record stays
 	// because it holds the enrolled machine's credential.
 	Cleared bool `json:"cleared,omitempty"`
+}
+
+// Called under g.mu. Never overwrite another fleet's ticket or a retained
+// redemption record, including the derived companion of a Hybrid invitation.
+func (g *Gateway) newInstallationTicket(source io.Reader, hybrid bool) (string, error) {
+	for range 8 {
+		var secret [6]byte
+		if _, err := io.ReadFull(source, secret[:]); err != nil {
+			return "", err
+		}
+		ticket := base64.RawURLEncoding.EncodeToString(secret[:])
+		if _, exists := g.installations[enrollment.Hash(ticket)]; exists {
+			continue
+		}
+		if hybrid {
+			if _, exists := g.installations[enrollment.Hash(enrollment.SystemTicket(ticket))]; exists {
+				continue
+			}
+		}
+		return ticket, nil
+	}
+	return "", errors.New("installation ticket collision limit reached")
+}
+
+func validInstallationTicket(ticket string) bool {
+	// Keep legacy invitations and derived Hybrid companion tickets usable.
+	return len(ticket) == 8 || len(ticket) == 43
 }
 
 func (g *Gateway) installationRoutes(mux *http.ServeMux) {
@@ -167,12 +196,13 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
-	var secret [32]byte
-	if _, err = rand.Read(secret[:]); err != nil {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	ticket, err := g.newInstallationTicket(rand.Reader, q.ServiceMode == "hybrid")
+	if err != nil {
 		http.Error(w, "could not create ticket", 500)
 		return
 	}
-	ticket := base64.RawURLEncoding.EncodeToString(secret[:])
 	now := time.Now().UTC()
 	i := installation{Invitation: enrollment.Invitation{UserID: p.UserID, ID: identity.NewID(), Name: q.Name, AutoName: q.AutoName, ServiceMode: q.ServiceMode, Gateway: base, Asset: asset, Assets: assets, Version: version, CreatedAt: now, ExpiresAt: now.Add(time.Duration(q.TTLSeconds) * time.Second)}}
 	var companion installation
@@ -186,8 +216,6 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 		}
 		companionHash = enrollment.Hash(enrollment.SystemTicket(ticket))
 	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
 	if g.clientNameReserved(p.UserID, q.Name) {
 		http.Error(w, "name is reserved for a client identity", http.StatusConflict)
 		return
@@ -301,7 +329,7 @@ func (g *Gateway) pendingInstallation(w http.ResponseWriter, r *http.Request) (i
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	ticket := r.PathValue("ticket")
-	if len(ticket) != 43 {
+	if !validInstallationTicket(ticket) {
 		http.NotFound(w, r)
 		return installation{}, false
 	}
@@ -369,7 +397,7 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	ticket := r.PathValue("ticket")
 	var q enrollment.Redemption
-	if len(ticket) != 43 || json.NewDecoder(r.Body).Decode(&q) != nil || len(q.PublicKey) != ed25519.PublicKeySize || !update.ValidDigest(q.CredentialHash) || !ed25519.Verify(q.PublicKey, enrollment.Message(ticket, q), q.Signature) {
+	if !validInstallationTicket(ticket) || json.NewDecoder(r.Body).Decode(&q) != nil || len(q.PublicKey) != ed25519.PublicKeySize || !update.ValidDigest(q.CredentialHash) || !ed25519.Verify(q.PublicKey, enrollment.Message(ticket, q), q.Signature) {
 		http.Error(w, "invalid enrollment proof", 400)
 		return
 	}

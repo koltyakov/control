@@ -14,7 +14,7 @@ With a saved gateway superuser login:
 control console password
 ```
 
-Enter and confirm a password at the hidden prompts. The operator's browser username is `@operator`. It is separate from fleet account names and remains usable only while the gateway has superuser administration configured.
+The command prints the browser username it is setting, then asks you to enter and confirm a password at hidden prompts. The operator's browser username is `@operator`. It is separate from fleet account names and remains usable only while the gateway has superuser administration configured.
 
 To give an existing fleet account browser access:
 
@@ -26,7 +26,7 @@ Only the operator can select another account. An account owner can run `control 
 
 For noninteractive provisioning, use `--password-stdin`. It removes one trailing line ending and requires 12..1024 password bytes. Passwords are not accepted as command-line arguments. Do not put them in shell history or commit them to project files.
 
-Open the gateway's HTTPS URL and sign in with the fleet account's exact, case-sensitive name or `@operator`. Users can change their own password on the Account page by entering their current password. Operators can set fleet passwords on the Accounts page. Every password change invalidates that login's existing browser sessions without rotating CLI keys or cancelling accepted work.
+Open the gateway's HTTPS URL and sign in with the fleet account's exact, case-sensitive name or `@operator`. The sign-in page's How to get a password section shows the provisioning command. Users can change their own password on the Account page by entering their current password. Operators can set fleet passwords on the Accounts page. Every password change invalidates that login's existing browser sessions without rotating CLI keys or cancelling accepted work.
 
 ## Pages and actions
 
