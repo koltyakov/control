@@ -45,6 +45,12 @@ The sender rechecks its live interfaces against the verified relationship and th
 
 Results contain `target`, `source`, and `packets`. Success means UDP accepted the packet for transmission, not that the NIC received it or the machine woke up. Check `control machines` afterward. A failure may follow partial transmission, so do not replay automatically. Normal execution never wakes a machine implicitly.
 
+## Wake from the console
+
+An offline machine's detail drawer in the [browser console](console.md) shows **Wake** when an online machine in the same fleet can send for it. The gateway picks the first eligible sender alphabetically: online, enabled, not policy-pending, with a current verified LAN relationship to the target, and advertising `gatewayWake` in signed registration. A node advertises `gatewayWake` only when its allow rules let account clients call `network.wake`, which includes the default with no `allow` block. The drawer names the sender before you click.
+
+The gateway relays one `wake.request` to that sender over its existing authenticated connection and waits up to ten seconds for its single `wake.result`. The gateway never sends magic packets. The sender applies the same allow rules, work admission (so disabled or paused machines refuse), offline-target directory lookup, and live interface checks as `network.wake`, then sends the packets. There is no automatic retry or fallback sender. If the sender does not confirm in time, it may still have sent the packet, so check the machine before trying again. One request per target can be in flight, with at most 64 in flight per gateway. Each attempt and its outcome is recorded in the activity log as `machine.wake`. The same operation is available to account and superuser keys as `POST /v1/fleet/nodes/{id}/wake`.
+
 ## Upgrade and hardware requirements
 
 Upgrade the gateway and nodes. Authenticated gateway metadata advertises `lanDiscovery`, which compatible nodes include in signed registration before automatically reporting interfaces or using the new signaling messages. During nodes-first managed rollouts, new nodes omit automatic interface metadata until the gateway advertises support. This preserves compatibility with the first Wake-on-LAN gateway, which rejects unlabeled interface records. Explicit legacy `labels.lan` profiles can still report to that gateway, but cannot establish automatic relationships. Older gateways receive no unsupported messages. No database schema migration is needed.
