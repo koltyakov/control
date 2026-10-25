@@ -408,7 +408,7 @@ const runAsLabels = {
 function runAsTag(node) {
   const label = runAsLabels[node.runAs];
   return label
-    ? `<span class="context-tag ${node.runAs}" title="${label[1]}">${label[0]}</span>`
+    ? `<span class="context-tag" title="${label[1]}">${label[0]}</span>`
     : "";
 }
 function plural(count, noun) {
@@ -749,6 +749,7 @@ const auditActions = {
   "machine.enable": ["Enabled machine", "good"],
   "machine.disable": ["Disabled machine", "warn"],
   "machine.unregister": ["Unregistered machine", "bad"],
+  "machine.wake": ["Sent wake packet", ""],
   "account.create": ["Created account", "good"],
   "account.disable": ["Disabled account", "bad"],
   "account.password": ["Set browser password", ""],
@@ -1329,7 +1330,7 @@ function machineDetails(id) {
             `<div class="disk-usage">${meter(percent(disk.usedBytes, disk.totalBytes), "Disk utilization for " + disk.path)}<small class="muted mono">${esc(disk.path)}</small><small class="muted">${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small></div>`,
         )
         .join("") || meter(null, "Disk utilization")
-    }</dd><dt>Processor</dt><dd>${esc(sys.cpuModel || "Unknown")}${sys.logicalCPUs ? " · " + esc(sys.logicalCPUs) + " cores" : ""}</dd><dt>Sampled</dt><dd>${esc(date(sys.sampledAt))}${n.online ? "" : `<small class="muted">Cached while offline</small>`}</dd></dl></section>${activitySection(n)}<section class="drawer-section"><h3>System</h3><dl class="metadata"><dt>Platform</dt><dd>${esc(platformText(n) || "Unknown")}</dd>${n.runAs ? `<dt>Runs as</dt><dd>${runAsLabels[n.runAs][1]}</dd>` : ""}<dt>Version</dt><dd>${esc(n.software?.version || "Unknown")}</dd><dt>Labels</dt><dd>${labels.length ? `<span class="labels">${labels.map(([k, v]) => `<span class="label-chip">${esc(k)}=${esc(v)}</span>`).join("")}</span>` : "None"}</dd>${n.online ? "" : `<dt>Last seen</dt><dd>${esc(date(n.lastSeen))}</dd>`}<dt>Identity</dt><dd class="mono">${esc(n.id)}</dd></dl></section><div class="drawer-actions"><button class="secondary" data-action="rename" data-id="${esc(n.id)}">Rename</button><button class="secondary" data-action="toggle" data-id="${esc(n.id)}">${n.disabled ? "Enable" : "Disable"}</button><button class="danger" data-action="unregister" data-id="${esc(n.id)}">Unregister</button></div>`,
+    }</dd><dt>Processor</dt><dd>${esc(sys.cpuModel || "Unknown")}${sys.logicalCPUs ? " · " + esc(sys.logicalCPUs) + " cores" : ""}</dd><dt>Sampled</dt><dd>${esc(date(sys.sampledAt))}${n.online ? "" : `<small class="muted">Cached while offline</small>`}</dd></dl></section>${activitySection(n)}<section class="drawer-section"><h3>System</h3><dl class="metadata"><dt>Platform</dt><dd>${esc(platformText(n) || "Unknown")}</dd>${n.runAs ? `<dt>Runs as</dt><dd>${runAsLabels[n.runAs][1]}</dd>` : ""}<dt>Version</dt><dd>${esc(n.software?.version || "Unknown")}</dd><dt>Labels</dt><dd>${labels.length ? `<span class="labels">${labels.map(([k, v]) => `<span class="label-chip">${esc(k)}=${esc(v)}</span>`).join("")}</span>` : "None"}</dd>${n.online ? "" : `<dt>Last seen</dt><dd>${esc(date(n.lastSeen))}</dd>`}<dt>Identity</dt><dd class="mono">${esc(n.id)}</dd></dl></section>${!n.online && n.wakeVia ? `<p class="drawer-note">Wake sends a Wake-on-LAN packet from ${esc(n.wakeVia)}, an online machine on the same LAN. The machine appears online once its node starts.</p>` : ""}<div class="drawer-actions">${!n.online && n.wakeVia ? `<button class="primary" data-action="wake" data-id="${esc(n.id)}">Wake</button>` : ""}<button class="secondary" data-action="rename" data-id="${esc(n.id)}">Rename</button><button class="secondary" data-action="toggle" data-id="${esc(n.id)}">${n.disabled ? "Enable" : "Disable"}</button><button class="danger" data-action="unregister" data-id="${esc(n.id)}">Unregister</button></div>`,
     "machine-drawer",
   );
 }
@@ -1443,6 +1444,20 @@ document.addEventListener("click", async (event) => {
       }
     }
     if (action === "details") machineDetails(id);
+    if (action === "wake" && node) {
+      button.disabled = true;
+      try {
+        const result = await api(
+          "fleet/nodes/" + encodeURIComponent(id) + "/wake",
+          "POST",
+        );
+        toast(
+          `Wake packet sent from ${result.source}. ${node.name} appears online once it starts.`,
+        );
+      } finally {
+        button.disabled = false;
+      }
+    }
     if (action === "rename" && node)
       formDialog(
         "Rename " + node.name,

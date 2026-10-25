@@ -13,13 +13,12 @@ import (
 type WakeSpec struct {
 	Node string `json:"node"`
 	From string `json:"from,omitempty"`
-	LAN  string `json:"lan,omitempty"`
 }
 
 func (c Client) Wake(ctx context.Context, spec WakeSpec) (model.WakeResult, error) {
 	var result model.WakeResult
-	if spec.Node == "" || (spec.From == "local" && spec.LAN == "") || (spec.From != "local" && spec.LAN != "") {
-		return result, errors.New("wake requires node; lan is required only with from=local")
+	if spec.Node == "" {
+		return result, errors.New("wake requires a target machine")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -58,10 +57,24 @@ func (c Client) Wake(ctx context.Context, spec WakeSpec) (model.WakeResult, erro
 		return result, errors.New("wake target is already online")
 	}
 	result.Target = target.ID
-	if spec.From == "local" {
-		result.Source = "local"
-		result.Packets, err = wol.Send(ctx, spec.LAN, target)
-		return result, err
+	if spec.From == "local" || spec.From == "" {
+		local, localErr := wol.Interfaces()
+		if localErr == nil {
+			for _, source := range nodes {
+				// Match a registered sender to a NIC on this host, then use the
+				// same verified relationship as a worker. No LAN assertion needed.
+				candidate := source
+				candidate.WakeInterfaces = local
+				if wol.CanSend(source, target) && wol.CanSend(candidate, target) {
+					result.Source = "local"
+					result.Packets, err = wol.Send(ctx, source.ID, target)
+					return result, err
+				}
+			}
+		}
+		if spec.From == "local" {
+			return result, errors.New("this host has no verified LAN relationship with the target")
+		}
 	}
 	source, err := wakeSender(nodes, target, spec.From)
 	if err != nil {
@@ -86,5 +99,5 @@ func wakeSender(nodes []model.Node, target model.Node, from string) (model.Node,
 			}
 		}
 	}
-	return model.Node{}, errors.New("no online wake sender on the target's lan label and IPv4 subnet; select --from local --lan LAN to send from this machine")
+	return model.Node{}, errors.New("no online wake sender with a verified LAN relationship; both machines must be online together once for automatic discovery")
 }

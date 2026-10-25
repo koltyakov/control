@@ -11,11 +11,10 @@ import (
 
 func wakeCLI(ctx context.Context, c client.Client, args []string) error {
 	if len(args) == 0 || args[0] == "" {
-		return errors.New("usage: control wake NODE [--from WORKER|local] [--lan LAN] [--json]")
+		return errors.New("usage: control wake NODE [--from WORKER|local] [--json]")
 	}
 	f := flag.NewFlagSet("wake", flag.ContinueOnError)
-	from := f.String("from", "", "sender worker; omitted selects an online same-LAN node; local sends from this machine")
-	lan := f.String("lan", "", "known LAN identifier, required with --from local")
+	from := f.String("from", "", "sender worker or local; omitted automatically selects a verified same-LAN sender")
 	jsonOutput := f.Bool("json", false, "print packet-send metadata")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
@@ -23,7 +22,7 @@ func wakeCLI(ctx context.Context, c client.Client, args []string) error {
 	if f.NArg() != 0 {
 		return errors.New("unexpected wake arguments")
 	}
-	result, err := c.Wake(ctx, client.WakeSpec{Node: args[0], From: *from, LAN: *lan})
+	result, err := c.Wake(ctx, client.WakeSpec{Node: args[0], From: *from})
 	if err != nil {
 		return err
 	}

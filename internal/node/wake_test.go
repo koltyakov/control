@@ -16,7 +16,6 @@ func TestWakePeerAuthorityAndAdmission(t *testing.T) {
 	for _, relay := range []bool{false, true} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			source, worker, target := cluster(t, relay, func(i int, cfg *Config) {
-				cfg.Labels["lan"] = "home"
 				if i == 1 {
 					cfg.Allow = map[string][]string{"source": {"network.wake"}}
 				}
@@ -24,8 +23,8 @@ func TestWakePeerAuthorityAndAdmission(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			var sends atomic.Int32
-			worker.sendWake = func(ctx context.Context, lan string, n model.Node) (int, error) {
-				if lan != "home" || n.ID != target.Identity.ID || n.Online {
+			worker.sendWake = func(ctx context.Context, sourceID string, n model.Node) (int, error) {
+				if sourceID != worker.Identity.ID || n.ID != target.Identity.ID || n.Online {
 					return 0, errors.New("incorrect wake destination")
 				}
 				sends.Add(1)

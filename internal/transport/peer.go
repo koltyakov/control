@@ -28,7 +28,6 @@ import (
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/protocol"
 	"github.com/koltyakov/control/internal/update"
-	"github.com/koltyakov/control/internal/wol"
 	"github.com/koltyakov/control/internal/wsio"
 	"github.com/pion/webrtc/v4"
 	"google.golang.org/protobuf/proto"
@@ -107,9 +106,14 @@ type Peer struct {
 	log                 *slog.Logger
 	wg                  sync.WaitGroup
 	control             func(string, []byte)
+	wake                func([]byte)
 	nodeHealth          bool
 	clientSessions      bool
 	networkSnapshot     func() (string, error)
+	wakeSnapshot        func() ([]model.WakeInterface, error)
+	lanDiscovery        bool
+	lanSlots            chan struct{}
+	lanInbound          map[string]time.Time
 }
 
 func New(cfg Config, handler func(string, net.Conn)) *Peer {
@@ -120,7 +124,8 @@ func New(cfg Config, handler func(string, net.Conn)) *Peer {
 		cfg: cfg, handler: handler, log: slog.Default(), api: newWebRTCAPI(cfg.DirectTimeout, false), trickleAPI: newWebRTCAPI(cfg.DirectTimeout, true),
 		writes: make(chan *gatewayWrite, 64), priorityWrites: make(chan *gatewayWrite, 32),
 		reconnectWake: make(chan struct{}, 1),
-		links:         map[string]*link{}, sessions: map[sessionKey]*peerSession{},
+		lanSlots:      make(chan struct{}, 4), lanInbound: map[string]time.Time{},
+		links: map[string]*link{}, sessions: map[sessionKey]*peerSession{},
 		allSessions: map[string]*peerSession{}, pending: map[sessionKey]*sessionDial{},
 		incomingSetups: map[string]*incomingSetup{}, resolved: map[string]string{},
 		members: map[string]bool{}, memberSeen: map[string]time.Time{}, owners: map[string]string{}, channels: map[string]bool{},
@@ -151,6 +156,9 @@ func (p *Peer) SetSoftware(info buildinfo.Info) {
 	p.cfg.Node.Software = info
 }
 func (p *Peer) SetControlHandler(handler func(string, []byte)) { p.control = handler }
+
+// SetWakeHandler receives wake requests the gateway relays for the fleet owner.
+func (p *Peer) SetWakeHandler(handler func([]byte)) { p.wake = handler }
 func (p *Peer) SendControl(ctx context.Context, kind string, data []byte) error {
 	return p.send(ctx, &protocol.Packet{Kind: kind, Data: data})
 }
@@ -191,7 +199,7 @@ func (p *Peer) Start(ctx context.Context) error {
 		p.cancel()
 		return err
 	}
-	if !p.worker(p.writeGateway) || !p.worker(func() { p.run(ws) }) || !p.worker(p.watchNetwork) {
+	if !p.worker(p.writeGateway) || !p.worker(func() { p.run(ws) }) || !p.worker(p.watchNetwork) || (!p.cfg.Client && !p.worker(p.watchLAN)) {
 		_ = ws.CloseNow()
 		return errors.New("peer stopped during startup")
 	}
@@ -234,6 +242,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		Delegation       bool     `json:"delegation"`
 		LargePackets     bool     `json:"largePackets"`
 		NodeBytes        bool     `json:"nodeBytes"`
+		LANDiscovery     bool     `json:"lanDiscovery"`
 		GatewayHeartbeat bool     `json:"gatewayHeartbeat"`
 		TrickleICE       bool     `json:"trickleICE"`
 		STUNServers      []string `json:"stunServers"`
@@ -253,8 +262,11 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		return nil, errors.New("gateway does not support concurrent client owners; upgrade the gateway and target nodes")
 	}
 	var wakeInterfaces []model.WakeInterface
-	if !p.cfg.Client && scope.NodeBytes && p.cfg.Node.Labels["lan"] != "" {
-		wakeInterfaces, err = wol.Interfaces()
+	// The first Wake-on-LAN gateway rejects metadata without an explicit lan
+	// label. Nodes update before the gateway during managed rollouts, so only
+	// enable automatic reporting once the gateway advertises LAN discovery.
+	if !p.cfg.Client && scope.NodeBytes && (scope.LANDiscovery || p.cfg.Node.Labels["lan"] != "") {
+		wakeInterfaces, err = p.localWakeInterfaces()
 		if err != nil {
 			p.log.Warn("cannot collect Wake-on-LAN interfaces", "error", err)
 		}
@@ -280,6 +292,8 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	p.cfg.Node.LargePackets = scope.LargePackets
 	p.cfg.Node.TrickleICE = scope.TrickleICE
 	p.cfg.Node.WakeInterfaces = wakeInterfaces
+	p.cfg.Node.LANDiscovery = scope.LANDiscovery && scope.NodeBytes && !p.cfg.Client
+	p.lanDiscovery = p.cfg.Node.LANDiscovery
 	p.iceServers = p.cfg.ICEServers
 	if p.iceServers == nil && len(scope.STUNServers) != 0 {
 		p.iceServers = []webrtc.ICEServer{{URLs: scope.STUNServers}}
@@ -462,6 +476,10 @@ func (p *Peer) send(ctx context.Context, msg *protocol.Packet) error {
 }
 
 func (p *Peer) receive(msg *protocol.Packet) {
+	if msg.Kind == "lan.probe" {
+		p.receiveLANProbe(msg)
+		return
+	}
 	if msg.Kind == "gateway.ping" {
 		if msg.From == update.GatewaySender && validChannelID(msg.Session) {
 			// Do not block the gateway reader while the shared writer drains.
@@ -478,6 +496,14 @@ func (p *Peer) receive(msg *protocol.Packet) {
 			p.lookups = map[string]lookupEntry{}
 			p.directoryGeneration++
 			p.mu.Unlock()
+		}
+		return
+	}
+	if msg.Kind == "wake.request" {
+		if msg.From == update.GatewaySender && p.wake != nil {
+			data := msg.Data
+			// Sending can wait on the network; keep the gateway reader free.
+			p.worker(func() { p.wake(data) })
 		}
 		return
 	}

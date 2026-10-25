@@ -1,4 +1,4 @@
-// Package wol sends bounded Wake-on-LAN magic packets on explicitly identified LANs.
+// Package wol sends bounded Wake-on-LAN packets using verified LAN relationships.
 package wol
 
 import (
@@ -81,10 +81,7 @@ type packet struct {
 	data  [102]byte
 }
 
-func plan(lan string, local []model.WakeInterface, target model.Node) ([]packet, error) {
-	if lan == "" || target.Labels["lan"] != lan {
-		return nil, errors.New("wake requires an explicitly matching lan label")
-	}
+func plan(sourceID string, local []model.WakeInterface, target model.Node) ([]packet, error) {
 	if err := Validate(local); err != nil {
 		return nil, err
 	}
@@ -101,6 +98,10 @@ func plan(lan string, local []model.WakeInterface, target model.Node) ([]packet,
 			if s.Masked() != p.Masked() || s.Addr() == p.Addr() || seen[key] {
 				continue
 			}
+			// A matching private prefix is only a candidate, never LAN evidence.
+			if !relationship(target, source, remote, sourceID, time.Now()) {
+				continue
+			}
 			seen[key] = true
 			q := packet{local: s.Addr(), to: broadcast(s)}
 			for j := range 6 {
@@ -113,25 +114,50 @@ func plan(lan string, local []model.WakeInterface, target model.Node) ([]packet,
 		}
 	}
 	if len(packets) == 0 {
-		return nil, errors.New("no wake interface on the same LAN and IPv4 subnet")
+		return nil, errors.New("no verified LAN relationship for these live interfaces")
 	}
 	return packets, nil
 }
 
+func relationship(target model.Node, source, remote model.WakeInterface, id string, now time.Time) bool {
+	for _, peer := range target.LANPeers {
+		if peer.ID == id && peer.Local == remote && peer.Remote == source && !peer.VerifiedAt.After(now) && now.Sub(peer.VerifiedAt) < model.LANPeerTTL {
+			return true
+		}
+	}
+	return false
+}
+
+// SameSubnet selects discovery candidates only. It does not prove a shared LAN.
+func SameSubnet(a, b model.WakeInterface) bool {
+	x, _, err := parse(a)
+	y, _, other := parse(b)
+	return err == nil && other == nil && x.Masked() == y.Masked() && x.Addr() != y.Addr()
+}
+
+// Broadcast sends a bounded discovery proof from an eligible local interface.
+func Broadcast(ctx context.Context, source model.WakeInterface, port int, data []byte) error {
+	prefix, _, err := parse(source)
+	if err != nil || port < 1024 || port > 65535 || len(data) > 2048 {
+		return errors.New("invalid LAN discovery datagram")
+	}
+	return writeUDP(ctx, prefix.Addr(), broadcast(prefix), fmt.Sprint(port), data)
+}
+
 // CanSend is a selection hint. Send revalidates against live local interfaces.
 func CanSend(source, target model.Node) bool {
-	_, err := plan(source.Labels["lan"], source.WakeInterfaces, target)
+	_, err := plan(source.ID, source.WakeInterfaces, target)
 	return err == nil
 }
 
 // Send transmits one UDP port 9 packet per distinct matching MAC/subnet.
 // A successful UDP write does not acknowledge receipt or a machine waking.
-func Send(ctx context.Context, lan string, target model.Node) (int, error) {
+func Send(ctx context.Context, source string, target model.Node) (int, error) {
 	local, err := Interfaces()
 	if err != nil {
 		return 0, err
 	}
-	packets, err := plan(lan, local, target)
+	packets, err := plan(source, local, target)
 	if err != nil {
 		return 0, err
 	}
@@ -155,8 +181,12 @@ func writePacket(ctx context.Context, p packet) error {
 }
 
 func writeDatagram(ctx context.Context, p packet, port string) error {
-	d := net.Dialer{LocalAddr: &net.UDPAddr{IP: net.IP(p.local.AsSlice())}}
-	conn, err := d.DialContext(ctx, "udp4", net.JoinHostPort(p.to.String(), port))
+	return writeUDP(ctx, p.local, p.to, port, p.data[:])
+}
+
+func writeUDP(ctx context.Context, local, target netip.Addr, port string, data []byte) error {
+	d := net.Dialer{LocalAddr: &net.UDPAddr{IP: net.IP(local.AsSlice())}}
+	conn, err := d.DialContext(ctx, "udp4", net.JoinHostPort(target.String(), port))
 	if err != nil {
 		return err
 	}
@@ -170,6 +200,6 @@ func writeDatagram(ctx context.Context, p packet, port string) error {
 	if err = conn.SetWriteDeadline(deadline); err != nil {
 		return err
 	}
-	_, err = conn.Write(p.data[:])
+	_, err = conn.Write(data)
 	return err
 }

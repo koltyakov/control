@@ -20,8 +20,8 @@ func adapter(address, mac string) model.WakeInterface {
 func TestMagicPacketAndSubnet(t *testing.T) {
 	local := []model.WakeInterface{adapter("192.168.4.2/24", "02:00:00:00:00:01"), adapter("192.168.4.3/24", "02:00:00:00:00:02")}
 	remote := adapter("192.168.4.10/24", "02:ab:cd:ef:01:23")
-	target := model.Node{Labels: map[string]string{"lan": "home"}, WakeInterfaces: []model.WakeInterface{remote, remote}}
-	packets, err := plan("home", local, target)
+	target := model.Node{WakeInterfaces: []model.WakeInterface{remote, remote}, LANPeers: []model.LANPeer{{ID: "sender", Local: remote, Remote: local[0], VerifiedAt: time.Now().Add(-time.Second)}}}
+	packets, err := plan("sender", local, target)
 	if err != nil || len(packets) != 1 {
 		t.Fatal(packets, err)
 	}
@@ -35,8 +35,13 @@ func TestMagicPacketAndSubnet(t *testing.T) {
 		t.Fatalf("incorrect magic packet: %x", p.data)
 	}
 	for _, change := range []func(*model.Node){
-		func(n *model.Node) { n.Labels = nil },
-		func(n *model.Node) { n.Labels = map[string]string{"lan": "office"} },
+		func(n *model.Node) { n.LANPeers = nil },
+		func(n *model.Node) {
+			n.LANPeers = []model.LANPeer{{ID: "other", Local: remote, Remote: local[0], VerifiedAt: time.Now()}}
+		},
+		func(n *model.Node) {
+			n.LANPeers = []model.LANPeer{{ID: "sender", Local: remote, Remote: local[0], VerifiedAt: time.Now().Add(-model.LANPeerTTL)}}
+		},
 		func(n *model.Node) { n.WakeInterfaces = nil },
 		func(n *model.Node) { n.WakeInterfaces = []model.WakeInterface{adapter("192.168.5.10/24", remote.MAC)} },
 		func(n *model.Node) { n.WakeInterfaces = []model.WakeInterface{adapter("192.168.4.10/16", remote.MAC)} },
@@ -44,7 +49,7 @@ func TestMagicPacketAndSubnet(t *testing.T) {
 	} {
 		n := target
 		change(&n)
-		if _, err := plan("home", local[:1], n); err == nil {
+		if _, err := plan("sender", local[:1], n); err == nil {
 			t.Fatal("accepted missing or mismatched LAN/subnet", n)
 		}
 	}

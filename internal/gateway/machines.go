@@ -17,6 +17,7 @@ import (
 func (g *Gateway) machineRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/node/state", g.nodeState)
 	mux.HandleFunc("PATCH /v1/fleet/nodes/{id}", g.fleetAdmin(g.setMachineState))
+	mux.HandleFunc("POST /v1/fleet/nodes/{id}/wake", g.fleetAdmin(g.wakeMachine))
 }
 
 // Called under g.mu. An enabling machine remains ineligible until it has

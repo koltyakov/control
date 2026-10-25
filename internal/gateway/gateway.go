@@ -89,6 +89,7 @@ type connection struct {
 	heartbeat         bool
 	pong              chan string
 	client            bool
+	lanDiscovery      bool
 	userID            string
 	ws                *websocket.Conn
 	out               chan *protocol.Packet
@@ -125,6 +126,7 @@ type Gateway struct {
 	updates          *update.Repository
 	options          Options
 	updateStatus     map[string]update.Status
+	wakes            map[string]pendingWake
 	updateCtx        context.Context
 	updateCancel     context.CancelFunc
 	updateWG         sync.WaitGroup
@@ -178,6 +180,7 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 	g.lock = lock
 	g.superuser, g.options = opts.SuperuserKey, opts
 	g.updateStatus = map[string]update.Status{}
+	g.wakes = map[string]pendingWake{}
 	if err := g.openDatabase(dir); err != nil {
 		if g.db != nil {
 			_ = g.db.Close()
@@ -346,7 +349,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		return
 	}
 	// Sign both the fresh challenge and registration metadata.
-	if wol.Validate(n.WakeInterfaces) != nil || (len(n.WakeInterfaces) != 0 && (client || n.Labels["lan"] == "")) || (n.RunAs != "" && n.RunAs != "system" && n.RunAs != "user") {
+	if wol.Validate(n.WakeInterfaces) != nil || (client && (len(n.WakeInterfaces) != 0 || n.LANDiscovery || len(n.LANPeers) != 0)) || (n.RunAs != "" && n.RunAs != "system" && n.RunAs != "user") {
 		return
 	}
 	if !ed25519.Verify(n.PublicKey, hello.Message(challenge), hello.Signature) {
@@ -393,6 +396,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		n.Name = g.machineStates[n.ID].Name
 	}
 	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, relayQueuePackets), outData: make(chan *protocol.Packet, relayQueuePackets), keyID: p.KeyID, userID: p.UserID, heartbeat: hello.GatewayHeartbeat, pong: make(chan string, 1)}
+	c.lanDiscovery = n.LANDiscovery
 	c.relay = newRelayScheduler()
 	if !g.allowInstallation(p.KeyID, n) {
 		g.mu.Unlock()
@@ -442,6 +446,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	n.LastSeen = time.Now().UTC()
 	previous, existed := g.nodes[n.ID]
 	n.UpdateUntil = previous.UpdateUntil // Never trust enrollment's display grace.
+	n.LANPeers = retainedLANPeers(previous.LANPeers, n.WakeInterfaces)
 	previousOwner := g.owners[ownerID]
 	g.owners[ownerID] = n.UserID
 	previousClient := g.clientOwners[ownerID]
@@ -585,6 +590,12 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			}
 			continue
 		}
+		if p.Kind == "wake.result" && p.To == "" {
+			if client || !g.receiveWake(n, p.Data) {
+				return
+			}
+			continue
+		}
 		if p.Kind == "update.status" && p.To == "" {
 			if client {
 				return
@@ -594,7 +605,17 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			}
 			continue
 		}
+		if p.Kind == "lan.report" && p.To == "" {
+			if client || !n.LANDiscovery || !g.receiveLANReport(n, c, p.Data) {
+				return
+			}
+			continue
+		}
 		switch p.Kind {
+		case "lan.probe":
+			if client || !n.LANDiscovery || len(p.Data) > 1024 {
+				return
+			}
 		case "open", "answer", "data", "close":
 		case "ice":
 			if !n.TrickleICE || len(p.Data) > 4096 {
@@ -616,6 +637,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			}
 		}
 		dest := g.route(p.To, c.userID)
+		if p.Kind == "lan.probe" && dest != nil && !dest.lanDiscovery {
+			continue
+		}
 		if dest == nil {
 			if p.Kind == "open" && !c.enqueue(&protocol.Packet{Kind: "close", From: p.To, Session: p.Session, Data: []byte("peer offline")}) {
 				return

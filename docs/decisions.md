@@ -714,6 +714,8 @@ Keep sessions bounded and in memory, store only opaque-token digests, recheck ac
 
 ## D080: Explicit LAN membership and peer Wake-on-LAN
 
+The manual LAN label and opt-in metadata collection are superseded by [D084](#d084-automatic-interface-reporting-and-verified-lan-relationships). Execution authority, bounded magic packets, and no-replay behavior remain unchanged.
+
 Use a shared operator-assigned `labels.lan` identifier plus an exact private IPv4 subnet match to authorize LAN selection, rather than treating overlapping private ranges, a shared public IP, or a WebRTC route as evidence of one broadcast domain. Opt-in nodes advertise bounded IPv4/MAC interface metadata in signed registration bytes. Retain it in the existing fleet directory for offline wake requests and gateway restart recovery. It is fleet-visible metadata, not proof of firmware support, and may become stale while offline.
 
 CLI and MCP share one sender-selection operation. The default chooses one compatible online node; explicit source selection can choose a worker or a local client that asserts its LAN identifier. Nodes execute `network.wake` under normal capability authority and admission, resolve targets in their own fleet directory, and recheck live local interfaces before sending. Never accept arbitrary caller-provided MAC/broadcast destinations or move packet emission into the gateway. This extends the provider model without granting ambient worker authority or adding a database schema.
@@ -737,3 +739,13 @@ Events are fleet-scoped like the data they describe: account keys and browser se
 Nodes include `runAs` in signed registration: `system` when the process runs as root or a Windows service account (LocalSystem, LocalService, NetworkService), and `user` otherwise, including an elevated interactive account. The value describes the running process, so it stays accurate after a startup-mode migration, unlike invitation metadata. Gateways reject other values and, per [D056](#d056-signed-registration-bytes-and-tolerant-health-reports), older gateways ignore the field.
 
 Clearing invitations deletes revoked and expired records but only hides redeemed ones, because a redeemed invitation holds its machine's credential. Machines are managed, disabled, and unregistered from their own records rather than by revoking the invitation in the console.
+
+## D084: Automatic interface reporting and verified LAN relationships
+
+Report eligible IPv4/MAC interfaces on every machine automatically, independently of labels, and detect interface changes separately from resource sampling. Manual opt-in prevented updated nodes from retaining the information needed after sleep. Matching private prefixes only select candidates; they do not prove a shared LAN.
+
+Use fleet-scoped gateway challenges and signed proofs delivered exclusively by UDP directed broadcast to establish directional relationships. The receiving machine must obtain the other node's fresh signature from a broadcast before reporting it through its authenticated connection. The gateway verifies both identities, interface bindings, and freshness before committing gateway-owned `lanPeers` to the existing directory. Registration cannot assert relationships. This requires negotiated `lanDiscovery` support but no Protobuf-envelope or database schema change, and works when execution connections use only the gateway relay.
+
+Bound discovery concurrency, message sizes, candidate counts, attempt rates, and retained edges. Refresh observations while both machines are online and retain them for seven days for offline wake requests. Match exact live sender interfaces and retained target interfaces at transmission. Stale evidence remains possible if hardware moves while retaining identical addresses and MACs; discovery is last-observed reachability, not proof of an offline host's present location. It grants no execution authority and changes no firewall, power, or NIC settings.
+
+CLI/MCP automatically prefer a matching local registered NIC or choose an online verified worker. Remove manual LAN assertions and `--lan`; labels cannot override missing evidence. Both machines need one overlapping online period to learn a relationship, so discovery cannot recover an unreported sleeping machine. This supersedes the manual membership portion of D080 without adding automatic waking, wake retries, or gateway packet emission. See [Wake-on-LAN](wake.md).

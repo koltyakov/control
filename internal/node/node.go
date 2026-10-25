@@ -183,7 +183,7 @@ func New(cfg Config) (*Node, error) {
 	}
 	n.Peer = transport.New(transport.Config{
 		Gateway: cfg.Gateway, Token: cfg.Token, Identity: id, RelayOnly: cfg.RelayOnly, ICEServers: cfg.ICEServers,
-		Node: model.Node{ID: id.ID, Name: cfg.Name, PublicKey: id.Public, OS: runtime.GOOS, Labels: cfg.Labels, Capabilities: n.Capabilities(), RunAs: processutil.RunAs()},
+		Node: model.Node{ID: id.ID, Name: cfg.Name, PublicKey: id.Public, OS: runtime.GOOS, Labels: cfg.Labels, Capabilities: n.Capabilities(), RunAs: processutil.RunAs(), GatewayWake: accountMayCall(cfg.Allow, "network.wake")},
 	}, n.handle)
 	ready = true
 	return n, nil
@@ -216,6 +216,7 @@ func (n *Node) SetShutdown(stop func()) { n.shutdown = stop }
 
 func (n *Node) Start(ctx context.Context) error {
 	n.Peer.SetCapabilities(n.Capabilities())
+	n.Peer.SetWakeHandler(n.gatewayWake)
 	n.ctx, n.cancel = context.WithCancel(ctx)
 	// The peer transport opens before the final policy check. Keep its work
 	// admission closed too, even while the local execution API is not listening.

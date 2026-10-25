@@ -11,8 +11,9 @@ import (
 )
 
 func TestWakeSender(t *testing.T) {
-	target := model.Node{ID: "sleeping", Labels: map[string]string{"lan": "home"}, WakeInterfaces: []model.WakeInterface{{Address: "192.168.1.3/24", MAC: "02:00:00:00:00:03"}}}
-	source := model.Node{ID: "sender-id", Name: "sender", Online: true, Labels: target.Labels, WakeInterfaces: []model.WakeInterface{{Address: "192.168.1.2/24", MAC: "02:00:00:00:00:02"}}, Capabilities: []model.Capability{{Name: "network.wake"}}}
+	target := model.Node{ID: "sleeping", WakeInterfaces: []model.WakeInterface{{Address: "192.168.1.3/24", MAC: "02:00:00:00:00:03"}}}
+	source := model.Node{ID: "sender-id", Name: "sender", Online: true, WakeInterfaces: []model.WakeInterface{{Address: "192.168.1.2/24", MAC: "02:00:00:00:00:02"}}, Capabilities: []model.Capability{{Name: "network.wake"}}}
+	target.LANPeers = []model.LANPeer{{ID: source.ID, Local: target.WakeInterfaces[0], Remote: source.WakeInterfaces[0], VerifiedAt: time.Now().Add(-time.Second)}}
 	for _, from := range []string{"", "sender", "sender-id"} {
 		got, err := wakeSender([]model.Node{target, source}, target, from)
 		if err != nil || got.ID != source.ID {
@@ -23,7 +24,7 @@ func TestWakeSender(t *testing.T) {
 		func(n *model.Node) { n.Online = false },
 		func(n *model.Node) { n.Disabled = true },
 		func(n *model.Node) { n.ControlPending = true },
-		func(n *model.Node) { n.Labels = map[string]string{"lan": "office"} },
+		func(n *model.Node) { n.ID = "other" },
 		func(n *model.Node) { n.Capabilities = nil },
 		func(n *model.Node) { n.WakeInterfaces = nil },
 	} {
@@ -39,7 +40,7 @@ func TestWakeSender(t *testing.T) {
 }
 
 func TestWakeRequiresAccountRoutingAndValidSpec(t *testing.T) {
-	for _, spec := range []WakeSpec{{}, {Node: "worker"}, {Node: "worker", From: "local"}, {Node: "worker", From: "sender", LAN: "home"}, {Node: "worker", From: "local", LAN: "home"}} {
+	for _, spec := range []WakeSpec{{}, {Node: "worker"}, {Node: "worker", From: "local"}, {Node: "worker", From: "sender"}} {
 		if _, err := (Client{}).Wake(context.Background(), spec); err == nil {
 			t.Fatal("accepted invalid specification or local API", spec)
 		}
@@ -95,7 +96,7 @@ func TestWakeDirectoryAndAccountChecks(t *testing.T) {
 	}
 	common := (Client{}).WithStandalone(ctx, StandaloneConfig{Gateway: Admin{URL: admin.URL, Key: workers[0].Config.Token}, StateDir: t.TempDir(), RelayOnly: true, AccountRouting: true})
 	defer func() { _ = common.Close() }()
-	if _, err := common.Wake(ctx, WakeSpec{Node: "third", From: "local", LAN: "home"}); err == nil || !strings.Contains(err.Error(), "account key") {
+	if _, err := common.Wake(ctx, WakeSpec{Node: "third", From: "local"}); err == nil || !strings.Contains(err.Error(), "account key") {
 		t.Fatal("common key reached local sender", err)
 	}
 	if err := workers[2].Close(); err != nil {
@@ -124,7 +125,7 @@ func TestWakeDirectoryAndAccountChecks(t *testing.T) {
 	if _, err := c.Wake(ctx, WakeSpec{Node: "third"}); err == nil || !strings.Contains(err.Error(), "no online wake sender") {
 		t.Fatal("selected sender without LAN metadata", err)
 	}
-	if _, err := c.Wake(ctx, WakeSpec{Node: "third", From: "local", LAN: "home"}); err == nil || !strings.Contains(err.Error(), "matching lan label") {
+	if _, err := c.Wake(ctx, WakeSpec{Node: "third", From: "local"}); err == nil || !strings.Contains(err.Error(), "no verified LAN relationship") {
 		t.Fatal("local sender ignored target LAN", err)
 	}
 }

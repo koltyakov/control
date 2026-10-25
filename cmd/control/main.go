@@ -598,7 +598,7 @@ Environment: CONTROL_API, CONTROL_TOKEN
   dashboard [--once] [--json] [--node NAME,...]  Gateway status, fleet activity and resources
   system NODE [--refresh]               Cached or requested system sample
   speedtest NODE [--from WORKER] [--size MiB] [--samples N] [--timeout DURATION] [--json]
-  wake NODE [--from WORKER|local] [--lan LAN] [--json]
+  wake NODE [--from WORKER|local] [--json]
   call NODE METHOD [JSON|@file]         Invoke any operation
   exec NODE [--detach] [--id ID] [--timeout DURATION] [--] COMMAND [ARG...]
   task start NODE JSON|@file            Submit a durable task

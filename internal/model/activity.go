@@ -46,6 +46,9 @@ type NodeActivitySnapshot struct {
 	Disabled       bool              `json:"disabled,omitempty"`
 	ControlPending bool              `json:"controlPending,omitempty"`
 	RunAs          string            `json:"runAs,omitempty"`
+	// WakeVia names the online sender the console would use to wake this
+	// offline machine; empty when none has a verified LAN relationship.
+	WakeVia string `json:"wakeVia,omitempty"`
 	// Status is ready for peer activity, summary for fresh owner health,
 	// online for directory-only presence, update during managed updates,
 	// offline, or unavailable.

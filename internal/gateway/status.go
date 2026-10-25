@@ -39,7 +39,12 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 	}
 	// Read committed observation data without waiting behind SQLite writes.
 	deployment := g.updates.Current()
-	for _, entry := range g.observations(p.UserID) {
+	entries := g.observations(p.UserID)
+	fleet := make([]model.Node, 0, len(entries))
+	for _, entry := range entries {
+		fleet = append(fleet, entry.node)
+	}
+	for _, entry := range entries {
 		n := entry.node
 		state := "offline"
 		if n.Online {
@@ -50,6 +55,9 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 			LastSeen: n.LastSeen, Status: state, System: n.System,
 			Software: n.Software, Disabled: n.Disabled, ControlPending: n.ControlPending, RunAs: n.RunAs,
 			Active: []model.Activity{}, Recent: []model.Activity{},
+		}
+		if sender, ok := wakeSender(fleet, n); ok {
+			snapshot.WakeVia = sender.Name
 		}
 		// Aggregate health is owner-only. Common peer keys still need the node's
 		// activities.list/system.info permissions for live observation.

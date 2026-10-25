@@ -27,7 +27,7 @@ func TestWakeMetadataPersistenceAndIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	interfaces := []model.WakeInterface{{Address: "192.168.1.2/24", MAC: "02:00:00:00:00:02"}}
-	n := model.Node{ID: id.ID, Name: "sleeper", PublicKey: id.Public, Labels: map[string]string{"lan": "home"}, WakeInterfaces: interfaces}
+	n := model.Node{ID: id.ID, Name: "sleeper", PublicKey: id.Public, WakeInterfaces: interfaces, LANDiscovery: true, LANPeers: []model.LANPeer{{ID: "forged", Local: interfaces[0], VerifiedAt: time.Now()}}}
 	register := func(n model.Node) bool {
 		ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(s.URL, "http")+"/v1/connect", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + a.Key}}})
 		if err != nil {
@@ -49,6 +49,12 @@ func TestWakeMetadataPersistenceAndIsolation(t *testing.T) {
 	if !register(n) {
 		t.Fatal("valid wake metadata rejected")
 	}
+	g.mu.Lock()
+	forged := len(g.nodes[id.ID].LANPeers) != 0
+	g.mu.Unlock()
+	if forged {
+		t.Fatal("registration supplied LAN relationship was trusted")
+	}
 	waitSessionClosed(t, g, id.ID)
 	var nodes []model.Node
 	if err := a.JSON(ctx, "GET", "/v1/nodes", nil, &nodes); err != nil || len(nodes) != 1 || nodes[0].Online || nodes[0].UserID != alice.ID || !reflect.DeepEqual(nodes[0].WakeInterfaces, interfaces) {
@@ -58,11 +64,6 @@ func TestWakeMetadataPersistenceAndIsolation(t *testing.T) {
 		t.Fatal("wake metadata crossed fleets", nodes, err)
 	}
 	bad := n
-	bad.Labels = nil
-	if register(bad) {
-		t.Fatal("wake metadata accepted without LAN opt-in")
-	}
-	bad = n
 	bad.WakeInterfaces = []model.WakeInterface{{Address: "8.8.8.8/24", MAC: interfaces[0].MAC}}
 	if register(bad) {
 		t.Fatal("invalid wake interface accepted")
