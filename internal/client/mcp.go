@@ -106,7 +106,7 @@ func (c Client) MCPServer() *mcp.Server {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(model.JSON(result))}}}, nil
 		})
 	}
-	local("control_wake", "Send Wake-on-LAN to an offline fleet machine using automatically discovered, verified LAN relationships. Prefers this host when a matching registered NIC has a verified relationship, otherwise selects an online worker. Optional from chooses a worker or local. No LAN labels or manual MACs are needed. Both machines must have been online together for discovery. Requires an account key and retained wakeInterfaces/lanPeers. Success means packet sent, not awake. Never retries or switches sender after failure.", map[string]any{"node": text, "from": text}, []string{"node"}, func(ctx context.Context, args json.RawMessage) (any, error) {
+	local("control_wake", "Send Wake-on-LAN to an offline fleet machine using verified LAN evidence. Prefers this host when a registered NIC matches, or its OS neighbor table matches the target's registered IP/MAC on the same local interface. A matching awake witness with a verified relationship to the target also qualifies this host. Otherwise selects an online verified worker. A standalone orchestrator needs no node enrollment. Optional from chooses a worker or local. No LAN labels or manual MACs are needed. Requires an account key and retained target wakeInterfaces. Success means packet sent, not awake. Never retries or switches sender after a wake-send failure.", map[string]any{"node": text, "from": text}, []string{"node"}, func(ctx context.Context, args json.RawMessage) (any, error) {
 		var spec WakeSpec
 		if err := json.Unmarshal(args, &spec); err != nil {
 			return nil, err

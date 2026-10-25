@@ -72,8 +72,13 @@ func (c Client) Wake(ctx context.Context, spec WakeSpec) (model.WakeResult, erro
 				}
 			}
 		}
+		if derived, err := wol.LocalTarget(ctx, target, nodes); err == nil {
+			result.Source = "local"
+			result.Packets, err = wol.Send(ctx, "local", derived)
+			return result, err
+		}
 		if spec.From == "local" {
-			return result, errors.New("this host has no verified LAN relationship with the target")
+			return result, errors.New("this host has no verified LAN relationship or matching local IP/MAC neighbor for the target")
 		}
 	}
 	source, err := wakeSender(nodes, target, spec.From)

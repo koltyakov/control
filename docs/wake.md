@@ -27,7 +27,11 @@ control wake workstation --from local
 control wake workstation --json
 ```
 
-The default first checks whether this host has a registered NIC with a verified relationship to the target. Otherwise it selects the first compatible online worker in the fleet's alphabetical directory order. `--from` accepts a name or stable ID; the reserved value `local` selects this host, so use a stable ID for a worker named `local`. Local sending still requires a previously verified relationship and a matching live NIC. It never assumes LAN membership from a shared subnet. Control never switches sender or retries after an uncertain wake result.
+The default first checks whether this host has a registered NIC with a verified relationship to the target. A standalone orchestrator also qualifies without node enrollment when its OS neighbor table contains the target's exact registered IPv4 address and MAC on the matching local interface. Alternatively, an exact neighbor match for an awake worker can establish local membership when that worker has a current verified relationship to the target. The witness interface must be the same one recorded in that relationship. Derived local evidence is process-local and never creates a fleet machine or gateway relationship.
+
+For a cold neighbor cache, Control can send up to three short, non-magic UDP datagrams to port 9 of awake verified witnesses, then read the table again. It never sends these discovery datagrams to the sleeping target. Local detection is bounded to two seconds and uses macOS `arp`, Windows `arp.exe`, or Linux `ip -j neigh`. Linux needs the `iproute2` tools for this path; if the tool is unavailable or no exact match exists, automatic selection can still choose a verified worker. Neighbor output is bounded to 1 MiB and incomplete/failed entries are ignored. Neighbor records are last-known link-layer observations, not cryptographic proofs, and may be stale or affected by ARP spoofing. Matching private ranges alone never qualifies a sender.
+
+If this host does not qualify, Control selects the first compatible online worker in the fleet's alphabetical directory order. `--from` accepts a name or stable ID; the reserved value `local` requires this host, so use a stable ID for a worker named `local`. No local node or service is required. Source selection and neighbor checks finish before any magic packet is sent. Control never switches sender or retries after an uncertain wake-send result.
 
 MCP `control_wake` accepts `node` and optional `from`. Direct worker calls use:
 
