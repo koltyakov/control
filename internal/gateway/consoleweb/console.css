@@ -998,8 +998,19 @@ td strong {
   line-height: 17px;
   white-space: nowrap;
 }
-.context-choice.offline {
-  text-decoration: line-through;
+.context-choice > span {
+  position: relative;
+}
+.context-choice.offline > span::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: currentColor;
+  transform: translateY(-50%);
+  pointer-events: none;
 }
 .machine-name {
   display: block;

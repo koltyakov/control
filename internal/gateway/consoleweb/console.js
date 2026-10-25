@@ -869,7 +869,7 @@ function contextChips(node) {
   if (!node.hybridId) return runAsTag(node);
   return [...node.contexts]
     .sort((a, b) => (a.hybridRole === "user" ? -1 : 1) - (b.hybridRole === "user" ? -1 : 1))
-    .map((context) => `<button class="context-tag context-choice${context.online ? "" : " offline"}" data-action="context" data-id="${esc(context.id)}" aria-pressed="${node.id === context.id}" aria-description="${context.online ? "Online" : "Offline"}" title="${esc(context.name)} · ${context.online ? "Online" : "Offline"}${context.hybridRole === "system" ? " · For operations requiring elevation" : " · Default execution context"}">${context.hybridRole === "user" ? "User" : "System"}</button>`)
+    .map((context) => `<button class="context-tag context-choice${context.online ? "" : " offline"}" data-action="context" data-id="${esc(context.id)}" aria-pressed="${node.id === context.id}" aria-description="${context.online ? "Online" : "Offline"}" title="${esc(context.name)} · ${context.online ? "Online" : "Offline"}${context.hybridRole === "system" ? " · For operations requiring elevation" : " · Default execution context"}"><span>${context.hybridRole === "user" ? "User" : "System"}</span></button>`)
     .join("");
 }
 function machineMatches(n) {

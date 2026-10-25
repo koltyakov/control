@@ -458,8 +458,14 @@ async function assertHybridGrouping(page, snapshot) {
   const assertOfflineChip = async (label, offline) => {
     await page.waitForFunction(({ id, offline }) => {
       const chip = document.querySelector(`.machine-table .context-choice[data-id="${id}"]`);
-      return chip?.getAttribute("aria-description") === (offline ? "Offline" : "Online") &&
-        getComputedStyle(chip).textDecorationLine === (offline ? "line-through" : "none");
+      if (chip?.getAttribute("aria-description") !== (offline ? "Offline" : "Online")) return false;
+      const label = chip.querySelector("span"),
+        strike = getComputedStyle(label, "::after");
+      if (getComputedStyle(chip).textDecorationLine !== "none") return false;
+      if (!offline) return strike.content === "none";
+      return strike.content === '\"\"' && strike.pointerEvents === "none" &&
+        Math.abs(parseFloat(strike.top) - label.getBoundingClientRect().height / 2) < 0.1 &&
+        strike.transform === "matrix(1, 0, 0, 1, 0, -0.5)";
     }, { id: label === "User" ? user.id : system.id, offline });
   };
   await assertOfflineChip("User", true);
