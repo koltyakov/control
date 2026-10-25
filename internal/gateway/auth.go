@@ -92,7 +92,7 @@ func bearer(r *http.Request) string {
 
 func (g *Gateway) admin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		role, _ := g.role(bearer(r))
+		role := g.requestPrincipal(r).Role
 		if role == "" {
 			g.counters.authFailures.Add(1)
 		}
@@ -106,7 +106,7 @@ func (g *Gateway) admin(next http.HandlerFunc) http.HandlerFunc {
 
 func (g *Gateway) authRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/auth", g.auth(func(w http.ResponseWriter, r *http.Request) {
-		p := g.authenticate(bearer(r))
+		p := g.requestPrincipal(r)
 		w.Header().Set("Content-Type", "application/json")
 		capabilities := []string{}
 		switch p.Role {
@@ -118,7 +118,7 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"role": p.Role, "userId": p.UserID, "capabilities": capabilities, "nodeHealth": true, "clientSessions": true, "clientOwners": true, "peerChannels": true, "delegation": true, "largePackets": true, "nodeBytes": true, "gatewayHeartbeat": true, "trickleICE": true, "stunServers": g.options.STUNServers})
 	}))
 	create := func(w http.ResponseWriter, r *http.Request) {
-		p := g.authenticate(bearer(r))
+		p := g.requestPrincipal(r)
 		r.Body = http.MaxBytesReader(w, r.Body, 4096)
 		var q struct {
 			Name string `json:"name"`
@@ -136,7 +136,7 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		key := APIKey{ID: identity.NewID(), UserID: p.UserID, Name: q.Name, Role: "common", CreatedAt: time.Now().UTC()}
 		g.mu.Lock()
 		g.keys[key.ID] = keyRecord{APIKey: key, Hash: tokenHash(token)}
-		err := g.commit(change{keys: []string{key.ID}})
+		err := g.commit(change{keys: []string{key.ID}, audit: []AuditEvent{g.auditEventLocked(r, "", "key.create", key.Name, key.ID, "")}})
 		if err != nil {
 			delete(g.keys, key.ID)
 		}
@@ -150,7 +150,7 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"key": key, "token": token})
 	}
 	list := func(w http.ResponseWriter, r *http.Request) {
-		p := g.authenticate(bearer(r))
+		p := g.requestPrincipal(r)
 		g.mu.Lock()
 		keys := []APIKey{}
 		for _, key := range g.keys {
@@ -164,7 +164,7 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		_ = json.NewEncoder(w).Encode(keys)
 	}
 	revoke := func(w http.ResponseWriter, r *http.Request) {
-		p := g.authenticate(bearer(r))
+		p := g.requestPrincipal(r)
 		g.mu.Lock()
 		key, ok := g.keys[r.PathValue("id")]
 		if !ok || key.UserID != p.UserID {
@@ -175,7 +175,7 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		old := key
 		key.Revoked = true
 		g.keys[key.ID] = key
-		err := g.commit(change{keys: []string{key.ID}})
+		err := g.commit(change{keys: []string{key.ID}, audit: []AuditEvent{g.auditEventLocked(r, "", "key.revoke", key.Name, key.ID, "")}})
 		if err != nil {
 			g.keys[key.ID] = old
 		}
@@ -197,6 +197,38 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
+	rename := func(w http.ResponseWriter, r *http.Request) {
+		p := g.requestPrincipal(r)
+		r.Body = http.MaxBytesReader(w, r.Body, 4096)
+		var q struct {
+			Name string `json:"name"`
+		}
+		if json.NewDecoder(r.Body).Decode(&q) != nil || q.Name == "" || len(q.Name) > 128 {
+			http.Error(w, "name is required, maximum 128 bytes", http.StatusBadRequest)
+			return
+		}
+		g.mu.Lock()
+		key, ok := g.keys[r.PathValue("id")]
+		if !ok || key.UserID != p.UserID {
+			g.mu.Unlock()
+			http.NotFound(w, r)
+			return
+		}
+		old := key
+		key.Name = q.Name
+		g.keys[key.ID] = key
+		err := g.commit(change{keys: []string{key.ID}, audit: []AuditEvent{g.auditEventLocked(r, "", "key.rename", key.Name, key.ID, "was "+old.Name)}})
+		if err != nil {
+			g.keys[key.ID] = old
+		}
+		g.mu.Unlock()
+		if err != nil {
+			http.Error(w, "could not persist key name", 500)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(key.APIKey)
+	}
 	for _, prefix := range []string{"/v1/admin/keys", "/v1/fleet/keys"} {
 		guard := g.fleetAdmin
 		if prefix == "/v1/admin/keys" {
@@ -204,6 +236,7 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		}
 		mux.HandleFunc("POST "+prefix, guard(create))
 		mux.HandleFunc("GET "+prefix, guard(list))
+		mux.HandleFunc("PATCH "+prefix+"/{id}", guard(rename))
 		mux.HandleFunc("DELETE "+prefix+"/{id}", guard(revoke))
 	}
 }

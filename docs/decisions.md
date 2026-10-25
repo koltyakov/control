@@ -701,3 +701,33 @@ Selection excludes fresh known leases and update state, then scores active work 
 Expose explicit account-client workflow reconciliation by reading the persisted plan and querying stable child IDs. Return bounded summaries and unresolved query errors. Do not reconstruct grants, resume interrupted parents, or resubmit children. This extends D060 without treating absence as proof that execution never happened.
 
 The gateway release fetcher and CLI updater verify the signed manifest with Sigstore, TUF trust roots, a transparency-log entry, trusted signing time and the exact GitHub release workflow identity at the requested tag. Reject unsigned or mismatched metadata before downloading or executing binaries. This replaces runtime checksum-only GitHub release trust. Superuser development publication and bootstrap installation retain their distinct trust paths. See [release verification](updates.md#publish-github-releases).
+
+## D079: Embedded management console with separate browser authority
+
+Serve a management console from the gateway's existing HTTP listener and embed all static assets in the Go binary. Use native browser JavaScript and CSS without a frontend build or runtime service. Read cached gateway health instead of adding peer observation, task scheduling, or application execution to the gateway.
+
+Add separately provisioned Argon2id browser passwords bound to existing immutable account IDs in SQLite schema version 5. Use `@operator` for the separately provisioned superuser browser login. Existing bearer keys, account roles, fleet isolation, and CLI/MCP behavior stay unchanged. There is no public signup or default password. This extends D016's account credentials without replacing its bearer authentication.
+
+Browser cookies authorize only an explicit management-route allowlist. Attach a verified principal in server-owned request context and reuse fleet and administrative handlers rather than issuing or exposing synthetic API keys. Cookies cannot authenticate bearer endpoints or peer/client WebSockets. Operator machine access remains limited to the legacy fleet; global user and update administration retains superuser checks.
+
+Keep sessions bounded and in memory, store only opaque-token digests, recheck account status and password revisions, and require idle/absolute expiry, same-origin mutations, and session-bound CSRF tokens. Gateway restart signs out browsers without losing passwords. Password resets revoke browser sessions without changing task ownership or CLI keys. Bound password work outside the gateway mutation lock and commit credential changes before acknowledging them. Require HTTPS except for direct loopback development; configured HTTPS origins may use a trusted loopback upstream, never arbitrary forwarded scheme headers. See [web console](console.md).
+
+## D080: Explicit LAN membership and peer Wake-on-LAN
+
+Use a shared operator-assigned `labels.lan` identifier plus an exact private IPv4 subnet match to authorize LAN selection, rather than treating overlapping private ranges, a shared public IP, or a WebRTC route as evidence of one broadcast domain. Opt-in nodes advertise bounded IPv4/MAC interface metadata in signed registration bytes. Retain it in the existing fleet directory for offline wake requests and gateway restart recovery. It is fleet-visible metadata, not proof of firmware support, and may become stale while offline.
+
+CLI and MCP share one sender-selection operation. The default chooses one compatible online node; explicit source selection can choose a worker or a local client that asserts its LAN identifier. Nodes execute `network.wake` under normal capability authority and admission, resolve targets in their own fleet directory, and recheck live local interfaces before sending. Never accept arbitrary caller-provided MAC/broadcast destinations or move packet emission into the gateway. This extends the provider model without granting ambient worker authority or adding a database schema.
+
+Bound each request to one UDP port 9 magic packet per distinct target MAC/subnet. Do not automatically wake on execution failure, repeat sends, or fail over after uncertain transmission. Report sent packets, not successful power-on. Firmware, NIC settings, broadcast delivery, and service startup after wake remain external requirements requiring native hardware verification. See [Wake-on-LAN](wake.md).
+
+## D081: Aggregate work, tunnel, and route counts in owner health
+
+Extend [D022](#d022-owner-visible-machine-health-without-a-local-node)'s health report with counts of active tasks, exec sessions, transfers, and other operations; forward and reverse tunnels; peers by connection route; the lease expiry; and the latest activity start or completion time. The browser console has no peer API, so without these counts it could show only a total. The node derives them from the records the peer activity view already uses.
+
+Reports still carry no operation names, owners, peers, arguments, or paths, and reach only the fleet's account key. Gateways validate the new counts as non-negative and ignore them when absent, so older nodes show totals only. Per [D056](#d056-signed-registration-bytes-and-tolerant-health-reports), older gateways ignore the new fields. Task control and per-operation detail remain on the peer API.
+
+## D082: Durable management audit log
+
+Record sign-ins, failed sign-ins, sign-outs, and management changes in a SQLite `audit_events` table (schema version 6) instead of relying on in-memory state or process logs. Each event is written in the same transaction as the change it describes, extending [D016](#d016-sqlite-backed-users-and-isolated-fleets)'s commit-before-acknowledgement rule, so the log cannot miss a committed change or describe one that rolled back. A sign-in is refused when its record cannot be written. Update publication and release checks persist outside SQLite, so their events follow the action and failures are logged.
+
+Events are fleet-scoped like the data they describe: account keys and browser sessions read their own fleet, and the operator reads every fleet, including failed sign-ins for unknown usernames. Actors are the browser login or the bearer key's account and ID. Source addresses are the direct TCP peer, because forwarded headers remain untrusted. Retention keeps the newest 50,000 events and caps failed sign-ins at 2,000 so password guessing cannot displace management history. Events never hold secrets, installation links, or execution arguments. This supersedes the console's earlier lack of a durable audit trail noted in [D079](#d079-embedded-management-console-with-separate-browser-authority).

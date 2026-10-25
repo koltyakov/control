@@ -27,6 +27,7 @@ import (
 	"github.com/koltyakov/control/internal/protocol"
 	"github.com/koltyakov/control/internal/system"
 	"github.com/koltyakov/control/internal/update"
+	"github.com/koltyakov/control/internal/wol"
 	"github.com/koltyakov/control/internal/wsio"
 	"google.golang.org/protobuf/proto"
 )
@@ -143,6 +144,7 @@ type Gateway struct {
 	routeMu  sync.RWMutex
 	routes   map[string]*connection
 	counters counters
+	console  *consoleState
 }
 
 func New(dir, token string, options ...Options) (*Gateway, error) {
@@ -172,6 +174,7 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 		return nil, errors.New("gateway data directory is already in use")
 	}
 	g := &Gateway{token: token, path: filepath.Join(dir, "nodes.json"), nodes: map[string]model.Node{}, clients: map[string]model.Node{}, peers: map[string]*connection{}, routes: map[string]*connection{}, observed: map[string]*observedFleet{}}
+	g.console = newConsoleState()
 	g.lock = lock
 	g.superuser, g.options = opts.SuperuserKey, opts
 	g.updateStatus = map[string]update.Status{}
@@ -183,6 +186,11 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 		return nil, err
 	}
 	if err := g.migrateLegacyClients(); err != nil {
+		_ = g.db.Close()
+		_ = lock.Close()
+		return nil, err
+	}
+	if err := readRecords(g.db, "console_passwords", "username", g.console.passwords); err != nil {
 		_ = g.db.Close()
 		_ = lock.Close()
 		return nil, err
@@ -238,15 +246,17 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/admin/metrics", g.admin(g.metricsHandler))
 	g.authRoutes(mux)
 	g.userRoutes(mux)
+	g.auditRoutes(mux)
 	g.updateRoutes(mux)
 	g.installationRoutes(mux)
 	g.machineRoutes(mux)
+	g.consoleRoutes(mux)
 	return mux
 }
 
 func (g *Gateway) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		role, _ := g.role(bearer(r))
+		role := g.requestPrincipal(r).Role
 		if role == "" {
 			g.counters.authFailures.Add(1)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -257,7 +267,7 @@ func (g *Gateway) auth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (g *Gateway) list(w http.ResponseWriter, r *http.Request) {
-	p := g.authenticate(bearer(r))
+	p := g.requestPrincipal(r)
 	nodes := g.directory(p.UserID)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(nodes)
@@ -336,6 +346,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		return
 	}
 	// Sign both the fresh challenge and registration metadata.
+	if wol.Validate(n.WakeInterfaces) != nil || (len(n.WakeInterfaces) != 0 && (client || n.Labels["lan"] == "")) {
+		return
+	}
 	if !ed25519.Verify(n.PublicKey, hello.Message(challenge), hello.Signature) {
 		return
 	}

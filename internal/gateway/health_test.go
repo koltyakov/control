@@ -32,7 +32,9 @@ func TestHealthIdentityFleetAndFreshness(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	health := model.NodeHealth{ActiveCount: 3, Leased: true, System: model.SystemInfo{SampledAt: time.Now()}}
+	health := model.NodeHealth{ActiveCount: 3, Leased: true, System: model.SystemInfo{SampledAt: time.Now()},
+		Work: &model.WorkCounts{Tasks: 1, Transfers: 1}, Tunnels: &model.TunnelCounts{Forward: 1},
+		ConnectionRoutes: &model.ConnectionRouteCounts{Direct: 2, Relay: 1}, LeaseExpires: time.Now().Add(time.Minute).UTC()}
 	packet, err := proto.Marshal(&protocol.Packet{Kind: "node.health", From: bi.ID, Data: model.JSON(health)})
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +65,9 @@ func TestHealthIdentityFleetAndFreshness(t *testing.T) {
 	}
 	if got := read(a); got.Status != "summary" || got.ActiveCount != 3 || !got.Leased || got.ID != ai.ID {
 		t.Fatal("sender identity not used", got)
+	} else if got.Work == nil || *got.Work != *health.Work || got.Tunnels == nil || got.Tunnels.Forward != 1 ||
+		got.DirectSessions != 2 || got.RelaySessions != 1 || !got.LeaseExpires.Equal(health.LeaseExpires) {
+		t.Fatal("aggregate work and connection counts not reported", got)
 	}
 	if got := read(b); got.Status != "online" || got.ActiveCount != 0 || got.ID != bi.ID {
 		t.Fatal("cross-fleet health disclosed", got)
@@ -76,7 +81,7 @@ func TestHealthIdentityFleetAndFreshness(t *testing.T) {
 	if got := read(a); got.Status != "online" || got.ActiveCount != 0 || got.Leased {
 		t.Fatal("stale health appeared live", got)
 	}
-	for _, invalid := range [][]byte{[]byte(`{"activeCount":-1}`), []byte(strings.Repeat(" ", model.MaxNodeHealthBytes+1)), []byte(`{} {}`)} {
+	for _, invalid := range [][]byte{[]byte(`{"activeCount":-1}`), []byte(`{"work":{"tasks":-1}}`), []byte(`{"connectionRoutes":{"relay":-1}}`), []byte(strings.Repeat(" ", model.MaxNodeHealthBytes+1)), []byte(`{} {}`)} {
 		if g.receiveHealth(n, c, invalid) {
 			t.Fatal("invalid health accepted")
 		}

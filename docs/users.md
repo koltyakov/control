@@ -15,7 +15,7 @@ control users create alice
 control users create bob
 ```
 
-Each command returns a user record and a random account key, shown once. Give each user only their own account key. Account registration is operator-provisioned; there is no public signup or password-login endpoint.
+Each command returns a user record and a random account key, shown once. Give each user only their own account key. Account registration is operator-provisioned; there is no public signup. The [web console](console.md) uses separately provisioned browser passwords, not account keys. An operator can run `control console password alice`; an account owner can set their own password with `control console password`.
 
 On Alice's orchestrator machine:
 
@@ -46,7 +46,7 @@ To also execute requested work on an orchestrator machine, run `control setup --
 | Redeemed installation key | Common permissions, with registration restricted to its bound identity, name, OS, and architecture |
 | Gateway superuser | Provision/disable accounts and publish gateway-wide software updates; fleet management and account-client execution operate only on the operator's legacy fleet |
 
-Users issue, list, and revoke their own common keys with `control keys create|list|revoke`. They cannot issue account keys for other users, change credential ownership, publish executable updates, or inspect gateway-wide rollout status. Fleet-management commands appear in user-account help. Gateway administration appears only for the superuser. Common-key help exposes neither.
+Users issue, list, rename, and revoke their own keys with `control keys create|list|rename|revoke`; `PATCH /v1/fleet/keys/{id}` with `{"name":...}` changes only the label. They cannot issue account keys for other users, change credential ownership, publish executable updates, or inspect gateway-wide rollout status. Fleet-management commands appear in user-account help. Gateway administration appears only for the superuser. Common-key help exposes neither.
 
 Only account-authenticated client sessions initiate execution authority. Enrolling a node with an account key does not grant its node identity that authority. Keep account keys off execution workers, since someone who steals one can authenticate a new orchestrator client. Worker installation/common keys do not independently execute peer commands, including through the local API or a new common-key client session.
 
@@ -83,6 +83,10 @@ Schema version 3 adds `client_identities`, referencing permanent identities with
 
 Schema version 4 adds `client_transports` with immutable references to permanent transport and owner identities. Versions 1 through 3 upgrade through transactional schema migrations. The existing persistent client key remains the task owner, so previous tasks and leases stay recoverable. Each process's transport binding survives disconnects and restarts to prevent role changes or owner reassignment, including for cached direct sessions. This ledger stores no routing metadata and is retained without automatic pruning. Back up the gateway state before upgrading; older gateways reject schema version 4.
 
+Schema version 5 adds `console_passwords`, referencing existing user IDs and storing salted Argon2id password hashes and revocation revisions. Earlier accounts remain browser-disabled until provisioned. Browser sessions exist only in memory, expire on idle/absolute deadlines, and disappear on gateway restart. Password resets and account disable invalidate browser access without changing CLI keys or task ownership. Older gateways reject schema version 5. See [console security and limits](console.md#credentials-sessions-and-limits).
+
+Schema version 6 adds `audit_events`, a bounded history of sign-ins and management changes. Each event belongs to one fleet: account owners read their own with `control audit list` or the console Activity page, and the operator reads every fleet. Events commit with the change they describe. Older gateways reject schema version 6. See [activity log](console.md#activity-log).
+
 `CONTROL_TOKEN` on the gateway is an optional bootstrap common key for the legacy fleet only. For a new shared gateway, omit it and configure `CONTROL_SUPERUSER_KEY`, then create separate accounts. Do not give unrelated users the same account key or legacy bootstrap token.
 
 **Upgrade the gateway before upgrading nodes from the pre-isolation version.** New nodes require fleet-aware authentication and refuse an older gateway. Pause automated release polling during this one-time gateway-first upgrade. Subsequent fleet-aware updates use the usual nodes-first managed rollout. SQLite migration cannot be reversed by starting the old executable against stale JSON files.
@@ -97,6 +101,7 @@ To split an old shared pool into new accounts, enroll fresh node identities unde
 | `GET /v1/admin/users` | Superuser | Registered users, without credentials |
 | `DELETE /v1/admin/users/{id}` | Superuser | Disable that account and its credentials |
 | `GET /v1/auth` | Authenticated | `role`, `userId`, and management capabilities |
+| `PUT /v1/console/password` | Account owner or superuser | Set own browser password; superuser may select an existing account by `username` |
 | `GET /v1/nodes` | Authenticated | Only the credential owner's fleet |
 | `GET /v1/client/connect` | Authenticated, unbound credential | Role-proven client session, without machine enrollment |
 | `GET /v1/peers/{id}` | Authenticated | Same-account machine identity or a connected client's transient identity; other IDs return 404 |

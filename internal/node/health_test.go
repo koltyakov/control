@@ -76,6 +76,9 @@ func TestOwnerHealthWithoutLocalObserver(t *testing.T) {
 	if got.System.CPUUsagePercent == nil || len(got.Active) != 0 || len(got.Recent) != 0 {
 		t.Fatal("owner did not get a resource-only summary")
 	}
+	if got.Work == nil || got.Work.Exec != 1 || got.ConnectionRoutes == nil || got.LastActive.IsZero() {
+		t.Fatal("owner did not get aggregate work and connection counts", got)
+	}
 	text := string(model.JSON(got))
 	for _, secret := range []string{"private-operation", "private-owner", "private-peer", n.Config.WorkDir, n.Config.DataDir} {
 		if strings.Contains(text, secret) {
@@ -91,7 +94,10 @@ func TestOwnerHealthWithoutLocalObserver(t *testing.T) {
 	}
 	h.finish(nil)
 	n.reportHealth(ctx)
-	eventually(t, ctx, func() bool { return read().ActiveCount == 0 })
+	eventually(t, ctx, func() bool { got = read(); return got.ActiveCount == 0 })
+	if got.Work == nil || got.Work.Exec != 0 || got.LastActive.IsZero() {
+		t.Fatal("finished work did not keep its last active time", got)
+	}
 	if err := n.Close(); err != nil {
 		t.Fatal(err)
 	}

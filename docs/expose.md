@@ -80,6 +80,8 @@ Enter the gateway superuser key at the hidden login prompt. Give Alice only her 
 
 Worker invitations need a selected release bundle. If none is available, the operator can run `control update check`, or publish a development bundle with `make update`.
 
+The same HTTPS route serves the [web console](console.md). With a saved operator login, set its separate browser password using `control console password`, then sign in as `@operator`. Use `control console password alice` to provision Alice's browser login. Keep the gateway on loopback and preserve the public Host header. A non-loopback upstream proxy must use TLS to the gateway or a trusted local forward; forwarded scheme headers alone do not enable browser login.
+
 After enrolling a worker, verify from the account-authenticated orchestrator. Replace `worker` with its registered name:
 
 ```sh

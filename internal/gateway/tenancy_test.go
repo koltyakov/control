@@ -65,6 +65,16 @@ func TestFleetAccountsAndInvitationsAreIsolated(t *testing.T) {
 	if err := a.JSON(ctx, "DELETE", "/v1/fleet/keys/"+kb.Key.ID, nil, nil); err == nil {
 		t.Fatal("foreign key revoked")
 	}
+	if err := a.JSON(ctx, "PATCH", "/v1/fleet/keys/"+kb.Key.ID, map[string]string{"name": "taken"}, nil); err == nil {
+		t.Fatal("foreign key renamed")
+	}
+	var renamed APIKey
+	if err := a.JSON(ctx, "PATCH", "/v1/fleet/keys/"+ka.Key.ID, map[string]string{"name": "build host"}, &renamed); err != nil || renamed.Name != "build host" {
+		t.Fatalf("rename own key: %+v %v", renamed, err)
+	}
+	if err := a.JSON(ctx, "PATCH", "/v1/fleet/keys/"+ka.Key.ID, map[string]string{"name": ""}, nil); err == nil {
+		t.Fatal("empty key name accepted")
+	}
 	var ia, ib enrollment.Link
 	q := enrollment.Request{Name: "worker", OS: "linux", Arch: "amd64", Gateway: s.URL}
 	if err := a.JSON(ctx, "POST", "/v1/fleet/installations", q, &ia); err != nil {

@@ -34,6 +34,7 @@ type Node struct {
 	ClientOwner    string            `json:"clientOwner,omitempty"`
 	PeerChannels   bool              `json:"peerChannels,omitempty"`
 	TrickleICE     bool              `json:"trickleICE,omitempty"`
+	WakeInterfaces []WakeInterface   `json:"wakeInterfaces,omitempty"`
 	// LargePackets advertises that this receiver accepts 64 KiB carrier packets.
 	LargePackets bool `json:"largePackets,omitempty"`
 	// ExecutionAuthority is assigned by the gateway, never by enrollment metadata.

@@ -106,6 +106,13 @@ func (c Client) MCPServer() *mcp.Server {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(model.JSON(result))}}}, nil
 		})
 	}
+	local("control_wake", "Send Wake-on-LAN to an offline fleet machine. Selects an online sender with the same explicit lan label and IPv4 subnet, or use from to choose a worker. from=local requires lan to assert this orchestrator is on that LAN. Requires an account key and retained wakeInterfaces. Success means packet sent, not awake. Never retries or switches sender after failure.", map[string]any{"node": text, "from": text, "lan": text}, []string{"node"}, func(ctx context.Context, args json.RawMessage) (any, error) {
+		var spec WakeSpec
+		if err := json.Unmarshal(args, &spec); err != nil {
+			return nil, err
+		}
+		return c.Wake(ctx, spec)
+	})
 	local("control_workflow_reconcile", "Inspect a retained workflow plan and query its stable child IDs after interruption or uncertainty. Reports unavailable children without replaying work or recreating grants.", map[string]any{"node": text, "id": text}, []string{"node", "id"}, func(ctx context.Context, args json.RawMessage) (any, error) {
 		var q struct {
 			Node string `json:"node"`

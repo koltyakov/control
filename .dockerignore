@@ -11,3 +11,4 @@ examples/state
 examples/work
 **/identity.key
 **/*.partial
+**/node_modules

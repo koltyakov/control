@@ -16,7 +16,8 @@ Orchestrators coordinate work; worker nodes execute it and exchange files direct
 - Commands, scripts, AI CLIs, MCP servers, and opt-in GUI automation.
 - SHA-256 artifacts, resumable downloads, and direct worker-to-worker delivery.
 - Forward/reverse TCP tunnels, private-network HTTP requests, and explicit clipboard pastes.
-- Leases, bounded parallel workflows, a live dashboard, and idle-only managed updates.
+- [Wake-on-LAN](docs/wake.md) for offline machines through a same-LAN node or an explicitly selected local client.
+- Leases, bounded parallel workflows, terminal and web dashboards, and idle-only managed updates.
 
 Account-authenticated clients initiate execution. Workers need instruction-bound delegation to request peer work; fleet membership permits discovery only. See [authority and delegation](docs/delegation.md).
 
@@ -35,6 +36,8 @@ Follow the [Linux VPS guide](docs/gateway.md) for Ubuntu/Debian setup with syste
 Already running expose? Use the [expose gateway guide](docs/expose.md) instead of Caddy.
 
 Point a domain at the VPS, allow TCP 80/443, and keep the gateway on `127.0.0.1:7330` behind the proxy. Create accounts with `control users create NAME`. Give users their own account keys, never the gateway superuser key.
+
+The gateway URL also serves the [web console](docs/console.md). Set a separate browser password with `control console password`; operators sign in as `@operator`. Operators can provision an existing user's browser login with `control console password NAME`. CLI account keys are not browser passwords.
 
 ## Install the orchestrator CLI
 
@@ -150,7 +153,7 @@ Compose tests run a gateway, three nodes, and an FFmpeg workflow over WebRTC and
 ## Documentation
 
 - [Linux VPS gateway](docs/gateway.md), [gateway behind expose](docs/expose.md), [installation and enrollment](docs/installation.md), [users and private fleets](docs/users.md), [authority and delegation](docs/delegation.md).
-- [Configuration and protocol](docs/protocol.md), [dashboard and metrics](docs/dashboard.md), [managed updates](docs/updates.md).
+- [Configuration and protocol](docs/protocol.md), [web console](docs/console.md), [dashboard and metrics](docs/dashboard.md), [managed updates](docs/updates.md).
 - [TCP tunnels](docs/tunnels.md), [connection tests](docs/connections.md), [fleet streaming](docs/streaming.md).
 - [GUI automation](docs/rpa.md), [worker-local secrets](docs/secrets.md), [clipboard pastes](docs/clipboard.md), [local machine scenarios](docs/scenarios.md).
 - [Terminology](docs/terminology.md), [architecture](docs/architecture.md), [engineering principles](docs/principles.md), [design decisions](docs/decisions.md).

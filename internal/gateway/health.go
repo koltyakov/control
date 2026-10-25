@@ -22,7 +22,7 @@ func (g *Gateway) receiveHealth(n model.Node, c *connection, data []byte) bool {
 	// the known aggregate fields are decoded and retained, and rejecting them
 	// would disconnect an upgraded node from an older gateway every interval.
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	if decoder.Decode(&health) != nil || decoder.Decode(new(any)) != io.EOF || health.ActiveCount < 0 || health.System.OS != n.OS || health.System.Arch != arch || len(health.System.Disks) > 2 {
+	if decoder.Decode(&health) != nil || decoder.Decode(new(any)) != io.EOF || !health.Valid() || health.System.OS != n.OS || health.System.Arch != arch || len(health.System.Disks) > 2 {
 		return false
 	}
 	if cpu := health.System.CPUUsagePercent; cpu != nil && (*cpu < 0 || *cpu > 100) {

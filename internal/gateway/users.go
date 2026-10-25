@@ -30,7 +30,7 @@ func newCredential() (string, error) {
 
 func (g *Gateway) fleetAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		p := g.authenticate(bearer(r))
+		p := g.requestPrincipal(r)
 		if p.Role != "user" && p.Role != "superuser" {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
@@ -68,7 +68,7 @@ func (g *Gateway) userRoutes(mux *http.ServeMux) {
 		old := u
 		u.Disabled = true
 		g.users[u.ID] = u
-		err := g.commit(change{users: []string{u.ID}})
+		err := g.commit(change{users: []string{u.ID}, audit: []AuditEvent{g.auditEventLocked(r, u.ID, "account.disable", u.Name, u.ID, "")}})
 		if err != nil {
 			g.users[u.ID] = old
 		}
@@ -120,7 +120,7 @@ func (g *Gateway) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	g.users[u.ID] = u
 	g.keys[k.ID] = k
-	if err = g.commit(change{users: []string{u.ID}, keys: []string{k.ID}}); err != nil {
+	if err = g.commit(change{users: []string{u.ID}, keys: []string{k.ID}, audit: []AuditEvent{g.auditEventLocked(r, u.ID, "account.create", u.Name, u.ID, "")}}); err != nil {
 		delete(g.users, u.ID)
 		delete(g.keys, k.ID)
 		http.Error(w, "could not persist user", 500)

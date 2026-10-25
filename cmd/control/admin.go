@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -101,6 +102,7 @@ Environment: CONTROL_GATEWAY, CONTROL_SUPERUSER_KEY
 
 const fleetUsage = `
 Your fleet:
+  console password [USER] [--password-stdin] Set a browser password; operators may select a user
   machines add [NAME|auto] --platform macos|windows|linux  Create install command; default uses target hostname
     --service user|system                Choose login-session or boot-time startup
     --force                              Retract a pending invitation for that name
@@ -111,7 +113,9 @@ Your fleet:
   machines unregister NAME              Unregister a machine and request node uninstall
   keys create NAME                     Issue a common key, shown once
   keys list                            List common keys
+  keys rename ID NAME                  Rename a key
   keys revoke ID                       Revoke a common key
+  audit list [N]                       Show recent sign-ins and management changes
 Environment: CONTROL_GATEWAY, CONTROL_USER_KEY
 `
 
@@ -121,14 +125,15 @@ func adminCLI(ctx context.Context, c client.Admin, args []string) error {
 	if authErr != nil && !help {
 		return authErr
 	}
-	if role != "superuser" && (role != "user" || args[0] != "keys") {
+	fleet := args[0] == "keys" || args[0] == "audit"
+	if role != "superuser" && (role != "user" || !fleet) {
 		if !help && args[0] == "update" {
 			return errUpdatePermission
 		}
 		return fmt.Errorf("unknown command %q", args[0])
 	}
 	if help {
-		if args[0] == "keys" {
+		if fleet {
 			fmt.Print(fleetUsage)
 		} else {
 			fmt.Print(adminUsage)
@@ -170,6 +175,23 @@ func adminCLI(ctx context.Context, c client.Admin, args []string) error {
 			return errors.New("usage: control keys create NAME")
 		}
 		err = c.JSON(ctx, http.MethodPost, "/v1/fleet/keys", map[string]string{"name": args[2]}, &result)
+	case "keys rename":
+		if len(args) != 4 {
+			return errors.New("usage: control keys rename ID NAME")
+		}
+		err = c.JSON(ctx, http.MethodPatch, "/v1/fleet/keys/"+url.PathEscape(args[2]), map[string]string{"name": args[3]}, &result)
+	case "audit list":
+		path := "/v1/audit"
+		if len(args) == 3 {
+			n, err := strconv.Atoi(args[2])
+			if err != nil || n < 1 || n > 200 {
+				return errors.New("usage: control audit list [1..200]")
+			}
+			path += "?limit=" + strconv.Itoa(n)
+		} else if len(args) != 2 {
+			return errors.New("usage: control audit list [1..200]")
+		}
+		err = c.JSON(ctx, http.MethodGet, path, nil, &result)
 	case "keys revoke":
 		if len(args) != 3 {
 			return errors.New("usage: control keys revoke ID")

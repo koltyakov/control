@@ -39,7 +39,7 @@ func (g *Gateway) openDatabase(dir string) error {
 	if err = g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 4 {
+	if version > 6 {
 		return errors.New("gateway database is newer than this executable")
 	}
 	if version == 0 {
@@ -63,7 +63,9 @@ CREATE TABLE machine_states (id TEXT PRIMARY KEY REFERENCES identities(id), data
 CREATE TABLE client_identities (id TEXT PRIMARY KEY REFERENCES identities(id), data BLOB NOT NULL);
 CREATE TABLE client_transports (id TEXT PRIMARY KEY REFERENCES identities(id), owner_id TEXT NOT NULL REFERENCES client_identities(id), data BLOB NOT NULL);
 CREATE INDEX client_identity_prefix ON client_identities(substr(id,1,16));
-PRAGMA user_version=4;`); err != nil {
+CREATE TABLE console_passwords (username TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL);
+` + auditSchema + `
+PRAGMA user_version=6;`); err != nil {
 			return err
 		}
 		if err = g.writeState(tx); err != nil {
@@ -106,6 +108,34 @@ PRAGMA user_version=4;`); err != nil {
 		}
 		defer func() { _ = tx.Rollback() }()
 		if _, err := tx.Exec(`CREATE TABLE client_transports (id TEXT PRIMARY KEY REFERENCES identities(id), owner_id TEXT NOT NULL REFERENCES client_identities(id), data BLOB NOT NULL); PRAGMA user_version=4;`); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		version = 4
+	}
+	if version == 4 {
+		tx, err := g.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(`CREATE TABLE console_passwords (username TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL); PRAGMA user_version=5;`); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		version = 5
+	}
+	if version == 5 {
+		tx, err := g.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(auditSchema + ` PRAGMA user_version=6;`); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
@@ -239,6 +269,9 @@ func (g *Gateway) persist() error {
 type change struct {
 	users, identities, clients, transports  []string
 	nodes, keys, invitations, machineStates []string
+	passwords                               []string
+	// audit events commit in the same transaction as the change they describe.
+	audit []AuditEvent
 }
 
 // commit makes one mutation durable in a single transaction before the caller
@@ -267,6 +300,15 @@ func (g *Gateway) writeChange(tx *sql.Tx, c change) error {
 	exec := func(query string, args ...any) error {
 		_, err := tx.Exec(query, args...)
 		return err
+	}
+	if err := writeAudit(tx, c.audit); err != nil {
+		return err
+	}
+	for _, username := range c.passwords {
+		p := g.console.passwords[username]
+		if err := exec(`INSERT INTO console_passwords(username,user_id,data) VALUES(?,?,?) ON CONFLICT(username) DO UPDATE SET data=excluded.data`, username, p.UserID, model.JSON(p)); err != nil {
+			return err
+		}
 	}
 	// Deletions precede inserts so a released name can be reused in one change.
 	for _, id := range c.nodes {

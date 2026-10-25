@@ -27,6 +27,7 @@ import (
 	"github.com/koltyakov/control/internal/transport"
 	"github.com/koltyakov/control/internal/update"
 	"github.com/koltyakov/control/internal/wire"
+	"github.com/koltyakov/control/internal/wol"
 	"github.com/koltyakov/control/internal/workgate"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -107,6 +108,7 @@ type Node struct {
 	copyClipboard       func(context.Context, string) error
 	clipboardSlots      chan struct{}
 	connectionTests     chan struct{}
+	sendWake            func(context.Context, string, model.Node) (int, error)
 	delegationMu        sync.Mutex
 	delegations         map[string]*delegationState
 }
@@ -147,6 +149,7 @@ func New(cfg Config) (*Node, error) {
 	n.readClipboard, n.copyClipboard = clipboard.Read, clipboard.Copy
 	n.clipboardSlots = make(chan struct{}, 8)
 	n.connectionTests = make(chan struct{}, 2)
+	n.sendWake = wol.Send
 	n.delegations = map[string]*delegationState{}
 	n.artifactStaging = make(map[string]bool)
 	if err = n.loadArtifactUsage(); err != nil {

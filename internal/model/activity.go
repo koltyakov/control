@@ -64,6 +64,9 @@ type NodeActivitySnapshot struct {
 	LeaseExpires     time.Time              `json:"leaseExpires,omitempty"`
 	Leased           bool                   `json:"leased,omitempty"`
 	System           *SystemInfo            `json:"system,omitempty"`
+	// Work and LastActive come from owner health reports, not peer activity.
+	Work       *WorkCounts `json:"work,omitempty"`
+	LastActive time.Time   `json:"lastActive,omitzero"`
 }
 
 // ConnectionRouteCounts counts usable peers once across their traffic lanes.

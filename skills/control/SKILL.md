@@ -23,6 +23,12 @@ Commands operate only within the authenticated user's private fleet. Machine nam
 
 An offline or unavailable node is not an idle node. Do not schedule work on machines with `disabled` or `controlPending` set. `control_select` excludes those machines. Report connection failures rather than choosing a different execution machine without the user's instruction.
 
+## Wake a known LAN machine
+
+When the user asks to wake a machine, use `control wake NAME` or MCP `control_wake` with `node`. The target must be offline and have retained `wakeInterfaces`. Control selects one online sender with the same nonempty `labels.lan` identifier and IPv4 subnet. Use `--from WORKER` or MCP `from` to choose a sender. For a known local LAN, use `--from local --lan LAN`, or MCP `from: "local", lan: "LAN"`. Never infer a shared LAN just from matching private IP ranges or invent a LAN identifier. Nodes opt in by configuring the same `labels.lan` before registering.
+
+Wake requires account-client routing and `network.wake` permission on a worker sender. It sends UDP magic packets only, does not configure firmware or NIC wake settings, and does not confirm power-on. Check the directory later for online status. Do not automatically wake machines as a side effect of execution failure, retry uncertain wake requests, or switch senders after failure.
+
 ## Test peer connections on demand
 
 Use `control speedtest NAME` to measure this orchestrator's connection to a worker, or `control speedtest DESTINATION --from SOURCE` for direct worker-to-worker traffic. MCP exposes `control_speedtest` with `node`, optional `from`, `bytes`, and `samples`. Results include warmed RTT, jitter, sequential throughput in both directions, and the measured WebRTC/relay mode. Upload means source to destination; download is the reverse. Worker payloads do not pass through the orchestrator.

@@ -28,6 +28,7 @@ import (
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/protocol"
 	"github.com/koltyakov/control/internal/update"
+	"github.com/koltyakov/control/internal/wol"
 	"github.com/koltyakov/control/internal/wsio"
 	"github.com/pion/webrtc/v4"
 	"google.golang.org/protobuf/proto"
@@ -251,6 +252,13 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	if p.cfg.ClientOwner != nil && (!p.cfg.Client || !scope.ClientOwners) {
 		return nil, errors.New("gateway does not support concurrent client owners; upgrade the gateway and target nodes")
 	}
+	var wakeInterfaces []model.WakeInterface
+	if !p.cfg.Client && scope.NodeBytes && p.cfg.Node.Labels["lan"] != "" {
+		wakeInterfaces, err = wol.Interfaces()
+		if err != nil {
+			p.log.Warn("cannot collect Wake-on-LAN interfaces", "error", err)
+		}
+	}
 	p.mu.Lock()
 	if p.userID != "" && p.userID != scope.UserID {
 		p.mu.Unlock()
@@ -271,6 +279,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	p.cfg.Node.PeerChannels = scope.PeerChannels
 	p.cfg.Node.LargePackets = scope.LargePackets
 	p.cfg.Node.TrickleICE = scope.TrickleICE
+	p.cfg.Node.WakeInterfaces = wakeInterfaces
 	p.iceServers = p.cfg.ICEServers
 	if p.iceServers == nil && len(scope.STUNServers) != 0 {
 		p.iceServers = []webrtc.ICEServer{{URLs: scope.STUNServers}}

@@ -11,7 +11,7 @@ import (
 
 // status reads cached resource samples and only the authenticated user's fleet.
 func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
-	p := g.authenticate(bearer(r))
+	p := g.requestPrincipal(r)
 	if p.Role == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -57,6 +57,13 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 			snapshot.Status, snapshot.ObservedAt = "summary", entry.healthAt
 			snapshot.ActiveCount, snapshot.Leased = entry.health.ActiveCount, entry.health.Leased
 			snapshot.System = &entry.health.System
+			snapshot.Work, snapshot.Tunnels, snapshot.LeaseExpires = entry.health.Work, entry.health.Tunnels, entry.health.LeaseExpires
+			snapshot.LastActive = entry.health.LastActive
+			if routes := entry.health.ConnectionRoutes; routes != nil {
+				snapshot.ConnectionRoutes = routes
+				snapshot.DirectSessions = routes.Direct + routes.TURN + routes.Unknown
+				snapshot.RelaySessions = routes.Relay
+			}
 		}
 		if nodeUpdating(n, entry.status, result.ObservedAt, deployment) {
 			snapshot.Status = "update"

@@ -332,7 +332,7 @@ func TestLegacyCLIRegistrationMigratesWithoutLosingOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(`DROP TABLE client_transports; DROP TABLE client_identities; PRAGMA user_version=2;`)
+	_, err = db.Exec(`DROP TABLE console_passwords; DROP TABLE client_transports; DROP TABLE client_identities; PRAGMA user_version=2;`)
 	_ = db.Close()
 	if err != nil {
 		t.Fatal(err)

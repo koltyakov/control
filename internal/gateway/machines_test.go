@@ -228,7 +228,7 @@ func TestMachinePolicySchemaMigrationPreservesAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(`DROP TABLE machine_states; DROP TABLE client_transports; DROP TABLE client_identities; PRAGMA user_version=1;`)
+	_, err = db.Exec(`DROP TABLE console_passwords; DROP TABLE machine_states; DROP TABLE client_transports; DROP TABLE client_identities; PRAGMA user_version=1;`)
 	_ = db.Close()
 	if err != nil {
 		t.Fatal(err)
@@ -242,7 +242,7 @@ func TestMachinePolicySchemaMigrationPreservesAccounts(t *testing.T) {
 		t.Fatal("migration lost account")
 	}
 	var version int
-	if err := g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 4 {
+	if err := g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 5 {
 		t.Fatal("schema not migrated", err)
 	}
 }

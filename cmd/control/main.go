@@ -125,7 +125,7 @@ func run(ctx context.Context, args []string) error {
 			c.Token = cfg.Token
 		}
 		switch args[0] {
-		case "mcp", "system", "call", "exec", "task", "artifact", "tunnel", "session", "clipboard", "dashboard", "speedtest", "diagnostics":
+		case "mcp", "system", "call", "exec", "task", "artifact", "tunnel", "session", "clipboard", "dashboard", "speedtest", "diagnostics", "wake":
 			if !explicitAPI && os.Getenv("CONTROL_API") == "" {
 				var override *string
 				if explicitToken {
@@ -200,8 +200,10 @@ func run(ctx context.Context, args []string) error {
 		return selfUpdateCLI(ctx, args[1:])
 	case "upgrade":
 		return selfUpdateCLI(ctx, args[1:])
-	case "keys", "users":
+	case "keys", "users", "audit":
 		return adminCLI(ctx, admin(), args)
+	case "console":
+		return consoleCLI(ctx, admin(), args[1:])
 	case "gateway":
 		f := flag.NewFlagSet("gateway", flag.ContinueOnError)
 		listen := f.String("listen", "127.0.0.1:7330", "listen address")
@@ -349,6 +351,8 @@ func run(ctx context.Context, args []string) error {
 		return nil
 	case "speedtest":
 		return speedtestCLI(ctx, c, args[1:])
+	case "wake":
+		return wakeCLI(ctx, c, args[1:])
 	case "clipboard":
 		return clipboardCLI(ctx, c, args[1:])
 	case "task":
@@ -594,6 +598,7 @@ Environment: CONTROL_API, CONTROL_TOKEN
   dashboard [--once] [--json] [--node NAME,...]  Gateway status, fleet activity and resources
   system NODE [--refresh]               Cached or requested system sample
   speedtest NODE [--from WORKER] [--size MiB] [--samples N] [--timeout DURATION] [--json]
+  wake NODE [--from WORKER|local] [--lan LAN] [--json]
   call NODE METHOD [JSON|@file]         Invoke any operation
   exec NODE [--detach] [--id ID] [--timeout DURATION] [--] COMMAND [ARG...]
   task start NODE JSON|@file            Submit a durable task

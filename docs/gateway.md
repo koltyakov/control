@@ -116,6 +116,12 @@ At login's hidden prompt, enter the generated `CONTROL_SUPERUSER_KEY` from the p
 
 Use `control update status` to inspect the selected bundle and rollout. If automatic release retrieval is enabled but no selected bundle is available yet, an operator can run `control update check` before creating worker invitations.
 
+## 7. Enable browser access
+
+With the saved operator login, run `control console password` and enter a separate browser password at the hidden prompts. Open the gateway's HTTPS URL and sign in as `@operator`. To give Alice browser access, run `control console password alice`; she signs in as `alice`. Existing CLI keys are not browser passwords. The console also lets the operator provision fleet accounts and their browser passwords.
+
+Keep `CONTROL_PUBLIC_URL` set to the exact HTTPS origin and preserve the Host header at the loopback proxy. No extra port, frontend build, or web service is needed. See [web console](console.md) for security, sessions, and supported actions.
+
 ## Maintenance
 
 - Follow [managed updates](updates.md) for release selection and idle-only rollout. `control update` replaces the local CLI, not the gateway's selected runtime.

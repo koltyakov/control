@@ -152,6 +152,7 @@ func (g *Gateway) updateRoutes(mux *http.ServeMux) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
+		g.recordUpdateAudit(r, "update.publish", d)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(d)
@@ -172,6 +173,7 @@ func (g *Gateway) updateRoutes(mux *http.ServeMux) {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
+		g.recordUpdateAudit(r, "update.check", d)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"deployment": d})
 	}))

@@ -4,6 +4,8 @@
 
 ## Open the dashboard
 
+For a browser interface at the gateway URL, see the [web console](console.md). It uses separate password logins and cached gateway health, with fleet management and operator-only account/update pages. The terminal dashboard below retains authorized peer activity detail that the web console does not collect.
+
 With a saved gateway login, run:
 
 ```sh
@@ -21,7 +23,7 @@ Uptime separates units with spaces, such as `2m 54s`. Once it reaches an hour, i
 
 The gateway URL comes from `CONTROL_GATEWAY`, the selected `--config` / `CONTROL_CONFIG` node profile, or the saved administration profile. Credentials use explicit global `--token`, then `CONTROL_USER_KEY`, `CONTROL_SUPERUSER_KEY`, `CONTROL_TOKEN`, a matching saved administration key, or the matching node profile token. Saved credentials are never sent to a different gateway. An unconfigured gateway produces a configuration error instead of defaulting to a loopback address. The gateway must support `GET /v1/status`.
 
-With an account key, the dashboard reads fresh machine-health reports from the gateway even without a local node. Nodes publish active-work counts, lease state, and their cached resource sample every five seconds. These reports allow `idle`/`busy`, numeric `Work`, and current CPU/RAM values after the first usable sample.
+With an account key, the dashboard reads fresh machine-health reports from the gateway even without a local node. Nodes publish active-work counts by kind, tunnel and peer-route counts, lease state and expiry, last activity time, and their cached resource sample every five seconds. These reports allow `idle`/`busy`, numeric `Work`, and current CPU/RAM values after the first usable sample.
 
 An account client can collect detailed peer snapshots under its own authority, without borrowing worker permissions. This observes work submitted by any owner, including delegated tasks. Explicit local-API routing cannot independently request peer activity beyond discovery. A failed peer request preserves fresh gateway health. Activity records, recent completions, and connection counts still require authorized peer observation.
 

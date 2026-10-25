@@ -26,7 +26,7 @@ type installation struct {
 
 func (g *Gateway) installationRoutes(mux *http.ServeMux) {
 	list := func(w http.ResponseWriter, r *http.Request) {
-		p := g.authenticate(bearer(r))
+		p := g.requestPrincipal(r)
 		g.mu.Lock()
 		list := []enrollment.Invitation{}
 		for _, i := range g.installations {
@@ -87,7 +87,7 @@ func (g *Gateway) installationAsset(r *http.Request, osName, arch string) (updat
 		}
 		return a, info.Version, nil
 	}
-	if g.options.ReleaseRepo != "" && g.authenticate(bearer(r)).Role == "superuser" {
+	if g.options.ReleaseRepo != "" && g.requestPrincipal(r).Role == "superuser" {
 		if d, err := g.fetchRelease(r.Context()); err == nil && d != nil {
 			if a, ok := d.Manifest.Asset(osName, arch); ok {
 				return a, d.Manifest.Version, nil
@@ -98,7 +98,7 @@ func (g *Gateway) installationAsset(r *http.Request, osName, arch string) (updat
 }
 
 func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
-	p := g.authenticate(bearer(r))
+	p := g.requestPrincipal(r)
 	r.Body = http.MaxBytesReader(w, r.Body, 8192)
 	var q enrollment.Request
 	if json.NewDecoder(r.Body).Decode(&q) != nil || (q.AutoName && q.Name != "") || (!q.AutoName && !validName.MatchString(q.Name)) || (q.OS != "linux" && q.OS != "darwin" && q.OS != "windows") || (q.Arch != "" && q.Arch != "amd64" && q.Arch != "arm64") {
@@ -207,7 +207,17 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	hash := enrollment.Hash(ticket)
 	g.installations[hash] = i
-	persisted := change{invitations: []string{hash}}
+	target, detail := i.Name, osName(q.OS)
+	if i.AutoName {
+		target = "target hostname"
+	}
+	if q.ServiceMode != "" {
+		detail += ", " + q.ServiceMode + " context"
+	}
+	if len(retracted) > 0 {
+		detail += ", replaced a pending invitation"
+	}
+	persisted := change{invitations: []string{hash}, audit: []AuditEvent{g.auditEventLocked(r, "", "invitation.create", target, i.ID, detail)}}
 	for h, old := range retracted {
 		old.Revoked = true
 		g.installations[h] = old
@@ -401,7 +411,9 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 	g.owners[id] = i.UserID
 	i.RedeemedID, i.CredentialHash = id, q.CredentialHash
 	g.installations[hash] = i
-	persisted := change{identities: []string{id}, invitations: []string{hash}, machineStates: []string{id}}
+	// The installer is the actor; the invitation names who authorized it.
+	enrolled := AuditEvent{At: time.Now().UTC(), UserID: i.UserID, Actor: "installer", Via: "invitation", Action: "machine.enroll", Target: clip(g.installationName(i), 128), TargetID: id, Detail: "invitation " + i.ID, SourceIP: sourceIP(r)}
+	persisted := change{identities: []string{id}, invitations: []string{hash}, machineStates: []string{id}, audit: []AuditEvent{enrolled}}
 	if registered {
 		persisted.nodes = []string{id}
 	}
@@ -430,7 +442,7 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) revokeInstallation(w http.ResponseWriter, r *http.Request) {
-	p := g.authenticate(bearer(r))
+	p := g.requestPrincipal(r)
 	g.mu.Lock()
 	var hash string
 	var old installation
@@ -448,7 +460,7 @@ func (g *Gateway) revokeInstallation(w http.ResponseWriter, r *http.Request) {
 	i := old
 	i.Revoked = true
 	g.installations[hash] = i
-	err := g.commit(change{invitations: []string{hash}})
+	err := g.commit(change{invitations: []string{hash}, audit: []AuditEvent{g.auditEventLocked(r, "", "invitation.revoke", g.installationName(i), i.ID, "")}})
 	if err != nil {
 		g.installations[hash] = old
 	}
@@ -499,7 +511,7 @@ func (g *Gateway) allowInstallation(keyID string, n model.Node) bool {
 }
 
 func (g *Gateway) forgetMachine(w http.ResponseWriter, r *http.Request) {
-	p := g.authenticate(bearer(r))
+	p := g.requestPrincipal(r)
 	g.mu.Lock()
 	id := r.PathValue("id")
 	n, ok := g.nodes[id]
@@ -525,7 +537,7 @@ func (g *Gateway) forgetMachine(w http.ResponseWriter, r *http.Request) {
 	delete(g.nodes, id)
 	previous := g.machineStates[id]
 	g.machineStates[id] = model.MachineState{Revision: previous.Revision + 1, Disabled: true, Unregistered: true}
-	persisted := change{nodes: []string{id}, machineStates: []string{id}}
+	persisted := change{nodes: []string{id}, machineStates: []string{id}, audit: []AuditEvent{g.auditEventLocked(r, "", "machine.unregister", n.Name, id, "")}}
 	for hash := range old {
 		persisted.invitations = append(persisted.invitations, hash)
 	}

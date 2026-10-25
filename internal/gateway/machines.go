@@ -73,7 +73,7 @@ func (g *Gateway) nodeState(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
-	p := g.authenticate(bearer(r))
+	p := g.requestPrincipal(r)
 	r.Body = http.MaxBytesReader(w, r.Body, 1024)
 	var q struct {
 		Disabled *bool   `json:"disabled"`
@@ -101,7 +101,7 @@ func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if q.Name != nil {
-		g.renameMachine(w, n, *q.Name, q.Force)
+		g.renameMachine(w, r, n, *q.Name, q.Force)
 		return
 	}
 	if !n.Managed {
@@ -117,7 +117,8 @@ func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 		updated := n
 		updated.Disabled = state.Disabled
 		g.nodes[id] = updated
-		if err := g.commit(change{nodes: []string{id}, machineStates: []string{id}}); err != nil {
+		action := actionVerb(state.Disabled, "machine.disable", "machine.enable")
+		if err := g.commit(change{nodes: []string{id}, machineStates: []string{id}, audit: []AuditEvent{g.auditEventLocked(r, "", action, n.Name, id, "")}}); err != nil {
 			g.nodes[id] = n
 			g.machineStates[id] = old
 			http.Error(w, "could not persist machine state", 500)
@@ -130,7 +131,7 @@ func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 
 // Called under g.mu. Renaming changes only gateway routing metadata, not work
 // admission or the signed installation proof retained for response recovery.
-func (g *Gateway) renameMachine(w http.ResponseWriter, n model.Node, name string, force bool) {
+func (g *Gateway) renameMachine(w http.ResponseWriter, r *http.Request, n model.Node, name string, force bool) {
 	if g.clientNameReserved(n.UserID, name) {
 		http.Error(w, "name is reserved for a client identity", http.StatusConflict)
 		return
@@ -161,7 +162,7 @@ func (g *Gateway) renameMachine(w http.ResponseWriter, n model.Node, name string
 	updated := n
 	updated.Name = name
 	g.nodes[n.ID], g.machineStates[n.ID] = updated, state
-	persisted := change{nodes: []string{n.ID}, machineStates: []string{n.ID}}
+	persisted := change{nodes: []string{n.ID}, machineStates: []string{n.ID}, audit: []AuditEvent{g.auditEventLocked(r, "", "machine.rename", name, n.ID, "was "+n.Name)}}
 	for hash, i := range retracted {
 		i.Revoked = true
 		g.installations[hash] = i
