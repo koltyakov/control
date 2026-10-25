@@ -242,7 +242,7 @@ func TestMachinePolicySchemaMigrationPreservesAccounts(t *testing.T) {
 		t.Fatal("migration lost account")
 	}
 	var version int
-	if err := g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 5 {
+	if err := g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 6 {
 		t.Fatal("schema not migrated", err)
 	}
 }

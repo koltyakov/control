@@ -138,10 +138,10 @@ func (g *Gateway) consoleRoutes(mux *http.ServeMux) {
 	for _, route := range []string{
 		"GET status", "GET nodes", "PUT console/password",
 		"GET fleet/keys", "POST fleet/keys", "PATCH fleet/keys/{id}", "DELETE fleet/keys/{id}",
-		"GET fleet/installations", "POST fleet/installations", "DELETE fleet/installations/{id}",
+		"GET fleet/installations", "POST fleet/installations", "DELETE fleet/installations", "DELETE fleet/installations/{id}",
 		"PATCH fleet/nodes/{id}", "DELETE fleet/nodes/{id}",
 		"GET admin/users", "POST admin/users", "DELETE admin/users/{id}",
-		"GET admin/updates", "POST admin/updates/check", "GET admin/metrics", "GET audit",
+		"GET admin/updates", "POST admin/updates/check", "GET admin/metrics", "GET audit", "DELETE audit",
 	} {
 		method, path, _ := strings.Cut(route, " ")
 		mux.Handle(method+" /console/api/"+path, g.consoleHeaders(g.consoleGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

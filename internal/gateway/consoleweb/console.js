@@ -36,6 +36,10 @@ const icons = {
   search: '<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/>',
   chevron: '<path d="m7 10 5 5 5-5"/>',
   check: '<path d="m5 12 5 5 9-10"/>',
+  direct: '<path d="M4 8h15m-3-3 3 3-3 3M20 16H5m3-3-3 3 3 3"/>',
+  relay:
+    '<circle cx="12" cy="12" r="3"/><path d="M3 12h6m6 0h6M12 3v6m0 6v6"/>',
+  tunnel: '<path d="M4 20V11a8 8 0 0 1 16 0v9M9 20v-5a3 3 0 0 1 6 0v5"/>',
   activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
   logout:
     '<path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l5-5-5-5m5 5H3"/>',
@@ -372,11 +376,14 @@ function tunnelText(node) {
       .join(" · ") + (tunnelCount(node) === 1 ? " tunnel" : " tunnels")
   );
 }
+// Three fixed counters keep every row's shape stable as connections come and
+// go: direct peers, relayed peers (TURN or gateway relay), and tunnels.
 function connectionCell(node) {
-  const peers = node.online ? peerCount(node) : null;
-  if (peers == null) return meter(null, "Connections");
-  const lines = [routeText(node), tunnelText(node)].filter(Boolean);
-  return `<span>${peers ? plural(peers, "peer") : '<span class="muted">No peers</span>'}</span>${lines.map((line) => `<small>${esc(line)}</small>`).join("")}`;
+  const r = node.online ? node.connectionRoutes : null,
+    t = node.online ? node.tunnels : null;
+  const counter = (iconName, label, value, title) =>
+    `<span class="counter${value ? "" : " zero"}" title="${esc(title)}">${icon(iconName)}<span class="sr-only">${label} </span>${value ?? "–"}</span>`;
+  return `<div class="counters">${counter("direct", "Direct peers", r ? r.direct + r.unknown : null, r ? `Direct peers: ${r.direct}` + (r.unknown ? `, unknown route: ${r.unknown}` : "") : "Direct peers: not reported")}${counter("relay", "Relayed peers", r ? r.turn + r.relay : null, r ? `Relayed peers: ${r.turn} TURN, ${r.relay} gateway relay` : "Relayed peers: not reported")}${counter("tunnel", "Tunnels", t ? t.forward + t.reverse : null, t ? `Tunnels: ${t.forward} forward, ${t.reverse} reverse` : "Tunnels: not reported")}</div>`;
 }
 function platformText(node) {
   const sys = node.system || {},
@@ -513,14 +520,42 @@ function machineMatches(n) {
     .join(" ")
     .toLowerCase();
   return (
-    text.includes(state.search.trim().toLowerCase()) &&
-    (state.filter === "all" ||
-      (state.filter === "online"
-        ? n.online
-        : state.filter === "offline"
-          ? !n.online
-          : machineState(n).toLowerCase() === state.filter))
+    text.includes(state.search.trim().toLowerCase()) && inState(n, state.filter)
   );
+}
+// Filters roll transitional states into the core ones: a reservation is busy,
+// updating machines are online, and pending policy follows the disabled flag.
+const stateFilters = [
+  ["all", "All"],
+  ["online", "Online"],
+  ["busy", "Busy"],
+  ["idle", "Idle"],
+  ["offline", "Offline"],
+  ["disabled", "Disabled"],
+];
+function inState(n, filter) {
+  switch (filter) {
+    case "online":
+      return n.online;
+    case "offline":
+      return !n.online;
+    case "busy":
+      return ["Busy", "Reserved"].includes(machineState(n));
+    case "idle":
+      return machineState(n) === "Idle";
+    case "disabled":
+      return !!n.disabled;
+    default:
+      return true;
+  }
+}
+function stateFilter(nodes) {
+  return `<div class="state-filter" role="group" aria-label="Filter machines by state">${stateFilters
+    .map(([key, label]) => {
+      const count = nodes.filter((n) => inState(n, key)).length;
+      return `<button data-action="filter-state" data-filter="${key}" aria-pressed="${state.filter === key}"${count || key === "all" ? "" : ' class="empty-state"'}>${label}<span>${count}</span></button>`;
+    })
+    .join("")}</div>`;
 }
 function machinePanel(overview) {
   const all = state.snapshot?.nodes || [];
@@ -550,7 +585,7 @@ function machinePanel(overview) {
     nodes.length === all.length
       ? plural(all.length, "machine")
       : `${nodes.length} of ${all.length}`;
-  return `<section class="panel"><div class="table-tools"><label class="search">${icon("search")}<input id="machine-search" type="search" aria-label="Search machines" placeholder="Search names, platforms, or labels" value="${esc(state.search)}"></label><select id="machine-filter" class="filter" aria-label="Filter machines">${["all", "online", "offline", "busy", "idle", "reserved", "updating", "disabled", "disabling", "enabling"].map((s) => `<option value="${s}" ${s === state.filter ? "selected" : ""}>${s === "all" ? "All states" : s[0].toUpperCase() + s.slice(1)}</option>`).join("")}</select><span class="result-count">${count}</span></div>${body}</section>`;
+  return `<section class="panel"><div class="table-tools"><label class="search">${icon("search")}<input id="machine-search" type="search" aria-label="Search machines" placeholder="Search names, platforms, or labels" value="${esc(state.search)}"></label>${stateFilter(all)}<span class="result-count">${count}</span></div>${body}</section>`;
 }
 function gatewayPanel() {
   const g = state.snapshot?.gateway || {},
@@ -581,6 +616,14 @@ function renderOverview() {
     `<a class="stat ${tone}" href="#machines" data-action="filter-machines" data-filter="${filter}"><span class="stat-label">${tone ? '<span class="status-dot"></span>' : ""}${label}</span><span class="stat-value">${value}</span></a>`;
   return `${gatewayPanel()}<div class="fleet-summary">${stat("Online", online, "online", online ? "good" : "")}${stat("Offline", offline, "offline", offline ? "bad" : "")}${stat("Active work", work, "busy", work ? "warn" : "")}</div>${machinePanel(true)}`;
 }
+// Matches the gateway: revoked invitations and unredeemed ones past expiry.
+function clearable(items) {
+  return items.filter(
+    (i) =>
+      i.revoked ||
+      (!i.redeemedId && Date.now() > new Date(i.expiresAt).getTime()),
+  );
+}
 function renderInvitations(items) {
   const startup = { user: "User", system: "System" };
   const rows = items.map((i) => {
@@ -602,6 +645,9 @@ function renderInvitations(items) {
           "Create a one-time command to install a worker.",
           `<button class="primary" data-action="add">${icon("plus")}Add machine</button>`,
         ),
+    clearable(items).length
+      ? `<button class="secondary compact" data-action="clear-invites">Clear history</button>`
+      : "",
   );
 }
 function renderKeys(items) {
@@ -675,6 +721,8 @@ const auditActions = {
   "key.revoke": ["Revoked key", "bad"],
   "invitation.create": ["Created invitation", "good"],
   "invitation.revoke": ["Revoked invitation", "bad"],
+  "invitation.clear": ["Cleared invitation history", ""],
+  "audit.clear": ["Cleared activity log", "warn"],
   "machine.enroll": ["Enrolled machine", "good"],
   "machine.rename": ["Renamed machine", ""],
   "machine.enable": ["Enabled machine", "good"],
@@ -745,7 +793,7 @@ function renderActivity() {
           state.auditCategory ? "No matching activity" : "No activity yet",
           "Sign-ins and management changes appear here as they happen.",
         );
-  return `<section class="panel"><div class="table-tools"><select id="audit-category" class="filter" aria-label="Filter activity">${categories.map(([value, text]) => `<option value="${value}" ${value === state.auditCategory ? "selected" : ""}>${text}</option>`).join("")}</select><span class="result-count">${data ? plural(data.events.length, "event") + (data.next ? " loaded" : "") : ""}</span></div>${body}<div class="audit-footer">${data?.next ? '<button class="secondary compact" data-action="audit-more">Load older</button>' : ""}</div></section>`;
+  return `<section class="panel"><div class="table-tools"><select id="audit-category" class="filter" aria-label="Filter activity">${categories.map(([value, text]) => `<option value="${value}" ${value === state.auditCategory ? "selected" : ""}>${text}</option>`).join("")}</select><span class="result-count">${data ? plural(data.events.length, "event") + (data.next ? " loaded" : "") : ""}</span><span class="audit-actions">${data?.events.length ? '<button class="secondary compact" data-action="clear-audit">Clear log</button>' : ""}</span></div>${body}<div class="audit-footer">${data?.next ? '<button class="secondary compact" data-action="audit-more">Load older</button>' : ""}</div></section>`;
 }
 function renderAccount() {
   return `<section class="panel content-card"><h2>Browser password</h2><p>Signed in as ${esc(state.session.username)}. Changing your password signs out every browser session for this login. CLI keys stay unchanged.</p><form id="account-form"><label>Current password<input name="currentPassword" type="password" autocomplete="current-password" required maxlength="1024"></label><label>New password<input name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="1024"></label><label>Confirm new password<input name="confirm" type="password" autocomplete="new-password" required minlength="12" maxlength="1024"></label><p class="field-help">Use at least 12 characters. Spaces and password managers are supported.</p><p class="form-error" role="alert"></p><button class="primary" type="submit">Change password</button></form></section>`;
@@ -765,6 +813,8 @@ function render() {
         focusSelector += `[data-id="${CSS.escape(active.dataset.id)}"]`;
       if (active.dataset.sort)
         focusSelector += `[data-sort="${CSS.escape(active.dataset.sort)}"]`;
+      if (active.dataset.filter)
+        focusSelector += `[data-filter="${CSS.escape(active.dataset.filter)}"]`;
     } else if (active.getAttribute("href"))
       focusSelector = `a[href="${CSS.escape(active.getAttribute("href"))}"]`;
     if (active.id === "machine-search")
@@ -781,7 +831,11 @@ function render() {
       // Replacing an input can lose keystrokes, selection, or an open dropdown.
       const template = document.createElement("template");
       template.innerHTML = machinePanel(false);
-      for (const selector of [".table-wrap, .empty", ".result-count"]) {
+      for (const selector of [
+        ".table-wrap, .empty",
+        ".result-count",
+        ".state-filter",
+      ]) {
         $(selector, content).replaceWith($(selector, template.content));
       }
     }
@@ -795,6 +849,7 @@ function render() {
       for (const selector of [
         ".table-wrap, .empty",
         ".result-count",
+        ".audit-actions",
         ".audit-footer",
       ]) {
         $(selector, content).replaceWith($(selector, template.content));
@@ -906,6 +961,7 @@ function navigate() {
     else a.removeAttribute("aria-current");
   });
   fitNav();
+  $(".content-scroll").scrollTop = 0;
   render();
   // A previous page's request cannot prevent the new page fetching its data.
   if (state.busy) pendingRefresh = true;
@@ -922,10 +978,6 @@ document.addEventListener("input", (event) => {
   $("#machine-search").setSelectionRange(start, start);
 });
 document.addEventListener("change", (event) => {
-  if (event.target.id === "machine-filter") {
-    state.filter = event.target.value;
-    render();
-  }
   if (event.target.id === "audit-category") {
     state.auditCategory = event.target.value;
     state.auxiliary = null;
@@ -1325,11 +1377,14 @@ document.addEventListener("click", async (event) => {
       state.search = "";
       state.filter = button.dataset.filter;
     }
+    if (action === "filter-state") {
+      state.filter = button.dataset.filter;
+      render();
+    }
     if (action === "clear-filters") {
       state.search = "";
       state.filter = "all";
       $("#machine-search").value = "";
-      $("#machine-filter").value = "all";
       render();
       $("#machine-search").focus();
     }
@@ -1407,6 +1462,43 @@ document.addEventListener("click", async (event) => {
         "Unregister machine",
         true,
       );
+    if (action === "clear-audit") {
+      const operator = state.session.role === "superuser";
+      formDialog(
+        "Clear activity log",
+        `<p>Remove events from ${operator ? "every fleet" : "this fleet"}. A record of the clearing stays in each fleet it affects.</p><label>Remove<select name="keep"><option value="">All events</option><option value="7">Events older than 7 days</option><option value="30">Events older than 30 days</option></select></label>`,
+        async (fields) => {
+          const days = Number(fields.keep);
+          const result = await api(
+            "audit" +
+              (days
+                ? "?before=" +
+                  encodeURIComponent(
+                    new Date(Date.now() - days * 86400000).toISOString(),
+                  )
+                : ""),
+            "DELETE",
+          );
+          state.auxiliary = null;
+          toast("Removed " + plural(result.removed, "event"));
+        },
+        "Clear log",
+        true,
+      );
+    }
+    if (action === "clear-invites") {
+      const count = clearable(state.auxiliary || []).length;
+      formDialog(
+        "Clear invitation history",
+        `<p>Remove ${esc(plural(count, "revoked or expired invitation"))} from this list. Pending invitations and those backing enrolled machines stay.</p>`,
+        async () => {
+          const result = await api("fleet/installations", "DELETE");
+          toast("Removed " + plural(result.removed, "invitation"));
+        },
+        "Clear history",
+        true,
+      );
+    }
     if (action === "revoke-invite")
       confirmAction(
         "Revoke invitation",

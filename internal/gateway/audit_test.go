@@ -146,3 +146,109 @@ func TestAuditRetentionBoundsFailedSignIns(t *testing.T) {
 		t.Fatalf("retained %d failed sign-ins and %d other events", failed, other)
 	}
 }
+
+func TestClearInstallationsKeepsUsableInvitations(t *testing.T) {
+	g, s := installationFixture(t)
+	ctx := context.Background()
+	operator := testAdmin{URL: s.URL, Key: superKey}
+	revoked, pending, expired, redeemed := invite(t, s, "revoked"), invite(t, s, "pending"), invite(t, s, "expired"), invite(t, s, "redeemed")
+	if err := operator.JSON(ctx, "DELETE", "/v1/admin/installations/"+revoked.ID, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, alice := createTestUser(t, s, "alice")
+	var foreign struct{ ID string }
+	if err := alice.JSON(ctx, "POST", "/v1/fleet/installations", map[string]any{"name": "theirs", "os": "linux", "arch": "amd64", "gateway": s.URL}, &foreign); err != nil {
+		t.Fatal(err)
+	}
+	if err := alice.JSON(ctx, "DELETE", "/v1/fleet/installations/"+foreign.ID, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	g.mu.Lock()
+	for hash, i := range g.installations {
+		switch i.ID {
+		case expired.ID:
+			i.ExpiresAt = time.Now().Add(-time.Minute)
+		case redeemed.ID:
+			// A redeemed invitation keeps its machine's credential even after expiry.
+			i.RedeemedID, i.ExpiresAt = "redeemed-machine", time.Now().Add(-time.Minute)
+		}
+		g.installations[hash] = i
+	}
+	g.mu.Unlock()
+
+	var result struct{ Removed int }
+	if err := operator.JSON(ctx, "DELETE", "/v1/admin/installations", nil, &result); err != nil || result.Removed != 2 {
+		t.Fatalf("cleared %d invitations: %v", result.Removed, err)
+	}
+	var remaining []struct{ ID string }
+	if err := operator.JSON(ctx, "GET", "/v1/admin/installations", nil, &remaining); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{}
+	for _, i := range remaining {
+		ids = append(ids, i.ID)
+	}
+	slices.Sort(ids)
+	want := []string{pending.ID, redeemed.ID}
+	slices.Sort(want)
+	if !slices.Equal(ids, want) {
+		t.Fatalf("remaining invitations = %v, want %v", ids, want)
+	}
+	var theirs []struct{ ID string }
+	if err := alice.JSON(ctx, "GET", "/v1/fleet/installations", nil, &theirs); err != nil || len(theirs) != 1 {
+		t.Fatal("clearing reached another fleet", theirs, err)
+	}
+	var stored int
+	if err := g.db.QueryRow(`SELECT COUNT(*) FROM invitations WHERE user_id=?`, legacyUser).Scan(&stored); err != nil || stored != 2 {
+		t.Fatalf("persisted %d operator invitations: %v", stored, err)
+	}
+	if got := auditActions(readAudit(t, operator, "category=invitation")); len(got) == 0 || got[0] != "invitation.clear" {
+		t.Fatalf("clear not audited: %v", got)
+	}
+}
+
+func TestClearAuditLeavesARecordInEachFleet(t *testing.T) {
+	_, s := installationFixture(t)
+	ctx := context.Background()
+	aliceUser, alice := createTestUser(t, s, "alice")
+	bobUser, bob := createTestUser(t, s, "bob")
+	for _, c := range []testAdmin{alice, bob} {
+		if err := c.JSON(ctx, "POST", "/v1/fleet/keys", map[string]string{"name": "ci"}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var result struct{ Removed int }
+	past := url.QueryEscape(time.Now().Add(-time.Hour).UTC().Format(time.RFC3339))
+	if err := alice.JSON(ctx, "DELETE", "/v1/audit?before="+past, nil, &result); err != nil || result.Removed != 0 {
+		t.Fatalf("cutoff removed %d newer events: %v", result.Removed, err)
+	}
+	if err := alice.JSON(ctx, "DELETE", "/v1/audit", nil, &result); err != nil || result.Removed != 2 {
+		t.Fatalf("alice cleared %d events: %v", result.Removed, err)
+	}
+	own := readAudit(t, alice, "")
+	if got := auditActions(own); !slices.Equal(got, []string{"audit.clear"}) || own.Events[0].Actor != "alice" || own.Events[0].UserID != aliceUser.ID {
+		t.Fatalf("alice log after clearing = %+v", own.Events)
+	}
+	if got := auditActions(readAudit(t, bob, "")); !slices.Equal(got, []string{"key.create", "account.create"}) {
+		t.Fatalf("alice's clear reached bob: %v", got)
+	}
+	if err := alice.JSON(ctx, "DELETE", "/v1/audit?before=yesterday", nil, nil); err == nil {
+		t.Fatal("invalid cutoff accepted")
+	}
+
+	operator := testAdmin{URL: s.URL, Key: superKey}
+	if err := operator.JSON(ctx, "DELETE", "/v1/audit", nil, &result); err != nil || result.Removed == 0 {
+		t.Fatalf("operator cleared %d events: %v", result.Removed, err)
+	}
+	fleets := map[string]bool{}
+	for _, e := range readAudit(t, operator, "").Events {
+		if e.Action != "audit.clear" || e.Actor != "@operator" || fleets[e.UserID] {
+			t.Fatalf("unexpected event after operator clear: %+v", e)
+		}
+		fleets[e.UserID] = true
+	}
+	// Only fleets that lost events get a record; the operator fleet had none.
+	if len(fleets) != 2 || !fleets[aliceUser.ID] || !fleets[bobUser.ID] {
+		t.Fatalf("clear records = %v, want one each for alice and bob", fleets)
+	}
+}

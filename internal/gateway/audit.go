@@ -3,6 +3,7 @@ package gateway
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -174,8 +175,75 @@ func (g *Gateway) listAudit(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"events": events, "next": next})
 }
 
+// clearAudit deletes events, optionally only those before a time. Account
+// owners clear their fleet; the operator clears every fleet. Each affected
+// fleet keeps one record of the clearing, written in the same transaction, so
+// history cannot disappear without a trace.
+func (g *Gateway) clearAudit(w http.ResponseWriter, r *http.Request) {
+	p := g.requestPrincipal(r)
+	cutoff, detail := "", "removed all events"
+	if value := r.URL.Query().Get("before"); value != "" {
+		before, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			http.Error(w, "before must be an RFC 3339 time", http.StatusBadRequest)
+			return
+		}
+		cutoff = before.UTC().Format(time.RFC3339Nano)
+		detail = "removed events before " + before.UTC().Format("2006-01-02 15:04 MST")
+	}
+	fleet := p.UserID
+	if p.Role == "superuser" {
+		fleet = ""
+	}
+	const scope = `(?='' OR user_id=?) AND (?='' OR json_extract(CAST(data AS TEXT),'$.at') < ?)`
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	tx, err := g.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		http.Error(w, "could not clear audit log", http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+	fleets := []string{}
+	rows, err := tx.Query(`SELECT DISTINCT user_id FROM audit_events WHERE `+scope, fleet, fleet, cutoff, cutoff)
+	if err == nil {
+		for rows.Next() {
+			var id string
+			if err = rows.Scan(&id); err != nil {
+				break
+			}
+			fleets = append(fleets, id)
+		}
+		_ = rows.Close()
+	}
+	var removed int64
+	if err == nil {
+		var result sql.Result
+		if result, err = tx.Exec(`DELETE FROM audit_events WHERE `+scope, fleet, fleet, cutoff, cutoff); err == nil {
+			removed, _ = result.RowsAffected()
+		}
+	}
+	if err == nil && removed > 0 {
+		events := []AuditEvent{}
+		for _, id := range fleets {
+			events = append(events, g.auditEventLocked(r, id, "audit.clear", "", "", fmt.Sprintf("%s (%d)", detail, removed)))
+		}
+		err = writeAudit(tx, events)
+	}
+	if err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		http.Error(w, "could not clear audit log", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]int64{"removed": removed})
+}
+
 func (g *Gateway) auditRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/audit", g.fleetAdmin(g.listAudit))
+	mux.HandleFunc("DELETE /v1/audit", g.fleetAdmin(g.clearAudit))
 }
 
 func osName(os string) string {

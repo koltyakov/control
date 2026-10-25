@@ -347,11 +347,21 @@ try {
     .waitFor();
   await page.locator('.stat[data-filter="offline"]').click();
   await page.getByText("No matching machines", { exact: true }).waitFor();
-  assert.equal(await page.locator("#machine-filter").inputValue(), "offline");
+  assert.equal(
+    await page
+      .locator('[data-action="filter-state"][aria-pressed="true"]')
+      .getAttribute("data-filter"),
+    "offline",
+  );
   await page
     .getByRole("button", { name: "Clear filters", exact: true })
     .click();
-  assert.equal(await page.locator("#machine-filter").inputValue(), "all");
+  assert.equal(
+    await page
+      .locator('[data-action="filter-state"][aria-pressed="true"]')
+      .getAttribute("data-filter"),
+    "all",
+  );
   await page
     .getByRole("button", { name: "renamed-worker", exact: true })
     .waitFor();

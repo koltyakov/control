@@ -106,7 +106,7 @@ Your fleet:
   machines add [NAME|auto] --platform macos|windows|linux  Create install command; default uses target hostname
     --service user|system                Choose login-session or boot-time startup
     --force                              Retract a pending invitation for that name
-  machines invites                     List installation status
+  machines invites [clear]             List installation status, or remove revoked and expired ones
   machines revoke ID                   Revoke an invitation and its machine key
   machines enable|disable NAME          Enable or disable new work on a machine
   machines rename NAME NEW_NAME [--force] Change alias; force retracts a pending invitation
@@ -116,6 +116,7 @@ Your fleet:
   keys rename ID NAME                  Rename a key
   keys revoke ID                       Revoke a common key
   audit list [N]                       Show recent sign-ins and management changes
+  audit clear [DAYS]                   Remove events, or only those older than DAYS
 Environment: CONTROL_GATEWAY, CONTROL_USER_KEY
 `
 
@@ -192,6 +193,18 @@ func adminCLI(ctx context.Context, c client.Admin, args []string) error {
 			return errors.New("usage: control audit list [1..200]")
 		}
 		err = c.JSON(ctx, http.MethodGet, path, nil, &result)
+	case "audit clear":
+		path := "/v1/audit"
+		if len(args) == 3 {
+			days, err := strconv.Atoi(args[2])
+			if err != nil || days < 1 {
+				return errors.New("usage: control audit clear [DAYS]")
+			}
+			path += "?before=" + url.QueryEscape(time.Now().AddDate(0, 0, -days).UTC().Format(time.RFC3339))
+		} else if len(args) != 2 {
+			return errors.New("usage: control audit clear [DAYS]")
+		}
+		err = c.JSON(ctx, http.MethodDelete, path, nil, &result)
 	case "keys revoke":
 		if len(args) != 3 {
 			return errors.New("usage: control keys revoke ID")
@@ -214,6 +227,14 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 	}
 	if role != "user" && role != "superuser" {
 		return errors.New("machine management requires a user account key; run control login with your account key")
+	}
+	if args[0] == "invites" && len(args) == 2 && args[1] == "clear" {
+		var result any
+		if err := c.JSON(ctx, "DELETE", "/v1/fleet/installations", nil, &result); err != nil {
+			return err
+		}
+		printJSON(result)
+		return nil
 	}
 	if args[0] == "invites" {
 		var list any

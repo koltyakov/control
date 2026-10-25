@@ -46,6 +46,7 @@ func (g *Gateway) installationRoutes(mux *http.ServeMux) {
 		}
 		mux.HandleFunc("POST "+prefix, guard(g.createInstallation))
 		mux.HandleFunc("GET "+prefix, guard(list))
+		mux.HandleFunc("DELETE "+prefix, guard(g.clearInstallations))
 		mux.HandleFunc("DELETE "+prefix+"/{id}", guard(g.revokeInstallation))
 	}
 	mux.HandleFunc("DELETE /v1/admin/nodes/{id}", g.admin(g.forgetMachine))
@@ -474,6 +475,36 @@ func (g *Gateway) revokeInstallation(w http.ResponseWriter, r *http.Request) {
 		_ = peer.ws.CloseNow()
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// clearInstallations removes invitations that can no longer enroll or
+// authenticate: revoked ones and unredeemed ones past expiry. A redeemed,
+// unrevoked invitation holds its machine's credential, and a pending one still
+// works, so both stay.
+func (g *Gateway) clearInstallations(w http.ResponseWriter, r *http.Request) {
+	p := g.requestPrincipal(r)
+	now := time.Now()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	removed := map[string]installation{}
+	persisted := change{}
+	for hash, i := range g.installations {
+		if i.UserID == p.UserID && (i.Revoked || (i.RedeemedID == "" && !now.Before(i.ExpiresAt))) {
+			removed[hash] = i
+			delete(g.installations, hash)
+			persisted.invitations = append(persisted.invitations, hash)
+		}
+	}
+	if len(removed) > 0 {
+		persisted.audit = []AuditEvent{g.auditEventLocked(r, "", "invitation.clear", "", "", fmt.Sprintf("removed %d revoked or expired", len(removed)))}
+		if err := g.commit(persisted); err != nil {
+			maps.Copy(g.installations, removed)
+			http.Error(w, "could not clear invitations", 500)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]int{"removed": len(removed)})
 }
 
 // Called under g.mu. Keep the original signed invitation name unchanged while

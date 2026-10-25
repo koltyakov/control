@@ -240,30 +240,32 @@
           </div>
         </div>
       </header>
-      <main id="content" tabindex="-1">
-        <div class="page-heading">
-          <div>
-            <h1 id="page-title">Overview</h1>
-            <p id="page-description" class="muted"></p>
+      <div class="content-scroll">
+        <main id="content" tabindex="-1">
+          <div class="page-heading">
+            <div>
+              <h1 id="page-title">Overview</h1>
+              <p id="page-description" class="muted"></p>
+            </div>
+            <div class="heading-actions">
+              <button
+                data-action="refresh"
+                class="secondary square"
+                aria-label="Refresh console"
+              >
+                <span data-icon="refresh"></span>
+              </button>
+              <button data-action="add" class="primary">
+                <span data-icon="plus"></span>Add machine
+              </button>
+            </div>
           </div>
-          <div class="heading-actions">
-            <button
-              data-action="refresh"
-              class="secondary square"
-              aria-label="Refresh console"
-            >
-              <span data-icon="refresh"></span>
-            </button>
-            <button data-action="add" class="primary">
-              <span data-icon="plus"></span>Add machine
-            </button>
+          <div id="stale-banner" class="banner" role="status" hidden></div>
+          <div id="page-content" aria-busy="true">
+            <div class="empty panel">Loading fleet…</div>
           </div>
-        </div>
-        <div id="stale-banner" class="banner" role="status" hidden></div>
-        <div id="page-content" aria-busy="true">
-          <div class="empty panel">Loading fleet…</div>
-        </div>
-      </main>
+        </main>
+      </div>
     </div>
     <dialog id="dialog" aria-labelledby="dialog-title">
       <div class="dialog-heading">

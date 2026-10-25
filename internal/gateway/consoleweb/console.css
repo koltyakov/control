@@ -204,6 +204,25 @@ textarea:focus-visible {
 :where([data-keyboard]) .console-header :focus-visible {
   outline-color: var(--header-accent);
 }
+/* The header stays fixed and only the page body scrolls. Both reserve the
+   same scrollbar gutter, so header and content share one width and switching
+   between short and long pages never shifts the layout. */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+.console-header {
+  flex-shrink: 0;
+  overflow: hidden;
+  scrollbar-gutter: stable;
+}
+.content-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
 .topbar,
 main {
   max-width: 1440px;
@@ -830,6 +849,35 @@ tbody tr:hover {
 td strong {
   font-weight: 550;
 }
+.counters {
+  display: flex;
+  gap: 4px;
+}
+.counter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 44px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--soft);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.counter .icon {
+  width: 13px;
+  height: 13px;
+  color: var(--muted);
+}
+.counter.zero {
+  background: transparent;
+  color: var(--subtle);
+  font-weight: 400;
+}
+.counter.zero .icon {
+  color: var(--subtle);
+}
 .cell-detail {
   display: block;
   margin-top: 2px;
@@ -1035,6 +1083,48 @@ tr:hover .machine-name {
 }
 .select-option[aria-selected="true"] .icon {
   visibility: visible;
+}
+.state-filter {
+  display: inline-flex;
+  flex-shrink: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--soft);
+}
+.state-filter button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.state-filter button:hover {
+  color: var(--text);
+}
+.state-filter button span {
+  color: var(--subtle);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.state-filter [aria-pressed="true"] {
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 500;
+  box-shadow:
+    var(--shadow),
+    0 0 0 1px var(--border);
+}
+.state-filter .empty-state:not([aria-pressed="true"]) {
+  opacity: 0.55;
 }
 .result-count {
   margin-left: auto;
