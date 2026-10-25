@@ -107,6 +107,7 @@ type Peer struct {
 	wg                  sync.WaitGroup
 	control             func(string, []byte)
 	wake                func([]byte)
+	startup             func([]byte)
 	nodeHealth          bool
 	clientSessions      bool
 	networkSnapshot     func() (string, error)
@@ -159,6 +160,12 @@ func (p *Peer) SetControlHandler(handler func(string, []byte)) { p.control = han
 
 // SetWakeHandler receives wake requests the gateway relays for the fleet owner.
 func (p *Peer) SetWakeHandler(handler func([]byte)) { p.wake = handler }
+
+// SetStartupHandler is configured before Start by an installed node only.
+func (p *Peer) SetStartupHandler(handler func([]byte)) {
+	p.startup = handler
+	p.cfg.Node.GatewayStartup = handler != nil
+}
 func (p *Peer) SendControl(ctx context.Context, kind string, data []byte) error {
 	return p.send(ctx, &protocol.Packet{Kind: kind, Data: data})
 }
@@ -504,6 +511,12 @@ func (p *Peer) receive(msg *protocol.Packet) {
 			data := msg.Data
 			// Sending can wait on the network; keep the gateway reader free.
 			p.worker(func() { p.wake(data) })
+		}
+		return
+	}
+	if msg.Kind == "startup.request" {
+		if msg.From == update.GatewaySender && p.startup != nil && len(msg.Data) <= 1024 {
+			p.worker(func() { p.startup(msg.Data) })
 		}
 		return
 	}

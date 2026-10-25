@@ -69,6 +69,7 @@ const state = {
   auxiliary: null,
   invitation: null,
   startupChange: null,
+  contexts: new Map(),
   stale: false,
   updatedAt: null,
 };
@@ -223,6 +224,7 @@ function showLogin() {
   state.snapshot = null;
   state.auxiliary = null;
   state.invitation = null;
+  state.contexts.clear();
   state.search = "";
   state.filter = "all";
   state.stale = false;
@@ -526,14 +528,36 @@ function machineRows(nodes) {
     const platformIcon =
       { darwin: "laptop", windows: "windows", linux: "gateway" }[n.os] ||
       "machine";
-    return `<tr data-id="${esc(n.id)}"><td class="name-column"><div class="machine-cell"><span class="os-icon">${icon(platformIcon)}</span><div class="machine-text"><div class="machine-title"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.name)}">${esc(n.name)}</button>${runAsTag(n)}</div><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version"> · ${esc(n.software?.version || "Unknown version")}</span></small></div><button class="icon-button machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="Actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(n)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${n.system?.logicalCPUs ? `<small>${plural(n.system.logicalCPUs, "core")}</small>` : ""}</td><td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
+    return `<tr data-id="${esc(n.id)}"><td class="name-column"><div class="machine-cell"><span class="os-icon">${icon(platformIcon)}</span><div class="machine-text"><div class="machine-title"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.targetName || n.name)}">${esc(n.name)}</button>${contextChips(n)}</div><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version"> · ${esc(n.software?.version || "Unknown version")}</span></small></div><button class="icon-button machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="Actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(n)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${n.system?.logicalCPUs ? `<small>${plural(n.system.logicalCPUs, "core")}</small>` : ""}</td><td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
   });
+}
+function groupedMachines(nodes) {
+  const groups = new Map();
+  for (const node of nodes) {
+    const paired = node.hybridId && ["user", "system"].includes(node.hybridRole),
+      key = paired ? "hybrid:" + node.hybridId : "node:" + node.id;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(node);
+  }
+  return [...groups.values()].map((contexts) => {
+    const user = contexts.find((n) => n.hybridRole === "user"),
+      selected = contexts.find((n) => n.id === state.contexts.get(n.hybridId)) || user || contexts[0];
+    return { ...selected, targetName: selected.name, name: user?.name || contexts[0].name, contexts };
+  });
+}
+function contextChips(node) {
+  if (!node.hybridId) return runAsTag(node);
+  return [...node.contexts]
+    .sort((a, b) => (a.hybridRole === "user" ? -1 : 1) - (b.hybridRole === "user" ? -1 : 1))
+    .map((context) => `<button class="context-tag context-choice" data-action="context" data-id="${esc(context.id)}" aria-pressed="${node.id === context.id}" title="${esc(context.name)} · ${context.online ? "Online" : "Offline"}${context.hybridRole === "system" ? " · For operations requiring elevation" : " · Default execution context"}">${context.hybridRole === "user" ? "User" : "System"}<span class="context-presence${context.online ? " online" : ""}" aria-hidden="true"></span></button>`)
+    .join("");
 }
 function machineMatches(n) {
   const text = [
     n.name,
     n.os,
     osName(n.os),
+    ...(n.contexts || []).map((context) => context.name),
     ...Object.entries(n.labels || {}).flat(),
   ]
     .join(" ")
@@ -553,6 +577,10 @@ const stateFilters = [
   ["disabled", "Disabled"],
 ];
 function inState(n, filter) {
+  if (n.contexts?.length > 1)
+    return filter === "offline"
+      ? n.contexts.every((context) => inState(context, filter))
+      : n.contexts.some((context) => inState(context, filter));
   switch (filter) {
     case "online":
       return n.online;
@@ -577,7 +605,7 @@ function stateFilter(nodes) {
     .join("")}</div>`;
 }
 function machinePanel(overview) {
-  const all = state.snapshot?.nodes || [];
+  const all = groupedMachines(state.snapshot?.nodes || []);
   const nodes = overview ? all : all.filter(machineMatches);
   const sorted = sortedMachines(nodes);
   const rows = overview ? sorted.slice(0, 8) : sorted;
@@ -624,10 +652,11 @@ function gatewayPanel() {
   return `<section class="gateway-card" aria-label="Gateway health"><div class="gateway-identity"><span class="gateway-icon">${icon("gateway")}</span><div><span class="gateway-label">Gateway</span><strong>${esc(g.url || location.host)}</strong>${facts.length ? `<small>${facts.join(" · ")}</small>` : ""}</div></div><div class="gateway-metrics" title="${sampled === "Unknown" ? "Sample time unknown" : "Sampled " + esc(sampled) + " ago"}">${metric("CPU", "cpu", sys.cpuUsagePercent, sys.cpuUsagePercent == null ? "Unknown" : Math.round(sys.cpuUsagePercent) + "%")}${metric("Memory", "memory", percent(sys.memoryUsedBytes, sys.memoryTotalBytes), sys.memoryTotalBytes ? bytes(sys.memoryUsedBytes) + " of " + bytes(sys.memoryTotalBytes) : "Unknown")}${metric("State disk", "disk", percent(disk?.usedBytes, disk?.totalBytes), disk?.totalBytes ? bytes(disk.usedBytes) + " of " + bytes(disk.totalBytes) : "Unknown")}</div></section>`;
 }
 function renderOverview() {
-  const nodes = state.snapshot?.nodes || [],
-    online = nodes.filter((n) => n.online).length,
+  const raw = state.snapshot?.nodes || [],
+    nodes = groupedMachines(raw),
+    online = nodes.filter((n) => inState(n, "online")).length,
     offline = nodes.length - online,
-    reported = nodes.filter(
+    reported = raw.filter(
       (n) => n.online && ["summary", "ready"].includes(n.status),
     );
   const work = reported.reduce((sum, n) => sum + n.activeCount, 0);
@@ -935,7 +964,7 @@ async function refresh(manual = false) {
     if (session !== state.session) return;
     state.snapshot = snapshot;
     state.updatedAt = snapshot.observedAt;
-    $("#nav-count").textContent = snapshot.nodes.length;
+    $("#nav-count").textContent = groupedMachines(snapshot.nodes).length;
     const route = {
       invitations: "fleet/installations",
       keys: "fleet/keys",
@@ -951,11 +980,13 @@ async function refresh(manual = false) {
     }
     if (state.invitation && $("#dialog").open) await updateInvitation();
     if (state.startupChange && $("#dialog").open) {
-      const node = snapshot.nodes.find((n) => n.id === state.startupChange);
+      const node = snapshot.nodes.find((n) => n.id === state.startupChange.id);
       $("#startup-progress").textContent =
         node?.online && node.runAs === "system"
           ? node.name + " is online in System context. You can close this dialog."
-          : "Waiting for the machine to reconnect and report System context…";
+          : Date.now() - state.startupChange.startedAt > 60000
+            ? "System startup was not confirmed. Inspect the machine and startup-change.log before using the local recovery command. No automatic retry was made."
+            : "Waiting for the machine to reconnect and report System context…";
     }
     banner("");
     // Resource refreshes preserve focus. Never replace an in-progress password form.
@@ -1009,13 +1040,14 @@ function navigate() {
 let pendingRefresh = false;
 window.addEventListener("hashchange", navigate);
 
-// One popover outside the polled table keeps an open menu and its focus alive.
+// One popover keeps focus through table polling and moves into a modal drawer
+// when opened there, so the modal does not make its actions inert.
 let machineMenuTarget = null;
 function machineMenuSource() {
   return (
     machineMenuTarget &&
     $(
-      `.machine-table [data-action="${machineMenuTarget.action}"][data-id="${CSS.escape(machineMenuTarget.id)}"]`,
+      `${machineMenuTarget.drawer ? ".drawer-actions" : ".machine-table"} [data-action="${machineMenuTarget.action}"][data-id="${CSS.escape(machineMenuTarget.id)}"]`,
     )
   );
 }
@@ -1036,14 +1068,17 @@ function syncMachineMenu() {
   }
   const item = (action, label, danger = false) =>
     `<button role="menuitem" tabindex="-1" class="menu-item${danger ? " destructive" : ""}" data-action="${action}" data-id="${esc(node.id)}">${label}</button>`;
-  const html =
-    item("details", "View details") +
-    item("rename", "Rename") +
-    (canChangeStartup(node) ? item("startup", "Change startup context") : "") +
-    (!node.online && node.wakeVia ? item("wake", "Wake") : "") +
-    item("toggle", node.disabled ? "Enable" : "Disable") +
-    '<div role="separator" class="menu-separator"></div>' +
-    item("unregister", "Unregister", true);
+  const startup = canChangeStartup(node) ? item("startup", "Startup context") : "",
+    separator = '<div role="separator" class="menu-separator"></div>';
+  const html = machineMenuTarget.drawer
+    ? startup + (startup ? separator : "") + item("unregister", "Unregister", true)
+    : item("details", "View details") +
+      item("rename", "Rename") +
+      startup +
+      (!node.online && node.wakeVia ? item("wake", "Wake") : "") +
+      item("toggle", node.disabled ? "Enable" : "Disable") +
+      separator +
+      item("unregister", "Unregister", true);
   if (menu.innerHTML !== html) {
     const focused = menu.contains(document.activeElement),
       action = document.activeElement.dataset.action;
@@ -1054,7 +1089,9 @@ function syncMachineMenu() {
       ).focus();
   }
   menu.setAttribute("aria-label", "Actions for " + node.name);
-  const trigger = $(`.machine-menu-button[data-id="${CSS.escape(node.id)}"]`);
+  const trigger = $(
+    `${machineMenuTarget.drawer ? ".drawer-actions" : ".machine-table"} .machine-menu-button[data-id="${CSS.escape(node.id)}"]`,
+  );
   trigger?.setAttribute("aria-expanded", "true");
 }
 function openMachineMenu(source, point) {
@@ -1062,9 +1099,14 @@ function openMachineMenu(source, point) {
   document
     .querySelectorAll("[popover]:popover-open")
     .forEach((popover) => popover.hidePopover());
-  machineMenuTarget = { id: source.dataset.id, action: source.dataset.action };
+  machineMenuTarget = {
+    id: source.dataset.id,
+    action: source.dataset.action,
+    drawer: !!source.closest(".drawer-actions"),
+  };
   const menu = $("#machine-menu"),
     box = source.getBoundingClientRect();
+  (machineMenuTarget.drawer ? $("#dialog") : document.body).append(menu);
   menu.showPopover();
   syncMachineMenu();
   if (!menu.matches(":popover-open")) return;
@@ -1324,6 +1366,7 @@ function toast(message) {
   }, 5000);
 }
 function closeDialog() {
+  closeMachineMenu();
   state.invitation = null;
   state.startupChange = null;
   $("#dialog").close();
@@ -1411,9 +1454,10 @@ function changeStartup(node) {
   state.invitation = null;
   state.startupChange = null;
   const windows = node.os === "windows";
+  const attempts = new Map();
   formDialog(
     "Change startup context for " + node.name,
-    `<p>The console cannot elevate or install services remotely. Prepare a command to run on ${esc(node.name)} while it is idle. Nothing changes until you run it.</p><label>Startup context<select name="serviceMode"><option value="system">System context</option><option value="hybrid">Hybrid</option></select></label><div id="startup-guidance" class="notice"></div><label id="system-name-field"${windows ? " hidden" : ""}>New System routing name<input name="systemName" value="${esc(node.name.slice(0, 56) + "-system")}" maxlength="63" pattern="[a-zA-Z0-9]([a-zA-Z0-9._]|-){0,62}"></label><label>Existing node configuration, optional<input name="config" placeholder="Absolute path on the target machine" autocomplete="off"></label><p class="field-help">Leave blank only for the installing user's default profile. Use the original profile path for a custom installation. Running the command interrupts work. System startup has no interactive desktop access.</p>`,
+    `<p>Request a startup change on ${esc(node.name)} while it is idle. If the node lacks permission or needs a local installer, the console shows a command to run on that machine. No UAC or sudo prompt is opened remotely.</p><label>Startup context<select name="serviceMode"><option value="system">System context</option><option value="hybrid">Hybrid</option></select></label><div id="startup-guidance" class="notice"></div><label id="system-name-field"${windows ? " hidden" : ""}>New System routing name<input name="systemName" value="${esc(node.name.slice(0, 56) + "-system")}" maxlength="63" pattern="[a-zA-Z0-9]([a-zA-Z0-9._]|-){0,62}"></label><label>Existing node configuration, optional<input name="config" placeholder="Absolute path on the target machine" autocomplete="off"></label><p class="field-help">The remote attempt always uses the running node's profile. This path applies only to the local fallback command. Leave blank for the installing user's default profile. System startup has no interactive desktop access.</p>`,
     async (fields) => {
       const current = state.snapshot?.nodes.find((n) => n.id === node.id);
       if (
@@ -1426,13 +1470,32 @@ function changeStartup(node) {
       const mode = fields.serviceMode,
         config = fields.config.trim(),
         cli = "control" + (config ? " --config " + commandQuote(config, windows) : "");
+      const name = mode === "hybrid" ? node.name : windows ? node.name : fields.systemName.trim();
+      if (mode === "hybrid" && name.length > 56)
+        throw new Error("Hybrid names allow at most 56 characters. Rename this machine first.");
+      if (mode === "system" && !windows && (!name || state.snapshot.nodes.some((n) => n.name === name)))
+        throw new Error("Choose an unused System routing name. Unix System installation cannot reuse the User identity.");
+      if (mode === "hybrid" && state.snapshot.nodes.some((n) => n.name === name + "-system"))
+        throw new Error("The System companion name is already registered. Manage that context separately.");
+      if (!attempts.has(mode)) {
+        try {
+          attempts.set(mode, await api("fleet/nodes/" + encodeURIComponent(node.id) + "/startup", "POST", { mode }));
+        } catch (error) {
+          if ([401, 403].includes(error.status)) throw error;
+          attempts.set(mode, { status: "unknown", reason: error.message });
+        }
+      }
+      const attempt = attempts.get(mode);
+      const outcome = attempt.status === "accepted"
+        ? "The machine accepted the change. Wait for System context to reconnect. The displayed command is for local recovery only; do not run it while the change is in progress. "
+        : (attempt.reason || "The node could not apply the change remotely.") + " No automatic retry was made. ";
       if (mode === "system" && windows) {
         showSecret(
-          "Run on " + node.name,
+          attempt.status === "accepted" ? "Changing startup on " + node.name : "Run on " + node.name,
           cli + " service start --mode auto",
-          "Run in Administrator PowerShell under the same installing user, not through the node's exec provider. This switches to boot-time LocalService startup and retains the identity, profile, workspace, and task history. Use a current installed Control CLI. The console has not changed the machine.",
+          outcome + "For local recovery, run in Administrator PowerShell under the same installing user, not through the node's exec provider. This switches to boot-time LocalService startup and retains the identity, profile, workspace, and task history. Use a current installed Control CLI.",
         );
-        state.startupChange = node.id;
+        state.startupChange = { id: node.id, startedAt: Date.now() };
         const note = document.createElement("p");
         note.id = "startup-progress";
         note.className = "progress-note";
@@ -1441,16 +1504,6 @@ function changeStartup(node) {
         $("#dialog-body").append(note);
         return false;
       }
-      const name = mode === "hybrid" ? node.name : fields.systemName.trim();
-      if (mode === "hybrid" && name.length > 56)
-        throw new Error("Hybrid names allow at most 56 characters. Rename this machine first.");
-      if (
-        mode === "system" &&
-        (!name || name === node.name || state.snapshot.nodes.some((n) => n.name === name))
-      )
-        throw new Error("Choose an unused System routing name. Unix System installation cannot reuse the User identity.");
-      if (mode === "hybrid" && state.snapshot.nodes.some((n) => n.name === name + "-system"))
-        throw new Error("The System companion name is already registered. Manage that context separately.");
       const link = await api("fleet/installations", "POST", {
         name,
         os: node.os,
@@ -1471,24 +1524,23 @@ function changeStartup(node) {
       showInstallationCommand(
         link,
         command,
-        mode === "hybrid"
+        outcome + (mode === "hybrid"
           ? `Run on ${node.name} ${windows ? "in Administrator PowerShell under the installing user's account" : "from the installing user's shell with sudo available, not sudo bash"}. This re-enrolls the existing User profile and adds ${name}-system as a separate protected companion. Explicitly target the companion for System work. Treat this command as a temporary credential.`
-          : `Run on ${node.name} from the installing user's shell with sudo available. This first stops and removes User startup, then installs a new root-owned profile as ${name}. Identity, credentials, files, and task history are not migrated. The old registration and files remain; unregister the old machine separately only after verifying System startup. Treat this command as a temporary credential.`,
+          : `Run on ${node.name} from the installing user's shell with sudo available. This first stops and removes User startup, then installs a new root-owned profile as ${name}. Identity, credentials, files, and task history are not migrated. The old registration and files remain; unregister the old machine separately only after verifying System startup. Treat this command as a temporary credential.`),
       );
       return false;
     },
-    windows ? "Show command" : "Create installation command",
+    "Apply startup context",
   );
   const sync = () => {
     const hybrid = $('#modal-form select[name="serviceMode"]').value === "hybrid";
     $("#system-name-field").hidden = windows || hybrid;
     $('#modal-form input[name="systemName"]').required = !windows && !hybrid;
     $('#modal-form input[name="systemName"]').disabled = windows || hybrid;
-    $('#modal-form button[type="submit"]').textContent = windows && !hybrid ? "Show command" : "Create installation command";
     $("#startup-guidance").textContent = hybrid
       ? `Keep ${node.name} for User work and add ${node.name}-system for explicit System work. Both have independent state and startup. The gateway needs published installers. No automatic elevation or fallback occurs.`
       : windows
-        ? "Switch the existing profile to boot-time LocalService startup. Run the displayed command in Administrator PowerShell under the same user. No invitation is needed."
+        ? "Try switching the running profile to boot-time LocalService startup. This requires the node itself to already have administrator rights. Otherwise, run the fallback in Administrator PowerShell. No invitation is needed."
         : "Unix System startup requires a separate root-owned profile and an unused routing name. The command removes User startup but keeps its files and registration. Use Hybrid instead to keep both contexts available.";
   };
   $('#modal-form select[name="serviceMode"]').addEventListener("change", sync);
@@ -1604,17 +1656,9 @@ function machineDetails(id) {
             `<div class="disk-usage">${meter(percent(disk.usedBytes, disk.totalBytes), "Disk utilization for " + disk.path)}<small class="muted mono">${esc(disk.path)}</small><small class="muted">${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small></div>`,
         )
         .join("") || meter(null, "Disk utilization")
-    }</dd><dt>Processor</dt><dd>${esc(sys.cpuModel || "Unknown")}${sys.logicalCPUs ? " · " + esc(sys.logicalCPUs) + " cores" : ""}</dd><dt>Sampled</dt><dd>${esc(date(sys.sampledAt))}${n.online ? "" : `<small class="muted">Cached while offline</small>`}</dd></dl></section>${activitySection(n)}<section class="drawer-section"><h3>System</h3><dl class="metadata"><dt>Platform</dt><dd>${esc(platformText(n) || "Unknown")}</dd>${n.runAs ? `<dt>Runs as</dt><dd>${runAsLabels[n.runAs][1]}</dd>` : ""}<dt>Version</dt><dd>${esc(n.software?.version || "Unknown")}</dd><dt>Labels</dt><dd>${labels.length ? `<span class="labels">${labels.map(([k, v]) => `<span class="label-chip">${esc(k)}=${esc(v)}</span>`).join("")}</span>` : "None"}</dd>${n.online ? "" : `<dt>Last seen</dt><dd>${esc(date(n.lastSeen))}</dd>`}<dt>Identity</dt><dd class="mono">${esc(n.id)}</dd></dl></section>${!n.online && n.wakeVia ? `<p class="drawer-note">Wake sends a Wake-on-LAN packet from ${esc(n.wakeVia)}, an online machine on the same LAN. The machine appears online once its node starts.</p>` : ""}<div class="drawer-actions">${!n.online && n.wakeVia ? `<button class="primary" data-action="wake" data-id="${esc(n.id)}">Wake</button>` : ""}<button class="secondary" data-action="rename" data-id="${esc(n.id)}">Rename</button><button class="secondary" data-action="toggle" data-id="${esc(n.id)}">${n.disabled ? "Enable" : "Disable"}</button><button class="danger" data-action="unregister" data-id="${esc(n.id)}">Unregister</button></div>`,
+    }</dd><dt>Processor</dt><dd>${esc(sys.cpuModel || "Unknown")}${sys.logicalCPUs ? " · " + esc(sys.logicalCPUs) + " cores" : ""}</dd><dt>Sampled</dt><dd>${esc(date(sys.sampledAt))}${n.online ? "" : `<small class="muted">Cached while offline</small>`}</dd></dl></section>${activitySection(n)}<section class="drawer-section"><h3>System</h3><dl class="metadata"><dt>Platform</dt><dd>${esc(platformText(n) || "Unknown")}</dd>${n.runAs ? `<dt>Runs as</dt><dd>${runAsLabels[n.runAs][1]}</dd>` : ""}<dt>Version</dt><dd>${esc(n.software?.version || "Unknown")}</dd><dt>Labels</dt><dd>${labels.length ? `<span class="labels">${labels.map(([k, v]) => `<span class="label-chip">${esc(k)}=${esc(v)}</span>`).join("")}</span>` : "None"}</dd>${n.online ? "" : `<dt>Last seen</dt><dd>${esc(date(n.lastSeen))}</dd>`}<dt>Identity</dt><dd class="mono">${esc(n.id)}</dd></dl></section>${!n.online && n.wakeVia ? `<p class="drawer-note">Wake sends a Wake-on-LAN packet from ${esc(n.wakeVia)}, an online machine on the same LAN. The machine appears online once its node starts.</p>` : ""}<div class="drawer-actions">${!n.online && n.wakeVia ? `<button class="primary" data-action="wake" data-id="${esc(n.id)}">Wake</button>` : ""}<button class="secondary" data-action="rename" data-id="${esc(n.id)}">Rename</button><button class="secondary" data-action="toggle" data-id="${esc(n.id)}">${n.disabled ? "Enable" : "Disable"}</button><button class="secondary square machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="More actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div>`,
     "machine-drawer",
   );
-  if (canChangeStartup(n)) {
-    const button = document.createElement("button");
-    button.className = "secondary";
-    button.dataset.action = "startup";
-    button.dataset.id = n.id;
-    button.textContent = "Change startup context";
-    $(".drawer-actions").prepend(button);
-  }
 }
 document.addEventListener("submit", async (event) => {
   if (event.target.id !== "account-form") return;
@@ -1736,6 +1780,11 @@ document.addEventListener("click", async (event) => {
       }
     }
     if (action === "details") machineDetails(id);
+    if (action === "context" && node?.hybridId) {
+      state.contexts.set(node.hybridId, node.id);
+      render();
+      $(`.context-choice[data-id="${CSS.escape(node.id)}"]`)?.focus({ preventScroll: true });
+    }
     if (action === "startup" && node && canChangeStartup(node))
       changeStartup(node);
     if (action === "wake" && node) {

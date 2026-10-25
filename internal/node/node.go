@@ -101,6 +101,8 @@ type Node struct {
 	updater             *update.Updater
 	shutdown            func()
 	lifecycleMu         sync.Mutex
+	maintenanceMu       sync.Mutex
+	startupChanging     bool // Protected by mu; maintenanceMu serializes reservation changes.
 	machineState        model.MachineState
 	startupPending      bool
 	rpaLockPath         string

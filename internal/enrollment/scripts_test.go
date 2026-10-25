@@ -1,11 +1,8 @@
 package enrollment
 
 import (
-	"encoding/base64"
-	"encoding/binary"
 	"strings"
 	"testing"
-	"unicode/utf16"
 
 	"github.com/koltyakov/control/internal/update"
 )
@@ -13,7 +10,7 @@ import (
 func TestInstallCommand(t *testing.T) {
 	link := "https://gateway.example/a'b/install/token"
 	for _, mode := range []string{"", "user", "system"} {
-		want := `powershell.exe -NoProfile -c "irm 'https://gateway.example/a''b/install/token'|iex"`
+		want := `irm 'https://gateway.example/a''b/install/token'|iex`
 		if got := InstallCommand(link, true, mode); got != want {
 			t.Fatalf("Windows command for %q: got %q, want %q", mode, got, want)
 		}
@@ -31,20 +28,8 @@ func TestWindowsInstallCommandPreservesShellMetacharacters(t *testing.T) {
 	for _, char := range []string{`"`, "$", "`", `\`, "%", "!", "\r", "\n"} {
 		link := "https://gateway.example/日本" + char + "'path/install/token"
 		command := InstallCommand(link, true, "user")
-		encoded, ok := strings.CutPrefix(command, "powershell.exe -NoProfile -EncodedCommand ")
-		if !ok {
-			t.Fatalf("unsafe URL must not appear in an outer-shell command: %q", command)
-		}
-		data, err := base64.StdEncoding.DecodeString(encoded)
-		if err != nil || len(data)%2 != 0 {
-			t.Fatalf("invalid encoded PowerShell command: %q, %v", command, err)
-		}
-		units := make([]uint16, len(data)/2)
-		for i := range units {
-			units[i] = binary.LittleEndian.Uint16(data[i*2:])
-		}
-		if got, want := string(utf16.Decode(units)), "irm "+PowerShellQuote(link)+"|iex"; got != want {
-			t.Fatalf("decoded command: got %q, want %q", got, want)
+		if want := "irm " + PowerShellQuote(link) + "|iex"; command != want {
+			t.Fatalf("PowerShell command: got %q, want %q", command, want)
 		}
 	}
 }

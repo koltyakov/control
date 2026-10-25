@@ -54,6 +54,7 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 			ID: n.ID, Name: n.Name, OS: n.OS, Labels: n.Labels, Online: n.Online,
 			LastSeen: n.LastSeen, Status: state, System: n.System,
 			Software: n.Software, Disabled: n.Disabled, ControlPending: n.ControlPending, RunAs: n.RunAs,
+			HybridID: n.HybridID, HybridRole: n.HybridRole,
 			Active: []model.Activity{}, Recent: []model.Activity{},
 		}
 		if sender, ok := wakeSender(fleet, n); ok {

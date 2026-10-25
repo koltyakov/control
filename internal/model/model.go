@@ -41,10 +41,15 @@ type Node struct {
 	// session. Older nodes omit it.
 	RunAs           string `json:"runAs,omitempty"`
 	InstructionOnly bool   `json:"instructionOnly,omitempty"`
+	// Hybrid pairing is assigned by the gateway from redeemed invitations.
+	HybridID   string `json:"hybridId,omitempty"`
+	HybridRole string `json:"hybridRole,omitempty"`
 	// GatewayWake means the node accepts wake requests relayed by the gateway
 	// for its fleet owner, because its allow rules let account clients call
 	// network.wake. Older nodes omit it and are never selected.
 	GatewayWake bool `json:"gatewayWake,omitempty"`
+	// GatewayStartup accepts fixed startup-context management requests.
+	GatewayStartup bool `json:"gatewayStartup,omitempty"`
 	// LargePackets advertises that this receiver accepts 64 KiB carrier packets.
 	LargePackets bool `json:"largePackets,omitempty"`
 	// ExecutionAuthority is assigned by the gateway, never by enrollment metadata.

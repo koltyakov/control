@@ -67,7 +67,7 @@ func (c Client) MCPServer() *mcp.Server {
 			return target, params, err
 		}
 	}
-	add("control_nodes", "List enrolled machines, software versions, online/disabled status, pending policy, labels, and capabilities.", "nodes.list", map[string]any{}, nil, normal)
+	add("control_nodes", "List enrolled contexts, software versions, status, labels, and capabilities. Hybrid contexts share gateway-owned hybridId and identify user/system with hybridRole. Default to User; explicitly choose the paired System context only for authorized operations requiring elevation, never as a blind retry of failed or uncertain User work.", "nodes.list", map[string]any{}, nil, normal)
 	add("control_activities", "Read a pool-wide activity snapshot, including all registered machines, availability, tasks from all owners, transfers, tunnels, direct/TURN/gateway-relay connection counts, and cached system metrics. Unavailable nodes are reported individually. Requires activities.list permission on the observed nodes.", "activities.pool", map[string]any{"nodes": map[string]any{"type": "array", "items": text}, "recent": map[string]any{"type": "integer", "minimum": 0, "maximum": 64}}, nil, normal)
 	add("control_system", "Read OS, CPU, RAM, and disk usage from a node's cached system sample. Set refresh to request a new sample.", "system.info", map[string]any{"node": text, "refresh": map[string]any{"type": "boolean"}}, []string{"node"}, normal)
 	add("control_describe", "Inspect a node and discover capability input schemas.", "node.describe", map[string]any{"node": text}, []string{"node"}, normal)

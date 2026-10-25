@@ -46,6 +46,8 @@ type NodeActivitySnapshot struct {
 	Disabled       bool              `json:"disabled,omitempty"`
 	ControlPending bool              `json:"controlPending,omitempty"`
 	RunAs          string            `json:"runAs,omitempty"`
+	HybridID       string            `json:"hybridId,omitempty"`
+	HybridRole     string            `json:"hybridRole,omitempty"`
 	// WakeVia names the online sender the console would use to wake this
 	// offline machine; empty when none has a verified LAN relationship.
 	WakeVia string `json:"wakeVia,omitempty"`

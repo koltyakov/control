@@ -764,8 +764,22 @@ A node opts in by advertising `gatewayWake` in signed registration only when its
 
 ## D087: Hybrid installation with isolated execution contexts
 
+Console row presentation is refined by [D089](#d089-hybrid-host-grouping-with-explicit-execution-contexts); independent execution and lifecycle boundaries below remain unchanged.
+
 Extend [D043](#d043-explicit-installation-context-and-unix-system-startup) with a composite Hybrid invitation, not a process that changes its own privileges. Create two independent identity-bound invitations in one transaction. User execution retains the normal name; System execution requires the explicit `-system` target. Keep separate protected binaries, profiles, state, startup registrations, updates and retirement. Show both contexts independently in machine views, rather than hiding divergent availability or task stores behind a single online flag. Ordinary Windows System mode remains LocalService; the explicitly privileged Hybrid companion uses LocalSystem. Unix companions run as root.
 
 Extend [D045](#d045-account-client-authority-and-instruction-bound-worker-delegation) with instruction-only destinations. All their execution RPCs require exact grants, including requests from account clients. A destination may issue a grant for the requesting account client's own live transport identity, never an unrelated client. Shared CLI/MCP code prepares those grants for explicitly named System operations. Synchronous and stream grants end on close; task grants retain the existing durable acceptance and idle-expiry rules. Workers gain no ambient permission, nested coordination remains disallowed, and providers are still not sandboxed.
 
 Exclude instruction-only destinations from automatic selection. Never retry User work as System, substitute System after logout, or replay uncertain execution. Atomic invitation creation and pending-pair retraction avoid half-reserved names. Installation can recover a completed System half before starting User enrollment. The two enrolled contexts retain independent lifecycle controls; this avoids inventing a cross-node transaction for task acceptance, updates, or shutdown. See [Hybrid installation](installation.md#hybrid-user-and-system-contexts).
+
+## D088: Gateway startup management with local-command recovery
+
+Extend the management-plane model of D086 with one fixed startup-context instruction. Fleet owners may request System or Hybrid through the gateway, but cannot supply a command, URL, binary, or profile path. Nodes advertise support, recheck account allow permission, and reserve idle admission exclusively against work, leases, and updates. The gateway records intent before dispatch and never retries an unconfirmed instruction.
+
+Windows User to System migration can run only when the installed node already has administrator rights. Prepare a checksum-verified detached helper for that node's own profile, acknowledge admission, then shut down; the helper waits for supervisor exit and validates identity again before installing LocalService startup. Other contexts and insufficient privilege require a local installer. Do not open remote UAC or sudo prompts. Admission is not success: observe the actual execution context after reconnect, and show local recovery commands for failure or uncertainty without replay. Generated Windows invitation commands run directly as `irm 'URL'|iex` in the caller's PowerShell, avoiding a nested interpreter.
+
+## D089: Hybrid host grouping with explicit execution contexts
+
+Refine D087's console presentation to show one host row with selectable User and System chips. Derive pairing from redeemed, fleet-owned invitation metadata, not a name suffix or a node assertion. Count that host once in machine and availability counters while retaining real per-context work counts. Online means at least one context is online; selecting a chip chooses which context's metrics and lifecycle actions are shown.
+
+Default to User even when only System is online. Keep explicit System targets and exact instruction grants for authorized work requiring elevation. Client and AI guidance may select that privileged alternative when the requested operation requires it, but must inspect failure and partial effects rather than automatically replay User commands. Presentation does not merge identities, storage, tasks, updates, or retirement, and selecting a chip changes no CLI/MCP routing.

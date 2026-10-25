@@ -127,6 +127,7 @@ type Gateway struct {
 	options          Options
 	updateStatus     map[string]update.Status
 	wakes            map[string]pendingWake
+	startupChanges   map[string]pendingStartup
 	updateCtx        context.Context
 	updateCancel     context.CancelFunc
 	updateWG         sync.WaitGroup
@@ -181,6 +182,7 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 	g.superuser, g.options = opts.SuperuserKey, opts
 	g.updateStatus = map[string]update.Status{}
 	g.wakes = map[string]pendingWake{}
+	g.startupChanges = map[string]pendingStartup{}
 	if err := g.openDatabase(dir); err != nil {
 		if g.db != nil {
 			_ = g.db.Close()
@@ -205,6 +207,13 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 		return nil, err
 	}
 	g.reindexCredentialsLocked()
+	// Hydrate pairing for installations enrolled before Hybrid grouping existed.
+	for _, invitation := range g.installations {
+		if n, ok := g.nodes[invitation.RedeemedID]; ok && !invitation.Revoked && invitation.HybridID != "" && n.UserID == invitation.UserID {
+			n.HybridID, n.HybridRole = invitation.HybridID, invitation.HybridRole
+			g.nodes[n.ID] = n
+		}
+	}
 	var reset []string
 	for id, n := range g.nodes {
 		if n.Online {
@@ -382,6 +391,8 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		return
 	}
 	n.UserID = p.UserID
+	// Pairing is gateway-owned; never accept a machine's asserted companion.
+	n.HybridID, n.HybridRole = "", ""
 	// A machine or common key cannot claim orchestrator authority in its proof.
 	n.ExecutionAuthority = client && (p.Role == "user" || p.Role == "superuser")
 	if g.machineStates[n.ID].Unregistered {
@@ -402,6 +413,12 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		g.mu.Unlock()
 		_ = ws.Close(websocket.StatusPolicyViolation, "credential does not authorize this registration")
 		return
+	}
+	for _, invitation := range g.installations {
+		if p.KeyID == "install:"+invitation.ID && invitation.RedeemedID == n.ID && !invitation.Revoked {
+			n.HybridID, n.HybridRole = invitation.HybridID, invitation.HybridRole
+			break
+		}
 	}
 	if g.closed || g.restarting {
 		g.mu.Unlock()
@@ -592,6 +609,12 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		}
 		if p.Kind == "wake.result" && p.To == "" {
 			if client || !g.receiveWake(n, p.Data) {
+				return
+			}
+			continue
+		}
+		if p.Kind == "startup.result" && p.To == "" {
+			if client || !g.receiveStartup(n, p.Data) {
 				return
 			}
 			continue

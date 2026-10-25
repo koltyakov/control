@@ -2,11 +2,8 @@ package enrollment
 
 import (
 	"bytes"
-	"encoding/base64"
-	"encoding/binary"
 	"strings"
 	"text/template"
-	"unicode/utf16"
 )
 
 func InstallCommand(link string, windows bool, mode string) string {
@@ -14,16 +11,8 @@ func InstallCommand(link string, windows bool, mode string) string {
 		// Invoke-RestMethod returns a plain-text response as one string, preserving
 		// multi-line scripts when piped to Invoke-Expression.
 		script := "irm " + PowerShellQuote(link) + "|iex"
-		// Keep unusual URLs literal in CMD, Bash, and the caller's PowerShell.
-		if strings.ContainsAny(link, "\"$`\\%!\r\n") {
-			units := utf16.Encode([]rune(script))
-			encoded := make([]byte, len(units)*2)
-			for i, unit := range units {
-				binary.LittleEndian.PutUint16(encoded[i*2:], unit)
-			}
-			return "powershell.exe -NoProfile -EncodedCommand " + base64.StdEncoding.EncodeToString(encoded)
-		}
-		return `powershell.exe -NoProfile -c "` + script + `"`
+		// Run in the caller's PowerShell, including its existing elevation.
+		return script
 	}
 	if mode == "system" {
 		return "curl -fsSL " + ShellQuote(link) + " | sudo bash"

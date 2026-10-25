@@ -56,6 +56,18 @@ func (g *Gate) PauseIfIdle() bool {
 	return true
 }
 
+// ReserveIfIdle acquires a new maintenance reservation without stealing an
+// existing update reservation or bypassing disabled admission.
+func (g *Gate) ReserveIfIdle() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.active != 0 || g.paused || g.disabled {
+		return false
+	}
+	g.paused = true
+	return true
+}
+
 func (g *Gate) Resume() {
 	g.mu.Lock()
 	defer g.mu.Unlock()

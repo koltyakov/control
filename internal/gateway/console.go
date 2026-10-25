@@ -140,6 +140,7 @@ func (g *Gateway) consoleRoutes(mux *http.ServeMux) {
 		"GET fleet/keys", "POST fleet/keys", "PATCH fleet/keys/{id}", "DELETE fleet/keys/{id}",
 		"GET fleet/installations", "POST fleet/installations", "DELETE fleet/installations", "DELETE fleet/installations/{id}",
 		"PATCH fleet/nodes/{id}", "DELETE fleet/nodes/{id}", "POST fleet/nodes/{id}/wake",
+		"POST fleet/nodes/{id}/startup",
 		"GET admin/users", "POST admin/users", "DELETE admin/users/{id}",
 		"GET admin/updates", "POST admin/updates/check", "GET admin/metrics", "GET audit", "DELETE audit",
 	} {

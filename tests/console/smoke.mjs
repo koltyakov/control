@@ -195,6 +195,15 @@ async function assertResourceIcons(page, gateway = false) {
 async function assertStartupCommands(page, snapshot) {
   // Only commands are inspected. Never execute installers or register real OS services.
   let nodes, records = [], requests = [], conflict = false, uncertain = false;
+  const attempts = [];
+  const startupRoute = (route) => {
+    const body = route.request().postDataJSON();
+    attempts.push(body);
+    return route.fulfill({ json: {
+      status: nodes[0].os === "windows" && body.mode === "system" ? "accepted" : "manual",
+      reason: "Local installation requires administrator permission",
+    } });
+  };
   const original = { ...snapshot.nodes[0], id: "startup-fixture", name: "startup-worker", runAs: "user", online: false };
   const statusRoute = (route) => route.fulfill({ json: { ...snapshot, nodes } });
   const installationsRoute = async (route) => {
@@ -209,11 +218,12 @@ async function assertStartupCommands(page, snapshot) {
       serviceMode: body.serviceMode,
       expiresAt: new Date(Date.now() + 900000).toISOString(),
       command: body.os === "windows"
-        ? 'powershell.exe -NoProfile -c "irm \'https://example.test/install/fixture\'|iex"'
+        ? "irm 'https://example.test/install/fixture'|iex"
         : "curl -fsSL 'https://example.test/install/fixture' | " + (body.serviceMode === "system" ? "sudo bash" : "bash"),
     } });
   };
   await page.route("**/console/api/status", statusRoute);
+  await page.route("**/console/api/fleet/nodes/*/startup", startupRoute);
   await page.route("**/console/api/fleet/installations", installationsRoute);
   const selectMode = async (mode) => {
     await page.locator('#modal-form select[name="serviceMode"]').locator("xpath=preceding-sibling::button[1]").click();
@@ -229,12 +239,33 @@ async function assertStartupCommands(page, snapshot) {
     await page.getByRole("button", { name: "Actions for startup-worker", exact: true }).click();
     if (drawer) {
       await page.getByRole("menuitem", { name: "View details", exact: true }).click();
-      await page.getByRole("button", { name: "Change startup context", exact: true }).click();
-    } else await page.getByRole("menuitem", { name: "Change startup context", exact: true }).click();
+      const actions = page.locator(".drawer-actions"),
+        more = actions.getByRole("button", { name: "More actions for startup-worker", exact: true }),
+        menu = page.getByRole("menu", { name: "Actions for startup-worker", exact: true });
+      assert.equal(await actions.getByRole("button", { name: "Startup context", exact: true }).count(), 0);
+      assert.equal(await actions.getByRole("button", { name: "Unregister", exact: true }).count(), 0);
+      assert.equal(await actions.getByRole("button", { name: "Rename", exact: true }).isVisible(), true);
+      assert.equal(await actions.getByRole("button", { name: "Disable", exact: true }).isVisible(), true);
+      await more.press("ArrowDown");
+      assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Startup context", "Unregister"]);
+      await refresh();
+      assert.equal(await menu.isVisible(), true, "Polling must preserve drawer overflow menus");
+      assert.equal(await more.getAttribute("aria-expanded"), "true");
+      const box = await menu.boundingBox(), viewport = page.viewportSize();
+      assert.ok(box.x >= 8 && box.y >= 8 && box.x + box.width <= viewport.width - 8 && box.y + box.height <= viewport.height - 8);
+      await page.keyboard.press("End");
+      assert.equal(await menu.getByRole("menuitem", { name: "Unregister", exact: true }).evaluate((element) => element === document.activeElement), true);
+      await page.keyboard.press("Escape");
+      assert.equal(await page.locator("dialog.machine-drawer").isVisible(), true, "Escape should close only the menu");
+      assert.equal(await more.evaluate((element) => element === document.activeElement), true);
+      await more.click();
+      await menu.getByRole("menuitem", { name: "Startup context", exact: true }).click();
+    } else await page.getByRole("menuitem", { name: "Startup context", exact: true }).click();
   };
   for (const os of ["windows", "linux", "darwin"]) {
     requests = [];
-    await open(os, os === "windows");
+    if (os === "darwin") await page.setViewportSize({ width: 390, height: 844 });
+    await open(os, os !== "linux");
     assert.equal(requests.length, 0, "Opening the dialog must not create an invitation");
     const config = os === "windows" ? "C:\\User's profile\\node.json" : "/home/user's profile/node.json";
     await page.getByLabel("Existing node configuration, optional").fill(config);
@@ -288,6 +319,7 @@ async function assertStartupCommands(page, snapshot) {
     assert.equal(requests.at(-1).serviceMode, "hybrid");
     const hybrid = await page.locator("#secret-value").textContent();
     assert.doesNotMatch(hybrid, /service uninstall|--mode hybrid/);
+    assert.doesNotMatch(hybrid, /powershell\.exe|EncodedCommand|NoProfile -c/);
     assert.match(hybrid, /CONTROL_CONFIG/);
     assert.match(hybrid, /https:\/\/example.test\/install\/fixture/);
     if (os === "windows") {
@@ -312,6 +344,7 @@ async function assertStartupCommands(page, snapshot) {
     assert.match(await page.locator("#enrollment-progress").textContent(), /online in User and System contexts/);
     await page.getByRole("button", { name: "Done", exact: true }).click();
     records = [];
+    await page.setViewportSize({ width: 1440, height: 1000 });
   }
   await open("linux");
   await selectMode("hybrid");
@@ -332,6 +365,13 @@ async function assertStartupCommands(page, snapshot) {
   assert.equal(requests.length, 0, "A stale dialog must not generate an installation");
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
 
+  await page.getByRole("button", { name: "startup-worker", exact: true }).click();
+  await page.getByRole("button", { name: "More actions for startup-worker", exact: true }).click();
+  assert.deepEqual(await page.locator("#machine-menu").getByRole("menuitem").allTextContents(), ["Unregister"]);
+  await page.keyboard.press("Enter");
+  await page.getByLabel("Type startup-worker to confirm").waitFor();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+
   // Lost mutation responses never create a second invitation automatically.
   await open("linux");
   await selectMode("hybrid");
@@ -342,8 +382,44 @@ async function assertStartupCommands(page, snapshot) {
   assert.equal(requests.length, 1);
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await page.unroute("**/console/api/status", statusRoute);
+  await page.unroute("**/console/api/fleet/nodes/*/startup", startupRoute);
   await page.unroute("**/console/api/fleet/installations", installationsRoute);
   await refresh();
+}
+
+async function assertHybridGrouping(page, snapshot) {
+  const baseNode = snapshot.nodes[0],
+    user = { ...baseNode, id: "paired-user", name: "paired-host", hybridId: "pair-1", hybridRole: "user", runAs: "user", online: false },
+    system = { ...baseNode, id: "paired-system", name: "paired-host-system", hybridId: "pair-1", hybridRole: "system", runAs: "system", online: true, system: { ...baseNode.system, cpuUsagePercent: 71 } },
+    ordinary = { ...baseNode, id: "ordinary-system", name: "unpaired-system", runAs: "system", online: true };
+  const statusRoute = (route) => route.fulfill({ json: { ...snapshot, nodes: [system, user, ordinary] } });
+  await page.route("**/console/api/status", statusRoute);
+  await page.waitForFunction(() => !state.busy);
+  await page.evaluate(() => refresh(true));
+  assert.equal(await page.locator("#nav-count").textContent(), "2", "A Hybrid companion must not add a machine to the counter");
+  assert.equal(await page.locator(".machine-table tbody tr").count(), 2);
+  assert.equal(await page.getByRole("button", { name: "paired-host-system", exact: true }).count(), 0);
+  const row = page.locator(".machine-table tbody tr").filter({ has: page.getByRole("button", { name: "paired-host", exact: true }) });
+  assert.equal(await row.getAttribute("data-id"), user.id, "User remains the default even when System is the only online context");
+  assert.equal(await row.getByRole("button", { name: "User", exact: true }).getAttribute("aria-pressed"), "true");
+  await row.getByRole("button", { name: "System", exact: true }).click();
+  assert.equal(await row.getAttribute("data-id"), system.id);
+  assert.match(await row.locator(".cpu-column").textContent(), /71%/);
+  await page.waitForFunction(() => !state.busy);
+  await page.evaluate(() => refresh(true));
+  assert.equal(await row.getAttribute("data-id"), system.id, "Polling preserves an explicit context selection");
+  await row.getByRole("button", { name: "paired-host", exact: true }).click();
+  await page.getByRole("dialog", { name: system.name, exact: true }).waitFor();
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await row.getByRole("button", { name: "User", exact: true }).click();
+  assert.equal(await row.getAttribute("data-id"), user.id);
+  assert.equal(await page.locator('.stat[data-filter="online"] .stat-value').textContent(), "2", "Online counts hosts, not execution profiles");
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.unroute("**/console/api/status", statusRoute);
+  await page.waitForFunction(() => !state.busy);
+  await page.evaluate(() => refresh(true));
 }
 
 try {
@@ -446,6 +522,7 @@ try {
   page.on("request", (request) => {
     if (
       request.url().includes("/console/api/fleet/nodes/") &&
+      !request.url().endsWith("/startup") &&
       request.method() !== "GET"
     )
       machineMutations++;
@@ -478,7 +555,7 @@ try {
   assert.deepEqual(await machineMenu.getByRole("menuitem").allTextContents(), [
     "View details",
     "Rename",
-    ...(registered.runAs === "user" ? ["Change startup context"] : []),
+    ...(registered.runAs === "user" ? ["Startup context"] : []),
     "Disable",
     "Unregister",
   ]);
@@ -909,6 +986,7 @@ try {
   await page.setViewportSize({ width: 1440, height: 1000 });
   const mutationsBeforeStartup = machineMutations;
   await assertStartupCommands(page, snapshot);
+  await assertHybridGrouping(page, snapshot);
   assert.equal(machineMutations, mutationsBeforeStartup, "Preparing startup commands must not mutate machine lifecycle policy");
 
   await page.locator("#account-button").click();

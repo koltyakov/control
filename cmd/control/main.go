@@ -32,6 +32,22 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	args := os.Args[1:]
+	if len(args) == 4 && args[0] == "__startup-system" {
+		log, err := os.OpenFile(filepath.Join(args[2], "startup-change.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "control startup:", err)
+			os.Exit(1)
+		}
+		err = installation.ApplyStartupChange(ctx, args[1], args[2], args[3])
+		if err != nil {
+			_, _ = fmt.Fprintln(log, "Control startup migration failed:", err)
+		}
+		_ = log.Close()
+		if err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	if len(args) == 2 && args[0] == "__tunnels" {
 		logFile, err := os.OpenFile(filepath.Join(args[1], "service.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 		if err == nil {
@@ -269,6 +285,9 @@ func run(ctx context.Context, args []string) error {
 				}
 			}()
 			n.SetShutdown(cancel)
+			n.ConfigureStartup(func(ctx context.Context, mode string) error {
+				return installation.PrepareStartupChange(ctx, *path, n.Identity.ID, mode)
+			})
 			if err = n.ConfigureUpdates(buildinfo.Current(), apply); err != nil {
 				return err
 			}
