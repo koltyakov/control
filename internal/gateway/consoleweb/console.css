@@ -1008,24 +1008,6 @@ td strong {
   line-height: 17px;
   white-space: nowrap;
 }
-.context-choice {
-  gap: 4px;
-  cursor: pointer;
-}
-.context-choice:hover,
-.context-choice[aria-pressed="true"] {
-  border-color: var(--action);
-  color: var(--text);
-}
-.context-presence {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--muted);
-}
-.context-presence.online {
-  background: var(--accent);
-}
 .machine-name {
   display: block;
   max-width: 360px;

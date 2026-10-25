@@ -137,6 +137,7 @@ async function pageLink(page, hash) {
 }
 
 async function assertContextChips(page) {
+  assert.equal(await page.locator(".context-presence").count(), 0, "Context chips must not contain status dots");
   const chips = await page.locator(".machine-table .context-tag").evaluateAll(
     (elements) => elements.map((element) => {
       const computed = getComputedStyle(element);
@@ -402,7 +403,9 @@ async function assertHybridGrouping(page, snapshot) {
   const row = page.locator(".machine-table tbody tr").filter({ has: page.getByRole("button", { name: "paired-host", exact: true }) });
   assert.equal(await row.getAttribute("data-id"), user.id, "User remains the default even when System is the only online context");
   assert.equal(await row.getByRole("button", { name: "User", exact: true }).getAttribute("aria-pressed"), "true");
+  await assertContextChips(page);
   await row.getByRole("button", { name: "System", exact: true }).click();
+  await assertContextChips(page);
   assert.equal(await row.getAttribute("data-id"), system.id);
   assert.match(await row.locator(".cpu-column").textContent(), /71%/);
   await page.waitForFunction(() => !state.busy);

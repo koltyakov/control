@@ -549,7 +549,7 @@ function contextChips(node) {
   if (!node.hybridId) return runAsTag(node);
   return [...node.contexts]
     .sort((a, b) => (a.hybridRole === "user" ? -1 : 1) - (b.hybridRole === "user" ? -1 : 1))
-    .map((context) => `<button class="context-tag context-choice" data-action="context" data-id="${esc(context.id)}" aria-pressed="${node.id === context.id}" title="${esc(context.name)} · ${context.online ? "Online" : "Offline"}${context.hybridRole === "system" ? " · For operations requiring elevation" : " · Default execution context"}">${context.hybridRole === "user" ? "User" : "System"}<span class="context-presence${context.online ? " online" : ""}" aria-hidden="true"></span></button>`)
+    .map((context) => `<button class="context-tag context-choice" data-action="context" data-id="${esc(context.id)}" aria-pressed="${node.id === context.id}" title="${esc(context.name)} · ${context.online ? "Online" : "Offline"}${context.hybridRole === "system" ? " · For operations requiring elevation" : " · Default execution context"}">${context.hybridRole === "user" ? "User" : "System"}</button>`)
     .join("");
 }
 function machineMatches(n) {
@@ -787,6 +787,7 @@ const auditActions = {
   "machine.disable": ["Disabled machine", "warn"],
   "machine.unregister": ["Unregistered machine", "bad"],
   "machine.wake": ["Sent wake packet", ""],
+  "machine.startup": ["Requested startup context", ""],
   "account.create": ["Created account", "good"],
   "account.disable": ["Disabled account", "bad"],
   "account.password": ["Set browser password", ""],

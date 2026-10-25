@@ -74,13 +74,24 @@ func (n *Node) pauseForUpdate() bool {
 	return true
 }
 
+func (n *Node) resumeAfterUpdate() {
+	n.maintenanceMu.Lock()
+	defer n.maintenanceMu.Unlock()
+	n.mu.Lock()
+	changing := n.startupChanging
+	n.mu.Unlock()
+	if !changing {
+		n.work.Resume()
+	}
+}
+
 // ConfigureUpdates is called by the executable before Start. Libraries/tests
 // cannot accidentally replace their own test runner through an update message.
 func (n *Node) ConfigureUpdates(info buildinfo.Info, apply func(string) error) error {
 	n.Peer.SetSoftware(info)
 	updater, err := update.NewUpdater(update.UpdaterOptions{
 		Gateway: n.Config.Gateway, Token: n.Config.Token, Dir: n.Config.DataDir, Software: info,
-		Busy: n.updateBusy, Pause: n.pauseForUpdate, Resume: n.work.Resume, Apply: apply,
+		Busy: n.updateBusy, Pause: n.pauseForUpdate, Resume: n.resumeAfterUpdate, Apply: apply,
 		Report: func(ctx context.Context, status update.Status) error {
 			return n.Peer.SendControl(ctx, "update.status", model.JSON(status))
 		},

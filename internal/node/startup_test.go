@@ -43,6 +43,7 @@ func TestStartupReservation(t *testing.T) {
 	if n.pauseForUpdate() || !n.updateBusy() {
 		t.Fatal("updates stole an admitted startup change")
 	}
+	n.resumeAfterUpdate()
 	blocked, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
 	defer cancel()
 	if _, err := n.work.Enter(blocked); err == nil {

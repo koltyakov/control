@@ -51,10 +51,10 @@ func startupInstallation(config, id string) (installedNode, node.Config, error) 
 // identity-preserving System migration. Hybrid and Unix need local installers.
 func PrepareStartupChange(ctx context.Context, config, id, mode string) error {
 	if mode == "hybrid" {
-		return errors.New("Hybrid needs a protected companion installation under the intended user; run its installer locally")
+		return errors.New("hybrid needs a protected companion installation under the intended user; run its installer locally")
 	}
 	if mode != "system" || runtime.GOOS != "windows" {
-		return errors.New("Unix System startup needs a separate root-owned profile; run its installer locally")
+		return errors.New("unix System startup needs a separate root-owned profile; run its installer locally")
 	}
 	if err := CheckServiceMode("auto"); err != nil {
 		return err
