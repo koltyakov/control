@@ -192,6 +192,160 @@ async function assertResourceIcons(page, gateway = false) {
   );
 }
 
+async function assertStartupCommands(page, snapshot) {
+  // Only commands are inspected. Never execute installers or register real OS services.
+  let nodes, records = [], requests = [], conflict = false, uncertain = false;
+  const original = { ...snapshot.nodes[0], id: "startup-fixture", name: "startup-worker", runAs: "user", online: false };
+  const statusRoute = (route) => route.fulfill({ json: { ...snapshot, nodes } });
+  const installationsRoute = async (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ json: records });
+    const body = route.request().postDataJSON();
+    requests.push(body);
+    if (uncertain) return route.abort();
+    if (conflict && !body.force) return route.fulfill({ status: 409, body: "name has an existing invitation" });
+    return route.fulfill({ json: {
+      id: "startup-invitation",
+      hybridId: body.serviceMode === "hybrid" ? "startup-invitation" : undefined,
+      serviceMode: body.serviceMode,
+      expiresAt: new Date(Date.now() + 900000).toISOString(),
+      command: body.os === "windows"
+        ? 'powershell.exe -NoProfile -c "irm \'https://example.test/install/fixture\'|iex"'
+        : "curl -fsSL 'https://example.test/install/fixture' | " + (body.serviceMode === "system" ? "sudo bash" : "bash"),
+    } });
+  };
+  await page.route("**/console/api/status", statusRoute);
+  await page.route("**/console/api/fleet/installations", installationsRoute);
+  const selectMode = async (mode) => {
+    await page.locator('#modal-form select[name="serviceMode"]').locator("xpath=preceding-sibling::button[1]").click();
+    await page.locator(`[role=option][data-value="${mode}"]`).click();
+  };
+  const refresh = async () => {
+    await page.waitForFunction(() => !state.busy);
+    await page.evaluate(() => refresh(true));
+  };
+  const open = async (os, drawer = false) => {
+    nodes = [{ ...original, os }];
+    await refresh();
+    await page.getByRole("button", { name: "Actions for startup-worker", exact: true }).click();
+    if (drawer) {
+      await page.getByRole("menuitem", { name: "View details", exact: true }).click();
+      await page.getByRole("button", { name: "Change startup context", exact: true }).click();
+    } else await page.getByRole("menuitem", { name: "Change startup context", exact: true }).click();
+  };
+  for (const os of ["windows", "linux", "darwin"]) {
+    requests = [];
+    await open(os, os === "windows");
+    assert.equal(requests.length, 0, "Opening the dialog must not create an invitation");
+    const config = os === "windows" ? "C:\\User's profile\\node.json" : "/home/user's profile/node.json";
+    await page.getByLabel("Existing node configuration, optional").fill(config);
+    if (os !== "windows") {
+      // Reusing the User name cannot reserve a new root-owned identity.
+      await page.getByLabel("New System routing name").fill(original.name);
+      await page.locator("#modal-form button[type=submit]").click();
+      await page.locator(".form-error").filter({ hasText: "unused System routing name" }).waitFor();
+      assert.equal(requests.length, 0);
+      await page.getByLabel("New System routing name").fill("startup-system");
+    }
+    await page.locator("#modal-form button[type=submit]").click();
+    await page.locator("#secret-value").waitFor();
+    const command = await page.locator("#secret-value").textContent();
+    if (os === "windows") {
+      assert.equal(command, "control --config 'C:\\User''s profile\\node.json' service start --mode auto");
+      assert.equal(requests.length, 0, "Windows in-place migration needs no invitation");
+      await refresh();
+      assert.match(await page.locator("#startup-progress").textContent(), /Waiting/);
+      nodes[0] = { ...nodes[0], online: true, runAs: "system" };
+      await refresh();
+      assert.match(await page.locator("#startup-progress").textContent(), /online in System context/);
+    } else {
+      assert.equal(command, "control --config '/home/user'\\''s profile/node.json' service uninstall --mode user &&\ncurl -fsSL 'https://example.test/install/fixture' | sudo bash");
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].name, "startup-system");
+      assert.equal(requests[0].serviceMode, "system");
+      assert.equal(requests[0].os, os);
+      assert.match(await page.locator("#dialog-body").textContent(), /not migrated/);
+    }
+    await page.getByRole("button", { name: "Done", exact: true }).click();
+
+    requests = [];
+    await open(os);
+    if (os === "linux") await page.getByLabel("New System routing name").fill("invalid hidden name");
+    await selectMode("hybrid");
+    assert.equal(await page.locator("#system-name-field").isVisible(), false);
+    assert.equal(await page.locator('input[name="systemName"]').isDisabled(), true);
+    await page.getByLabel("Existing node configuration, optional").fill(config);
+    if (os === "linux") conflict = true;
+    await page.locator("#modal-form button[type=submit]").click();
+    if (conflict) {
+      await page.locator("#force-confirm").check();
+      assert.equal(requests.length, 1, "A conflict must not automatically retry");
+      await page.locator("#modal-form button[type=submit]").click();
+      assert.equal(requests.at(-1).force, true);
+      conflict = false;
+    }
+    await page.locator("#secret-value").waitFor();
+    assert.equal(requests.at(-1).name, original.name);
+    assert.equal(requests.at(-1).serviceMode, "hybrid");
+    const hybrid = await page.locator("#secret-value").textContent();
+    assert.doesNotMatch(hybrid, /service uninstall|--mode hybrid/);
+    assert.match(hybrid, /CONTROL_CONFIG/);
+    assert.match(hybrid, /https:\/\/example.test\/install\/fixture/);
+    if (os === "windows") {
+      assert.match(hybrid, /C:\\User''s profile\\node.json/);
+      assert.match(hybrid, /finally/);
+    } else {
+      assert.ok(hybrid.startsWith("CONTROL_CONFIG='/home/user'\\''s profile/node.json' bash -c '"));
+      assert.doesNotMatch(hybrid, /sudo bash/);
+    }
+    records = [
+      { id: "startup-invitation", redeemedId: original.id },
+      { id: "system-invitation", hybridId: "startup-invitation", hybridRole: "system", redeemedId: "system-fixture" },
+    ];
+    nodes[0] = { ...nodes[0], online: true };
+    await refresh();
+    assert.match(await page.locator("#enrollment-progress").textContent(), /Waiting for both/);
+    nodes.push({ ...original, id: "system-fixture", name: original.name + "-system", os, online: true });
+    await refresh();
+    assert.match(await page.locator("#enrollment-progress").textContent(), /Waiting for both/);
+    nodes[1].runAs = "system";
+    await refresh();
+    assert.match(await page.locator("#enrollment-progress").textContent(), /online in User and System contexts/);
+    await page.getByRole("button", { name: "Done", exact: true }).click();
+    records = [];
+  }
+  await open("linux");
+  await selectMode("hybrid");
+  nodes.push({ ...original, id: "existing-system", name: original.name + "-system", os: "linux", runAs: "system" });
+  await refresh();
+  requests = [];
+  await page.locator("#modal-form button[type=submit]").click();
+  await page.locator(".form-error").filter({ hasText: "already registered" }).waitFor();
+  assert.equal(requests.length, 0, "Existing companions must not be replaced");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  await open("linux");
+  nodes[0].runAs = "system";
+  await refresh();
+  requests = [];
+  await page.locator("#modal-form button[type=submit]").click();
+  await page.locator(".form-error").filter({ hasText: "machine changed" }).waitFor();
+  assert.equal(requests.length, 0, "A stale dialog must not generate an installation");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  // Lost mutation responses never create a second invitation automatically.
+  await open("linux");
+  await selectMode("hybrid");
+  requests = [];
+  uncertain = true;
+  await page.locator("#modal-form button[type=submit]").click();
+  await page.locator(".form-error").filter({ hasText: "Refresh" }).waitFor();
+  assert.equal(requests.length, 1);
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.unroute("**/console/api/status", statusRoute);
+  await page.unroute("**/console/api/fleet/installations", installationsRoute);
+  await refresh();
+}
+
 try {
   start(
     [
@@ -320,9 +474,11 @@ try {
     true,
     "Releasing the right button dismissed the menu",
   );
+  const registered = (await api("/v1/nodes", "GET", undefined, account.token))[0];
   assert.deepEqual(await machineMenu.getByRole("menuitem").allTextContents(), [
     "View details",
     "Rename",
+    ...(registered.runAs === "user" ? ["Change startup context"] : []),
     "Disable",
     "Unregister",
   ]);
@@ -751,6 +907,9 @@ try {
   await page.getByRole("button", { name: "Close dialog", exact: true }).click();
   await page.unroute("**/console/api/status");
   await page.setViewportSize({ width: 1440, height: 1000 });
+  const mutationsBeforeStartup = machineMutations;
+  await assertStartupCommands(page, snapshot);
+  assert.equal(machineMutations, mutationsBeforeStartup, "Preparing startup commands must not mutate machine lifecycle policy");
 
   await page.locator("#account-button").click();
   await page.locator('#account-menu a[href="#account"]').click();

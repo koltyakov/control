@@ -237,6 +237,8 @@ If System installation succeeds but User installation fails, rerunning the still
 
 Hybrid is a composite invitation installation, not a single-profile `service --mode` value. Use `machines add --service hybrid`, not `setup --service hybrid` or a startup-mode migration. Upgrade the gateway and publish matching new installers first. The System script passes `--hybrid-system`, which older binaries reject before consuming its invitation; the gateway also rejects a companion registration without instruction-only System execution.
 
+The [web console's Change startup context action](console.md#change-an-installed-user-nodes-startup-context) prepares target-local commands for existing User nodes. Windows System uses the profile-preserving service migration without an invitation. Hybrid creates a same-name User replacement plus a new protected companion. Unix System instead asks for an unused routing name and prepares a command to uninstall User startup before installing a separate root profile. It does not migrate User data or unregister the original identity. No command is executed by the console, and installation generation alone does not interrupt the node.
+
 ## Single use and recovery
 
 The owning user can create invitations for their fleet. For an explicit name, the gateway reserves that name within the fleet. Automatic invitations defer the name claim to redemption. The gateway persists the ticket hash in SQLite. A live ticket permits script, metadata, and binary downloads until expiry or redemption. Fetching a URL does not consume it.

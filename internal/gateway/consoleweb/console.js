@@ -68,6 +68,7 @@ const state = {
   busy: false,
   auxiliary: null,
   invitation: null,
+  startupChange: null,
   stale: false,
   updatedAt: null,
 };
@@ -949,6 +950,13 @@ async function refresh(manual = false) {
         state.auxiliary = page === "activity" ? mergeAudit(data) : data;
     }
     if (state.invitation && $("#dialog").open) await updateInvitation();
+    if (state.startupChange && $("#dialog").open) {
+      const node = snapshot.nodes.find((n) => n.id === state.startupChange);
+      $("#startup-progress").textContent =
+        node?.online && node.runAs === "system"
+          ? node.name + " is online in System context. You can close this dialog."
+          : "Waiting for the machine to reconnect and report System context…";
+    }
     banner("");
     // Resource refreshes preserve focus. Never replace an in-progress password form.
     if (page === state.page && state.page !== "account") render();
@@ -1031,6 +1039,7 @@ function syncMachineMenu() {
   const html =
     item("details", "View details") +
     item("rename", "Rename") +
+    (canChangeStartup(node) ? item("startup", "Change startup context") : "") +
     (!node.online && node.wakeVia ? item("wake", "Wake") : "") +
     item("toggle", node.disabled ? "Enable" : "Disable") +
     '<div role="separator" class="menu-separator"></div>' +
@@ -1316,6 +1325,7 @@ function toast(message) {
 }
 function closeDialog() {
   state.invitation = null;
+  state.startupChange = null;
   $("#dialog").close();
   $("#dialog-body").replaceChildren();
 }
@@ -1389,6 +1399,115 @@ function confirmAction(title, message, handler, label = "Confirm") {
     true,
   );
 }
+function canChangeStartup(node) {
+  return (
+    node.runAs === "user" && ["linux", "darwin", "windows"].includes(node.os)
+  );
+}
+function commandQuote(value, windows) {
+  return "'" + value.replaceAll("'", windows ? "''" : "'\\''") + "'";
+}
+function changeStartup(node) {
+  state.invitation = null;
+  state.startupChange = null;
+  const windows = node.os === "windows";
+  formDialog(
+    "Change startup context for " + node.name,
+    `<p>The console cannot elevate or install services remotely. Prepare a command to run on ${esc(node.name)} while it is idle. Nothing changes until you run it.</p><label>Startup context<select name="serviceMode"><option value="system">System context</option><option value="hybrid">Hybrid</option></select></label><div id="startup-guidance" class="notice"></div><label id="system-name-field"${windows ? " hidden" : ""}>New System routing name<input name="systemName" value="${esc(node.name.slice(0, 56) + "-system")}" maxlength="63" pattern="[a-zA-Z0-9]([a-zA-Z0-9._]|-){0,62}"></label><label>Existing node configuration, optional<input name="config" placeholder="Absolute path on the target machine" autocomplete="off"></label><p class="field-help">Leave blank only for the installing user's default profile. Use the original profile path for a custom installation. Running the command interrupts work. System startup has no interactive desktop access.</p>`,
+    async (fields) => {
+      const current = state.snapshot?.nodes.find((n) => n.id === node.id);
+      if (
+        !current ||
+        !canChangeStartup(current) ||
+        current.name !== node.name ||
+        current.os !== node.os
+      )
+        throw new Error("The machine changed. Close this dialog and inspect its current state.");
+      const mode = fields.serviceMode,
+        config = fields.config.trim(),
+        cli = "control" + (config ? " --config " + commandQuote(config, windows) : "");
+      if (mode === "system" && windows) {
+        showSecret(
+          "Run on " + node.name,
+          cli + " service start --mode auto",
+          "Run in Administrator PowerShell under the same installing user, not through the node's exec provider. This switches to boot-time LocalService startup and retains the identity, profile, workspace, and task history. Use a current installed Control CLI. The console has not changed the machine.",
+        );
+        state.startupChange = node.id;
+        const note = document.createElement("p");
+        note.id = "startup-progress";
+        note.className = "progress-note";
+        note.setAttribute("role", "status");
+        note.textContent = "Waiting for the machine to report System context…";
+        $("#dialog-body").append(note);
+        return false;
+      }
+      const name = mode === "hybrid" ? node.name : fields.systemName.trim();
+      if (mode === "hybrid" && name.length > 56)
+        throw new Error("Hybrid names allow at most 56 characters. Rename this machine first.");
+      if (
+        mode === "system" &&
+        (!name || name === node.name || state.snapshot.nodes.some((n) => n.name === name))
+      )
+        throw new Error("Choose an unused System routing name. Unix System installation cannot reuse the User identity.");
+      if (mode === "hybrid" && state.snapshot.nodes.some((n) => n.name === name + "-system"))
+        throw new Error("The System companion name is already registered. Manage that context separately.");
+      const link = await api("fleet/installations", "POST", {
+        name,
+        os: node.os,
+        serviceMode: mode,
+        ttlSeconds: 900,
+        gateway: location.origin,
+        force: fields.force === "on",
+      });
+      if (link.serviceMode !== mode)
+        throw new Error("The gateway did not confirm the requested startup context. Inspect Invitations before creating another command.");
+      let command = link.command;
+      if (mode === "system") command = cli + " service uninstall --mode user &&\n" + command;
+      else if (config) {
+        command = windows
+          ? `& { $previousConfig = $env:CONTROL_CONFIG; try { $env:CONTROL_CONFIG = ${commandQuote(config, true)}; ${command} } finally { $env:CONTROL_CONFIG = $previousConfig } }`
+          : "CONTROL_CONFIG=" + commandQuote(config, false) + " bash -c " + commandQuote(command, false);
+      }
+      showInstallationCommand(
+        link,
+        command,
+        mode === "hybrid"
+          ? `Run on ${node.name} ${windows ? "in Administrator PowerShell under the installing user's account" : "from the installing user's shell with sudo available, not sudo bash"}. This re-enrolls the existing User profile and adds ${name}-system as a separate protected companion. Explicitly target the companion for System work. Treat this command as a temporary credential.`
+          : `Run on ${node.name} from the installing user's shell with sudo available. This first stops and removes User startup, then installs a new root-owned profile as ${name}. Identity, credentials, files, and task history are not migrated. The old registration and files remain; unregister the old machine separately only after verifying System startup. Treat this command as a temporary credential.`,
+      );
+      return false;
+    },
+    windows ? "Show command" : "Create installation command",
+  );
+  const sync = () => {
+    const hybrid = $('#modal-form select[name="serviceMode"]').value === "hybrid";
+    $("#system-name-field").hidden = windows || hybrid;
+    $('#modal-form input[name="systemName"]').required = !windows && !hybrid;
+    $('#modal-form input[name="systemName"]').disabled = windows || hybrid;
+    $('#modal-form button[type="submit"]').textContent = windows && !hybrid ? "Show command" : "Create installation command";
+    $("#startup-guidance").textContent = hybrid
+      ? `Keep ${node.name} for User work and add ${node.name}-system for explicit System work. Both have independent state and startup. The gateway needs published installers. No automatic elevation or fallback occurs.`
+      : windows
+        ? "Switch the existing profile to boot-time LocalService startup. Run the displayed command in Administrator PowerShell under the same user. No invitation is needed."
+        : "Unix System startup requires a separate root-owned profile and an unused routing name. The command removes User startup but keeps its files and registration. Use Hybrid instead to keep both contexts available.";
+  };
+  $('#modal-form select[name="serviceMode"]').addEventListener("change", sync);
+  sync();
+}
+function showInstallationCommand(
+  link,
+  command = link.command,
+  description = "Run this command on the intended machine. Treat it as a temporary credential. It is shown only here and cannot be retrieved later.",
+) {
+  state.invitation = link;
+  showSecret("Install on the target machine", command, description);
+  const note = document.createElement("p");
+  note.id = "enrollment-progress";
+  note.className = "progress-note";
+  note.setAttribute("role", "status");
+  note.textContent = "Waiting for installation · Expires " + date(link.expiresAt);
+  $("#dialog-body").append(note);
+}
 function addMachine() {
   state.invitation = null;
   formDialog(
@@ -1406,19 +1525,7 @@ function addMachine() {
         gateway: location.origin,
         force: fields.force === "on",
       });
-      state.invitation = link;
-      showSecret(
-        "Install on the target machine",
-        link.command,
-        "Run this command on the intended machine. Treat it as a temporary credential. It is shown only here and cannot be retrieved later.",
-      );
-      const note = document.createElement("p");
-      note.id = "enrollment-progress";
-      note.className = "progress-note";
-      note.setAttribute("role", "status");
-      note.textContent =
-        "Waiting for installation · Expires " + date(link.expiresAt);
-      $("#dialog-body").append(note);
+      showInstallationCommand(link);
       return false;
     },
     "Create installation command",
@@ -1440,7 +1547,20 @@ async function updateInvitation() {
     const node = current.nodes.find(
       (n) => n.id === record.redeemedId && n.online,
     );
-    note.textContent = node
+    if (link.serviceMode === "hybrid") {
+      const companion = records.find(
+          (i) => i.hybridId === link.hybridId && i.hybridRole === "system",
+        ),
+        system = current.nodes.find(
+          (n) => n.id === companion?.redeemedId && n.online && n.runAs === "system",
+        );
+      note.textContent = node?.runAs === "user" && system
+        ? node.name + " and " + system.name + " are online in User and System contexts. You can close this dialog."
+        : "Invitation redeemed. Waiting for both User and System contexts to connect…";
+      return;
+    }
+    const ready = node && (!link.serviceMode || node.runAs === link.serviceMode);
+    note.textContent = ready
       ? node.name + " is online. You can close this dialog."
       : "Invitation redeemed. Waiting for the machine to connect…";
   } else if (Date.now() > new Date(record.expiresAt).getTime())
@@ -1487,6 +1607,14 @@ function machineDetails(id) {
     }</dd><dt>Processor</dt><dd>${esc(sys.cpuModel || "Unknown")}${sys.logicalCPUs ? " · " + esc(sys.logicalCPUs) + " cores" : ""}</dd><dt>Sampled</dt><dd>${esc(date(sys.sampledAt))}${n.online ? "" : `<small class="muted">Cached while offline</small>`}</dd></dl></section>${activitySection(n)}<section class="drawer-section"><h3>System</h3><dl class="metadata"><dt>Platform</dt><dd>${esc(platformText(n) || "Unknown")}</dd>${n.runAs ? `<dt>Runs as</dt><dd>${runAsLabels[n.runAs][1]}</dd>` : ""}<dt>Version</dt><dd>${esc(n.software?.version || "Unknown")}</dd><dt>Labels</dt><dd>${labels.length ? `<span class="labels">${labels.map(([k, v]) => `<span class="label-chip">${esc(k)}=${esc(v)}</span>`).join("")}</span>` : "None"}</dd>${n.online ? "" : `<dt>Last seen</dt><dd>${esc(date(n.lastSeen))}</dd>`}<dt>Identity</dt><dd class="mono">${esc(n.id)}</dd></dl></section>${!n.online && n.wakeVia ? `<p class="drawer-note">Wake sends a Wake-on-LAN packet from ${esc(n.wakeVia)}, an online machine on the same LAN. The machine appears online once its node starts.</p>` : ""}<div class="drawer-actions">${!n.online && n.wakeVia ? `<button class="primary" data-action="wake" data-id="${esc(n.id)}">Wake</button>` : ""}<button class="secondary" data-action="rename" data-id="${esc(n.id)}">Rename</button><button class="secondary" data-action="toggle" data-id="${esc(n.id)}">${n.disabled ? "Enable" : "Disable"}</button><button class="danger" data-action="unregister" data-id="${esc(n.id)}">Unregister</button></div>`,
     "machine-drawer",
   );
+  if (canChangeStartup(n)) {
+    const button = document.createElement("button");
+    button.className = "secondary";
+    button.dataset.action = "startup";
+    button.dataset.id = n.id;
+    button.textContent = "Change startup context";
+    $(".drawer-actions").prepend(button);
+  }
 }
 document.addEventListener("submit", async (event) => {
   if (event.target.id !== "account-form") return;
@@ -1608,6 +1736,8 @@ document.addEventListener("click", async (event) => {
       }
     }
     if (action === "details") machineDetails(id);
+    if (action === "startup" && node && canChangeStartup(node))
+      changeStartup(node);
     if (action === "wake" && node) {
       button.disabled = true;
       try {

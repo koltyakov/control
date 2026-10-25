@@ -150,6 +150,50 @@ func TestConsoleFleetIsolationAndManagement(t *testing.T) {
 	ba.request(t, "DELETE", "/console/api/fleet/nodes/"+ids[0]+"?stop=true", nil, 204)
 }
 
+func TestConsoleHybridUserReplacement(t *testing.T) {
+	g, server := installationFixture(t)
+	owner, admin := createTestUser(t, server, "startup-owner")
+	provisionBrowser(t, admin, "")
+	browser := browserLogin(t, server.URL, owner.Name, browserPassword)
+	id, err := identity.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rawPeer(t, server.URL, admin.Key, "existing-user", owner.ID, id) == nil {
+		t.Fatal("node registration failed")
+	}
+	data, _ := browser.request(t, "POST", "/console/api/fleet/installations", enrollment.Request{
+		Name: "existing-user", OS: "linux", Arch: "amd64", Gateway: server.URL, ServiceMode: "hybrid",
+	}, http.StatusOK)
+	var link enrollment.Link
+	if err := json.Unmarshal(data, &link); err != nil {
+		t.Fatal(err)
+	}
+	if link.ReplaceID != id.ID || link.ServiceMode != "hybrid" || strings.Contains(link.Command, "sudo bash") {
+		t.Fatal("replacement did not retain the User identity and target-local elevation", link)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	node, ok := g.nodes[id.ID]
+	if !ok || node.Name != "existing-user" || !node.Online || node.Disabled || len(g.nodes) != 1 {
+		t.Fatal("preparing an installation changed the existing node", node)
+	}
+	var user, system installation
+	for _, invitation := range g.installations {
+		if invitation.HybridID != link.HybridID {
+			continue
+		}
+		if invitation.HybridRole == "system" {
+			system = invitation
+		} else {
+			user = invitation
+		}
+	}
+	if user.ReplaceID != id.ID || system.ID == "" || system.ReplaceID != "" || system.Name != "existing-user-system" || system.UserID != owner.ID {
+		t.Fatal("Hybrid replacement did not create an independent, same-fleet companion", user, system)
+	}
+}
+
 func TestConsoleSessionBoundariesAndRevocation(t *testing.T) {
 	g, s := installationFixture(t)
 	alice, a := createTestUser(t, s, "alice")

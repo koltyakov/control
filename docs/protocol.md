@@ -114,6 +114,8 @@ The gateway serves an embedded management console at `/console`, with `/` redire
 
 The explicit console allowlist mirrors `GET status`, `GET nodes`, fleet key and installation list/create/revoke, machine PATCH/DELETE, user list/create/disable, update status/release-check, aggregate administrative metrics, and password management under `/console/api/`. Fleet and superuser restrictions are unchanged. No peer, task, artifact, raw streaming, or binary-upload API is exposed through browser sessions. Remote password access requires HTTPS, with an explicitly configured HTTPS public origin permitted through a trusted loopback proxy. See [console security and limits](console.md#credentials-sessions-and-limits) for session expiry, throttling, schema migration, and reverse-proxy requirements.
 
+The console's [startup-context action](console.md#change-an-installed-user-nodes-startup-context) uses these existing invitation and status routes only. It displays target-local migration or installation commands without an execution API, gateway policy for startup mode, automatic retirement, or remote elevation. Reported `runAs`, not the selected form value, determines completion; Hybrid also requires both enrolled contexts online.
+
 ### Gateway observation
 
 Machine lists in `GET /v1/nodes` and `GET /v1/status` sort alphabetically by name, ignoring case, with original spelling breaking case-only ties. This ordering does not change case-sensitive name lookup or fleet uniqueness.
