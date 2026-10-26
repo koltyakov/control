@@ -69,6 +69,8 @@ When the fleet reports classified discrete GPUs or NPUs, machine tables add a GP
 
 In machine drawers, GPU and NPU memory usage appear in the Resources grid alongside CPU, memory, and disk, with matching labels and bar widths.
 
+A detected device without a dedicated-memory percentage shows `NPU detected` or `GPU detected` instead of a bar. Capacity or used bytes remain visible when known; otherwise the subtitle reads `Memory unavailable`. This distinguishes inventory-only devices such as Surface's Qualcomm Hexagon NPU from machines with no accelerator. Model names remain in tooltips, and offline devices still hide cached usage.
+
 The console reads gateway snapshots every five seconds while its tab is visible. Refresh requests do not initiate resource sampling or peer probes. Gateway metrics retain their original collection times; node health expires under the same rules as the terminal dashboard. Missing fresh health means unknown work, not zero work. Reported work is a count of tracked operations, not necessarily distinct jobs.
 
 Failed requests preserve the last view and show a warning with the last update time. The console supports light/dark themes, narrow layouts, labeled native form controls, keyboard-scrollable tables, keyboard focus, modal dialogs, and reduced motion. Theme selection is the only value stored in browser local storage. Passwords, session tokens, keys, and installation commands are not stored there.

@@ -478,6 +478,7 @@ async function assertHybridGrouping(page, snapshot) {
     assert.deepEqual(await row.locator(".gpu-usage").evaluateAll((elements) => elements.map((element) => element.title)), [gpu.name, "Intel AI Boost"]);
     assert.ok(!(await row.locator(".gpu-column").textContent()).includes(gpu.name), "GPU names must appear only in hover tooltips");
     assert.ok(!(await row.locator(".gpu-column").textContent()).includes("Intel AI Boost"), "NPU names must appear only in hover tooltips");
+    assert.match(await row.locator(".gpu-usage").last().textContent(), /NPU detected/, "Hybrid fallback must retain an NPU without dedicated memory readings");
     assert.equal(await row.locator(".gpu-compute").textContent(), "Compute 67%");
     assert.equal(await row.locator(".gpu-usage small").first().textContent(), "2.0 GiB of 8.0 GiB");
     assert.equal(await row.locator(".gpu-column img").count(), 0, "GPU names must be escaped");
@@ -658,6 +659,55 @@ async function assertHybridGrouping(page, snapshot) {
   await page.unroute("**/console/api/status", statusRoute);
   await page.waitForFunction(() => !state.busy);
   await page.evaluate(() => refresh(true));
+}
+
+async function assertAcceleratorPresence(page, snapshot) {
+  const npu = { name: "Snapdragon(R) X Plus - X1P42100 - Qualcomm(R) Hexagon(TM) NPU", kind: "npu" },
+    baseNode = { ...snapshot.nodes[0], status: "summary", activeCount: 0, leased: false, disabled: false, controlPending: false, online: true },
+    surface = { ...baseNode, id: "surface", name: "surface", system: { ...baseNode.system, gpus: [npu] } },
+    cpuOnly = { ...baseNode, id: "cpu-only", name: "cpu-only", system: { ...baseNode.system, gpus: [] } };
+  const statusRoute = (route) => route.fulfill({ json: { ...snapshot, nodes: [surface, cpuOnly] } });
+  await page.route("**/console/api/status", statusRoute);
+  await refreshPage(page);
+  const row = page.locator('.machine-table tbody tr[data-id="surface"]'),
+    device = row.locator(".gpu-usage");
+  const assertPresence = async (device) => {
+    assert.equal(await device.getAttribute("title"), npu.name);
+    assert.match(await device.textContent(), /NPU detected/);
+    assert.equal(await device.locator("small").first().textContent(), "Memory unavailable");
+    assert.equal(await device.locator("meter").count(), 0, "Missing dedicated memory must not become a zero reading");
+  };
+  await assertPresence(device);
+  assert.equal(await page.locator('.machine-table tbody tr[data-id="cpu-only"] .gpu-usage').count(), 0, "No accelerator must remain distinct from an NPU without metrics");
+  await pageLink(page, "machines");
+  await assertPresence(device);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertPresence(device);
+  assert.ok(await device.isVisible());
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await row.getByRole("button", { name: "surface", exact: true }).click();
+  await assertPresence(page.locator("dialog .gpu-usage"));
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  npu.usagePercent = 54;
+  await refreshPage(page);
+  await assertPresence(device);
+  assert.equal(await device.locator(".gpu-compute").textContent(), "Compute 54%");
+  surface.online = false;
+  await refreshPage(page);
+  await assertPresence(device);
+  assert.equal(await device.locator(".gpu-compute").count(), 0, "Offline inventory must not expose cached compute activity");
+  await row.getByRole("button", { name: "surface", exact: true }).click();
+  await assertPresence(page.locator("dialog .gpu-usage"));
+  assert.equal(await page.locator("dialog .gpu-compute").count(), 0);
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  surface.online = true;
+  npu.kind = "discrete";
+  await refreshPage(page);
+  assert.match(await device.textContent(), /GPU detected/, "Discrete GPUs without memory readings must also remain visible");
+  await page.unroute("**/console/api/status", statusRoute);
+  await refreshPage(page);
+  await page.locator('.brand[href="#overview"]').click();
 }
 
 try {
@@ -1237,6 +1287,7 @@ try {
   await assertStartupCommands(page, snapshot);
   await page.locator('.brand[href="#overview"]').click();
   await assertHybridGrouping(page, snapshot);
+  await assertAcceleratorPresence(page, snapshot);
   assert.equal(machineMutations, mutationsBeforeStartup, "Preparing startup commands must not mutate machine lifecycle policy");
 
   await page.locator("#account-button").click();

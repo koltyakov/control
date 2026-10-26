@@ -826,7 +826,8 @@ function gpuResources(gpus, online, metadata = false) {
       kind = gpu.kind === "npu" ? "NPU" : "GPU",
       memory = used == null ? null : percent(used, gpu.memoryTotalBytes),
       memoryText = gpu.memoryTotalBytes ? used == null ? bytes(gpu.memoryTotalBytes) + " total" : bytes(used) + " of " + bytes(gpu.memoryTotalBytes) : used == null ? "" : bytes(used) + " used";
-    const resource = `<div class="gpu-usage" title="${esc(gpu.name)}">${meter(memory, kind + " memory usage for " + gpu.name)}${memoryText ? `<small>${memoryText}</small>` : ""}${online && gpu.usagePercent != null ? `<small class="gpu-compute">Compute ${Math.round(gpu.usagePercent)}%</small>` : ""}</div>`;
+    const reading = memory == null ? `<span class="muted">${kind} detected</span>` : meter(memory, kind + " memory usage for " + gpu.name);
+    const resource = `<div class="gpu-usage" title="${esc(gpu.name)}">${reading}<small>${memoryText || "Memory unavailable"}</small>${online && gpu.usagePercent != null ? `<small class="gpu-compute">Compute ${Math.round(gpu.usagePercent)}%</small>` : ""}</div>`;
     return metadata ? `<dt>${kind} memory usage</dt><dd>${resource}</dd>` : resource;
   }).join("");
 }
