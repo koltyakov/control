@@ -782,6 +782,8 @@ Windows User to System migration can run only when the installed node already ha
 
 ## D089: Hybrid host grouping with explicit execution contexts
 
+The offline-User metric display is superseded by [D091](#d091-system-telemetry-for-an-offline-hybrid-user); selection and execution boundaries remain unchanged.
+
 Refine D087's console presentation to show one host row with selectable User and System chips. Derive pairing from redeemed, fleet-owned invitation metadata, not a name suffix or a node assertion. Count that host once in machine and availability counters while retaining real per-context work counts. Online means at least one context is online; selecting a chip chooses which context's metrics and lifecycle actions are shown.
 
 Default to User even when only System is online. Keep explicit System targets and exact instruction grants for authorized work requiring elevation. Client and AI guidance may select that privileged alternative when the requested operation requires it, but must inspect failure and partial effects rather than automatically replay User commands. Presentation does not merge identities, storage, tasks, updates, or retirement, and selecting a chip changes no CLI/MCP routing.
@@ -791,3 +793,9 @@ Default to User even when only System is online. Keep explicit System targets an
 Generate installation URL tickets from six cryptographically random bytes encoded as eight unpadded base64url characters. This shortens copy-and-run commands without changing the target's separate 256-bit credential or Ed25519 identity. The ticket has 48 bits of entropy, less guessing resistance than a permanent credential, and remains a temporary bearer credential with the existing default 15-minute expiry, revocation, and single-identity redemption. Retain the existing lifetime override and signed response-recovery behavior.
 
 Check both the ticket hash and any derived Hybrid companion hash against all retained gateway invitations under the mutation lock. Retry random collisions at most eight times, then fail without changing records. Never overwrite another fleet's invitation or a redeemed credential. Continue accepting existing 43-character tickets and keep Hybrid companion derivation unchanged. Persist hashes only. This refines D015's ticket generation without changing fleet ownership, download pinning, or node authentication. See [installation and recovery](installation.md#single-use-and-recovery).
+
+## D091: System telemetry for an offline Hybrid User
+
+Refine D089's row metrics without changing its default User selection. When the selected User context is offline and its paired System context is online, show System resources and connection/tunnel counts, and sort by those displayed values. Restore User telemetry automatically when it reconnects. An explicitly selected offline System context keeps unknown live metrics rather than borrowing User telemetry; both offline contexts also keep live metrics unknown.
+
+Use only the gateway-supplied pairing and cached reports. This display fallback does not initiate sampling or peer probes, change the drawer or management-action target, merge per-context counters, or authorize System execution. Lifecycle actions and CLI/MCP work still target the explicitly selected identity. See [Hybrid rows and counters](console.md#hybrid-rows-and-counters).

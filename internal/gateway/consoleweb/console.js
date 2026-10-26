@@ -802,21 +802,29 @@ function machineTable(rows) {
   return `<div class="table-wrap machine-table" role="region" aria-label="Machines" tabindex="0"><table><thead><tr>${head}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
 }
 
+// An offline User selection can still show its online System companion's
+// telemetry. Keep the selected identity for details, actions, and routing.
+function machineMetricsContext(node) {
+  if (!node.online && node.hybridRole === "user")
+    return node.contexts?.find((context) => context.hybridRole === "system" && context.online) || node;
+  return node;
+}
 function sortedMachines(nodes) {
   const value = (n) => {
+    const metrics = machineMetricsContext(n);
     switch (state.sort) {
       case "status":
         return machineState(n);
       case "cpu":
-        return n.online ? n.system?.cpuUsagePercent : null;
+        return metrics.online ? metrics.system?.cpuUsagePercent : null;
       case "memory":
-        return n.online
-          ? percent(n.system?.memoryUsedBytes, n.system?.memoryTotalBytes)
+        return metrics.online
+          ? percent(metrics.system?.memoryUsedBytes, metrics.system?.memoryTotalBytes)
           : null;
       case "peers":
-        return n.online ? peerCount(n) : null;
+        return metrics.online ? peerCount(metrics) : null;
       case "disk": {
-        const disk = n.online ? diskUsage(n.system) : null;
+        const disk = metrics.online ? diskUsage(metrics.system) : null;
         return percent(disk?.usedBytes, disk?.totalBytes);
       }
       default:
@@ -840,7 +848,8 @@ function sortedMachines(nodes) {
 
 function machineRows(nodes) {
   return nodes.map((n) => {
-    const sys = n.online ? n.system : null,
+    const metrics = machineMetricsContext(n),
+      sys = metrics.online ? metrics.system : null,
       memory = percent(sys?.memoryUsedBytes, sys?.memoryTotalBytes),
       disk = diskUsage(sys),
       diskPercent = percent(disk?.usedBytes, disk?.totalBytes),
@@ -848,7 +857,7 @@ function machineRows(nodes) {
     const platformIcon =
       { darwin: "laptop", windows: "windows", linux: "gateway" }[n.os] ||
       "machine";
-    return `<tr data-id="${esc(n.id)}"><td class="name-column"><div class="machine-cell"><span class="os-icon">${icon(platformIcon)}</span><div class="machine-text"><div class="machine-title"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.targetName || n.name)}">${esc(n.name)}</button>${contextChips(n)}</div><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version"> · ${esc(n.software?.version || "Unknown version")}</span></small></div><button class="icon-button machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="Actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(n)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${n.system?.logicalCPUs ? `<small>${plural(n.system.logicalCPUs, "core")}</small>` : ""}</td><td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
+    return `<tr data-id="${esc(n.id)}"><td class="name-column"><div class="machine-cell"><span class="os-icon">${icon(platformIcon)}</span><div class="machine-text"><div class="machine-title"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.targetName || n.name)}">${esc(n.name)}</button>${contextChips(n)}</div><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version"> · ${esc(n.software?.version || "Unknown version")}</span></small></div><button class="icon-button machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="Actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(metrics)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${metrics.system?.logicalCPUs ? `<small>${plural(metrics.system.logicalCPUs, "core")}</small>` : ""}</td><td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
   });
 }
 function groupedMachines(nodes) {

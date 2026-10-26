@@ -440,9 +440,10 @@ async function assertStartupCommands(page, snapshot) {
 
 async function assertHybridGrouping(page, snapshot) {
   const baseNode = { ...snapshot.nodes[0], status: "summary", activeCount: 0, leased: false, disabled: false, controlPending: false },
-    user = { ...baseNode, id: "paired-user", name: "paired-host", hybridId: "pair-1", hybridRole: "user", runAs: "user", online: false },
-    system = { ...baseNode, id: "paired-system", name: "paired-host-system", hybridId: "pair-1", hybridRole: "system", runAs: "system", online: true, system: { ...baseNode.system, cpuUsagePercent: 71 } },
-    ordinary = { ...baseNode, id: "ordinary-system", name: "unpaired-system", runAs: "system", online: true };
+    resources = (cpu, used) => ({ ...baseNode.system, cpuUsagePercent: cpu, memoryUsedBytes: used, memoryTotalBytes: 100, disks: [{ path: "work", usedBytes: used, totalBytes: 100 }] }),
+    user = { ...baseNode, id: "paired-user", name: "paired-host", hybridId: "pair-1", hybridRole: "user", runAs: "user", online: false, system: resources(23, 25), connectionRoutes: { direct: 1, turn: 0, relay: 0, unknown: 0 }, tunnels: { forward: 0, reverse: 1 } },
+    system = { ...baseNode, id: "paired-system", name: "paired-host-system", hybridId: "pair-1", hybridRole: "system", runAs: "system", online: true, system: { ...resources(71, 75), logicalCPUs: 16 }, connectionRoutes: { direct: 3, turn: 2, relay: 1, unknown: 1 }, tunnels: { forward: 2, reverse: 3 } },
+    ordinary = { ...baseNode, id: "ordinary-system", name: "unpaired-system", runAs: "system", online: true, system: resources(50, 50), connectionRoutes: { direct: 2, turn: 0, relay: 0, unknown: 0 } };
   const statusRoute = (route) => route.fulfill({ json: { ...snapshot, nodes: [system, user, ordinary] } });
   await page.route("**/console/api/status", statusRoute);
   await page.waitForFunction(() => !state.busy);
@@ -454,7 +455,36 @@ async function assertHybridGrouping(page, snapshot) {
   assert.equal(await row.getAttribute("data-id"), user.id, "User remains the default even when System is the only online context");
   assert.equal(await row.getByRole("button", { name: "User", exact: true }).getAttribute("aria-pressed"), "true");
   assert.equal(await row.locator(".status-column .badge").textContent(), "Idle", "Host status must include the online System context while User is selected");
-  assert.equal(await row.locator(".cpu-column meter").count(), 0, "Host availability must not substitute System metrics for offline User metrics");
+  const assertSystemMetrics = async () => {
+    assert.equal(await row.locator(".cpu-column meter").getAttribute("value"), "71");
+    assert.equal(await row.locator(".cpu-column small").textContent(), "16 cores");
+    assert.equal(await row.locator(".memory-column meter").getAttribute("value"), "75");
+    assert.equal(await row.locator(".disk-column meter").getAttribute("value"), "75");
+    assert.deepEqual(await row.locator(".counter").allTextContents(), ["Direct peers 4", "Relayed peers 3", "Tunnels 5"]);
+  };
+  await assertSystemMetrics();
+  assert.equal(await row.locator(".machine-menu-button").getAttribute("data-id"), user.id, "Telemetry fallback must not retarget management actions");
+  await page.evaluate(() => refresh(true));
+  await assertSystemMetrics();
+  assert.equal(await row.getAttribute("data-id"), user.id, "Polling must preserve User selection while displaying System telemetry");
+  const sortedIDs = await page.evaluate(() => {
+    const previous = { sort: state.sort, descending: state.descending };
+    try {
+      return ["cpu", "memory", "disk", "peers"].map((sort) => {
+        state.sort = sort;
+        state.descending = false;
+        const ascending = sortedMachines(groupedMachines(state.snapshot.nodes)).map((node) => node.id);
+        state.descending = true;
+        return { ascending, descending: sortedMachines(groupedMachines(state.snapshot.nodes)).map((node) => node.id) };
+      });
+    } finally {
+      Object.assign(state, previous);
+    }
+  });
+  for (const sorted of sortedIDs) {
+    assert.deepEqual(sorted.ascending, [ordinary.id, user.id], "Sorting must use the displayed System telemetry");
+    assert.deepEqual(sorted.descending, [user.id, ordinary.id]);
+  }
   const assertOfflineChip = async (label, offline) => {
     await page.waitForFunction(({ id, offline }) => {
       const chip = document.querySelector(`.machine-table .context-choice[data-id="${id}"]`);
@@ -475,7 +505,7 @@ async function assertHybridGrouping(page, snapshot) {
   await assertContextChips(page);
   assert.equal(await row.getAttribute("data-id"), system.id);
   assert.equal(await row.locator(".status-column .badge").textContent(), "Idle");
-  assert.match(await row.locator(".cpu-column").textContent(), /71%/);
+  await assertSystemMetrics();
   await page.waitForFunction(() => !state.busy);
   await page.evaluate(() => refresh(true));
   assert.equal(await row.getAttribute("data-id"), system.id, "Polling preserves an explicit context selection");
@@ -509,6 +539,8 @@ async function assertHybridGrouping(page, snapshot) {
   user.lastSeen = "2026-01-01T00:00:00Z";
   await refresh();
   assert.equal(await row.locator(".status-column .badge").textContent(), "Offline");
+  assert.equal(await row.locator("meter").count(), 0, "Both offline contexts must leave live resources unknown");
+  assert.deepEqual(await row.locator(".counter").allTextContents(), ["Direct peers –", "Relayed peers –", "Tunnels –"]);
   assert.equal(await row.locator(".status-column small").textContent(), await page.evaluate((lastSeen) => "Seen " + age(lastSeen).split(" ")[0] + " ago", system.lastSeen), "Offline host age uses the most recently seen context");
   await assertOfflineChip("User", true);
   await assertOfflineChip("System", true);
@@ -520,12 +552,24 @@ async function assertHybridGrouping(page, snapshot) {
   await refresh();
   assert.equal(await row.getAttribute("data-id"), system.id, "An offline System selection must not switch to User automatically");
   assert.equal(await row.locator(".status-column .badge").textContent(), "Idle");
+  assert.equal(await row.locator("meter").count(), 0, "An explicit offline System selection must not borrow User metrics");
   await assertOfflineChip("User", false);
   await assertOfflineChip("System", true);
   system.online = true;
   await row.getByRole("button", { name: "User", exact: true }).click();
   await refresh();
   assert.equal(await row.locator(".status-column .badge").textContent(), "Busy", "An idle User context must not hide System work");
+  assert.equal(await row.locator(".cpu-column meter").getAttribute("value"), "23", "An online User must show its own metrics");
+  assert.equal(await row.locator(".memory-column meter").getAttribute("value"), "25");
+  assert.equal(await row.locator(".disk-column meter").getAttribute("value"), "25");
+  assert.deepEqual(await row.locator(".counter").allTextContents(), ["Direct peers 1", "Relayed peers 0", "Tunnels 1"]);
+  user.online = false;
+  await refresh();
+  await assertSystemMetrics();
+  user.online = true;
+  await refresh();
+  assert.equal(await row.getAttribute("data-id"), user.id);
+  assert.equal(await row.locator(".cpu-column meter").getAttribute("value"), "23", "User reconnection must restore its telemetry automatically");
   await assertOfflineChip("User", false);
   await assertOfflineChip("System", false);
   await page.locator('.brand[href="#overview"]').click();
