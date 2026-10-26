@@ -136,6 +136,19 @@ async function pageLink(page, hash) {
   );
 }
 
+async function refreshPage(page) {
+  await page.evaluate(async () => {
+    // Wait and request in the same browser turn so the polling timer cannot
+    // start between a separate idle check and a manual refresh.
+    const deadline = Date.now() + 10000;
+    while (state.busy) {
+      if (Date.now() >= deadline) throw new Error("Console refresh did not finish");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await refresh(true);
+  });
+}
+
 async function assertContextChips(page) {
   assert.equal(await page.locator(".context-presence").count(), 0, "Context chips must not contain status dots");
   const chips = await page.locator(".machine-table .context-tag").evaluateAll(
@@ -214,6 +227,7 @@ async function assertBrandAssets(page) {
 }
 
 async function assertResourceIcons(page, gateway = false) {
+  const hasGPU = !gateway && await page.locator('.machine-table [data-sort="gpu"]').count() > 0;
   const labels = page.locator(
     gateway
       ? ".gateway-metrics .resource-label"
@@ -231,7 +245,7 @@ async function assertResourceIcons(page, gateway = false) {
         visible: getComputedStyle(svg).opacity,
       };
     })),
-    ["CPU", "Memory", gateway ? "State disk" : "Disk"].map((label) => ({
+    ["CPU", ...(hasGPU ? ["GPU/NPU"] : []), "Memory", gateway ? "State disk" : "Disk"].map((label) => ({
       label,
       icon: "svg",
       hidden: "true",
@@ -280,10 +294,7 @@ async function assertStartupCommands(page, snapshot) {
     await page.locator('#modal-form select[name="serviceMode"]').locator("xpath=preceding-sibling::button[1]").click();
     await page.locator(`[role=option][data-value="${mode}"]`).click();
   };
-  const refresh = async () => {
-    await page.waitForFunction(() => !state.busy);
-    await page.evaluate(() => refresh(true));
-  };
+  const refresh = () => refreshPage(page);
   const open = async (os, drawer = false) => {
     nodes = [{ ...original, os }];
     await refresh();
@@ -440,10 +451,12 @@ async function assertStartupCommands(page, snapshot) {
 
 async function assertHybridGrouping(page, snapshot) {
   const baseNode = { ...snapshot.nodes[0], status: "summary", activeCount: 0, leased: false, disabled: false, controlPending: false },
-    resources = (cpu, used) => ({ ...baseNode.system, cpuUsagePercent: cpu, memoryUsedBytes: used, memoryTotalBytes: 100, disks: [{ path: "work", usedBytes: used, totalBytes: 100 }] }),
-    user = { ...baseNode, id: "paired-user", name: "paired-host", hybridId: "pair-1", hybridRole: "user", runAs: "user", online: false, system: resources(23, 25), connectionRoutes: { direct: 1, turn: 0, relay: 0, unknown: 0 }, tunnels: { forward: 0, reverse: 1 } },
-    system = { ...baseNode, id: "paired-system", name: "paired-host-system", hybridId: "pair-1", hybridRole: "system", runAs: "system", online: true, system: { ...resources(71, 75), logicalCPUs: 16 }, connectionRoutes: { direct: 3, turn: 2, relay: 1, unknown: 1 }, tunnels: { forward: 2, reverse: 3 } },
-    ordinary = { ...baseNode, id: "ordinary-system", name: "unpaired-system", runAs: "system", online: true, system: resources(50, 50), connectionRoutes: { direct: 2, turn: 0, relay: 0, unknown: 0 } };
+    resources = (cpu, used) => ({ ...baseNode.system, cpuUsagePercent: cpu, memoryUsedBytes: used, memoryTotalBytes: 100, disks: [{ path: "work", usedBytes: used, totalBytes: 100 }], gpus: [] }),
+    gpu = { name: 'NVIDIA Test <img src=x onerror="alert(1)">', vendor: "NVIDIA", kind: "discrete", usagePercent: 67, memoryTotalBytes: 8 * 2 ** 30, memoryUsedBytes: 2 * 2 ** 30 },
+    user = { ...baseNode, id: "paired-user", name: "paired-host", hybridId: "pair-1", hybridRole: "user", runAs: "user", online: false, system: { ...resources(23, 25), gpus: [{ ...gpu, usagePercent: 11, memoryUsedBytes: 0 }] }, connectionRoutes: { direct: 1, turn: 0, relay: 0, unknown: 0 }, tunnels: { forward: 0, reverse: 1 } },
+    hidden = [{ ...gpu, name: "Intel Graphics", vendor: "Intel", kind: "integrated", usagePercent: 99, memoryUsedBytes: 7 * 2 ** 30 }, { ...gpu, name: "Parsec Virtual Display Adapter", kind: "virtual" }, { name: "VMware SVGA 3D" }],
+    system = { ...baseNode, id: "paired-system", name: "paired-host-system", hybridId: "pair-1", hybridRole: "system", runAs: "system", online: true, system: { ...resources(71, 75), logicalCPUs: 16, gpus: [gpu, ...hidden, { name: "Intel AI Boost", vendor: "Intel", kind: "npu" }] }, connectionRoutes: { direct: 3, turn: 2, relay: 1, unknown: 1 }, tunnels: { forward: 2, reverse: 3 } },
+    ordinary = { ...baseNode, id: "ordinary-system", name: "unpaired-system", runAs: "system", online: true, system: { ...resources(50, 50), gpus: [{ name: "Test GPU", kind: "discrete", usagePercent: 99, memoryTotalBytes: 8 * 2 ** 30, memoryUsedBytes: 2 ** 30 }] }, connectionRoutes: { direct: 2, turn: 0, relay: 0, unknown: 0 } };
   const statusRoute = (route) => route.fulfill({ json: { ...snapshot, nodes: [system, user, ordinary] } });
   await page.route("**/console/api/status", statusRoute);
   await page.waitForFunction(() => !state.busy);
@@ -455,14 +468,28 @@ async function assertHybridGrouping(page, snapshot) {
   assert.equal(await row.getAttribute("data-id"), user.id, "User remains the default even when System is the only online context");
   assert.equal(await row.getByRole("button", { name: "User", exact: true }).getAttribute("aria-pressed"), "true");
   assert.equal(await row.locator(".status-column .badge").textContent(), "Idle", "Host status must include the online System context while User is selected");
+  await assertResourceIcons(page);
   const assertSystemMetrics = async () => {
     assert.equal(await row.locator(".cpu-column meter").getAttribute("value"), "71");
     assert.equal(await row.locator(".cpu-column small").textContent(), "16 cores");
     assert.equal(await row.locator(".memory-column meter").getAttribute("value"), "75");
     assert.equal(await row.locator(".disk-column meter").getAttribute("value"), "75");
+    assert.equal(await row.locator(".gpu-column meter").getAttribute("value"), "25", "GPU bar must show loaded dedicated memory, not compute utilization");
+    assert.deepEqual(await row.locator(".gpu-usage").evaluateAll((elements) => elements.map((element) => element.title)), [gpu.name, "Intel AI Boost"]);
+    assert.ok(!(await row.locator(".gpu-column").textContent()).includes(gpu.name), "GPU names must appear only in hover tooltips");
+    assert.ok(!(await row.locator(".gpu-column").textContent()).includes("Intel AI Boost"), "NPU names must appear only in hover tooltips");
+    assert.equal(await row.locator(".gpu-compute").textContent(), "Compute 67%");
+    assert.equal(await row.locator(".gpu-usage small").first().textContent(), "2.0 GiB of 8.0 GiB");
+    assert.equal(await row.locator(".gpu-column img").count(), 0, "GPU names must be escaped");
     assert.deepEqual(await row.locator(".counter").allTextContents(), ["Direct peers 4", "Relayed peers 3", "Tunnels 5"]);
   };
   await assertSystemMetrics();
+  delete gpu.usagePercent;
+  await refreshPage(page);
+  assert.equal(await row.locator(".gpu-column meter").getAttribute("value"), "25", "AMD-style memory-only reports must still show loaded VRAM");
+  assert.equal(await row.locator(".gpu-compute").count(), 0);
+  gpu.usagePercent = 67;
+  await refreshPage(page);
   assert.equal(await row.locator(".machine-menu-button").getAttribute("data-id"), user.id, "Telemetry fallback must not retarget management actions");
   await page.evaluate(() => refresh(true));
   await assertSystemMetrics();
@@ -470,7 +497,7 @@ async function assertHybridGrouping(page, snapshot) {
   const sortedIDs = await page.evaluate(() => {
     const previous = { sort: state.sort, descending: state.descending };
     try {
-      return ["cpu", "memory", "disk", "peers"].map((sort) => {
+      return ["cpu", "gpu", "memory", "disk", "peers"].map((sort) => {
         state.sort = sort;
         state.descending = false;
         const ascending = sortedMachines(groupedMachines(state.snapshot.nodes)).map((node) => node.id);
@@ -511,14 +538,34 @@ async function assertHybridGrouping(page, snapshot) {
   assert.equal(await row.getAttribute("data-id"), system.id, "Polling preserves an explicit context selection");
   await row.getByRole("button", { name: "paired-host", exact: true }).click();
   await page.getByRole("dialog", { name: system.name, exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Resources", exact: true }).waitFor();
+  assert.equal(await page.getByRole("heading", { name: "GPU/NPU resources", exact: true }).count(), 0, "GPU readings belong in the shared Resources section");
+  const resourceGrid = page.locator("dialog .metadata").first();
+  assert.deepEqual(await resourceGrid.locator("dt").allTextContents(), ["CPU utilization", "GPU memory usage", "NPU memory usage", "Memory usage", "Disk usage", "Processor", "Sampled"]);
+  const assertGPUAlignment = async () => {
+    const cpu = await resourceGrid.locator('meter[aria-label="CPU utilization"]').boundingBox(),
+      gpu = await resourceGrid.locator(".gpu-usage meter").boundingBox(),
+      memory = await resourceGrid.locator('meter[aria-label="Memory utilization"]').boundingBox();
+    assert.ok(cpu && gpu && memory);
+    assert.equal(gpu.x, cpu.x, "GPU bars must align with CPU bars");
+    assert.equal(gpu.x, memory.x, "GPU bars must align with memory bars");
+    assert.equal(gpu.width, cpu.width, "GPU bars must match CPU bar width");
+    assert.equal(gpu.width, memory.width, "GPU bars must match memory bar width");
+    assert.equal(await resourceGrid.locator(".gpu-usage small").first().evaluate((element) => getComputedStyle(element).fontSize), await resourceGrid.locator("dd > small").first().evaluate((element) => getComputedStyle(element).fontSize));
+  };
+  await assertGPUAlignment();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertGPUAlignment();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  assert.equal(await page.locator("dialog .gpu-usage meter").getAttribute("value"), "25");
+  assert.equal(await page.locator("dialog .gpu-usage small").first().textContent(), "2.0 GiB of 8.0 GiB");
+  assert.deepEqual(await page.locator("dialog .gpu-usage").evaluateAll((elements) => elements.map((element) => element.title)), [gpu.name, "Intel AI Boost"], "Drawer tooltips must also exclude integrated and virtual adapters");
+  assert.ok(!(await page.locator("dialog").textContent()).includes(gpu.name), "Drawer GPU names must appear only in hover tooltips");
   await page.getByRole("button", { name: "Close dialog", exact: true }).click();
   await row.getByRole("button", { name: "User", exact: true }).click();
   assert.equal(await row.getAttribute("data-id"), user.id);
   assert.equal(await page.locator('.stat[data-filter="online"] .stat-value').textContent(), "2", "Online counts hosts, not execution profiles");
-  const refresh = async () => {
-    await page.waitForFunction(() => !state.busy);
-    await page.evaluate(() => refresh(true));
-  };
+  const refresh = () => refreshPage(page);
   system.activeCount = 2;
   system.work = { exec: 2 };
   await refresh();
@@ -533,6 +580,9 @@ async function assertHybridGrouping(page, snapshot) {
   await row.getByRole("button", { name: "paired-host", exact: true }).click();
   await page.getByRole("dialog", { name: user.name, exact: true }).waitFor();
   assert.equal(await page.locator("dialog .badge").first().textContent(), "Offline", "The drawer must retain the selected context's own status");
+  assert.equal(await page.locator("dialog .gpu-usage meter").count(), 0, "Offline drawer must hide GPU usage");
+  assert.equal(await page.locator("dialog .gpu-usage").getAttribute("title"), gpu.name, "Offline drawers must retain GPU model tooltips");
+  assert.equal(await page.locator("dialog .gpu-usage small").textContent(), "8.0 GiB total");
   await page.getByRole("button", { name: "Close dialog", exact: true }).click();
   system.online = false;
   system.lastSeen = "2026-01-02T00:00:00Z";
@@ -540,6 +590,7 @@ async function assertHybridGrouping(page, snapshot) {
   await refresh();
   assert.equal(await row.locator(".status-column .badge").textContent(), "Offline");
   assert.equal(await row.locator("meter").count(), 0, "Both offline contexts must leave live resources unknown");
+  assert.equal(await row.locator(".gpu-usage").getAttribute("title"), gpu.name, "Offline rows must retain GPU model tooltips");
   assert.deepEqual(await row.locator(".counter").allTextContents(), ["Direct peers –", "Relayed peers –", "Tunnels –"]);
   assert.equal(await row.locator(".status-column small").textContent(), await page.evaluate((lastSeen) => "Seen " + age(lastSeen).split(" ")[0] + " ago", system.lastSeen), "Offline host age uses the most recently seen context");
   await assertOfflineChip("User", true);
@@ -560,6 +611,8 @@ async function assertHybridGrouping(page, snapshot) {
   await refresh();
   assert.equal(await row.locator(".status-column .badge").textContent(), "Busy", "An idle User context must not hide System work");
   assert.equal(await row.locator(".cpu-column meter").getAttribute("value"), "23", "An online User must show its own metrics");
+  assert.equal(await row.locator(".gpu-column meter").getAttribute("value"), "0");
+  assert.equal(await row.locator(".gpu-usage small").first().textContent(), "0 B of 8.0 GiB");
   assert.equal(await row.locator(".memory-column meter").getAttribute("value"), "25");
   assert.equal(await row.locator(".disk-column meter").getAttribute("value"), "25");
   assert.deepEqual(await row.locator(".counter").allTextContents(), ["Direct peers 1", "Relayed peers 0", "Tunnels 1"]);
@@ -570,12 +623,38 @@ async function assertHybridGrouping(page, snapshot) {
   await refresh();
   assert.equal(await row.getAttribute("data-id"), user.id);
   assert.equal(await row.locator(".cpu-column meter").getAttribute("value"), "23", "User reconnection must restore its telemetry automatically");
+  assert.equal(await row.locator(".gpu-column meter").getAttribute("value"), "0");
   await assertOfflineChip("User", false);
   await assertOfflineChip("System", false);
   await page.locator('.brand[href="#overview"]').click();
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.setViewportSize({ width: 1440, height: 1000 });
+  for (const node of [user, system, ordinary]) node.system.gpus = hidden;
+  await refresh();
+  await page.locator('.machine-table [data-sort="gpu"]').waitFor({ state: "detached" });
+  assert.equal(await page.locator('.machine-table [data-sort="gpu"]').count(), 0, "Fleets with only integrated, virtual, or unknown adapters must hide the GPU/NPU column");
+  assert.equal(await page.locator(".gpu-column").count(), 0);
+  user.disabled = true;
+  system.online = false;
+  await refresh();
+  assert.equal(await row.count(), 0, "Overview must not combine an online disabled context with an offline enabled context");
+  user.disabled = false;
+  system.disabled = true;
+  system.online = true;
+  await refresh();
+  assert.equal(await row.count(), 1, "An online enabled User keeps its Hybrid host on Overview even with a disabled companion");
+  user.online = false;
+  ordinary.disabled = true;
+  await refresh();
+  assert.equal(await page.locator(".machine-table tbody tr").count(), 0);
+  await page.getByText("No online enabled machines", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Clear filters", exact: true }).count(), 0, "Overview must not offer irrelevant search controls");
+  assert.equal(await page.locator("#nav-count").textContent(), "2", "Overview filtering must not change the fleet count");
+  await page.locator('.panel-heading [data-action="filter-machines"][data-filter="all"]').click();
+  await page.locator("#machine-search").waitFor();
+  assert.equal(await page.locator(".machine-table tbody tr").count(), 2, "All machines must retain hidden offline and disabled hosts");
+  await page.locator('.brand[href="#overview"]').click();
   await page.unroute("**/console/api/status", statusRoute);
   await page.waitForFunction(() => !state.busy);
   await page.evaluate(() => refresh(true));
@@ -1012,6 +1091,14 @@ try {
     .getByRole("button", { name: "build-linux-01", exact: true })
     .waitFor();
   await page.locator("#toast").waitFor({ state: "hidden" });
+  assert.equal(await page.locator(".machine-table tbody tr").count(), 4, "Overview must hide offline and disabled machines");
+  assert.equal(await page.getByRole("button", { name: "staging-linux", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "test-runner-with-a-long-routing-name", exact: true }).count(), 0);
+  assert.equal(await page.locator('.stat[data-filter="online"] .stat-value').textContent(), "5", "Overview summary counts must retain the full fleet");
+  assert.equal(await page.locator('.stat[data-filter="offline"] .stat-value').textContent(), "1");
+  await page.locator('.panel-heading [data-action="filter-machines"][data-filter="all"]').click();
+  await page.locator("#machine-search").waitFor();
+  assert.equal(await page.locator(".machine-table tbody tr").count(), 6, "All machines must include offline and disabled machines");
   await assertContextChips(page);
   await page.locator('[data-action="sort"][data-sort="cpu"]').click();
   assert.equal(
@@ -1058,6 +1145,7 @@ try {
   await page.getByRole("menuitem", { name: "Enable", exact: true }).waitFor();
   await page.locator("#page-title").click();
   assert.equal(await page.locator("#machine-menu").isVisible(), false);
+  await page.locator('.brand[href="#overview"]').click();
   if (process.env.CONTROL_CONSOLE_SCREENSHOTS) {
     await mkdir(process.env.CONTROL_CONSOLE_SCREENSHOTS, { recursive: true });
     await page.screenshot({
@@ -1145,7 +1233,9 @@ try {
   await page.unroute("**/console/api/status");
   await page.setViewportSize({ width: 1440, height: 1000 });
   const mutationsBeforeStartup = machineMutations;
+  await pageLink(page, "machines");
   await assertStartupCommands(page, snapshot);
+  await page.locator('.brand[href="#overview"]').click();
   await assertHybridGrouping(page, snapshot);
   assert.equal(machineMutations, mutationsBeforeStartup, "Preparing startup commands must not mutate machine lifecycle policy");
 

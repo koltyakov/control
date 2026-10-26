@@ -334,6 +334,12 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 			// Sign the exact registration bytes so a gateway that does not know
 			// a newer field ignores it instead of failing signature verification.
 			hello.NodeBytes, hello.Node = model.JSON(p.cfg.Node), model.Node{}
+		} else if hello.Node.System != nil {
+			// Legacy gateways reconstruct the signed Node with their known
+			// fields. New nested metrics must not change those signature bytes.
+			info := *hello.Node.System
+			info.GPUs = nil
+			hello.Node.System = &info
 		}
 		hello.Signature = ed25519.Sign(p.cfg.Identity.Private, hello.Message(challenge))
 		if p.cfg.ClientOwner != nil {

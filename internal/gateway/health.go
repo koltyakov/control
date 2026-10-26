@@ -28,6 +28,14 @@ func (g *Gateway) receiveHealth(n model.Node, c *connection, data []byte) bool {
 	if cpu := health.System.CPUUsagePercent; cpu != nil && (*cpu < 0 || *cpu > 100) {
 		return false
 	}
+	if len(health.System.GPUs) > model.MaxGPUs {
+		return false
+	}
+	for _, gpu := range health.System.GPUs {
+		if !gpu.Valid() {
+			return false
+		}
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.peers[n.ID] != c {

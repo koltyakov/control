@@ -799,3 +799,17 @@ Check both the ticket hash and any derived Hybrid companion hash against all ret
 Refine D089's row metrics without changing its default User selection. When the selected User context is offline and its paired System context is online, show System resources and connection/tunnel counts, and sort by those displayed values. Restore User telemetry automatically when it reconnects. An explicitly selected offline System context keeps unknown live metrics rather than borrowing User telemetry; both offline contexts also keep live metrics unknown.
 
 Use only the gateway-supplied pairing and cached reports. This display fallback does not initiate sampling or peer probes, change the drawer or management-action target, merge per-context counters, or authorize System execution. Lifecycle actions and CLI/MCP work still target the explicitly selected identity. See [Hybrid rows and counters](console.md#hybrid-rows-and-counters).
+
+## D092: Optional driver-reported GPU resources
+
+The display policy and Windows sampling below are refined by [D093](#d093-classified-accelerators-and-loaded-dedicated-memory).
+
+Extend cached system snapshots with bounded per-device GPU inventory and optional utilization and dedicated-memory readings. Use NVIDIA's installed CLI, Linux DRM sysfs, and Windows/macOS inventory tools without CGO, privileged daemons, new dependencies, or driver installation. Discover inventory once per collector and sample live readings on the existing resource schedule. Bound commands by context, output, and device count. Missing hardware, permissions, tools, and driver metrics mean absent readings, not zero utilization or shared RAM presented as VRAM.
+
+Carry these reports through existing JSON APIs and owner-only health, validating new fields without changing peer execution authority or worker selection. Omit new nested fields from legacy reconstructed-signature registrations; exact-byte registration and unknown-field health decoding preserve nodes-first upgrades. Conditionally show GPU data in console tables/drawers and terminal hardware details, hiding offline usage and preserving Hybrid action targets during telemetry fallback. Sort console GPU utilization by the highest known device reading rather than averaging dissimilar GPUs. See [GPU support and limitations](dashboard.md#gpu-resources).
+
+## D093: Classified accelerators and loaded dedicated memory
+
+Restrict GPU/NPU displays to identified discrete GPUs and NPUs. Keep integrated, virtual, and unclassified inventory in JSON, but hide it from tables, drawers, and terminal Hardware details. Add optional validated `kind` metadata to the existing `gpus` entries rather than renaming that wire field. Prefer Windows DXCore hardware/integrated flags and NPU attributes; elsewhere classify only recognized models or NPU drivers. Never infer a discrete GPU from vendor or memory size alone. Unknown older reports remain hidden until the node and gateway are updated.
+
+Make loaded dedicated memory the primary console bar and sort value, keeping compute activity separately labeled. Add 64-bit DXCore dedicated capacity and Windows GPU Adapter Memory gauges, joined by native LUID. Do not use truncated WMI AdapterRAM, process-scoped DXGI budgets, summed GPU-process memory, or display ordinals. Unsupported counters remain unknown, and shared RAM is not presented as dedicated memory. Retain bounded sampling, per-owner health, offline suppression, and Hybrid action/telemetry separation. See [GPU/NPU support](dashboard.md#gpu-resources).

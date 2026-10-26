@@ -534,6 +534,27 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 				hardwareHeading = true
 			}
 			fmt.Fprintf(&b, "%s: %s %s | %s | %d physical / %d logical CPUs\n", clean(n.Name), clean(s.Platform), clean(s.PlatformVersion), clean(s.CPUModel), s.PhysicalCPUs, s.LogicalCPUs)
+			for _, gpu := range s.GPUs {
+				if !gpu.Displayable() {
+					continue
+				}
+				kind := "GPU"
+				if gpu.Kind == model.GPUNPU {
+					kind = "NPU"
+				}
+				fmt.Fprintf(&b, "  %s: %s", kind, clean(gpu.Name))
+				if n.Online && gpu.UsagePercent != nil {
+					fmt.Fprintf(&b, " | %.1f%% utilization", *gpu.UsagePercent)
+				}
+				if gpu.MemoryTotalBytes > 0 {
+					if n.Online && gpu.MemoryUsedBytes != nil {
+						fmt.Fprintf(&b, " | %s used / %s total %s memory", bytes(*gpu.MemoryUsedBytes), bytes(gpu.MemoryTotalBytes), kind)
+					} else {
+						fmt.Fprintf(&b, " | %s total %s memory", bytes(gpu.MemoryTotalBytes), kind)
+					}
+				}
+				b.WriteByte('\n')
+			}
 			for _, disk := range s.Disks {
 				if !n.Online {
 					fmt.Fprintf(&b, "  %s: %s total\n", clean(disk.Path), bytes(disk.TotalBytes))

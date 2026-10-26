@@ -789,11 +789,13 @@ const machineColumns = [
   ["Status", "status"],
   ["Connections", "peers"],
   ["CPU", "cpu", "cpu"],
+  ["GPU/NPU", "gpu", "cpu"],
   ["Memory", "memory", "memory"],
   ["Disk", "disk", "disk"],
 ];
-function machineTable(rows) {
+function machineTable(rows, showGPUs) {
   const head = machineColumns
+    .filter(([, key]) => key !== "gpu" || showGPUs)
     .map(([label, key, resourceIcon]) => {
       const selected = state.sort === key;
       return `<th scope="col" aria-sort="${selected ? (state.descending ? "descending" : "ascending") : "none"}"><button class="sort-button${selected ? " sorted" : ""}" data-action="sort" data-sort="${key}">${resourceIcon ? icon(resourceIcon) : ""}${label}<span aria-hidden="true">${selected ? (state.descending ? "↓" : "↑") : "↕"}</span></button></th>`;
@@ -809,6 +811,25 @@ function machineMetricsContext(node) {
     return node.contexts?.find((context) => context.hybridRole === "system" && context.online) || node;
   return node;
 }
+function visibleGPUs(gpus) {
+  return (gpus || []).filter((gpu) => ["discrete", "npu"].includes(gpu.kind));
+}
+function gpuMemoryUsage(gpus) {
+  const values = visibleGPUs(gpus).map((gpu) => gpu.memoryUsedBytes == null ? null : percent(gpu.memoryUsedBytes, gpu.memoryTotalBytes)).filter((value) => value != null && Number.isFinite(value));
+  return values.length ? Math.max(...values) : null;
+}
+function gpuResources(gpus, online, metadata = false) {
+  gpus = visibleGPUs(gpus);
+  if (!gpus.length) return meter(null, "GPU/NPU memory usage");
+  return gpus.map((gpu) => {
+    const used = online ? gpu.memoryUsedBytes : null,
+      kind = gpu.kind === "npu" ? "NPU" : "GPU",
+      memory = used == null ? null : percent(used, gpu.memoryTotalBytes),
+      memoryText = gpu.memoryTotalBytes ? used == null ? bytes(gpu.memoryTotalBytes) + " total" : bytes(used) + " of " + bytes(gpu.memoryTotalBytes) : used == null ? "" : bytes(used) + " used";
+    const resource = `<div class="gpu-usage" title="${esc(gpu.name)}">${meter(memory, kind + " memory usage for " + gpu.name)}${memoryText ? `<small>${memoryText}</small>` : ""}${online && gpu.usagePercent != null ? `<small class="gpu-compute">Compute ${Math.round(gpu.usagePercent)}%</small>` : ""}</div>`;
+    return metadata ? `<dt>${kind} memory usage</dt><dd>${resource}</dd>` : resource;
+  }).join("");
+}
 function sortedMachines(nodes) {
   const value = (n) => {
     const metrics = machineMetricsContext(n);
@@ -817,6 +838,8 @@ function sortedMachines(nodes) {
         return machineState(n);
       case "cpu":
         return metrics.online ? metrics.system?.cpuUsagePercent : null;
+      case "gpu":
+        return metrics.online ? gpuMemoryUsage(metrics.system?.gpus) : null;
       case "memory":
         return metrics.online
           ? percent(metrics.system?.memoryUsedBytes, metrics.system?.memoryTotalBytes)
@@ -846,18 +869,19 @@ function sortedMachines(nodes) {
   });
 }
 
-function machineRows(nodes) {
+function machineRows(nodes, showGPUs) {
   return nodes.map((n) => {
     const metrics = machineMetricsContext(n),
       sys = metrics.online ? metrics.system : null,
       memory = percent(sys?.memoryUsedBytes, sys?.memoryTotalBytes),
       disk = diskUsage(sys),
       diskPercent = percent(disk?.usedBytes, disk?.totalBytes),
+      gpuColumn = showGPUs ? `<td class="resource-column gpu-column" data-label="GPU/NPU">${gpuResources(metrics.system?.gpus, metrics.online)}</td>` : "",
       detail = statusDetail(n);
     const platformIcon =
       { darwin: "laptop", windows: "windows", linux: "gateway" }[n.os] ||
       "machine";
-    return `<tr data-id="${esc(n.id)}"><td class="name-column"><div class="machine-cell"><span class="os-icon">${icon(platformIcon)}</span><div class="machine-text"><div class="machine-title"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.targetName || n.name)}">${esc(n.name)}</button>${contextChips(n)}</div><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version"> · ${esc(n.software?.version || "Unknown version")}</span></small></div><button class="icon-button machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="Actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(metrics)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${metrics.system?.logicalCPUs ? `<small>${plural(metrics.system.logicalCPUs, "core")}</small>` : ""}</td><td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
+    return `<tr data-id="${esc(n.id)}"><td class="name-column"><div class="machine-cell"><span class="os-icon">${icon(platformIcon)}</span><div class="machine-text"><div class="machine-title"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.targetName || n.name)}">${esc(n.name)}</button>${contextChips(n)}</div><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version"> · ${esc(n.software?.version || "Unknown version")}</span></small></div><button class="icon-button machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="Actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(metrics)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${metrics.system?.logicalCPUs ? `<small>${plural(metrics.system.logicalCPUs, "core")}</small>` : ""}</td>${gpuColumn}<td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
   });
 }
 function groupedMachines(nodes) {
@@ -935,18 +959,21 @@ function stateFilter(nodes) {
 }
 function machinePanel(overview) {
   const all = groupedMachines(state.snapshot?.nodes || []);
-  const nodes = overview ? all : all.filter(machineMatches);
+  const nodes = overview
+    ? all.filter((node) => node.contexts.some((context) => context.online && !context.disabled))
+    : all.filter(machineMatches);
   const sorted = sortedMachines(nodes);
   const rows = overview ? sorted.slice(0, 8) : sorted;
+  const showGPUs = all.some((node) => (node.contexts || [node]).some((context) => visibleGPUs(context.system?.gpus).length));
   const body = rows.length
-    ? machineTable(machineRows(rows))
+    ? machineTable(machineRows(rows, showGPUs), showGPUs)
     : empty(
-        all.length ? "No matching machines" : "No machines registered",
+        all.length ? overview ? "No online enabled machines" : "No matching machines" : "No machines registered",
         all.length
-          ? "Try another search or state filter."
+          ? overview ? "Offline and disabled machines are available under All machines." : "Try another search or state filter."
           : "Add a machine to see its availability and resources.",
         all.length
-          ? '<button class="secondary" data-action="clear-filters">Clear filters</button>'
+          ? overview ? '<a class="secondary" href="#machines" data-action="filter-machines" data-filter="all">All machines</a>' : '<button class="secondary" data-action="clear-filters">Clear filters</button>'
           : `<button class="primary" data-action="add">${icon("plus")}Add machine</button>`,
       );
   if (overview)
@@ -1978,7 +2005,7 @@ function machineDetails(id) {
     labels = Object.entries(n.labels || {});
   dialog(
     n.name,
-    `<div class="drawer-status">${badge(machineState(n))}${detail ? `<span class="muted">${esc(detail)}</span>` : ""}</div><section class="drawer-section"><h3>Resources</h3><dl class="metadata"><dt>CPU utilization</dt><dd>${meter(live.cpuUsagePercent, "CPU utilization")}</dd><dt>Memory usage</dt><dd>${meter(memory, "Memory utilization")}${sys.memoryTotalBytes ? `<small class="muted">${memory == null ? bytes(sys.memoryTotalBytes) + " total" : bytes(live.memoryUsedBytes) + " of " + bytes(live.memoryTotalBytes)}</small>` : ""}</dd><dt>Disk usage</dt><dd>${
+    `<div class="drawer-status">${badge(machineState(n))}${detail ? `<span class="muted">${esc(detail)}</span>` : ""}</div><section class="drawer-section"><h3>Resources</h3><dl class="metadata"><dt>CPU utilization</dt><dd>${meter(live.cpuUsagePercent, "CPU utilization")}</dd>${visibleGPUs(sys.gpus).length ? gpuResources(sys.gpus, n.online, true) : ""}<dt>Memory usage</dt><dd>${meter(memory, "Memory utilization")}${sys.memoryTotalBytes ? `<small class="muted">${memory == null ? bytes(sys.memoryTotalBytes) + " total" : bytes(live.memoryUsedBytes) + " of " + bytes(live.memoryTotalBytes)}</small>` : ""}</dd><dt>Disk usage</dt><dd>${
       (live.disks || [])
         .filter((disk) => disk.totalBytes > 0)
         .map(

@@ -24,6 +24,7 @@ type Collector struct {
 	gate     chan struct{}
 	trigger  chan struct{}
 	previous *cpu.TimesStat
+	gpu      gpuCollector
 }
 
 func New(paths []string, interval time.Duration) *Collector {
@@ -48,6 +49,17 @@ func (c *Collector) Snapshot() model.SystemInfo {
 	s := c.latest
 	s.Disks = append([]model.DiskUsage(nil), s.Disks...)
 	s.Errors = append([]string(nil), s.Errors...)
+	s.GPUs = append([]model.GPUInfo(nil), s.GPUs...)
+	for i := range s.GPUs {
+		if p := s.GPUs[i].UsagePercent; p != nil {
+			value := *p
+			s.GPUs[i].UsagePercent = &value
+		}
+		if p := s.GPUs[i].MemoryUsedBytes; p != nil {
+			value := *p
+			s.GPUs[i].MemoryUsedBytes = &value
+		}
+	}
 	if s.CPUUsagePercent != nil {
 		value := *s.CPUUsagePercent
 		s.CPUUsagePercent = &value
@@ -139,6 +151,7 @@ func (c *Collector) Refresh(ctx context.Context) (model.SystemInfo, error) {
 		}
 		s.Disks = append(s.Disks, entry)
 	}
+	s.GPUs = c.gpu.sample(ctx)
 	if err := ctx.Err(); err != nil {
 		return c.Snapshot(), err
 	}
@@ -146,7 +159,7 @@ func (c *Collector) Refresh(ctx context.Context) (model.SystemInfo, error) {
 	c.mu.Lock()
 	c.latest = s
 	c.mu.Unlock()
-	return s, nil
+	return c.Snapshot(), nil
 }
 
 // Utilization is averaged across logical CPUs between samples. The first sample

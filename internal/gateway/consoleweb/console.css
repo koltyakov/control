@@ -1042,6 +1042,14 @@ tr:hover .machine-name {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
+.gpu-usage + .gpu-usage {
+  margin-top: 12px;
+}
+.gpu-usage small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
 .table-tools {
   display: flex;
   align-items: center;

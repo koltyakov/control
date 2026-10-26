@@ -116,6 +116,7 @@ Each node collects system information locally using cross-platform Go APIs:
 - CPU model, physical and logical CPU counts, and utilization averaged across logical CPUs.
 - Total and used RAM, plus available RAM. Available RAM includes memory the OS can reclaim, rather than only completely unused pages.
 - Total, used, and free space on the filesystems containing `workDir` and `dataDir`. Those paths may refer to the same filesystem; their capacities should not be summed.
+- Optional GPU names, vendor, utilization, and dedicated-memory capacity/usage when the driver exposes them. See [GPU resources](#gpu-resources) for platform support.
 
 Collection happens on startup, periodically, after execution/agent tasks or other tasks lasting over a second finish, and on an explicit refresh request. Completion triggers are coalesced and do not delay task completion. CPU utilization is calculated between samples; the first sample establishes the baseline and shows unknown usage rather than a false zero. Windows system CPU time already includes interrupt and DPC time, so those counters are not added again.
 
@@ -138,6 +139,25 @@ control call worker system.info '{"refresh":true}'
 The dashboard never initiates hardware collection when it refreshes. It reads the latest cached sample. `control machines` contains the registration-time system snapshot; use `system.info`, `node.describe`, or the dashboard for the current cache. Offline machines show `-` for CPU usage, RAM usage, and disk free space. Details mode retains their static hardware and disk capacity, but hides used/free disk readings and sample errors. Unavailable online machines may show the older registration sample. JSON retains cached metrics and their sampling timestamp, including for offline machines.
 
 Collection errors are included in the system snapshot. The CPU field is absent until a usable delta is available. A collection timeout leaves the previous cached sample intact. These are host-visible metrics, not per-task consumption or container resource quotas. Docker Desktop reports the environment visible inside its Linux containers.
+
+### GPU resources
+
+Resource samples include optional `gpus`, with up to 16 GPU/NPU entries. `system.info` returns this array directly in its sample; `node.describe`, pool JSON, and owner-visible gateway health nest it under `system.gpus`. Each entry has `name`, optional `vendor`, optional `kind`, optional compute `usagePercent`, and optional dedicated `memoryTotalBytes` / `memoryUsedBytes`. `kind` is `discrete`, `integrated`, `virtual`, or `npu`; absence means unclassified. Missing readings mean unknown, not zero. Shared system RAM is not reported as dedicated GPU/NPU memory.
+
+| Host | Available readings |
+| --- | --- |
+| NVIDIA with `nvidia-smi` on the node service's PATH | Model, utilization, and dedicated-memory total/used, where supported by the driver |
+| Linux AMD/Intel/NVIDIA DRM devices | Inventory from `/sys/class/drm`; AMD and other supporting drivers can also expose `gpu_busy_percent` and `mem_info_vram_total` / `mem_info_vram_used`. Recognizable model families determine GPU kind; ambiguous names remain unclassified |
+| Windows 10 version 2004+ with DXCore | Hardware/integrated/NPU flags, model, native adapter identity, and 64-bit dedicated-memory capacity. Windows GPU Adapter Memory counters provide node-wide dedicated-memory usage, matched by adapter LUID rather than name or display order. Works with supporting AMD, Intel, and NVIDIA drivers; compute utilization still needs NVIDIA support |
+| Older Windows or unavailable DXCore | Model/vendor inventory through Windows PowerShell and `Win32_VideoController`; recognizable model families determine kind. `AdapterRAM` is not used because it truncates modern VRAM capacities |
+| Linux NPUs | Inventory for `intel_vpu`/`ivpu`, `amdxdna`, and `qaic` devices in `/sys/class/accel`; memory and utilization remain unknown |
+| macOS | Model/vendor inventory through `system_profiler`; Apple GPUs are classified integrated. Discrete GPU model families can be identified, but memory/utilization and NPU inventory are not collected |
+
+GPU inventory and the NVIDIA executable are discovered once per collector, so restart the node after attaching hardware or installing driver tools. Dynamic readings follow the existing resource-sampling schedule, never dashboard polling. Commands require no elevation, have a two-second timeout and 64 KiB output limit, and do not expose stderr. Missing tools, unsupported drivers, inaccessible device files, and tool failures omit readings without failing ordinary resource collection. Containers need access to their GPU devices and driver tools; a normal CPU-only container reports no GPUs. Actual driver behavior requires hardware verification on each platform.
+
+The web console adds a GPU/NPU column only when the fleet has classified discrete GPUs or NPUs. Integrated GPUs, virtual/remote display adapters, and unclassified devices are hidden from tables, drawers, and terminal Hardware details. Raw JSON retains their inventory for diagnostics. Windows uses driver-reported hardware flags; other collectors classify only recognizable model families, never assuming that a vendor or large memory reading proves a discrete GPU. Update both nodes and gateway so reports include `kind`; older unclassified reports remain hidden.
+
+The main GPU/NPU bar shows loaded dedicated memory as a percentage, with used/total bytes underneath. Compute utilization, when available, is a separately labeled secondary reading. Sorting uses the highest known dedicated-memory percentage among displayed devices, not compute utilization. NPUs with only shared memory or unsupported memory counters show unknown dedicated memory. Hybrid rows use the same System telemetry fallback as CPU/RAM when User is selected but offline. Offline rows and drawers retain model/capacity but hide live usage. JSON retains all reported fields. GPU/NPU readings do not affect worker selection or execution authorization.
 
 ## Authorization and data boundaries
 

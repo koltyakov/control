@@ -136,17 +136,18 @@ func TestOfflineMachineHidesResourceUsage(t *testing.T) {
 		Name: "worker", OS: "linux", Status: "offline", LastSeen: now.Add(-time.Hour),
 		System: &model.SystemInfo{
 			CPUModel: "Test CPU", CPUUsagePercent: &cpu, MemoryUsedBytes: 8 << 30, MemoryTotalBytes: 16 << 30,
+			GPUs:  []model.GPUInfo{{Name: "Test GPU", Kind: model.GPUDiscrete, UsagePercent: new(71.0), MemoryTotalBytes: 8 << 30, MemoryUsedBytes: new(uint64(3 << 30))}, {Name: "Hidden integrated", Kind: model.GPUIntegrated}, {Name: "Hidden virtual", Kind: model.GPUVirtual}, {Name: "Hidden unknown"}, {Name: "Test NPU", Kind: model.GPUNPU}},
 			Disks: []model.DiskUsage{{Path: "work", UsedBytes: 20 << 30, TotalBytes: 100 << 30, FreeBytes: 80 << 30}},
 		},
 	}}}
 	for _, options := range []renderOptions{{}, {width: 80, color: true}, {width: 120, details: true}} {
 		text := ansi.Strip(render(snapshot, now, options))
-		for _, stale := range []string{"12.5%", "8.0GiB/16.0GiB", "20.0GiB", "80.0GiB"} {
+		for _, stale := range []string{"12.5%", "8.0GiB/16.0GiB", "20.0GiB", "80.0GiB", "71.0%", "3.0GiB"} {
 			if strings.Contains(text, stale) {
 				t.Fatalf("offline machine shows stale %q:\n%s", stale, text)
 			}
 		}
-		if options.details && (!strings.Contains(text, "Test CPU") || !strings.Contains(text, "work: 100.0GiB total")) {
+		if options.details && (!strings.Contains(text, "Test CPU") || !strings.Contains(text, "work: 100.0GiB total") || !strings.Contains(text, "GPU: Test GPU | 8.0GiB total GPU memory")) {
 			t.Fatalf("offline machine lost hardware details:\n%s", text)
 		}
 	}
@@ -157,6 +158,13 @@ func TestOfflineMachineHidesResourceUsage(t *testing.T) {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("online machine missing %q:\n%s", expected, text)
 		}
+	}
+	text = render(snapshot, now, renderOptions{details: true})
+	if !strings.Contains(text, "GPU: Test GPU | 71.0% utilization | 3.0GiB used / 8.0GiB total GPU memory") {
+		t.Fatal("online GPU resources missing", text)
+	}
+	if strings.Contains(text, "Hidden") || !strings.Contains(text, "NPU: Test NPU") {
+		t.Fatal("GPU/NPU display filtering failed", text)
 	}
 }
 

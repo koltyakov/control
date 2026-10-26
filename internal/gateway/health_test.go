@@ -35,6 +35,8 @@ func TestHealthIdentityFleetAndFreshness(t *testing.T) {
 	health := model.NodeHealth{ActiveCount: 3, Leased: true, System: model.SystemInfo{SampledAt: time.Now()},
 		Work: &model.WorkCounts{Tasks: 1, Transfers: 1}, Tunnels: &model.TunnelCounts{Forward: 1},
 		ConnectionRoutes: &model.ConnectionRouteCounts{Direct: 2, Relay: 1}, LeaseExpires: time.Now().Add(time.Minute).UTC()}
+	usage, used := 42.0, uint64(2<<30)
+	health.System.GPUs = []model.GPUInfo{{Name: "NVIDIA Test", Vendor: "NVIDIA", Kind: model.GPUDiscrete, UsagePercent: &usage, MemoryTotalBytes: 8 << 30, MemoryUsedBytes: &used}}
 	packet, err := proto.Marshal(&protocol.Packet{Kind: "node.health", From: bi.ID, Data: model.JSON(health)})
 	if err != nil {
 		t.Fatal(err)
@@ -68,6 +70,8 @@ func TestHealthIdentityFleetAndFreshness(t *testing.T) {
 	} else if got.Work == nil || *got.Work != *health.Work || got.Tunnels == nil || got.Tunnels.Forward != 1 ||
 		got.DirectSessions != 2 || got.RelaySessions != 1 || !got.LeaseExpires.Equal(health.LeaseExpires) {
 		t.Fatal("aggregate work and connection counts not reported", got)
+	} else if got.System == nil || len(got.System.GPUs) != 1 || got.System.GPUs[0].Kind != model.GPUDiscrete || got.System.GPUs[0].UsagePercent == nil || *got.System.GPUs[0].UsagePercent != 42 || got.System.GPUs[0].MemoryUsedBytes == nil || *got.System.GPUs[0].MemoryUsedBytes != used {
+		t.Fatal("GPU metrics not reported to owner", got)
 	}
 	if got := read(b); got.Status != "online" || got.ActiveCount != 0 || got.ID != bi.ID {
 		t.Fatal("cross-fleet health disclosed", got)
@@ -85,6 +89,21 @@ func TestHealthIdentityFleetAndFreshness(t *testing.T) {
 		if g.receiveHealth(n, c, invalid) {
 			t.Fatal("invalid health accepted")
 		}
+	}
+	for _, gpu := range []model.GPUInfo{{Name: "GPU", Kind: "bad-kind"}, {Name: "GPU", UsagePercent: new(101.0)}, {Name: "GPU", MemoryTotalBytes: 1, MemoryUsedBytes: new(uint64(2))}, {Name: strings.Repeat("x", 129)}} {
+		invalid := health
+		invalid.System.GPUs = []model.GPUInfo{gpu}
+		if g.receiveHealth(n, c, model.JSON(invalid)) {
+			t.Fatal("invalid GPU metrics accepted", gpu)
+		}
+	}
+	tooMany := health
+	tooMany.System.GPUs = make([]model.GPUInfo, model.MaxGPUs+1)
+	for i := range tooMany.System.GPUs {
+		tooMany.System.GPUs[i].Name = "GPU"
+	}
+	if g.receiveHealth(n, c, model.JSON(tooMany)) {
+		t.Fatal("too many GPU records accepted")
 	}
 	// A newer node's additional fields are ignored, not retained or rejected.
 	if !g.receiveHealth(n, c, []byte(`{"activeCount":2,"task":"private","system":{"futureMetric":1}}`)) {

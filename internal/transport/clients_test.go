@@ -59,12 +59,20 @@ func TestMachineNegotiatesClientSupportForOlderGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := New(Config{Gateway: s.URL, Token: token, Identity: id, Node: model.Node{ID: id.ID, Name: "worker", PublicKey: id.Public, ClientSessions: true}}, nil)
+	p.SetSystemInfo(model.SystemInfo{GPUs: []model.GPUInfo{{Name: "Test GPU"}}})
 	defer func() { _ = p.Close() }()
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatal("new machine failed against an older gateway", err)
 	}
 	if strings.Contains(string(model.JSON(p.cfg.Node)), "clientSessions") {
 		t.Fatal("new field broke legacy registration encoding")
+	}
+	nodes, err := p.Nodes(context.Background())
+	if err != nil || len(nodes) != 1 || nodes[0].System == nil || len(nodes[0].System.GPUs) != 0 {
+		t.Fatal("GPU metrics leaked into legacy signed registration", nodes, err)
+	}
+	if len(p.cfg.Node.System.GPUs) != 1 {
+		t.Fatal("legacy registration removed the local GPU cache")
 	}
 }
 
