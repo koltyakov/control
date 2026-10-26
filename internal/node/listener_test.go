@@ -64,15 +64,22 @@ func TestReverseListenerActivitySurvivesSocketClose(t *testing.T) {
 				}
 				_ = accepted.Close()
 				_ = socket.Close()
-				snapshot := worker.activitySnapshot(model.ActivityQuery{Recent: 5})
-				if len(snapshot.Active) != 1 || snapshot.Active[0].ID != id || snapshot.Active[0].Phase != "listening" || len(snapshot.Recent) != 0 {
-					t.Fatalf("socket close finished listener activity: %+v", snapshot)
-				}
-				if snapshot.Tunnels == nil || *snapshot.Tunnels != (model.TunnelCounts{Reverse: 1}) {
-					t.Fatalf("socket close changed listener count: %+v", snapshot.Tunnels)
-				}
-				activity := snapshot.Active[0]
-				if want := int64((i + 1) * 4); activity.BytesSent != want || activity.BytesReceived != want {
+				want := int64((i + 1) * 4)
+				var activity model.Activity
+				// Receiving the bytes does not wait for activityConn to publish its
+				// counters after the underlying I/O returns on the worker.
+				eventually(t, ctx, func() bool {
+					snapshot := worker.activitySnapshot(model.ActivityQuery{Recent: 5})
+					if len(snapshot.Active) != 1 || snapshot.Active[0].ID != id || snapshot.Active[0].Phase != "listening" || len(snapshot.Recent) != 0 {
+						t.Fatalf("socket close finished listener activity: %+v", snapshot)
+					}
+					if snapshot.Tunnels == nil || *snapshot.Tunnels != (model.TunnelCounts{Reverse: 1}) {
+						t.Fatalf("socket close changed listener count: %+v", snapshot.Tunnels)
+					}
+					activity = snapshot.Active[0]
+					return activity.BytesSent >= want && activity.BytesReceived >= want
+				})
+				if activity.BytesSent != want || activity.BytesReceived != want {
 					t.Fatalf("listener traffic not accumulated: %+v", activity)
 				}
 				if health := worker.healthSnapshot(); health.ActiveCount != 1 {
