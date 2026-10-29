@@ -147,6 +147,27 @@ func TestFFmpegWorkflowAndResumableCLIDownload(t *testing.T) {
 	if finished.State != "succeeded" {
 		t.Fatalf("workflow failed: %s; result=%s", finished.Error, finished.Result)
 	}
+	var recovery client.WorkflowReconciliation
+	if err = json.Unmarshal(cli(t, ctx, "task", "reconcile", "source", accepted.ID), &recovery); err != nil {
+		t.Fatal(err)
+	}
+	if !recovery.Complete || len(recovery.Steps) != 2 {
+		t.Fatalf("CLI could not reconcile the cross-container workflow: %+v", recovery)
+	}
+	for _, observed := range recovery.Steps {
+		if observed.ID == "" || observed.Task == nil || observed.Task.State != "succeeded" {
+			t.Fatalf("CLI lost a persisted child outcome: %+v", observed)
+		}
+	}
+	log := cli(t, ctx, "task", "logs", "source", accepted.ID, "--follow")
+	if !bytes.Contains(log, []byte("step encode:")) {
+		t.Fatalf("CLI could not drain the completed workflow log: %q", log)
+	}
+	offset := len(log) / 2
+	tail := cli(t, ctx, "task", "logs", "source", accepted.ID, "--follow", "--offset", fmt.Sprint(offset))
+	if !bytes.Equal(tail, log[offset:]) {
+		t.Fatal("CLI log resume changed bytes or offsets")
+	}
 	var steps map[string]model.Task
 	if err = json.Unmarshal(finished.Result, &steps); err != nil {
 		t.Fatal(err)

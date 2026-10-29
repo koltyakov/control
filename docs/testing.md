@@ -183,6 +183,8 @@ go test ./internal/node -run '^$' -bench '^BenchmarkTaskLogPayload$' -benchmem -
 
 MCP regression tests use a local HTTP server to verify successful tool results, bounded error diagnostics, preservation of failed tool output and refusal to start dependent workflow tasks after `isError`. Reconciliation tests verify concurrency bounds, cancellation, plan ordering, timeout isolation, missing stable IDs and structured error limits without sending mutations.
 
+`TestMCPWorkflowRecoveryEndToEnd` runs both MCP adapters through account-client and delegated peer connections over WebRTC and relay. It verifies synchronous error codes, failed tool results above the inline limit downloaded as artifacts, dependent-step refusal, idempotent parent submission, log offsets and owner checks, and fresh-client reconciliation of a twelve-child parallel workflow. The cross-container FFmpeg test also invokes the shipped CLI to reconcile persisted children and drain/resume completed workflow logs.
+
 Reliability tests cover corrupt interior tombstones without journal rewriting, cleanup retry across restart, bounded owner-scoped pages, artifact-backed results, quota accounting, reader pins, independent MCP startup, relay fairness and close/offline ordering, cache eviction with retained identity ownership, fresh resource constraints, and read-only workflow reconciliation. Signature tests use a local virtual Sigstore authority to check exact repository/tag identity and artifact bytes. Update-path tests also verify that invalid signatures stop before executable downloads. They need no live signing service.
 
 Measure local observation and gateway commit contention separately from integration flows:
