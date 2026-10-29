@@ -175,6 +175,14 @@ Go bounds parallel tests per package with `-parallel`, which defaults to `GOMAXP
 
 ### Throughput and allocation benchmarks
 
+`BenchmarkTaskLogPayload` measures snapshot and streaming reads of a 64 KiB log chunk with empty or large retained task payloads. On October 29, 2026, macOS arm64, Apple M4 Pro and Go 1.27.3, three one-second runs with 2 MiB each of arguments and inline result allocated about 4.42 MB per snapshot read and 4.35 MB per streaming read before removing task payload clones. Afterwards they allocated about 205 KB and 139 KB, respectively. These synthetic legacy-sized records exceed current new-task inline limits. The benchmark isolates local log reading, not end-to-end transport throughput or process peak memory. Full task reads still copy payloads; log reads retain owner checks and completion notifications.
+
+```sh
+go test ./internal/node -run '^$' -bench '^BenchmarkTaskLogPayload$' -benchmem -benchtime=1s -count=3
+```
+
+MCP regression tests use a local HTTP server to verify successful tool results, bounded error diagnostics, preservation of failed tool output and refusal to start dependent workflow tasks after `isError`. Reconciliation tests verify concurrency bounds, cancellation, plan ordering, timeout isolation, missing stable IDs and structured error limits without sending mutations.
+
 Reliability tests cover corrupt interior tombstones without journal rewriting, cleanup retry across restart, bounded owner-scoped pages, artifact-backed results, quota accounting, reader pins, independent MCP startup, relay fairness and close/offline ordering, cache eviction with retained identity ownership, fresh resource constraints, and read-only workflow reconciliation. Signature tests use a local virtual Sigstore authority to check exact repository/tag identity and artifact bytes. Update-path tests also verify that invalid signatures stop before executable downloads. They need no live signing service.
 
 Measure local observation and gateway commit contention separately from integration flows:

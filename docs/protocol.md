@@ -351,6 +351,8 @@ New task specifications allow at most 1 MiB of arguments, 128 inputs, 128 output
 
 `control task list NODE --limit 100 --cursor ID` and MCP `control_tasks` use `tasks.page`. `control task reconcile NODE ID` and `control_workflow_reconcile` read a retained workflow plan and query its stable child IDs under the account owner's authority. They report child summaries and query errors without starting work, recreating grants or changing the parent. `complete` means every observed child succeeded. A missing child or unavailable worker is unresolved, not permission to replay. Pruned parents cannot be reconciled from their tombstones.
 
+Reconciliation queries at most eight children concurrently, allowing six seconds per child within a thirty-second overall observation budget, including the parent read. Results retain plan order. Once the parent plan is available, internal timeouts return a partial report with unresolved errors rather than discarding healthy child observations. Query errors include `code` and `outcome`; messages are limited to 1 KiB with `errorTruncated` when shortened. Explicit caller cancellation stops and joins the readers and returns its error. Older workers need no upgrade because queries still use ordinary `tasks.get`.
+
 `control diagnostics NODE` and MCP `control_diagnostics` expose `diagnostics.get`. Counts omit task arguments, results, credentials and local paths. MCP errors include JSON `code`, `outcome` and `message`.
 
 ## Shared-pool leases
@@ -412,6 +414,8 @@ The process writes one JSON result to stdout, diagnostics to stderr, and exits z
 ```
 
 Commands accept optional `args`, `env`, and `dir`. Stdio MCP servers run from `workDir` unless `dir` overrides it, and stay attached to the node rather than an individual task. Sessions are initialized lazily with a 15-second deadline, reused, removed when disconnected, and closed on node shutdown. A later request can establish a new session; failed tool calls are not replayed.
+
+MCP tool results with `isError: true` fail `mcp.call`. Synchronous responses use error code `mcp_tool_failed`, outcome `unknown`, and a bounded message with the first text diagnostic when available. Tracked tasks fail and retain the complete MCP result through the existing inline/result-artifact rules, including partial output. Dependent workflow steps do not start after that failure. Protocol success and a returned result do not establish successful execution or authorize a retry.
 
 `mcp.discover` without `server` lists configured names and descriptions. Selecting a server returns its tools, schemas, and negotiated capabilities. `mcp.request` supports only `resources/list`, `resources/read`, `resources/templates/list`, `prompts/list`, and `prompts/get`, with the corresponding MCP parameters. This worker-side configuration is separate from [installing Control as an orchestrator's MCP server](installation.md#mcp-and-skills).
 

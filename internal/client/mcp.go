@@ -83,7 +83,7 @@ func (c Client) MCPServer() *mcp.Server {
 	add("control_task_cancel", "Cancel a queued or running task.", "tasks.cancel", map[string]any{"node": text, "id": text}, []string{"node", "id"}, normal)
 	add("control_task_logs", "Read task logs from a byte offset. Returns the next offset.", "tasks.logs", map[string]any{"node": text, "id": text, "offset": map[string]any{"type": "integer"}}, []string{"node", "id"}, normal)
 	add("control_mcp_discover", "List configured MCP servers, or discover a server's tools and input schemas. Requires execution authority; selecting a server may start its configured process or remote session.", "mcp.discover", map[string]any{"node": text, "server": text}, []string{"node"}, normal)
-	add("control_mcp_call", "Invoke an installed MCP tool on the selected node.", "mcp.call", map[string]any{"node": text, "server": text, "tool": text, "arguments": object}, []string{"node", "server", "tool"}, normal)
+	add("control_mcp_call", "Invoke an installed MCP tool on the selected node. Tool-reported isError is a failure with unknown effects, not permission to retry. Use a tracked mcp.call task to retain the full result, including partial output on failure.", "mcp.call", map[string]any{"node": text, "server": text, "tool": text, "arguments": object}, []string{"node", "server", "tool"}, normal)
 	add("control_rpa", "Run an opt-in GUI action batch on a worker's logged-in desktop. Discover rpa.run first. Use secret instead of text on setValue/type for worker-local credentials; never request their values. Inspect accessibility elements before selector actions. Screenshots return PNG artifacts and are not secret-masked. Batches are serialized per OS user; use leased tasks for multi-batch workflows. A failed call may have changed the desktop; never replay automatically.", "rpa.run", map[string]any{"node": text, "actions": rpa.Schema()["properties"].(map[string]any)["actions"]}, []string{"node", "actions"}, func(args map[string]json.RawMessage) (string, any, error) {
 		target, params, err := normal(args)
 		if err != nil {
@@ -113,7 +113,7 @@ func (c Client) MCPServer() *mcp.Server {
 		}
 		return c.Wake(ctx, spec)
 	})
-	local("control_workflow_reconcile", "Inspect a retained workflow plan and query its stable child IDs after interruption or uncertainty. Reports unavailable children without replaying work or recreating grants.", map[string]any{"node": text, "id": text}, []string{"node", "id"}, func(ctx context.Context, args json.RawMessage) (any, error) {
+	local("control_workflow_reconcile", "Inspect a retained workflow plan and query its stable child IDs after interruption or uncertainty. Queries up to eight children concurrently, with six seconds per child and thirty seconds overall. Returns plan-ordered summaries and bounded errors for unavailable children. complete means every child was observed succeeded. Does not replay work or recreate grants.", map[string]any{"node": text, "id": text}, []string{"node", "id"}, func(ctx context.Context, args json.RawMessage) (any, error) {
 		var q struct {
 			Node string `json:"node"`
 			ID   string `json:"id"`

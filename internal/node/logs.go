@@ -17,7 +17,7 @@ import (
 // or task completion between the file read and the subscription.
 func (n *Node) readTaskLog(owner, id string, offset int64) (model.TaskLogChunk, <-chan struct{}, error) {
 	n.mu.Lock()
-	task, err := n.ownedTaskLocked(owner, id)
+	task, err := n.ownedTaskRecordLocked(owner, id)
 	if err != nil {
 		n.mu.Unlock()
 		return model.TaskLogChunk{}, nil, err

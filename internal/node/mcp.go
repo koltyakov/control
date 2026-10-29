@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/buildinfo"
+	"github.com/koltyakov/control/internal/model"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -143,7 +144,24 @@ func (n *Node) mcpCall(ctx context.Context, args json.RawMessage, e Execution) (
 	if err != nil {
 		return nil, err
 	}
-	return session.CallTool(ctx, &mcp.CallToolParams{Name: q.Tool, Arguments: q.Arguments})
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: q.Tool, Arguments: q.Arguments})
+	if err != nil || result == nil || !result.IsError {
+		return result, err
+	}
+	// MCP tool failures are successful protocol responses. Propagate their
+	// execution failure too, so durable tasks and dependent steps cannot succeed.
+	// Keep the original result for task diagnostics, including partial effects.
+	message := fmt.Sprintf("MCP tool %q on server %q reported failure", q.Tool, q.Server)
+	for _, content := range result.Content {
+		if text, ok := content.(*mcp.TextContent); ok && text.Text != "" {
+			message += ": " + text.Text
+			break
+		}
+	}
+	if len(message) > 1024 {
+		message = message[:1024] + " [truncated]"
+	}
+	return result, &model.RPCError{Code: "mcp_tool_failed", Outcome: "unknown", Message: message}
 }
 
 func (n *Node) mcpRequest(ctx context.Context, args json.RawMessage, e Execution) (any, error) {

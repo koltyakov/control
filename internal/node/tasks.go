@@ -508,10 +508,15 @@ func (n *Node) taskMethod(ctx context.Context, owner, method string, args json.R
 		sort.Slice(tasks, func(i, j int) bool { return tasks[i].Created.Before(tasks[j].Created) })
 		return tasks, nil
 	}
-	task, err := n.ownedTaskLocked(owner, query.ID)
+	record, err := n.ownedTaskRecordLocked(owner, query.ID)
 	if err != nil {
 		n.mu.Unlock()
 		return nil, err
+	}
+	terminal := record.Terminal()
+	var task model.Task
+	if method != "tasks.logs" {
+		task = cloneTask(record)
 	}
 	if method == "tasks.cancel" {
 		if cancel := n.cancels[query.ID]; cancel != nil {
@@ -530,7 +535,7 @@ func (n *Node) taskMethod(ctx context.Context, owner, method string, args json.R
 		}
 		f, err := os.Open(n.logPath(query.ID))
 		if errors.Is(err, os.ErrNotExist) {
-			return map[string]any{"text": "", "offset": query.Offset, "terminal": task.Terminal()}, nil
+			return map[string]any{"text": "", "offset": query.Offset, "terminal": terminal}, nil
 		}
 		if err != nil {
 			return nil, err
@@ -540,7 +545,7 @@ func (n *Node) taskMethod(ctx context.Context, owner, method string, args json.R
 			return nil, err
 		}
 		b, err := io.ReadAll(io.LimitReader(f, 64*1024))
-		return map[string]any{"text": string(b), "offset": query.Offset + int64(len(b)), "terminal": task.Terminal()}, err
+		return map[string]any{"text": string(b), "offset": query.Offset + int64(len(b)), "terminal": terminal}, err
 	}
 	return nil, errors.New("unknown task method")
 }
@@ -548,16 +553,27 @@ func (n *Node) taskMethod(ctx context.Context, owner, method string, args json.R
 // Called with n.mu held. Pruned tasks remain visible to their owner as
 // terminal tombstones.
 func (n *Node) ownedTaskLocked(owner, id string) (model.Task, error) {
-	var task model.Task
-	if stored := n.tasks[id]; stored != nil {
-		task = cloneTask(stored)
-	} else if pruned, ok := n.tombstones[id]; ok {
-		task = pruned.task()
-	} else {
-		return model.Task{}, errors.New("task not found")
+	task, err := n.ownedTaskRecordLocked(owner, id)
+	if err != nil {
+		return model.Task{}, err
+	}
+	return cloneTask(task), nil
+}
+
+// The returned record may alias node state and must only be read under n.mu.
+// Check ownership before copying payloads; log readers need only terminal state.
+func (n *Node) ownedTaskRecordLocked(owner, id string) (*model.Task, error) {
+	task := n.tasks[id]
+	if task == nil {
+		pruned, ok := n.tombstones[id]
+		if !ok {
+			return nil, errors.New("task not found")
+		}
+		record := pruned.task()
+		task = &record
 	}
 	if task.Owner != owner && owner != n.Identity.ID {
-		return model.Task{}, errors.New("task belongs to another caller")
+		return nil, errors.New("task belongs to another caller")
 	}
 	return task, nil
 }

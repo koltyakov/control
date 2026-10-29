@@ -30,6 +30,8 @@ Grants travel in invocation contexts, including the contexts of durable tasks. T
 
 Run `control task reconcile COORDINATOR PARENT_ID`, or MCP `control_workflow_reconcile`, from the account client that owns the workflow. It reads the retained parent plan and queries each persisted child ID directly under that owner's authority. The report separates successful, failed, interrupted and unresolved children through their summaries or query errors. It does not replay steps, recreate grants or mark the parent successful. A missing record or unreachable worker remains unresolved. Fetch a child's retained result with `tasks.get`; large results use `resultArtifact`.
 
+Child reads run with at most eight concurrent queries, six seconds per child and thirty seconds overall. Reports retain plan order and healthy observations when another child times out. Query errors include bounded messages, codes and delivery outcomes. Cancellation stops and joins pending readers. See [recovery limits](protocol.md#bounded-task-results-and-recovery).
+
 ## Inspect and revoke access
 
 ```sh
