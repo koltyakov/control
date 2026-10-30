@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/koltyakov/control/internal/buildinfo"
@@ -20,6 +22,10 @@ import (
 // updateStatusFreshness bounds how old a node's last update status may
 // be for rollout decisions; nodes report unchanged status every 5..6s.
 const updateStatusFreshness = 8 * time.Second
+
+// Match the maintenance lease lifetime. A vanished participant cannot hold
+// future publications forever, but a normal managed restart gets time to return.
+const updateReconnectGrace = 2 * time.Minute
 
 type Options struct {
 	STUNServers     []string
@@ -103,6 +109,16 @@ func nodeUpdating(n model.Node, status update.Status, now time.Time, d *update.D
 }
 
 func (g *Gateway) updateRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /v1/updates", g.auth(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		selection := update.Selection{}
+		if d := g.updates.Current(); d != nil {
+			selection.ID, selection.Manifest = d.ID, d.Manifest
+			selection.ReleaseRepo = g.updateReleaseRepo(d)
+		}
+		_ = json.NewEncoder(w).Encode(selection)
+	}))
 	mux.HandleFunc("GET /v1/updates/blobs/{hash}", g.auth(func(w http.ResponseWriter, r *http.Request) {
 		hash := r.PathValue("hash")
 		if !update.ValidDigest(hash) {
@@ -177,6 +193,16 @@ func (g *Gateway) updateRoutes(mux *http.ServeMux) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"deployment": d})
 	}))
+}
+
+func (g *Gateway) updateReleaseRepo(d *update.Deployment) string {
+	if repository, ok := strings.CutPrefix(d.Source, "github:"); ok {
+		return repository
+	}
+	if g.options.ReleaseRepo != "" {
+		return g.options.ReleaseRepo
+	}
+	return g.options.Software.ReleaseRepo
 }
 
 func (g *Gateway) validatePlatforms(manifest update.Manifest) error {
@@ -258,6 +284,10 @@ func (g *Gateway) rolloutPeers(d *update.Deployment) []rolloutPeer {
 	defer g.mu.Unlock()
 	peers := []rolloutPeer{}
 	ids := map[string]bool{}
+	deferred := make(map[string]bool, len(d.Deferred))
+	for _, id := range d.Deferred {
+		deferred[id] = true
+	}
 	for id, c := range g.peers {
 		if !c.client {
 			ids[id] = true
@@ -265,7 +295,9 @@ func (g *Gateway) rolloutPeers(d *update.Deployment) []rolloutPeer {
 	}
 	if d.Phase == "installing" {
 		for _, id := range d.Participants {
-			ids[id] = true
+			if !deferred[id] {
+				ids[id] = true
+			}
 		}
 	}
 	for id := range ids {
@@ -276,6 +308,57 @@ func (g *Gateway) rolloutPeers(d *update.Deployment) []rolloutPeer {
 		peers = append(peers, rolloutPeer{g.nodes[id], status, g.peers[id] != nil && ok && time.Since(status.SeenAt) < updateStatusFreshness})
 	}
 	return peers
+}
+
+// Called under rolloutMu. Offline participants remain pending, never applied.
+// Live connections always join rolloutPeers, even while marked deferred.
+func (g *Gateway) reconcileDeferred(d *update.Deployment, now time.Time) (*update.Deployment, error) {
+	deferred := make(map[string]bool, len(d.Deferred))
+	tracked := make(map[string]bool, len(d.Participants)+len(d.Deferred))
+	for _, id := range d.Deferred {
+		deferred[id] = true
+		tracked[id] = true
+	}
+	for _, id := range d.Participants {
+		tracked[id] = true
+	}
+	g.mu.Lock()
+	for id := range tracked {
+		if g.clientOwners[id] {
+			delete(deferred, id)
+			continue
+		}
+		status := g.updateStatus[id]
+		if g.peers[id] != nil {
+			if now.Sub(status.SeenAt) < updateStatusFreshness && updateAppliedAndResumed(d, status) {
+				delete(deferred, id)
+			}
+			continue
+		}
+		lastSeen := g.nodes[id].LastSeen
+		if status.SeenAt.After(lastSeen) {
+			lastSeen = status.SeenAt
+		}
+		if lastSeen.IsZero() {
+			lastSeen = d.UpdatedAt
+		}
+		if d.Phase == "installing" && now.Sub(lastSeen) >= updateReconnectGrace {
+			deferred[id] = true
+		}
+	}
+	g.mu.Unlock()
+	ids := make([]string, 0, len(deferred))
+	for id := range deferred {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	if slices.Equal(ids, d.Deferred) {
+		return d, nil
+	}
+	if err := g.updates.SetDeferred(d.ID, ids); err != nil {
+		return nil, err
+	}
+	return g.updates.Current(), nil
 }
 
 func (g *Gateway) stageGateway(ctx context.Context, d *update.Deployment) (string, error) {
@@ -354,6 +437,11 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 				stagedID, stagedPath = d.ID, path
 				requestedRestart = false
 			}
+			var err error
+			d, err = g.reconcileDeferred(d, time.Now())
+			if err != nil {
+				return
+			}
 			peers := g.rolloutPeers(d)
 			retained := make(map[string]bool, len(peers))
 			for _, peer := range peers {
@@ -371,7 +459,7 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 					allStaged, peersApplied = false, false
 					continue
 				}
-				command := update.Command{ID: d.ID, Version: d.Manifest.Version, Asset: asset}
+				command := update.Command{ID: d.ID, Version: d.Manifest.Version, Asset: asset, ReleaseRepo: g.updateReleaseRepo(d)}
 				matching := peer.fresh && peer.status.ID == d.ID
 				applied := matching && update.IsCurrent(peer.status.Software, d.Manifest.Version, asset)
 				staged := matching && (applied || peer.status.State == "staged" || peer.status.State == "ready" || peer.status.State == "busy" || peer.status.State == "restarting")
@@ -434,23 +522,31 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 					return
 				}
 			}
-			for _, peer := range peers {
-				send(peer.node.ID, "update.commit", update.Command{ID: d.ID})
-			}
-			// Keep the gateway available until every participating node has restarted
-			// and reported the target version or checksum. Disconnections are never acknowledgments.
-			if peersApplied && stagedPath != "" && !requestedRestart && g.reserveRestart(d, peers) {
-				requestedRestart = true
-				if err := g.options.Apply(stagedPath); err != nil {
-					g.mu.Lock()
-					g.restarting = false
-					g.mu.Unlock()
-					requestedRestart = false
-					_ = g.updates.SetPhase(d.ID, "error", err)
-				}
-			}
+			requestedRestart = g.installReady(d, peers, stagedPath, requestedRestart, send)
 		}()
 	}
+}
+
+// Called under rolloutMu after staging and idle admission. Only a gateway that
+// already runs the selection may commit node replacements.
+func (g *Gateway) installReady(d *update.Deployment, peers []rolloutPeer, stagedPath string, requestedRestart bool, send func(string, string, update.Command)) bool {
+	if stagedPath != "" {
+		if !requestedRestart && g.reserveRestart(d, peers) {
+			requestedRestart = true
+			if err := g.options.Apply(stagedPath); err != nil {
+				g.mu.Lock()
+				g.restarting = false
+				g.mu.Unlock()
+				requestedRestart = false
+				_ = g.updates.SetPhase(d.ID, "error", err)
+			}
+		}
+		return requestedRestart
+	}
+	for _, peer := range peers {
+		send(peer.node.ID, "update.commit", update.Command{ID: d.ID})
+	}
+	return false
 }
 
 // Called under rolloutMu, after the gateway and online participants acknowledge
@@ -494,8 +590,8 @@ func (g *Gateway) reserveRestart(d *update.Deployment, peers []rolloutPeer) bool
 	}
 	for _, peer := range peers {
 		status := g.updateStatus[peer.node.ID]
-		asset, ok := d.Manifest.Asset(status.Software.OS, status.Software.Arch)
-		if !ok || g.peers[peer.node.ID] == nil || status.ID != d.ID || !update.IsCurrent(status.Software, d.Manifest.Version, asset) || !status.Paused || status.Busy || time.Since(status.SeenAt) >= updateStatusFreshness || time.Until(status.LeaseUntil) <= 30*time.Second {
+		_, ok := d.Manifest.Asset(status.Software.OS, status.Software.Arch)
+		if !ok || g.peers[peer.node.ID] == nil || status.ID != d.ID || !status.Paused || status.Busy || time.Since(status.SeenAt) >= updateStatusFreshness || time.Until(status.LeaseUntil) <= 30*time.Second {
 			return false
 		}
 	}

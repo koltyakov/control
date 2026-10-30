@@ -37,7 +37,7 @@ Open the gateway's HTTPS URL and sign in with the fleet account's exact, case-se
 - Access keys creates, renames, and revokes common fleet keys. Renaming changes only the label. New secrets are displayed once. Account keys are not listed on this page. Installation commands also cannot be recovered after their dialog closes.
 - Account changes the current browser password. The account menu under the avatar links there, selects the system, light, or dark theme, and signs out after confirmation. Sign out revokes only the current browser session.
 - Operator-only Accounts provisions and disables private fleets and sets their browser passwords. Account creation shows the CLI account key once.
-- Operator-only Updates displays gateway-wide deployment progress and node acknowledgments. A confirmed release check may begin a verified, idle-only rollout. Development bundle publication stays in `control update push DIR`.
+- Operator-only Updates displays gateway-wide deployment progress and node acknowledgments. Offline installation participants deferred after the two-minute reconnection grace are explicitly pending, with admission shown as unknown rather than the last stale reservation. They catch up when connected and do not hold later publications indefinitely. A confirmed release check may begin a verified, idle-only, gateway-first rollout. Development bundle publication stays in `control update push DIR`.
 
 A pending invitation name conflict offers an explicit checkbox to retract the existing invitation on the next submission. It never forces or retries a request automatically. A lost mutation response instructs the user to refresh and inspect state before submitting again.
 

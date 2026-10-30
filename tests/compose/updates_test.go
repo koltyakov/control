@@ -90,6 +90,11 @@ func TestManagedUpdateDefersWorkAndRestartsWholePool(t *testing.T) {
 		if admin.JSON(ctx, "GET", "/v1/admin/updates", nil, &status) != nil || status.Deployment == nil {
 			return false
 		}
+		for _, node := range status.Nodes {
+			if node.Software.Version == version && status.Gateway.Version != version {
+				t.Fatal("managed node switched before the gateway")
+			}
+		}
 		if status.Deployment.Phase != "complete" || status.Gateway.Version != version {
 			return false
 		}

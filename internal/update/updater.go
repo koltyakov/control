@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -123,6 +126,9 @@ func (a *Updater) Run(ctx context.Context) {
 	defer cleanup.Stop()
 	// Run starts only after the node has connected and passed startup checks.
 	a.cleanup(ctx)
+	if err := a.checkSelection(ctx); err != nil && ctx.Err() == nil {
+		slog.Warn("startup update check; awaiting gateway offer", "error", err)
+	}
 	a.report(ctx)
 	for {
 		select {
@@ -139,6 +145,51 @@ func (a *Updater) Run(ctx context.Context) {
 		}
 		a.report(ctx)
 	}
+}
+
+// A starting node checks the current selection instead of depending on an old
+// rollout's participant list. Staging is safe during work; only a later gateway
+// commit with an idle reservation may replace the running node.
+func (a *Updater) checkSelection(ctx context.Context) error {
+	if a.options.Gateway == "" {
+		return nil
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(a.options.Gateway, "/")+"/v1/updates", nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+a.options.Token)
+	response, err := (&http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(request)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = response.Body.Close() }()
+	// Older gateways still offer updates over the authenticated connection.
+	if response.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("gateway update selection: %s", response.Status)
+	}
+	var selection Selection
+	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&selection); err != nil {
+		return err
+	}
+	if selection.ID == "" {
+		return nil
+	}
+	if err := selection.Manifest.Validate(); err != nil {
+		return err
+	}
+	if selection.ID != selection.Manifest.ID() {
+		return errors.New("gateway update selection ID does not match manifest")
+	}
+	asset, ok := selection.Manifest.Asset(a.options.Software.OS, a.options.Software.Arch)
+	if !ok {
+		return errors.New("gateway update selection lacks node platform")
+	}
+	a.process(ctx, queuedCommand{"update.offer", Command{ID: selection.ID, Version: selection.Manifest.Version, Asset: asset, ReleaseRepo: selection.ReleaseRepo}})
+	return nil
 }
 
 func (a *Updater) cleanup(ctx context.Context) {
@@ -190,7 +241,7 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 		a.set("downloading", nil)
 		a.report(ctx)
 		path := a.stagePath(command.Asset)
-		err := Download(ctx, &http.Client{Timeout: 2 * time.Minute}, a.options.Gateway+"/v1/updates/blobs/"+command.Asset.SHA256, a.options.Token, path, command.Asset)
+		err := DownloadPreferred(ctx, command.ReleaseRepo, command.Version, a.options.Gateway+"/v1/updates/blobs/"+command.Asset.SHA256, a.options.Token, path, command.Asset)
 		if err == nil {
 			err = ValidateExecutable(ctx, path, command.Version, command.Asset)
 		}

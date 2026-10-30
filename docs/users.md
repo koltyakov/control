@@ -91,7 +91,7 @@ Schema version 7 adds `console_sessions`, storing cookie digests and session met
 
 `CONTROL_TOKEN` on the gateway is an optional bootstrap common key for the legacy fleet only. For a new shared gateway, omit it and configure `CONTROL_SUPERUSER_KEY`, then create separate accounts. Do not give unrelated users the same account key or legacy bootstrap token.
 
-**Upgrade the gateway before upgrading nodes from the pre-isolation version.** New nodes require fleet-aware authentication and refuse an older gateway. Pause automated release polling during this one-time gateway-first upgrade. Subsequent fleet-aware updates use the usual nodes-first managed rollout. SQLite migration cannot be reversed by starting the old executable against stale JSON files.
+**Upgrade the gateway before upgrading nodes from the pre-isolation version.** New nodes require fleet-aware authentication and refuse an older gateway. Pause automated release polling during this one-time migration. Current fleet-aware managed updates also switch the gateway first, followed by nodes; an older coordinator retains its previous rollout order until upgraded. SQLite migration cannot be reversed by starting the old executable against stale JSON files.
 
 To split an old shared pool into new accounts, enroll fresh node identities under those accounts in separate state directories. Existing identities and their task ownership remain in the legacy fleet. For backups, stop the gateway and copy its state directory, including the database and release storage. Node tasks, artifacts, and workspaces remain on their respective machines; executable blobs and rollout state retain their existing filesystem storage.
 

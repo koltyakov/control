@@ -122,6 +122,8 @@ These metrics describe host-visible capacity and usage. They do not implement ta
 
 ## D014: Superuser-authorized gateway updates and idle reservations
 
+The nodes-first order and indefinite disconnected-participant wait are superseded by [D096](#d096-gateway-first-updates-with-deferred-offline-participants). Idle admission and binary verification remain mandatory.
+
 Indefinite node-local binary and previous-selection retention is superseded by [D065](#d065-remove-obsolete-node-binaries-after-successful-startup). Gateway recovery retention remains unchanged.
 
 Same-version update selection and acknowledgements are refined by [D047](#d047-skip-updates-for-unchanged-versions). Authorization and idle reservations remain unchanged.
@@ -827,3 +829,17 @@ Bound D078's explicit reconciliation to eight concurrent child reads, six second
 Persist bounded browser sessions in SQLite schema version 7 rather than signing every user out when an update restarts the gateway. Store only cookie digests with username, password revision, CSRF token, creation time, and last activity. Restore valid sessions without renewing idle or absolute expiry. Recheck account status, password revisions, and operator availability at startup and on authenticated requests. Keep the existing management-route allowlist, cookie security, and browser-to-bearer separation.
 
 Commit sign-in and sign-out with their audit events before issuing or clearing cookies. Password changes delete that login's persisted sessions in the credential transaction. Checkpoint activity at most once per minute per session and flush pending activity on graceful shutdown instead of syncing every poll. After a crash, an idle deadline may be up to one minute earlier, never later. Existing memory-only sessions cannot cross the first upgrade. This supersedes D079's restart-sign-out choice without changing CLI credentials or execution authority. See [console sessions](console.md#credentials-sessions-and-limits).
+
+## D096: Gateway-first updates with deferred offline participants
+
+Stage and verify executable assets before maintenance. Reserve live nodes idle, recheck membership, then switch the gateway's versioned child first. Only a gateway already running the selected build may commit node replacements. This makes coordinator changes available before new nodes start, while retaining durable runtime selection and reservations. Gateway restart still causes a short connection outage; this is not a hot relay handover or permission to replay accepted work. Browser sessions retain D095's restart persistence.
+
+Persist unavailable installation participants as explicitly `deferred` after two minutes offline, matching the maintenance reservation lifetime. Their absence is never an applied acknowledgment. Complete the available fleet and permit later publication without waiting indefinitely for sleeping or unreachable machines. Keep deferred identities visible until fresh selected-software and released-maintenance reports confirm catch-up. Live connections always rejoin coordination, even before their pending marker clears. Persistence failure leaves the participant blocking. The selected manifest remains downloadable for offline nodes, which catch up directly to the current selection when they return.
+
+Add authenticated `GET /v1/updates` exposing only the selected ID and manifest, not fleet or rollout identities. Nodes query it on startup, stage their verified platform asset, then use existing gateway prepare/commit authorization and idle admission. Failed or unsupported startup queries retain authenticated connection offers as recovery. Standalone CLI/MCP processes are still not managed nodes. This supersedes D014's nodes-first order and indefinite offline wait without weakening superuser publication, checksums, work admission, or task durability. See [managed updates](updates.md).
+
+## D097: Exact GitHub release delivery with gateway fallback
+
+Treat download location separately from the selected deployment. A managed node first checks the tag-pinned GitHub manifest and signature in the gateway-supplied `releaseRepo`. Use public executable bytes only when the signed manifest has the same version and exact platform asset as the authenticated gateway selection. Verify bytes and executable metadata as before. Missing, different, invalid, or unavailable public releases fall back to the gateway without changing versions or accepting different checksums. Bound release metadata/signature work to ten seconds and public binary download to one minute; parent cancellation stops both sources rather than starting fallback.
+
+Keep every selected platform asset on the gateway, whether published by `make update` or fetched from a release. This permits private releases and public-network outages without giving nodes the gateway's GitHub token. Never send fleet credentials to GitHub, and refuse redirects for authenticated gateway downloads. Offer and startup-selection metadata carry only an optional repository name, never a caller-selected URL or credential. Old nodes ignore it, and absent metadata keeps gateway-only delivery. This extends D078's signed release trust and D096's startup catch-up without changing publication authority, update order, or idle admission. See [managed delivery](updates.md).

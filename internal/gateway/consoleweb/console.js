@@ -1108,9 +1108,12 @@ function renderUpdates(result) {
         "No selected deployment",
         "Publish a bundle through the CLI or check for a stable release.",
       );
-  const rows = Object.entries(result.nodes || {}).map(([id, s]) => {
+  const deferred = new Set(d?.deferred || []);
+  const acknowledgments = { ...result.nodes };
+  for (const id of deferred) acknowledgments[id] ||= {};
+  const rows = Object.entries(acknowledgments).map(([id, s]) => {
     const name = state.snapshot?.nodes.find((n) => n.id === id)?.name;
-    return `<tr><td>${name ? `<strong>${esc(name)}</strong><small class="mono muted id-line">${esc(id.slice(0, 16))}</small>` : `<span class="mono">${esc(id)}</span>`}</td><td>${esc(s.software?.version)}</td><td>${esc(s.state ? s.state[0].toUpperCase() + s.state.slice(1) : "")}</td><td>${s.paused ? "Paused" : "Open"}</td><td${s.error ? "" : ' class="muted"'}>${esc(s.error || "None")}</td></tr>`;
+    return `<tr><td>${name ? `<strong>${esc(name)}</strong><small class="mono muted id-line">${esc(id.slice(0, 16))}</small>` : `<span class="mono">${esc(id)}</span>`}</td><td>${esc(s.software?.version)}</td><td>${deferred.has(id) ? "Deferred, awaiting confirmation" : esc(s.state ? s.state[0].toUpperCase() + s.state.slice(1) : "")}</td><td>${deferred.has(id) ? "Unknown" : s.paused ? "Paused" : "Open"}</td><td${s.error ? "" : ' class="muted"'}>${esc(s.error || "None")}</td></tr>`;
   });
   return (
     panel(
@@ -1118,7 +1121,7 @@ function renderUpdates(result) {
       body,
       '<button class="secondary compact" data-action="check-release">Check for release</button>',
     ) +
-    '<p class="notice">Updates cover all fleets and wait for idle reservations. Publish development bundles with <code>control update push DIR</code>. Browser access does not bypass binary verification or maintenance admission.</p>' +
+    `<p class="notice">Updates cover all fleets and wait for idle reservations. ${deferred.size ? `${deferred.size} offline participant(s) deferred; they will update when they reconnect. ` : ""}Publish development bundles with <code>control update push DIR</code>. Browser access does not bypass binary verification or maintenance admission.</p>` +
     (rows.length
       ? panel(
           "Node acknowledgments",

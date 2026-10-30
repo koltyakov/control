@@ -39,13 +39,22 @@ type Deployment struct {
 	Error        string    `json:"error,omitempty"`
 	UpdatedAt    time.Time `json:"updatedAt"`
 	Participants []string  `json:"participants,omitempty"`
+	Deferred     []string  `json:"deferred,omitempty"`
+}
+
+// Selection exposes software metadata without cross-fleet rollout identities.
+type Selection struct {
+	ID          string   `json:"id"`
+	Manifest    Manifest `json:"manifest"`
+	ReleaseRepo string   `json:"releaseRepo,omitempty"`
 }
 
 type Command struct {
-	ID         string    `json:"id"`
-	Version    string    `json:"version,omitempty"`
-	Asset      Asset     `json:"asset,omitempty"`
-	LeaseUntil time.Time `json:"leaseUntil,omitempty"`
+	ID          string    `json:"id"`
+	Version     string    `json:"version,omitempty"`
+	Asset       Asset     `json:"asset,omitempty"`
+	LeaseUntil  time.Time `json:"leaseUntil,omitempty"`
+	ReleaseRepo string    `json:"releaseRepo,omitempty"`
 }
 
 type Status struct {

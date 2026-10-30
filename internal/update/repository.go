@@ -94,6 +94,7 @@ func (r *Repository) Current() *Deployment {
 	copy := *r.current
 	copy.Manifest.Assets = append([]Asset(nil), copy.Manifest.Assets...)
 	copy.Participants = append([]string(nil), copy.Participants...)
+	copy.Deferred = append([]string(nil), copy.Deferred...)
 	return &copy
 }
 
@@ -149,6 +150,34 @@ func (r *Repository) BeginInstall(id string, participants []string) error {
 	copy := *r.current
 	copy.Phase, copy.Error, copy.UpdatedAt = "installing", "", time.Now().UTC()
 	copy.Participants = append([]string(nil), participants...)
+	// Keep deferred identities visible until they acknowledge the selected build.
+	for _, deferred := range copy.Deferred {
+		found := false
+		for _, participant := range copy.Participants {
+			found = found || participant == deferred
+		}
+		if !found {
+			copy.Participants = append(copy.Participants, deferred)
+		}
+	}
+	if err := store.Write(filepath.Join(r.dir, "deployment.json"), &copy); err != nil {
+		return err
+	}
+	r.current = &copy
+	return nil
+}
+
+// SetDeferred records unavailable participants without claiming their updates
+// succeeded. The selected manifest remains available when they reconnect.
+func (r *Repository) SetDeferred(id string, deferred []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.current == nil || r.current.ID != id {
+		return errors.New("update superseded")
+	}
+	copy := *r.current
+	copy.Deferred = append([]string(nil), deferred...)
+	// Deferral is observation, not a new installation or renewed grace period.
 	if err := store.Write(filepath.Join(r.dir, "deployment.json"), &copy); err != nil {
 		return err
 	}

@@ -153,6 +153,8 @@ Compose tests run a gateway, three nodes, and an FFmpeg workflow over WebRTC and
 
 `control update` updates the CLI from GitHub Releases. Managed node restarts wait for idle reservations. With saved superuser authorization, `make update` pushes a development bundle to the gateway and nodes; `make update-status` tracks it. See [managed updates](docs/updates.md).
 
+Managed rollouts switch the gateway first, then nodes. Offline nodes catch up on startup without blocking the available fleet indefinitely. Nodes prefer an exact signed GitHub release and use the gateway's retained bundle when GitHub is unavailable or its assets differ.
+
 ## Documentation
 
 - [Linux VPS gateway](docs/gateway.md), [gateway behind expose](docs/expose.md), [installation and enrollment](docs/installation.md), [users and private fleets](docs/users.md), [authority and delegation](docs/delegation.md).
