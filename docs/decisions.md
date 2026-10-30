@@ -706,6 +706,8 @@ The gateway release fetcher and CLI updater verify the signed manifest with Sigs
 
 ## D079: Embedded management console with separate browser authority
 
+Memory-only sessions and restart sign-out are superseded by [D095](#d095-browser-sessions-survive-gateway-updates). Browser authority and credential separation remain unchanged.
+
 Serve a management console from the gateway's existing HTTP listener and embed all static assets in the Go binary. Use native browser JavaScript and CSS without a frontend build or runtime service. Read cached gateway health instead of adding peer observation, task scheduling, or application execution to the gateway.
 
 Add separately provisioned Argon2id browser passwords bound to existing immutable account IDs in SQLite schema version 5. Use `@operator` for the separately provisioned superuser browser login. Existing bearer keys, account roles, fleet isolation, and CLI/MCP behavior stay unchanged. There is no public signup or default password. This extends D016's account credentials without replacing its bearer authentication.
@@ -819,3 +821,9 @@ Make loaded dedicated memory the primary console bar and sort value, keeping com
 Treat MCP `isError` results as provider failures while retaining the original result in durable tasks. A successful MCP protocol exchange can still report failed execution; treating it as task success incorrectly released dependent workflow steps. Synchronous callers receive `mcp_tool_failed` with unknown outcome and a bounded diagnostic. This refines D006's MCP adapter contract without retrying calls or discarding partial task output.
 
 Bound D078's explicit reconciliation to eight concurrent child reads, six seconds per child and thirty seconds overall. Preserve plan order, include structured bounded query errors and retain healthy observations when other children time out. Caller cancellation joins the readers. Keep ordinary owner-authorized `tasks.get` queries for compatibility; this still transfers full child records from workers, though reports retain only summaries. No grants, task submissions or parent-state changes are introduced. See [recovery behavior](protocol.md#bounded-task-results-and-recovery).
+
+## D095: Browser sessions survive gateway updates
+
+Persist bounded browser sessions in SQLite schema version 7 rather than signing every user out when an update restarts the gateway. Store only cookie digests with username, password revision, CSRF token, creation time, and last activity. Restore valid sessions without renewing idle or absolute expiry. Recheck account status, password revisions, and operator availability at startup and on authenticated requests. Keep the existing management-route allowlist, cookie security, and browser-to-bearer separation.
+
+Commit sign-in and sign-out with their audit events before issuing or clearing cookies. Password changes delete that login's persisted sessions in the credential transaction. Checkpoint activity at most once per minute per session and flush pending activity on graceful shutdown instead of syncing every poll. After a crash, an idle deadline may be up to one minute earlier, never later. Existing memory-only sessions cannot cross the first upgrade. This supersedes D079's restart-sign-out choice without changing CLI credentials or execution authority. See [console sessions](console.md#credentials-sessions-and-limits).

@@ -40,6 +40,7 @@ type consolePassword struct {
 type consoleSession struct {
 	Username, Revision, CSRF string
 	Created, Seen            time.Time
+	saved                    time.Time
 }
 
 type consoleAttempt struct {
@@ -48,7 +49,7 @@ type consoleAttempt struct {
 }
 
 type consoleState struct {
-	// Password records use g.mu and the gateway transaction discipline.
+	// Passwords and sessions use g.mu and the gateway transaction discipline.
 	passwords map[string]consolePassword
 	mu        sync.Mutex
 	sessions  map[string]consoleSession
@@ -123,13 +124,19 @@ func (g *Gateway) consoleRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /console/api/session", g.consoleHeaders(http.HandlerFunc(g.consoleWhoami)))
 	mux.Handle("POST /console/api/logout", g.consoleHeaders(g.consoleGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
-		// Signing out still proceeds if its record cannot be written.
-		_ = g.commit(change{audit: []AuditEvent{g.auditEventLocked(r, "", "session.signout", "", "", "")}})
-		g.mu.Unlock()
 		cookie, _ := r.Cookie(g.consoleCookieName(r))
-		g.console.mu.Lock()
-		delete(g.console.sessions, tokenHash(cookie.Value))
-		g.console.mu.Unlock()
+		key := tokenHash(cookie.Value)
+		old := g.console.sessions[key]
+		delete(g.console.sessions, key)
+		err := g.commit(change{sessions: []string{key}, audit: []AuditEvent{g.auditEventLocked(r, "", "session.signout", "", "", "")}})
+		if err != nil {
+			g.console.sessions[key] = old
+		}
+		g.mu.Unlock()
+		if err != nil {
+			http.Error(w, "could not persist sign-out; try again", http.StatusInternalServerError)
+			return
+		}
 		g.consoleSetCookie(w, r, "", -1)
 		w.WriteHeader(http.StatusNoContent)
 	}))))
@@ -219,31 +226,23 @@ func (g *Gateway) consoleSession(r *http.Request) (consoleContext, consoleSessio
 		return consoleContext{}, consoleSession{}, false
 	}
 	key, now := tokenHash(cookie.Value), time.Now()
-	g.console.mu.Lock()
-	s, ok := g.console.sessions[key]
-	if ok && (now.Sub(s.Seen) >= 30*time.Minute || now.Sub(s.Created) >= 12*time.Hour) {
-		delete(g.console.sessions, key)
-		ok = false
-	}
-	if ok {
-		s.Seen = now
-		g.console.sessions[key] = s
-	}
-	g.console.mu.Unlock()
-	if !ok {
-		return consoleContext{}, s, false
-	}
 	g.mu.Lock()
-	p, exists := g.console.passwords[s.Username]
-	u := g.users[p.UserID]
-	valid := exists && p.Revision == s.Revision && !u.Disabled && u.ID != "" && (p.Role == "user" || (p.Role == "superuser" && g.superuser != ""))
-	g.mu.Unlock()
-	if !valid {
-		g.console.mu.Lock()
-		delete(g.console.sessions, key)
-		g.console.mu.Unlock()
+	defer g.mu.Unlock()
+	s, ok := g.console.sessions[key]
+	if !ok || !g.validConsoleSession(s, now) {
 		return consoleContext{}, s, false
 	}
+	s.Seen = now
+	g.console.sessions[key] = s
+	// Checkpoint activity at most once a minute, not on every console poll.
+	// A failed checkpoint never advances the durable idle deadline.
+	if now.Sub(s.saved) >= time.Minute {
+		if err := g.commit(change{sessions: []string{key}}); err == nil {
+			s.saved = now
+			g.console.sessions[key] = s
+		}
+	}
+	p := g.console.passwords[s.Username]
 	return consoleContext{principal: principal{Role: p.Role, UserID: p.UserID}, Username: s.Username, Revision: s.Revision}, s, true
 }
 
@@ -346,37 +345,56 @@ func (g *Gateway) consoleLogin(w http.ResponseWriter, r *http.Request) {
 		g.counters.authFailures.Add(1)
 		g.mu.Lock()
 		// A failed write must not change the response an attacker observes.
-		_ = g.recordSignInLocked(r, q.Username, p.UserID, false)
+		_ = g.commit(change{audit: []AuditEvent{signInEvent(r, q.Username, p.UserID, false)}})
 		g.mu.Unlock()
 		http.Error(w, "incorrect username or password", http.StatusUnauthorized)
 		return
 	}
 	g.mu.Lock()
-	err := g.recordSignInLocked(r, q.Username, p.UserID, true)
-	g.mu.Unlock()
-	if err != nil {
-		http.Error(w, "could not record sign-in", http.StatusInternalServerError)
+	defer g.mu.Unlock()
+	if g.console.passwords[q.Username].Revision != p.Revision || g.users[p.UserID].Disabled {
+		http.Error(w, "account changed; sign in again", http.StatusUnauthorized)
 		return
 	}
 	now := time.Now()
 	secret := consoleSecret()
-	s := consoleSession{Username: q.Username, Revision: p.Revision, CSRF: consoleSecret(), Created: now, Seen: now}
-	g.console.mu.Lock()
-	for key, session := range g.console.sessions {
-		if now.Sub(session.Seen) >= 30*time.Minute || now.Sub(session.Created) >= 12*time.Hour {
+	s := consoleSession{Username: q.Username, Revision: p.Revision, CSRF: consoleSecret(), Created: now, Seen: now, saved: now}
+	removed := map[string]consoleSession{}
+	remove := func(key string) {
+		if session, ok := g.console.sessions[key]; ok {
+			removed[key] = session
 			delete(g.console.sessions, key)
 		}
 	}
-	if cookie, err := r.Cookie(g.consoleCookieName(r)); err == nil {
-		delete(g.console.sessions, tokenHash(cookie.Value))
+	for key, session := range g.console.sessions {
+		if !g.validConsoleSession(session, now) {
+			remove(key)
+		}
 	}
+	if cookie, err := r.Cookie(g.consoleCookieName(r)); err == nil {
+		remove(tokenHash(cookie.Value))
+	}
+	defer func() {
+		for key, session := range removed {
+			g.console.sessions[key] = session
+		}
+	}()
 	if len(g.console.sessions) >= 4096 {
-		g.console.mu.Unlock()
 		http.Error(w, "session limit reached", http.StatusTooManyRequests)
 		return
 	}
-	g.console.sessions[tokenHash(secret)] = s
-	g.console.mu.Unlock()
+	key := tokenHash(secret)
+	g.console.sessions[key] = s
+	changed := []string{key}
+	for hash := range removed {
+		changed = append(changed, hash)
+	}
+	if err := g.commit(change{sessions: changed, audit: []AuditEvent{signInEvent(r, q.Username, p.UserID, true)}}); err != nil {
+		delete(g.console.sessions, key)
+		http.Error(w, "could not persist sign-in", http.StatusInternalServerError)
+		return
+	}
+	clear(removed)
 	g.consoleSetCookie(w, r, secret, 12*60*60)
 	consoleJSON(w, map[string]any{"username": q.Username, "role": p.Role, "userId": p.UserID, "csrf": s.CSRF})
 }
@@ -450,12 +468,10 @@ func (g *Gateway) consolePasswordHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not persist password", http.StatusInternalServerError)
 		return
 	}
-	g.console.mu.Lock()
 	for key, session := range g.console.sessions {
 		if session.Username == username {
 			delete(g.console.sessions, key)
 		}
 	}
-	g.console.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -4,6 +4,8 @@
 
 The gateway accepts development bundles and can poll GitHub Releases. It distributes the selected platform binary across all user fleets, waits for idle nodes, restarts the nodes, then restarts itself. Offline nodes receive the current deployment when they reconnect. Publication and global rollout status are restricted to the gateway superuser; user-account and common keys cannot access them.
 
+Valid web-console logins survive the gateway restart. Their existing 30-minute idle and 12-hour absolute expiry still apply. The first upgrade from a memory-only session version requires signing in once more; later updates retain sessions. CLI saved credentials are unchanged. See [browser sessions](console.md#credentials-sessions-and-limits).
+
 CLI/MCP client sessions are not managed fleet nodes. Their platforms do not constrain the release bundle, they do not receive update commands, and they are excluded from rollout participants and the gateway's machine-reservation count. Work accepted on their destination nodes is still included in those nodes' idle checks. Upgrade the CLI with `control update`. The gateway and target nodes must both support client sessions before standalone execution can use them; see [standalone usage](installation.md#standalone-cli-and-mcp) and [terminology](terminology.md).
 
 [Hybrid installations](installation.md#hybrid-user-and-system-contexts) have two managed node profiles. Each owns its idle reservation, staged binaries, supervisor, task state, and restart. Updating one context does not restart the other, and an offline User context is not replaced by System execution. Publish new installers with `--hybrid-system` support before offering Hybrid invitations.

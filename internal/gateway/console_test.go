@@ -238,7 +238,7 @@ func TestConsoleExpiryThrottlingAndHeaders(t *testing.T) {
 	for _, absolute := range []bool{false, true} {
 		b := browserLogin(t, s.URL, "alice", browserPassword)
 		key := tokenHash(b.Cookie.Value)
-		g.console.mu.Lock()
+		g.mu.Lock()
 		session := g.console.sessions[key]
 		if absolute {
 			session.Created = time.Now().Add(-13 * time.Hour)
@@ -246,7 +246,7 @@ func TestConsoleExpiryThrottlingAndHeaders(t *testing.T) {
 			session.Seen = time.Now().Add(-31 * time.Minute)
 		}
 		g.console.sessions[key] = session
-		g.console.mu.Unlock()
+		g.mu.Unlock()
 		b.request(t, "GET", "/console/api/session", nil, 401)
 	}
 	b := testBrowser{URL: s.URL}
@@ -360,7 +360,7 @@ func TestConsolePasswordPersistenceAndRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`DROP TABLE console_passwords; PRAGMA user_version=4;`); err != nil {
+	if _, err := db.Exec(`DROP TABLE console_sessions; DROP TABLE console_passwords; PRAGMA user_version=4;`); err != nil {
 		t.Fatal(err)
 	}
 	_ = db.Close()

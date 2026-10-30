@@ -39,7 +39,7 @@ func (g *Gateway) openDatabase(dir string) error {
 	if err = g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 6 {
+	if version > 7 {
 		return errors.New("gateway database is newer than this executable")
 	}
 	if version == 0 {
@@ -64,8 +64,8 @@ CREATE TABLE client_identities (id TEXT PRIMARY KEY REFERENCES identities(id), d
 CREATE TABLE client_transports (id TEXT PRIMARY KEY REFERENCES identities(id), owner_id TEXT NOT NULL REFERENCES client_identities(id), data BLOB NOT NULL);
 CREATE INDEX client_identity_prefix ON client_identities(substr(id,1,16));
 CREATE TABLE console_passwords (username TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL);
-` + auditSchema + `
-PRAGMA user_version=6;`); err != nil {
+` + auditSchema + consoleSessionSchema + `
+PRAGMA user_version=7;`); err != nil {
 			return err
 		}
 		if err = g.writeState(tx); err != nil {
@@ -136,6 +136,20 @@ PRAGMA user_version=6;`); err != nil {
 		}
 		defer func() { _ = tx.Rollback() }()
 		if _, err := tx.Exec(auditSchema + ` PRAGMA user_version=6;`); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		version = 6
+	}
+	if version == 6 {
+		tx, err := g.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(consoleSessionSchema + ` PRAGMA user_version=7;`); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
@@ -269,7 +283,7 @@ func (g *Gateway) persist() error {
 type change struct {
 	users, identities, clients, transports  []string
 	nodes, keys, invitations, machineStates []string
-	passwords                               []string
+	passwords, sessions                     []string
 	// audit events commit in the same transaction as the change they describe.
 	audit []AuditEvent
 }
@@ -307,6 +321,18 @@ func (g *Gateway) writeChange(tx *sql.Tx, c change) error {
 	for _, username := range c.passwords {
 		p := g.console.passwords[username]
 		if err := exec(`INSERT INTO console_passwords(username,user_id,data) VALUES(?,?,?) ON CONFLICT(username) DO UPDATE SET data=excluded.data`, username, p.UserID, model.JSON(p)); err != nil {
+			return err
+		}
+		if err := exec(`DELETE FROM console_sessions WHERE json_extract(data,'$.Username')=?`, username); err != nil {
+			return err
+		}
+	}
+	for _, hash := range c.sessions {
+		if s, ok := g.console.sessions[hash]; ok {
+			if err := exec(`INSERT INTO console_sessions(hash,data) VALUES(?,?) ON CONFLICT(hash) DO UPDATE SET data=excluded.data`, hash, model.JSON(s)); err != nil {
+				return err
+			}
+		} else if err := exec(`DELETE FROM console_sessions WHERE hash=?`, hash); err != nil {
 			return err
 		}
 	}

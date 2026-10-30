@@ -258,10 +258,10 @@ func osName(os string) string {
 	return os
 }
 
-// recordSignIn persists a browser sign-in attempt. These requests carry no
+// signInEvent describes a browser sign-in attempt. These requests carry no
 // session yet, so the attempted login is the actor. Unknown logins belong to
 // the operator's history. Caller holds g.mu.
-func (g *Gateway) recordSignInLocked(r *http.Request, username, userID string, ok bool) error {
+func signInEvent(r *http.Request, username, userID string, ok bool) AuditEvent {
 	e := AuditEvent{At: time.Now().UTC(), UserID: userID, Actor: clip(username, 64), Via: "browser", Action: "session.signin", SourceIP: sourceIP(r)}
 	if !ok {
 		e.Action = auditSignInFailed
@@ -269,7 +269,7 @@ func (g *Gateway) recordSignInLocked(r *http.Request, username, userID string, o
 	if e.UserID == "" {
 		e.UserID = legacyUser
 	}
-	return g.commit(change{audit: []AuditEvent{e}})
+	return e
 }
 
 // Deployments persist in the update store, not SQLite, so their record follows

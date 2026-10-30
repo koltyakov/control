@@ -200,6 +200,11 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 		_ = lock.Close()
 		return nil, err
 	}
+	if err := g.loadConsoleSessions(); err != nil {
+		_ = g.db.Close()
+		_ = lock.Close()
+		return nil, err
+	}
 	g.updates, err = update.OpenRepository(filepath.Join(dir, "updates"))
 	if err != nil {
 		_ = g.db.Close()
@@ -704,6 +709,10 @@ func (g *Gateway) Close() error {
 		g.updateWG.Wait()
 	}
 	g.mu.Lock()
+	var sessionErr error
+	if !g.closed {
+		sessionErr = g.checkpointConsoleSessions()
+	}
 	g.closed = true
 	peers := make([]*connection, 0, len(g.peers))
 	for _, c := range g.peers {
@@ -718,7 +727,7 @@ func (g *Gateway) Close() error {
 		_ = g.db.Close()
 	}
 	_ = g.lock.Close()
-	return nil
+	return sessionErr
 }
 
 func URL(base, path string) string {
