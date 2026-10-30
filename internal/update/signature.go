@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/sigstore/sigstore-go/pkg/bundle"
@@ -26,7 +28,7 @@ func VerifyReleaseManifest(ctx context.Context, repository, tag string, manifest
 	if err := b.UnmarshalJSON(proof); err != nil {
 		return fmt.Errorf("release signature bundle: %w", err)
 	}
-	opts := tuf.DefaultOptions().WithContext(ctx).WithDisableLocalCache().WithFetcher(trustFetcher{ctx})
+	opts := tuf.DefaultOptions().WithContext(ctx).WithDisableLocalCache().WithFetcher(trustFetcher{ctx: ctx})
 	trusted, err := root.FetchTrustedRootWithOptions(opts)
 	if err != nil {
 		return fmt.Errorf("sigstore trust roots: %w", err)
@@ -53,14 +55,42 @@ func verifyReleaseBundle(ctx context.Context, trusted root.TrustedMaterial, repo
 	return ctx.Err()
 }
 
-type trustFetcher struct{ ctx context.Context }
+type trustFetcher struct {
+	ctx    context.Context
+	client *http.Client
+}
 
 func (f trustFetcher) DownloadFile(target string, limit int64, _ time.Duration) ([]byte, error) {
+	client := f.client
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	data, err := f.download(client, target, limit)
+	if err == nil || f.ctx.Err() != nil {
+		return data, err
+	}
+	var status *metadata.ErrDownloadHTTP
+	var network *url.Error
+	retry := errors.As(err, &network)
+	if errors.As(err, &status) {
+		retry = status.StatusCode == http.StatusForbidden || status.StatusCode == http.StatusRequestTimeout || status.StatusCode == http.StatusTooManyRequests || status.StatusCode >= http.StatusInternalServerError
+	}
+	u, parseErr := url.Parse(target)
+	if !retry || parseErr != nil || u.Scheme != "https" || u.Host != "tuf-repo-cdn.sigstore.dev" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !strings.HasPrefix(u.Path, "/") {
+		return nil, err
+	}
+	// Sigstore publishes the same signed TUF repository here before promoting
+	// it to the CDN. This changes transport only: the TUF updater still verifies
+	// every root rotation, metadata signature, expiry, and target digest.
+	return f.download(client, "https://sigstore.github.io/root-signing"+u.EscapedPath(), limit)
+}
+
+func (f trustFetcher) download(client *http.Client, target string, limit int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(f.ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,15 +25,62 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+var fixedTunnelPort atomic.Uint32
+
 func fixedTunnelAddress(t *testing.T) string {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	// Fixed test listeners must survive restarts. Ports from Listen(:0) overlap
+	// outbound ephemeral sockets and can be reclaimed while the listener is down.
+	for range 20000 {
+		port := 10000 + (fixedTunnelPort.Add(1)-1)%20000
+		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			continue
+		}
+		address := listener.Addr().String()
+		_ = listener.Close()
+		return address
 	}
-	address := l.Addr().String()
-	_ = l.Close()
-	return address
+	t.Fatal("no fixed tunnel test port available outside the ephemeral range")
+	return ""
+}
+
+func TestTunnelServiceEndpointAvoidsRetainedForwardPorts(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "0.0.0.0", "::"} {
+		t.Run(host, func(t *testing.T) {
+			reserved, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = reserved.Close() }()
+			available, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = available.Close() }()
+			_, port, _ := net.SplitHostPort(reserved.Addr().String())
+			m := &tunnelService{entries: map[string]*retainedTunnel{
+				"forward": {info: PersistentTunnelInfo{PersistentTunnelSpec: PersistentTunnelSpec{ForwardSpec: ForwardSpec{Listen: net.JoinHostPort(host, port)}}}},
+			}}
+			attempts := 0
+			listener, err := m.listenEndpoint(func(network, address string) (net.Listener, error) {
+				attempts++
+				if network != "tcp" || address != "127.0.0.1:0" {
+					t.Fatal("management endpoint was not loopback-only", network, address)
+				}
+				if attempts == 1 {
+					return reserved, nil
+				}
+				return available, nil
+			})
+			if err != nil || listener != available || attempts != 2 {
+				t.Fatal("management endpoint stole a retained forward port", attempts, err)
+			}
+			if _, err := reserved.Accept(); !errors.Is(err, net.ErrClosed) {
+				t.Fatal("rejected endpoint candidate was not released", err)
+			}
+		})
+	}
 }
 
 func waitPersistent(t *testing.T, ctx context.Context, c Client, count int) []PersistentTunnelInfo {

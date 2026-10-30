@@ -70,7 +70,7 @@ func RunTunnelService(ctx context.Context, dir string) error {
 		return err
 	}
 	defer m.close()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := m.listenEndpoint(net.Listen)
 	if err != nil {
 		return err
 	}
@@ -89,6 +89,39 @@ func RunTunnelService(ctx context.Context, dir string) error {
 		return nil
 	}
 	return err
+}
+
+// Retained local forwards may not have rebound yet during startup. Keep the
+// ephemeral management listener from taking one of their fixed ports.
+func (m *tunnelService) listenEndpoint(listen func(string, string) (net.Listener, error)) (net.Listener, error) {
+	m.mu.Lock()
+	reserved := map[string]bool{}
+	for _, entry := range m.entries {
+		if !entry.info.Reverse {
+			_, port, _ := net.SplitHostPort(entry.info.Listen)
+			reserved[port] = true
+		}
+	}
+	m.mu.Unlock()
+	var held []net.Listener
+	defer func() {
+		for _, listener := range held {
+			_ = listener.Close()
+		}
+	}()
+	// Holding rejected candidates prevents the kernel from picking them again.
+	for range len(reserved) + 1 {
+		listener, err := listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, err
+		}
+		_, port, _ := net.SplitHostPort(listener.Addr().String())
+		if !reserved[port] {
+			return listener, nil
+		}
+		held = append(held, listener)
+	}
+	return nil, errors.New("could not allocate tunnel service endpoint outside retained ports")
 }
 
 func newTunnelService(ctx context.Context, dir string, cfg StandaloneConfig) (*tunnelService, error) {

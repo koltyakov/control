@@ -60,6 +60,8 @@ State lives under `tunnels/<login scope>/` in the Control configuration director
 
 When restarting a stopped service, the client waits for its previous owner to release the runtime lock before launching a replacement. Shutdown keeps the endpoint file until owned forwards have stopped. Closing a reverse listener still requires the close to reach the worker, so its remote port can take a short time to be released.
 
+The service's ephemeral management port excludes retained local forward ports, including wildcard listener addresses. A restarting service cannot take a forward's fixed port before that forward has rebound. Ports held by unrelated processes still report a conflict and retry normally.
+
 `service.json` contains the selected account credential and ICE configuration; `tunnels.json` contains desired definitions and absolute expiries. Both are atomically written private files with mode `0600` on Unix. Windows uses the configuration directory's inherited ACLs. Keep the directory outside worker-accessible workspaces and protect it as you protect the saved login. A service lock prevents duplicate runtimes; a startup lock serializes competing launches. The local management API binds only `127.0.0.1`, authenticates with a random private endpoint token, refuses redirects, bounds requests, and exposes no generic execution or credential-read operation. Inspect `service.log` for startup failures.
 
 At most 32 retained tunnels and 128 simultaneous sockets per tunnel are supported. User-service entries remain when the last definition is disposed, but an empty service opens no account peer sessions. Keep the executable at the registered path, normally the installed CLI path, for restart recovery.
