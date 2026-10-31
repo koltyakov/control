@@ -28,6 +28,7 @@ const updateStatusFreshness = 8 * time.Second
 const updateReconnectGrace = 2 * time.Minute
 
 type Options struct {
+	Limits          Limits
 	STUNServers     []string
 	PublicURL       string
 	SuperuserKey    string

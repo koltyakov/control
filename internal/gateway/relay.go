@@ -13,7 +13,8 @@ import (
 const (
 	// relayQueuePackets bounds queued packets per destination connection.
 	relayQueuePackets = 1024
-	// relayQueueBytes bounds queued relay payload per destination connection.
+	// relayQueueBytes bounds retained packets per production destination,
+	// including signaling and writes in progress.
 	relayQueueBytes = 8 << 20
 )
 
@@ -31,14 +32,25 @@ type counters struct {
 
 // GatewayMetrics is the superuser diagnostic snapshot.
 type GatewayMetrics struct {
-	ConnectedMachines int   `json:"connectedMachines"`
-	ConnectedClients  int   `json:"connectedClients"`
-	QueuedRelayBytes  int64 `json:"queuedRelayBytes"`
-	Connects          int64 `json:"connects"`
-	Disconnects       int64 `json:"disconnects"`
-	AuthFailures      int64 `json:"authFailures"`
-	RelayPackets      int64 `json:"relayPackets"`
-	RelayBytes        int64 `json:"relayBytes"`
+	Limits                   Limits  `json:"limits"`
+	AdmittedConnections      int     `json:"admittedConnections"`
+	ActiveHandshakes         int     `json:"activeHandshakes"`
+	QueuedPacketBytes        int64   `json:"queuedPacketBytes"`
+	PeakQueuedPacketBytes    int64   `json:"peakQueuedPacketBytes"`
+	AdmissionRejects         int64   `json:"admissionRejects"`
+	NewIdentityRejects       int64   `json:"newIdentityRejects"`
+	PacketQueueRejects       int64   `json:"packetQueueRejects"`
+	HandshakeCount           int64   `json:"handshakeCount"`
+	HandshakeDurationSeconds float64 `json:"handshakeDurationSeconds"`
+	PacketWriteFailures      int64   `json:"packetWriteFailures"`
+	ConnectedMachines        int     `json:"connectedMachines"`
+	ConnectedClients         int     `json:"connectedClients"`
+	QueuedRelayBytes         int64   `json:"queuedRelayBytes"`
+	Connects                 int64   `json:"connects"`
+	Disconnects              int64   `json:"disconnects"`
+	AuthFailures             int64   `json:"authFailures"`
+	RelayPackets             int64   `json:"relayPackets"`
+	RelayBytes               int64   `json:"relayBytes"`
 	// RelayOverflows counts relay sessions closed because their destination's
 	// queue was full. The destination's gateway connection stays open.
 	RelayOverflows int64 `json:"relayOverflows"`
@@ -53,6 +65,14 @@ func (g *Gateway) metricsHandler(w http.ResponseWriter, _ *http.Request) {
 		RelayBytes: g.counters.relayBytes.Load(), RelayOverflows: g.counters.relayOverflows.Load(),
 		RelayDropped: g.counters.relayDropped.Load(),
 	}
+	a := g.admission
+	a.mu.Lock()
+	m.Limits, m.AdmittedConnections, m.ActiveHandshakes = a.limits, a.connections, a.handshakes
+	a.mu.Unlock()
+	m.QueuedPacketBytes, m.PeakQueuedPacketBytes = a.packets.used.Load(), a.packets.peak.Load()
+	m.AdmissionRejects, m.NewIdentityRejects, m.PacketQueueRejects = a.rejected.Load(), a.identityRejected.Load(), a.queueRejected.Load()
+	m.HandshakeCount, m.HandshakeDurationSeconds = a.handshakeCount.Load(), float64(a.handshakeNanos.Load())/1e9
+	m.PacketWriteFailures = a.writeFailures.Load()
 	g.routeMu.RLock()
 	for _, c := range g.routes {
 		if c.client {
@@ -82,6 +102,9 @@ func (g *Gateway) route(to, userID string) *connection {
 // enqueue offers a packet to a connection's writer without blocking the
 // sender's read loop. Relay payload is bounded in bytes as well as packets.
 func (c *connection) enqueue(p *protocol.Packet) bool {
+	if c.queues != nil {
+		return c.enqueueBounded(p)
+	}
 	if c.relay != nil && (p.Kind == "data" || p.Kind == "close" || p.Kind == "offline") {
 		// Reserve diagnostic bytes before the writer can consume the packet.
 		if p.Kind == "data" {

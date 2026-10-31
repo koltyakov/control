@@ -46,7 +46,7 @@ func (c *connection) writePackets(ctx context.Context) {
 		if priorityBurst < 8 {
 			select {
 			case packet := <-c.out:
-				if err := c.writePacket(ctx, packet); err != nil {
+				if err := c.writeQueuedPacket(ctx, packet); err != nil {
 					return
 				}
 				priorityBurst++
@@ -66,14 +66,11 @@ func (c *connection) writePackets(ctx context.Context) {
 				deadline, pending = nil, ""
 			}
 		case packet := <-c.out:
-			if err := c.writePacket(ctx, packet); err != nil {
+			if err := c.writeQueuedPacket(ctx, packet); err != nil {
 				return
 			}
 		case packet := <-c.outData:
-			if packet.Kind == "data" {
-				c.queued.Add(-int64(len(packet.Data)))
-			}
-			if err := c.writePacket(ctx, packet); err != nil {
+			if err := c.writeQueuedPacket(ctx, packet); err != nil {
 				return
 			}
 		case <-relayReady:
@@ -81,10 +78,7 @@ func (c *connection) writePackets(ctx context.Context) {
 			if packet == nil {
 				continue
 			}
-			if packet.Kind == "data" {
-				c.queued.Add(-int64(len(packet.Data)))
-			}
-			if err := c.writePacket(ctx, packet); err != nil {
+			if err := c.writeQueuedPacket(ctx, packet); err != nil {
 				return
 			}
 		case <-ticker.C:

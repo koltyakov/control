@@ -2,7 +2,7 @@
 
 [README](../README.md) · [Installation](installation.md) · [Architecture](architecture.md) · [Protocol](protocol.md)
 
-One gateway can serve multiple users. Each user owns one private fleet with any number of nodes. Account-authenticated clients address workers by name, subject to access rules. Workers collaborate only under instruction-bound orchestrator delegation; fleet membership alone permits discovery. A client does not enroll its machine. Another user's credentials cannot discover or connect to those machines. See [terminology](terminology.md) and [delegation](delegation.md).
+One gateway can serve multiple users. Each user owns one private fleet; offline registrations are separate from the gateway's configurable live connection and node limits. Account-authenticated clients address workers by name, subject to access rules. Workers collaborate only under instruction-bound orchestrator delegation; fleet membership alone permits discovery. A client does not enroll its machine. Another user's credentials cannot discover or connect to those machines. See [terminology](terminology.md), [resource admission](protocol.md#gateway-resource-admission), and [delegation](delegation.md).
 
 ## Register a user
 

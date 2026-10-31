@@ -116,6 +116,10 @@ Windows worker enrollment optionally configures profile-scoped executable firewa
 
 ## Connection lifecycle
 
+Gateway admission reserves bounded global and authenticated-account connection and handshake slots before WebSocket upgrade. Node/client class limits include pending handshakes. New identity registrations also consume a per-account token bucket before persistence; known-identity reconnects do not. Destination connections share account/global packet budgets across signaling and relay, holding full-envelope reservations through write completion and releasing them after writer shutdown. Bulk data leaves control headroom, and the unused second relay channel is no longer allocated in production. These are retention/admission controls, not process-memory quotas or a weighted scheduler. See [resource admission](protocol.md#gateway-resource-admission) and [D101](decisions.md#d101-bounded-gateway-admission-and-aggregate-packet-retention).
+
+Status builds the case-sensitive Wake-sender candidate order once for all eligible offline targets, without altering display order, LAN verification or policy checks. Small identity caches skip unnecessary active-set construction, and ordinary account connections skip installation-pairing scans.
+
 1. A node loads or generates its Ed25519 key in its data directory.
 2. It opens an outbound gateway WebSocket, answers a fresh challenge, and registers its metadata.
 3. A caller resolves a destination name or ID through the directory.

@@ -51,15 +51,8 @@ func (g *Gateway) validateClient(n model.Node, p principal, ownerID string) erro
 	if conflict, err := g.storedClientName(p.UserID, n.Name, ownerID); err != nil || conflict {
 		return errors.New("client name reservation cannot be satisfied")
 	}
-	count := 0
-	for _, c := range g.peers {
-		if c.client && c.userID == p.UserID {
-			count++
-		}
-	}
-	if count >= 64 {
-		return errors.New("client session limit reached")
-	}
+	// The authenticated reservation already counts pending and live clients
+	// atomically. connectPeer rechecks that this principal owns that reservation.
 	return nil
 }
 

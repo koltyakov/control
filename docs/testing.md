@@ -162,6 +162,12 @@ The Dockerfile downloads Go dependencies while building the image. The running t
 
 ## Performance benchmarks
 
+Gateway admission tests cover atomic global/account/class reservations, pre-upgrade handshake rejection and recovery, configurable positive limits, new-identity rate refusal before persistence, known-identity reconnects, and operator-only diagnostics. Packet-budget tests include shared-account and cross-account pressure, control headroom, spare data capacity, non-data and unknown protobuf bytes, queue rejection rollback, canceled writes and concurrent disconnect cleanup. Existing relay tests retain ordering, offline barriers, fairness, overflow isolation and legal 4 MiB bulk-window coverage.
+
+`BenchmarkStatusWakeCandidates` compares repeated per-target candidate sorting with one shared candidate order at 100 and 1,000 registrations and 32 offline targets. Selection regressions verify case-sensitive name ordering and fleet/LAN checks without changing display order. Run it with `go test ./internal/gateway -run '^$' -bench '^BenchmarkStatusWakeCandidates$' -benchmem`. This isolates candidate preparation, not end-to-end user capacity. Future sizing still requires isolated multi-account fleets with real node policy/health traffic, reconnect storms, bulk relay, slow consumers and a long soak. Do not drive a live gateway to failure.
+
+An October 31, 2026 macOS arm64 run on an Apple M4 Pro used a 300 ms benchmark duration and three repetitions. At 100 registrations, repeated preparation allocated approximately 1.57 MB and 32 objects per batch of 32 targets, versus 49 KB and one object with a shared order. At 1,000 registrations, the corresponding allocation was approximately 13.89 MB versus 434 KB. Concurrent build/test work made timing results noisy, so these allocation measurements do not establish latency or gateway-capacity improvements.
+
 ### Native test runtime
 
 `make test` runs the complete native suite, including local gateways, nodes, and peer transports. Independent long-running fixtures use `t.Parallel()` with their own temporary state, credentials, and listeners. Lifecycle, artifact-expiry, persistent-tunnel, and ICE compatibility cases also run their isolated subtests concurrently. Process-global environment and working-directory changes must stay in serial tests. Call `t.Parallel()` before creating fixture contexts so queueing does not consume their deadlines, and keep shared parent resources alive with `t.Cleanup` if adding parallel children.

@@ -51,6 +51,15 @@ func wakeSender(nodes []model.Node, target model.Node) (model.Node, bool) {
 	}
 	candidates := slices.Clone(nodes)
 	slices.SortFunc(candidates, func(a, b model.Node) int { return strings.Compare(a.Name, b.Name) })
+	return wakeSenderSorted(candidates, target)
+}
+
+// wakeSenderSorted reuses the same case-sensitive candidate order across status
+// targets. Display ordering remains separate and selection checks are unchanged.
+func wakeSenderSorted(candidates []model.Node, target model.Node) (model.Node, bool) {
+	if target.Online || len(target.WakeInterfaces) == 0 {
+		return model.Node{}, false
+	}
 	for _, s := range candidates {
 		if s.ID != target.ID && s.UserID == target.UserID && s.Online && !s.Disabled && !s.ControlPending && s.GatewayWake && wol.CanSend(s, target) {
 			return s, true

@@ -97,6 +97,7 @@ type connection struct {
 	relay             *relayScheduler
 	writeBuffer       []byte       // Owned exclusively by writePackets.
 	queued            atomic.Int64 // Relay payload bytes waiting in out.
+	queues            *packetQueues
 	keyID             string
 	health            *model.NodeHealth
 	healthAt          time.Time
@@ -144,16 +145,22 @@ type Gateway struct {
 	credentials atomic.Pointer[map[string]principal]
 	// routes mirrors peers for relay forwarding under its own lock, so packet
 	// routing does not wait for commits or administration holding g.mu.
-	routeMu  sync.RWMutex
-	routes   map[string]*connection
-	counters counters
-	console  *consoleState
+	routeMu   sync.RWMutex
+	routes    map[string]*connection
+	counters  counters
+	console   *consoleState
+	admission *admission
 }
 
 func New(dir, token string, options ...Options) (*Gateway, error) {
 	var opts Options
 	if len(options) > 0 {
 		opts = options[0]
+	}
+	var err error
+	opts.Limits, err = opts.Limits.defaults()
+	if err != nil {
+		return nil, err
 	}
 	if err := validateSTUNServers(opts.STUNServers); err != nil {
 		return nil, err
@@ -178,6 +185,7 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 	}
 	g := &Gateway{token: token, path: filepath.Join(dir, "nodes.json"), nodes: map[string]model.Node{}, clients: map[string]model.Node{}, peers: map[string]*connection{}, routes: map[string]*connection{}, observed: map[string]*observedFleet{}}
 	g.console = newConsoleState()
+	g.admission = newAdmission(opts.Limits)
 	g.lock = lock
 	g.superuser, g.options = opts.SuperuserKey, opts
 	g.updateStatus = map[string]update.Status{}
@@ -320,7 +328,23 @@ func (g *Gateway) connectClient(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client bool) {
-	defer g.trimIdentityCache()
+	principal := g.requestPrincipal(r)
+	if principal.UserID == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if client && strings.HasPrefix(principal.KeyID, "install:") {
+		http.Error(w, "installation credentials cannot open client sessions", http.StatusForbidden)
+		return
+	}
+	reservation, ok := g.admission.reserve(principal.UserID, client)
+	if !ok {
+		w.Header().Set("Retry-After", "1")
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "gateway connection admission limit reached", http.StatusServiceUnavailable)
+		return
+	}
+	defer reservation.release()
 	g.mu.Lock()
 	if g.closed || g.restarting {
 		g.mu.Unlock()
@@ -329,7 +353,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	}
 	g.wg.Add(1)
 	g.mu.Unlock()
-	defer g.wg.Done()
+	defer func() { reservation.release(); g.wg.Done() }()
 	ws, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
@@ -381,6 +405,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	} else if n.ClientOwner != "" || len(hello.OwnerSignature) != 0 || (!client && len(hello.OwnerKey) != 0) {
 		return
 	}
+	// Only proof-verified handshakes hydrate identity caches. In particular,
+	// admission rejection must not wait behind the mutation lock just to trim.
+	defer g.trimIdentityCache()
 	g.mu.Lock()
 	p := g.authenticateLocked(bearer(r))
 	if err := g.loadIdentityLocked(n.ID); err != nil {
@@ -391,7 +418,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		g.mu.Unlock()
 		return
 	}
-	if p.UserID == "" || (n.UserID != "" && n.UserID != p.UserID) || (g.owners[n.ID] != "" && g.owners[n.ID] != p.UserID) {
+	if p.UserID == "" || p.UserID != reservation.user || (n.UserID != "" && n.UserID != p.UserID) || (g.owners[n.ID] != "" && g.owners[n.ID] != p.UserID) {
 		g.mu.Unlock()
 		return
 	}
@@ -411,18 +438,17 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	if !client && g.machineStates[n.ID].Name != "" {
 		n.Name = g.machineStates[n.ID].Name
 	}
-	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, relayQueuePackets), outData: make(chan *protocol.Packet, relayQueuePackets), keyID: p.KeyID, userID: p.UserID, heartbeat: hello.GatewayHeartbeat, pong: make(chan string, 1)}
-	c.lanDiscovery = n.LANDiscovery
-	c.relay = newRelayScheduler()
 	if !g.allowInstallation(p.KeyID, n) {
 		g.mu.Unlock()
 		_ = ws.Close(websocket.StatusPolicyViolation, "credential does not authorize this registration")
 		return
 	}
-	for _, invitation := range g.installations {
-		if p.KeyID == "install:"+invitation.ID && invitation.RedeemedID == n.ID && !invitation.Revoked {
-			n.HybridID, n.HybridRole = invitation.HybridID, invitation.HybridRole
-			break
+	if strings.HasPrefix(p.KeyID, "install:") {
+		for _, invitation := range g.installations {
+			if p.KeyID == "install:"+invitation.ID && invitation.RedeemedID == n.ID && !invitation.Revoked {
+				n.HybridID, n.HybridRole = invitation.HybridID, invitation.HybridRole
+				break
+			}
 		}
 	}
 	if g.closed || g.restarting {
@@ -464,6 +490,15 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		_ = ws.Close(websocket.StatusPolicyViolation, "identity already connected")
 		return
 	}
+	if (g.owners[ownerID] == "" || g.owners[n.ID] == "") && !reservation.allowNewIdentity() {
+		g.mu.Unlock()
+		_ = ws.Close(websocket.StatusTryAgainLater, "new identity rate limit reached")
+		return
+	}
+	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, relayQueuePackets),
+		keyID: p.KeyID, userID: p.UserID, heartbeat: hello.GatewayHeartbeat, pong: make(chan string, 1), lanDiscovery: n.LANDiscovery, relay: newRelayScheduler(),
+		queues: &packetQueues{local: packetBudget{limit: relayQueueBytes}, global: &g.admission.packets, account: &reservation.account.packets, rejected: g.admission}}
+	defer c.closeQueues()
 	n.Online = true
 	n.LastSeen = time.Now().UTC()
 	previous, existed := g.nodes[n.ID]
@@ -578,11 +613,15 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	if err = ws.Write(handshake, websocket.MessageBinary, []byte("ready")); err != nil {
 		return
 	}
+	reservation.finishHandshake()
+	writerDone := make(chan struct{})
 	go func() {
+		defer close(writerDone)
 		defer cancel()
 		defer func() { _ = ws.CloseNow() }()
 		c.writePackets(ctx)
 	}()
+	defer func() { cancel(); _ = ws.CloseNow(); <-writerDone }()
 	// Sessions whose data was dropped for a full destination queue. Only this
 	// read loop touches it, and the sender's close packet clears an entry.
 	overflowed := map[string]bool{}

@@ -3,6 +3,8 @@ package gateway
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/koltyakov/control/internal/buildinfo"
@@ -41,8 +43,13 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 	deployment := g.updates.Current()
 	entries := g.observations(p.UserID)
 	fleet := make([]model.Node, 0, len(entries))
+	needsWake := false
 	for _, entry := range entries {
 		fleet = append(fleet, entry.node)
+		needsWake = needsWake || (!entry.node.Online && len(entry.node.WakeInterfaces) != 0)
+	}
+	if needsWake {
+		slices.SortFunc(fleet, func(a, b model.Node) int { return strings.Compare(a.Name, b.Name) })
 	}
 	for _, entry := range entries {
 		n := entry.node
@@ -57,7 +64,7 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 			HybridID: n.HybridID, HybridRole: n.HybridRole,
 			Active: []model.Activity{}, Recent: []model.Activity{},
 		}
-		if sender, ok := wakeSender(fleet, n); ok {
+		if sender, ok := wakeSenderSorted(fleet, n); ok {
 			snapshot.WakeVia = sender.Name
 		}
 		// Aggregate health is owner-only. Common peer keys still need the node's

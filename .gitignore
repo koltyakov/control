@@ -43,3 +43,5 @@ go.work.sum
 /tmp/
 
 .DS_Store
+reports/
+research_notes/

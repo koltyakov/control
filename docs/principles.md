@@ -54,6 +54,8 @@ Document the authority under which providers run. A filesystem root limits files
 
 Bound queues, message sizes, retained output, and execution concurrency. Use cancellation and backpressure rather than accumulating work indefinitely in memory.
 
+Gateway resource bounds must apply across destinations and authenticated accounts, not only to individual queues. Reserve capacity before publication, release it on failure and shutdown, account for signaling as well as bulk bytes, and retain control headroom. Resource admission does not confer authority or permit weakening durability, identity checks, or application retry rules.
+
 The component that creates a connection, goroutine, subprocess, or temporary file must define how it terminates. Node shutdown should wait for owned work to stop before releasing its state directory. Lease expiry must not allow a new owner to overlap a still-running leased task.
 
 ## Keep changes testable across operating systems

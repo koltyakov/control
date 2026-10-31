@@ -278,6 +278,8 @@ The current gateway permits one connection per identity. An exclusive file lock 
 
 ## D029: Authenticated client sessions are not fleet machines
 
+The fixed client-count limit is superseded by [D101](#d101-bounded-gateway-admission-and-aggregate-packet-retention), which retains 64 as the configurable default and adds aggregate admission. Role and identity boundaries remain unchanged.
+
 The one-connection-per-owner and process-long file lock are superseded by [D030](#d030-concurrent-client-connections-with-stable-task-owners). Fleet separation remains unchanged.
 
 The orchestrator's CLI/MCP is a requesting client, not a fleet execution agent. Replace D028's machine registration with a separate authenticated client-session endpoint and role-bound challenge proof. Persist only immutable account ownership and client role; keep connection metadata transient. Client sessions do not create fleet entries, dashboard rows, health samples, lifecycle policy, update-platform requirements, or rollout participants.
@@ -694,6 +696,8 @@ Reject owner overflow rather than weakening ownership. Retained task references,
 
 ## D077: Bounded transport buffers and identity caches
 
+Data-only relay byte charging is superseded by [D101](#d101-bounded-gateway-admission-and-aggregate-packet-retention)'s full-packet and aggregate budgets. Session fairness, offline ordering and durable identity-cache behavior remain unchanged.
+
 Detach Pion data channels and run peer-owned receive loops with reusable bounded buffers. TLS still consumes independently owned pooled packets; authentication, packet-size negotiation and receive bounds stay intact. Count overflow only for valid packets rejected by a live queue.
 
 Schedule gateway relay sessions round-robin, with at most 768 queued packets and 6 MiB per session inside the existing 1,024-packet, 8 MiB destination bound. The session limit accommodates a 4 MiB bulk window plus framing while leaving capacity for other sessions. Preserve data/close order within each session and treat offline notifications as FIFO barriers. Signaling retains bounded priority bursts. This refines D073's destination-wide FIFO without promising bandwidth QoS or preemption of an in-progress write.
@@ -865,3 +869,11 @@ Longer sessions increase the time a stolen cookie can be used. Retain immediate 
 Replace D067's raw address inventory and gateway-source strings with selected gateway egress identities. macOS can alternate temporary IPv6 source addresses on an unchanged interface/subnet; treating each choice as a network switch closed healthy VM sessions and cancelled client calls. Match each UDP route probe's source to its active interface and record its index/name plus assigned IPv6 subnet. Retain exact IPv4 addresses and subnets to detect DHCP changes. Sort and deduplicate the fingerprint, include target zones, and reject incomplete interface/source samples rather than resetting on a partial view.
 
 Keep the two-second, packet-free sampling and existing recovery for changed selected interfaces, subnets, IPv4 addresses, or reachability. Ignore temporary IPv6 address rotation and unselected address/adapter changes. This deliberately narrows proactive reset detection to gateway paths; next-hop changes preserving the fingerprint, peer-only path changes, and missing initial gateway resolution rely on normal transport failure detection. There is no portable next-hop inspection, active connectivity test, new configuration, or application replay. TLS identity, fleet authorization, generation checks, accepted-task durability, and disconnected-carrier grace remain unchanged. See [connection lifecycle](architecture.md#connection-lifecycle) and [operational reference](protocol.md#node-configuration).
+
+## D101: Bounded gateway admission and aggregate packet retention
+
+Extend D029's 64-client default with positive operator-configurable global/account connection, node, client and handshake limits. Reserve authenticated-account slots before upgrade and queue allocation, include pending handshakes in those limits, and revalidate authority before persistence. Reject excess connections promptly with HTTP 503 rather than queuing indefinitely. Bound attempts introducing new identity records with an account token bucket; unchanged identity reconnects skip it. These in-memory limits reset on restart and do not delete offline registrations, immutable ownership history or accepted tasks.
+
+Extend relay backpressure to full retained packet envelopes across signaling and relay, with destination, account and gateway byte ceilings. Include spare payload capacity and unknown protobuf bytes plus a fixed bookkeeping charge. Keep reservations until writes finish and drain them after joining the connection writer, rejecting enqueue through stale routing pointers after cleanup. Bulk data leaves one sixteenth of byte capacity for control; preserve the legal bulk receive window, session-local overflow, round-robin ordering and offline barriers. These budgets exclude socket/runtime/marshaling memory and are not RSS guarantees or byte-weighted tenant fairness. Expose only aggregate limits and counters through the existing superuser metrics route.
+
+Keep the separate committed observation view, full SQLite durability, pinned peer TLS, authorization, application heartbeats and no-replay semantics. Removing an unused production channel and reusing Wake candidate sorting reduce bookkeeping without changing routing or LAN decisions. Proxy admission is independent: expose's new bypass HTTP reservation must be sized alongside Control, not bypassed by raising only one service's limit. See [limits and defaults](protocol.md#gateway-resource-admission) and [expose deployment](expose.md#limits-and-troubleshooting).

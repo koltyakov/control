@@ -42,10 +42,7 @@ func (q *relayScheduler) signal() {
 func (q *relayScheduler) push(p *protocol.Packet) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	size := int64(0)
-	if p.Kind == "data" {
-		size = int64(len(p.Data))
-	}
+	size := packetRetainedBytes(p)
 	if q.count >= relayQueuePackets || q.bytes+size > relayQueueBytes {
 		return false
 	}
@@ -87,9 +84,7 @@ func (q *relayScheduler) pop() *protocol.Packet {
 		p = s.items[0].packet
 		s.items[0] = relayItem{}
 		s.items = s.items[1:]
-		if p.Kind == "data" {
-			s.bytes -= int64(len(p.Data))
-		}
+		s.bytes -= packetRetainedBytes(p)
 		q.order = append(q.order[:i], q.order[i+1:]...)
 		if len(s.items) == 0 {
 			delete(q.sessions, key)
@@ -107,9 +102,7 @@ func (q *relayScheduler) pop() *protocol.Packet {
 		return nil
 	}
 	q.count--
-	if p.Kind == "data" {
-		q.bytes -= int64(len(p.Data))
-	}
+	q.bytes -= packetRetainedBytes(p)
 	if q.count > 0 {
 		q.signal()
 	}

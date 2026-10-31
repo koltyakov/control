@@ -40,6 +40,9 @@ func (g *Gateway) loadIdentityLocked(id string) error {
 }
 
 func (g *Gateway) trimIdentityCacheLocked() {
+	if len(g.clientTransports) <= maxIdentityCache && len(g.clientOwners) <= maxIdentityCache {
+		return
+	}
 	active := make(map[string]bool, len(g.clients)*2)
 	for id, c := range g.clients {
 		active[id] = true

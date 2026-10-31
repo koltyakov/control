@@ -226,7 +226,20 @@ func run(ctx context.Context, args []string) error {
 		data := f.String("data", ".control-gateway", "gateway state directory")
 		cert := f.String("tls-cert", "", "TLS certificate PEM")
 		key := f.String("tls-key", "", "TLS private key PEM")
+		limits := gateway.DefaultLimits()
+		f.IntVar(&limits.Connections, "max-connections", limits.Connections, "maximum gateway connections, including handshakes")
+		f.IntVar(&limits.ConnectionsPerAccount, "max-connections-per-account", limits.ConnectionsPerAccount, "maximum connections per account")
+		f.IntVar(&limits.ClientsPerAccount, "max-clients-per-account", limits.ClientsPerAccount, "maximum client connections per account")
+		f.IntVar(&limits.NodesPerAccount, "max-nodes-per-account", limits.NodesPerAccount, "maximum connected nodes per account")
+		f.IntVar(&limits.Handshakes, "max-handshakes", limits.Handshakes, "maximum concurrent gateway handshakes")
+		f.IntVar(&limits.HandshakesPerAccount, "max-handshakes-per-account", limits.HandshakesPerAccount, "maximum concurrent handshakes per account")
+		f.IntVar(&limits.NewIdentitiesPerMinute, "new-identities-per-minute", limits.NewIdentitiesPerMinute, "new identity registrations per minute per account, with an equal burst")
+		f.Int64Var(&limits.QueuedBytes, "max-queued-bytes", limits.QueuedBytes, "global retained packet byte budget")
+		f.Int64Var(&limits.QueuedBytesPerAccount, "max-queued-bytes-per-account", limits.QueuedBytesPerAccount, "retained packet byte budget per account")
 		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if err := limits.Validate(); err != nil {
 			return err
 		}
 		return managed(ctx, *data, commandArgs, func(ctx context.Context, apply func(string) error) error {
@@ -244,7 +257,7 @@ func run(ctx context.Context, args []string) error {
 					stunServers = append(stunServers, strings.TrimSpace(server))
 				}
 			}
-			g, err := gateway.New(*data, *token, gateway.Options{STUNServers: stunServers, PublicURL: os.Getenv("CONTROL_PUBLIC_URL"), SuperuserKey: os.Getenv("CONTROL_SUPERUSER_KEY"), Software: buildinfo.Current(), Apply: apply, ReleaseRepo: releaseRepository(), ReleaseToken: os.Getenv("CONTROL_RELEASE_TOKEN"), ReleaseInterval: interval})
+			g, err := gateway.New(*data, *token, gateway.Options{Limits: limits, STUNServers: stunServers, PublicURL: os.Getenv("CONTROL_PUBLIC_URL"), SuperuserKey: os.Getenv("CONTROL_SUPERUSER_KEY"), Software: buildinfo.Current(), Apply: apply, ReleaseRepo: releaseRepository(), ReleaseToken: os.Getenv("CONTROL_RELEASE_TOKEN"), ReleaseInterval: interval})
 			if err != nil {
 				return err
 			}
