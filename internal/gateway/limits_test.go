@@ -420,12 +420,19 @@ func TestGatewayFailedPacketWriteReleasesBudget(t *testing.T) {
 		t.Fatal("enqueue")
 	}
 	p = c.relay.pop()
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	if c.writeQueuedPacket(ctx, p) == nil {
-		t.Fatal("canceled write succeeded")
+	if size := packetRetainedBytes(p); a.packets.used.Load() != size || c.queues.account.used.Load() != size || c.queues.local.used.Load() != size {
+		t.Fatal("packet budgets released before write completion")
 	}
-	if a.packets.used.Load() != 0 || c.queued.Load() != 0 || a.writeFailures.Load() != 1 {
-		t.Fatal("write failure leaked reservation")
+	// Cancellation can race with a ready WebSocket write. Close the connection
+	// synchronously so failure does not depend on platform or select scheduling.
+	if err := ws.CloseNow(); err != nil {
+		t.Fatal(err)
+	}
+	if c.writeQueuedPacket(t.Context(), p) == nil {
+		t.Fatal("write to closed connection succeeded")
+	}
+	if a.packets.used.Load() != 0 || c.queues.account.used.Load() != 0 || c.queues.local.used.Load() != 0 || c.queued.Load() != 0 || a.writeFailures.Load() != 1 {
+		t.Fatalf("write failure accounting: global=%d account=%d connection=%d payload=%d failures=%d",
+			a.packets.used.Load(), c.queues.account.used.Load(), c.queues.local.used.Load(), c.queued.Load(), a.writeFailures.Load())
 	}
 }
