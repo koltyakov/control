@@ -12,6 +12,39 @@ import (
 	"time"
 )
 
+func TestConsoleSessionExpiryBoundaries(t *testing.T) {
+	g, server := installationFixture(t)
+	_, admin := createTestUser(t, server, "alice")
+	provisionBrowser(t, admin, "")
+	browser := browserLogin(t, server.URL, "alice", browserPassword)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	session := g.console.sessions[tokenHash(browser.Cookie.Value)]
+	now := time.Now()
+	for _, tt := range []struct {
+		name      string
+		age, idle time.Duration
+		valid     bool
+	}{
+		{"beyond old limits", 13 * time.Hour, 31 * time.Minute, true},
+		{"before idle expiry", 2 * 24 * time.Hour, 24*time.Hour - time.Nanosecond, true},
+		{"at idle expiry", 2 * 24 * time.Hour, 24 * time.Hour, false},
+		{"after idle expiry", 2 * 24 * time.Hour, 25 * time.Hour, false},
+		{"before absolute expiry", 7*24*time.Hour - time.Nanosecond, 0, true},
+		{"at absolute expiry", 7 * 24 * time.Hour, 0, false},
+		{"after absolute expiry", 8 * 24 * time.Hour, 0, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := session
+			s.Created = now.Add(-tt.age)
+			s.Seen = now.Add(-tt.idle)
+			if got := g.validConsoleSession(s, now); got != tt.valid {
+				t.Fatalf("validConsoleSession = %v, want %v", got, tt.valid)
+			}
+		})
+	}
+}
+
 func TestConsoleSessionsSurviveRestarts(t *testing.T) {
 	for _, scenario := range []string{"active", "logout", "replacement", "password", "disabled", "idle", "absolute", "operator", "operator-disabled"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -58,8 +91,8 @@ func TestConsoleSessionsSurviveRestarts(t *testing.T) {
 			}
 			g.mu.Lock()
 			session := g.console.sessions[key]
-			session.Created = time.Now().Add(-2 * time.Hour)
-			session.Seen = time.Now().Add(-29 * time.Minute)
+			session.Created = time.Now().Add(-6 * 24 * time.Hour)
+			session.Seen = time.Now().Add(-23 * time.Hour)
 			session.saved = session.Seen
 			g.console.sessions[key] = session
 			err := g.commit(change{sessions: []string{key}})
@@ -97,9 +130,9 @@ func TestConsoleSessionsSurviveRestarts(t *testing.T) {
 				g.mu.Lock()
 				session = g.console.sessions[key]
 				if scenario == "idle" {
-					session.Seen = time.Now().Add(-31 * time.Minute)
+					session.Seen = time.Now().Add(-24 * time.Hour)
 				} else {
-					session.Created = time.Now().Add(-13 * time.Hour)
+					session.Created = time.Now().Add(-7 * 24 * time.Hour)
 				}
 				g.console.sessions[key] = session
 				err := g.commit(change{sessions: []string{key}})

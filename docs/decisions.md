@@ -826,6 +826,8 @@ Bound D078's explicit reconciliation to eight concurrent child reads, six second
 
 ## D095: Browser sessions survive gateway updates
 
+Session lifetime policy is refined by [D099](#d099-longer-bounded-browser-sessions); persistence and revocation remain unchanged.
+
 Persist bounded browser sessions in SQLite schema version 7 rather than signing every user out when an update restarts the gateway. Store only cookie digests with username, password revision, CSRF token, creation time, and last activity. Restore valid sessions without renewing idle or absolute expiry. Recheck account status, password revisions, and operator availability at startup and on authenticated requests. Keep the existing management-route allowlist, cookie security, and browser-to-bearer separation.
 
 Commit sign-in and sign-out with their audit events before issuing or clearing cookies. Password changes delete that login's persisted sessions in the credential transaction. Checkpoint activity at most once per minute per session and flush pending activity on graceful shutdown instead of syncing every poll. After a crash, an idle deadline may be up to one minute earlier, never later. Existing memory-only sessions cannot cross the first upgrade. This supersedes D079's restart-sign-out choice without changing CLI credentials or execution authority. See [console sessions](console.md#credentials-sessions-and-limits).
@@ -849,3 +851,9 @@ Keep every selected platform asset on the gateway, whether published by `make up
 The public Sigstore CDN and its Google Storage origin can reject a gateway's location with HTTP 403, preventing otherwise valid release verification. On that response, network failures, HTTP 408/429, or server errors, fetch the same metadata file from Sigstore's official GitHub-hosted TUF repository. Restrict this mapping to the canonical public CDN origin; do not accept arbitrary replacement URLs, roots, or verification bypasses.
 
 Both paths feed the existing TUF updater using its embedded trust anchor. Root rotation, signature thresholds, expiry, and target hashes remain mandatory, followed by D078's exact release identity and transparency checks. Cryptographic or format failures never cause mirror retry. Preserve HTTP 404 as the normal end of available root versions, and preserve cancellation and response-size limits. If both transports fail, reject the update rather than accepting unsigned data or changing the selected deployment. This extends D078/D097's availability without changing their trust model. See [release verification](updates.md#publish-github-releases).
+
+## D099: Longer bounded browser sessions
+
+Replace the console's 30-minute idle and 12-hour absolute limits with 24 hours idle and 7 days total to reduce repeated sign-ins across workdays. Set login-cookie maximum age from the same absolute-lifetime constant used by server validation. Authenticated polling renews only idle activity; it cannot extend the seven-day limit.
+
+Longer sessions increase the time a stolen cookie can be used. Retain immediate revocation on sign-out, password changes, and account disable, plus the existing HTTPS, HttpOnly, SameSite, origin, CSRF, and management-only authorization rules. D095's persistence keeps original timestamps across restart; older browser cookies retain their issued maximum age until a fresh login. No database migration or CLI credential change is needed. See [console sessions](console.md#credentials-sessions-and-limits).

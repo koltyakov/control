@@ -70,6 +70,9 @@ func browserLogin(t *testing.T, base, username, password string) testBrowser {
 	if len(cookies) != 1 || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
 		t.Fatal("unsafe cookie", cookies)
 	}
+	if cookies[0].MaxAge != 7*24*60*60 {
+		t.Fatal("cookie lifetime must be seven days", cookies[0].MaxAge)
+	}
 	b.Cookie, b.CSRF = cookies[0], session.CSRF
 	return b
 }
@@ -241,9 +244,9 @@ func TestConsoleExpiryThrottlingAndHeaders(t *testing.T) {
 		g.mu.Lock()
 		session := g.console.sessions[key]
 		if absolute {
-			session.Created = time.Now().Add(-13 * time.Hour)
+			session.Created = time.Now().Add(-7 * 24 * time.Hour)
 		} else {
-			session.Seen = time.Now().Add(-31 * time.Minute)
+			session.Seen = time.Now().Add(-24 * time.Hour)
 		}
 		g.console.sessions[key] = session
 		g.mu.Unlock()

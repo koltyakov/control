@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+const (
+	consoleSessionIdleTTL = 24 * time.Hour
+	consoleSessionTTL     = 7 * 24 * time.Hour
+)
+
 const consoleSessionSchema = `
 CREATE TABLE console_sessions (hash TEXT PRIMARY KEY, data BLOB NOT NULL);
 `
@@ -16,7 +21,7 @@ func (g *Gateway) validConsoleSession(s consoleSession, now time.Time) bool {
 	return exists && p.Revision == s.Revision && !u.Disabled && u.ID != "" &&
 		(p.Role == "user" || (p.Role == "superuser" && g.superuser != "")) &&
 		!s.Created.IsZero() && !s.Seen.IsZero() &&
-		now.Sub(s.Seen) < 30*time.Minute && now.Sub(s.Created) < 12*time.Hour
+		now.Sub(s.Seen) < consoleSessionIdleTTL && now.Sub(s.Created) < consoleSessionTTL
 }
 
 func (g *Gateway) loadConsoleSessions() error {

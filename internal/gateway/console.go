@@ -395,7 +395,7 @@ func (g *Gateway) consoleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clear(removed)
-	g.consoleSetCookie(w, r, secret, 12*60*60)
+	g.consoleSetCookie(w, r, secret, int(consoleSessionTTL/time.Second))
 	consoleJSON(w, map[string]any{"username": q.Username, "role": p.Role, "userId": p.UserID, "csrf": s.CSRF})
 }
 
