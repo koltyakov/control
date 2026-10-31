@@ -2,10 +2,12 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
-	"sort"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -15,9 +17,19 @@ const (
 	carrierDisconnectGrace = 3 * time.Second
 )
 
-// Interface/address changes cover VPN adapters, Wi-Fi switches, and DHCP.
-// Route-selected source addresses also detect default-route switches that leave
-// the adapters unchanged. UDP connect asks the OS for a route; no packets are sent.
+type networkInterface struct {
+	net.Interface
+	addresses []net.Addr
+}
+
+type networkRoute struct {
+	target *net.UDPAddr
+	source net.IP // nil means the target is unreachable.
+}
+
+// Track gateway egress networks, not the host's entire address inventory. IPv6
+// privacy addresses can alternate on one interface/subnet without changing any
+// established connection. UDP connect asks the OS for a route; no packets are sent.
 func networkProbe(ctx context.Context, gatewayURL string) func() (string, error) {
 	var targets []*net.UDPAddr
 	if u, err := url.Parse(gatewayURL); err == nil {
@@ -33,33 +45,66 @@ func networkProbe(ctx context.Context, gatewayURL string) func() (string, error)
 		if err != nil {
 			return "", err
 		}
-		var parts []string
+		var networks []networkInterface
 		for _, iface := range interfaces {
-			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			if iface.Flags&net.FlagUp == 0 {
 				continue
 			}
 			addresses, err := iface.Addrs()
 			if err != nil {
 				return "", err
 			}
-			for _, address := range addresses {
-				ip, _, err := net.ParseCIDR(address.String())
-				if err == nil && ip.IsGlobalUnicast() {
-					parts = append(parts, fmt.Sprintf("%d/%s/%s", iface.Index, iface.Name, address))
-				}
-			}
+			networks = append(networks, networkInterface{Interface: iface, addresses: addresses})
 		}
+		var routes []networkRoute
 		for _, target := range targets {
-			local := "unreachable"
+			route := networkRoute{target: target}
 			if conn, err := net.DialUDP("udp", nil, target); err == nil {
-				local = conn.LocalAddr().(*net.UDPAddr).IP.String()
+				route.source = conn.LocalAddr().(*net.UDPAddr).IP
 				_ = conn.Close()
 			}
-			parts = append(parts, target.IP.String()+"="+local)
+			routes = append(routes, route)
 		}
-		sort.Strings(parts)
-		return strings.Join(parts, "\n"), nil
+		return networkFingerprint(networks, routes)
 	}
+}
+
+func networkFingerprint(interfaces []networkInterface, routes []networkRoute) (string, error) {
+	var parts []string
+	for _, route := range routes {
+		local := "unreachable"
+		if route.source != nil {
+			var matches []string
+			for _, iface := range interfaces {
+				if iface.Flags&net.FlagUp == 0 || (route.target.Zone != "" && route.target.Zone != iface.Name && route.target.Zone != strconv.Itoa(iface.Index)) {
+					continue
+				}
+				for _, address := range iface.addresses {
+					ip, subnet, err := net.ParseCIDR(address.String())
+					if err != nil || !ip.Equal(route.source) {
+						continue
+					}
+					// IPv4 DHCP changes still invalidate the route. For IPv6,
+					// compare the assigned subnet rather than the interface ID.
+					identity := ip.String() + "@" + subnet.String()
+					if ip.To4() == nil {
+						identity = subnet.String()
+					}
+					matches = append(matches, fmt.Sprintf("%d/%s/%s", iface.Index, iface.Name, identity))
+				}
+			}
+			if len(matches) == 0 {
+				// Interface enumeration and route lookup are not atomic. Retry
+				// the sample rather than interpreting a partial view as a switch.
+				return "", errors.New("route source is absent from sampled interfaces")
+			}
+			slices.Sort(matches)
+			local = strings.Join(slices.Compact(matches), ",")
+		}
+		parts = append(parts, route.target.String()+"="+local)
+	}
+	slices.Sort(parts)
+	return strings.Join(slices.Compact(parts), "\n"), nil
 }
 
 func (p *Peer) watchNetwork() {
