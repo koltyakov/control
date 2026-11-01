@@ -2,7 +2,42 @@
 
 [README](../README.md) · [Protocol](protocol.md) · [Installation](installation.md) · [Testing](testing.md)
 
+For remote UI work, Control's MCP instructions and CLI skill first check for [agent-desktop](https://github.com/vercel-labs/agent-desktop) on the selected worker. It runs through `exec.run` and does not require Control's Python helper. Credential entry uses Control's separate secret-reference path described below.
+
 `rpa.run` lets an AI agent inspect and manipulate a worker's logged-in desktop. It is absent unless the node configuration includes an `rpa` helper command. Control remains CGO-free; the desktop helper uses installed Python libraries. No gateway or transport changes are needed.
+
+## Use agent-desktop on a worker
+
+Discover the worker with `node.describe`, then check the binary and load its version-matched instructions on that same machine:
+
+```sh
+control exec worker -- agent-desktop version
+control exec worker -- agent-desktop skills get desktop
+control exec worker -- agent-desktop skills get platform
+control exec worker -- agent-desktop status
+```
+
+MCP uses `control_call` with `node: "worker"`, `method: "exec.run"`, and `params: {"command":"agent-desktop","args":["version"]}`. Change the argument array for the remaining commands. Read the returned skills' `data.content` before acting. A local installation does not establish remote availability. Keep subsequent commands routed through Control to that worker, using structured argument arrays and fresh snapshot-qualified refs. Follow the installed skill's observation and delivery rules; never replay uncertain effects. Physical input with `--headed` needs explicit user permission, not an automatic fallback after a semantic failure.
+
+`version` checks presence, not desktop readiness. `status` reports platform and permissions. The worker still needs the logged-in user's graphical session and upstream OS dependencies and permissions. Do not switch to System to recover GUI access. Missing executables, execution denial, unavailable sessions, and missing OS grants must be reported rather than bypassed. If absent, use an already configured `rpa.run` when suitable, or ask for setup. Control does not automatically install agent-desktop, prompt for permissions, or expose a dedicated agent-desktop capability.
+
+With user approval, install the binary on the worker using the upstream installation instructions. For an agent harness that supports skill installation, upstream also provides:
+
+```sh
+npx skills add https://github.com/vercel-labs/agent-desktop --skill agent-desktop
+```
+
+This optional harness skill does not install the worker's binary. Reading the embedded desktop and platform skills through Control needs no harness installation. Restart or reload the intended harness when required by its installer.
+
+### Login without credentials in agent context
+
+Use [worker-local secret references](secrets.md#fill-application-fields-by-reference) for both private usernames and passwords. The user enters them on the worker with `control secrets set app.username` and `control secrets set app.password`, outside chat. On the same worker and profile, inspect `rpa.run` selectors, then use `setValue` with `secret` instead of `text`. Agent-desktop refs cannot be used as RPA selectors. The worker injects values into the private helper's stdin, masks supported text results, and suppresses raw helper logs while secrets exist. Tool arguments and durable task specifications contain names only.
+
+Agent-desktop's literal `type`/`set-value` commands and ordinary `exec.run` do not resolve Control secret references. Raw command output is not secret-masked. Do not read the secret store, construct shell credential substitutions, or send credentials in command arguments, stdin, environment, clipboard, scripts, or agent prompts. If `rpa.run` is unavailable, stop for manual login or explicitly approved helper setup. There is no direct agent-desktop secret-input adapter.
+
+While credentials may be visible, use secret-masked RPA inspection instead of raw agent-desktop snapshots, field reads, screenshots, clipboard reads, or traces. Do not enable password reveal or credential-bearing recording. Verify login by non-sensitive application state and resume agent-desktop only after credentials are no longer visible. Text masking is not a sandbox and cannot protect screenshots, arbitrary transformations, or unrestricted execution. See [what secrets protect](secrets.md#what-this-protects).
+
+Control's RPA lock does not cover external agent-desktop commands. Coordinate one writer; neither tool excludes human input or unrelated desktop software.
 
 ## Install the helper
 

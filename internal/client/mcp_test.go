@@ -13,7 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestMCPAndSkillUseCanonicalTerminology(t *testing.T) {
+func TestMCPAndSkillInstructions(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
@@ -36,6 +36,37 @@ func TestMCPAndSkillUseCanonicalTerminology(t *testing.T) {
 		for _, obsolete := range []string{"fleet agent", "host agent", "Lifecycle-capable agents"} {
 			if strings.Contains(text, obsolete) {
 				t.Errorf("%s instructions use obsolete terminology %q", name, obsolete)
+			}
+		}
+		required := []string{
+			"https://github.com/vercel-labs/agent-desktop",
+			"version", "desktop", "platform", "data.content", "status",
+			"exec.run", "structured", "worker", "--headed", "explicit user permission",
+			"control secrets set NAME", "secret", "setValue", "profile",
+			"exec.run output is not secret-masked",
+		}
+		if name == "mcp" {
+			required = append(required,
+				"npx skills add https://github.com/vercel-labs/agent-desktop --skill agent-desktop",
+				"never substitute a shell credential workaround",
+				"credentials are no longer visible", "not RPA selectors")
+		} else {
+			required = append(required,
+				"Only when a task requires GUI interaction",
+				"skip these checks and skill loads for non-GUI tasks",
+				"https://github.com/koltyakov/control/blob/main/docs/rpa.md",
+				"stop for manual login", "never retrieve credentials through a shell")
+			_, gui, found := strings.Cut(text, "## GUI work, only when needed\n")
+			gui, _, _ = strings.Cut(gui, "\n## ")
+			if !found || len(strings.Fields(gui)) > 200 {
+				t.Error("skill should keep GUI guidance brief and load details on demand")
+			}
+		}
+		// The skill uses Markdown code spans; MCP uses plain instructions.
+		plain := strings.ReplaceAll(text, "`", "")
+		for _, fragment := range required {
+			if !strings.Contains(plain, fragment) {
+				t.Errorf("%s instructions omit remote desktop guidance %q", name, fragment)
 			}
 		}
 	}
@@ -83,5 +114,31 @@ func TestMCPRoutesRPA(t *testing.T) {
 	result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "control_rpa", Arguments: map[string]any{"node": "desktop", "actions": []any{map[string]any{"type": "unknown"}}}})
 	if err == nil && !result.IsError {
 		t.Fatal("invalid GUI action bypassed MCP schema validation")
+	}
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "control_rpa", Arguments: map[string]any{
+		"node": "desktop",
+		"actions": []any{map[string]any{
+			"type": "setValue", "target": map[string]any{"app": "Login", "name": "Password"}, "secret": "app.password",
+		}},
+	}})
+	if err != nil || result.IsError {
+		t.Fatalf("credential handoff failed: %+v, %v", result, err)
+	}
+	select {
+	case request := <-requests:
+		if string(request["target"]) != `"desktop"` || string(request["method"]) != `"rpa.run"` {
+			t.Fatalf("credential handoff changed worker or capability: %v", request)
+		}
+		var params struct {
+			Actions []map[string]json.RawMessage `json:"actions"`
+		}
+		if err := json.Unmarshal(request["params"], &params); err != nil {
+			t.Fatal(err)
+		}
+		if len(params.Actions) != 1 || string(params.Actions[0]["secret"]) != `"app.password"` || params.Actions[0]["text"] != nil {
+			t.Fatalf("credential reference was changed: %s", request["params"])
+		}
+	case <-ctx.Done():
+		t.Fatal("credential handoff did not route a request")
 	}
 }

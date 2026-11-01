@@ -41,6 +41,14 @@ Use actual selectors from GUI inspection. `setValue` and `type` accept exactly o
 
 GUI text results and errors mask currently configured secret values, including in subsequent inspection calls. When any secrets are configured, Control suppresses raw helper stdout/stderr in task logs and failure diagnostics. This avoids leaks from chunked writes or truncated output. Structured results remain available after masking. Screenshots are not masked. Do not capture a screen displaying credentials or enable an application's reveal-password control.
 
+### Agent-desktop login handoff
+
+For an [agent-desktop workflow](rpa.md#use-agent-desktop-on-a-worker), use `rpa.run` on the same worker and profile to fill credential fields by reference. Store private usernames as secrets too. Inspect fresh RPA selectors rather than passing agent-desktop refs. The values go only to the worker-local helper, not to agent-desktop command arguments or the coordinating AI agent. Agent-desktop can continue operating the application after login without learning those values.
+
+There is no direct agent-desktop secret-input adapter. Its text commands do not understand Control secret names, and ordinary `exec.run` does not mask output. If protected input is not configured, ask the user to log in themselves or approve helper setup. Never retrieve stored values through a shell, environment, clipboard, script, or filesystem call to bridge that gap.
+
+During credential entry and verification, avoid raw agent-desktop snapshots, field reads, screenshots, clipboard reads, and traces. Use masked RPA inspection until credentials are no longer visible, then verify non-sensitive application state. Upstream secure-field redaction alone is insufficient for private usernames or applications that expose credentials as ordinary text. Control's masking remains best-effort and does not isolate credentials from an unrestricted process on the worker.
+
 ## Authenticate HTTP requests by reference
 
 ```json
