@@ -13,7 +13,7 @@ Orchestrators coordinate work; worker nodes execute it and exchange files direct
 - Private user fleets with persistent machine identities and names.
 - Direct WebRTC connections with WebSocket relay fallback and mutually authenticated TLS on both paths.
 - Durable tasks with idempotent submission, cancellation, streamed logs, and restart reconciliation.
-- Commands, scripts, AI CLIs, MCP servers, and opt-in GUI automation.
+- Commands, scripts, AI CLIs, MCP servers, and opt-in [native desktop automation](docs/desktop.md) with worker-local secret references.
 - SHA-256 artifacts, resumable downloads, and direct worker-to-worker delivery.
 - Forward/reverse TCP tunnels, private-network HTTP requests, and explicit clipboard pastes.
 - [Wake-on-LAN](docs/wake.md) for offline machines through a same-LAN node or an explicitly selected local client.
@@ -160,7 +160,7 @@ Managed rollouts switch the gateway first, then nodes. Offline nodes catch up on
 - [Linux VPS gateway](docs/gateway.md), [gateway behind expose](docs/expose.md), [installation and enrollment](docs/installation.md), [users and private fleets](docs/users.md), [authority and delegation](docs/delegation.md).
 - [Configuration and protocol](docs/protocol.md), [web console](docs/console.md), [dashboard and metrics](docs/dashboard.md), [managed updates](docs/updates.md).
 - [TCP tunnels](docs/tunnels.md), [connection tests](docs/connections.md), [fleet streaming](docs/streaming.md).
-- [GUI automation](docs/rpa.md), [worker-local secrets](docs/secrets.md), [clipboard pastes](docs/clipboard.md), [local machine scenarios](docs/scenarios.md).
+- [GUI automation](docs/rpa.md), [native agent-desktop](docs/desktop.md), [worker-local secrets](docs/secrets.md), [clipboard pastes](docs/clipboard.md), [local machine scenarios](docs/scenarios.md).
 - [Terminology](docs/terminology.md), [architecture](docs/architecture.md), [engineering principles](docs/principles.md), [design decisions](docs/decisions.md).
 - [Testing](docs/testing.md), [examples](examples), [contributor guide](AGENTS.md).
 

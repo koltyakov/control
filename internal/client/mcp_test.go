@@ -44,6 +44,7 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 			"exec.run", "structured", "worker", "--headed", "explicit user permission",
 			"control secrets set NAME", "secret", "setValue", "profile",
 			"exec.run output is not secret-masked",
+			"desktop.run", "control_desktop", "private", "masked",
 		}
 		if name == "mcp" {
 			required = append(required,
@@ -140,5 +141,26 @@ func TestMCPRoutesRPA(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("credential handoff did not route a request")
+	}
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "control_desktop", Arguments: map[string]any{
+		"node": "desktop", "request": map[string]any{"command": "setValue", "ref": "@s123:e1", "secret": "app.password"},
+	}})
+	if err != nil || result.IsError {
+		t.Fatalf("native desktop tool failed: %+v, %v", result, err)
+	}
+	select {
+	case request := <-requests:
+		if string(request["target"]) != `"desktop"` || string(request["method"]) != `"desktop.run"` ||
+			!strings.Contains(string(request["params"]), `"secret":"app.password"`) || strings.Contains(string(request["params"]), `"text"`) {
+			t.Fatal("native desktop did not route a reference-only request")
+		}
+	case <-ctx.Done():
+		t.Fatal("native desktop did not route a request")
+	}
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "control_desktop", Arguments: map[string]any{
+		"node": "desktop", "request": map[string]any{"command": "screenshot"},
+	}})
+	if err == nil && !result.IsError {
+		t.Fatal("native desktop tool accepted an unprotected command")
 	}
 }

@@ -20,6 +20,7 @@ import (
 
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/client"
+	"github.com/koltyakov/control/internal/desktop"
 	"github.com/koltyakov/control/internal/gateway"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/installation"
@@ -29,9 +30,13 @@ import (
 )
 
 func main() {
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "__desktop" {
+		desktop.RunHelper(os.Stdin, os.Stdout, args[1:])
+		return
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	args := os.Args[1:]
 	if len(args) == 4 && args[0] == "__startup-system" {
 		log, err := os.OpenFile(filepath.Join(args[2], "startup-change.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 		if err != nil {

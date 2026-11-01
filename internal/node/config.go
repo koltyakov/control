@@ -19,6 +19,13 @@ type Command struct {
 	URL         string            `json:"url,omitempty"`
 }
 
+// DesktopConfig opts into the built-in Go helper with an explicit library.
+// An explicit external Command is retained for existing profiles and providers.
+type DesktopConfig struct {
+	Command
+	Library string `json:"library,omitempty"`
+}
+
 type Config struct {
 	Name    string `json:"name"`
 	Gateway string `json:"gateway"`
@@ -56,6 +63,8 @@ type Config struct {
 	MCP       map[string]Command  `json:"mcp,omitempty"`
 	// RPA opts into desktop access through a configured version-1 helper.
 	RPA *Command `json:"rpa,omitempty"`
+	// Desktop opts into the native agent-desktop private-pipe helper.
+	Desktop *DesktopConfig `json:"desktop,omitempty"`
 }
 
 func LoadConfig(path string) (Config, error) {

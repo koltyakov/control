@@ -345,7 +345,7 @@ For the generic `agents` target, the skill is `~/.agents/skills/control/SKILL.md
 
 MCP entries contain an absolute executable path and `--config PATH mcp`. Credentials stay in the local profile. The [Control skill](../skills/control/SKILL.md) covers discovery, durable tasks, reconciliation after uncertain submission, and direct artifact delivery. MCP also works without the skill.
 
-For remote UI work, both teach the client to check [agent-desktop on the worker](rpa.md#use-agent-desktop-on-a-worker) and read its embedded desktop and platform skills through Control. No separate harness skill installation is required for that flow. Agent-desktop binary installation and OS permission changes need user approval. Login fields use Control's configured `rpa.run` secret-reference input on that worker, or manual login, not literal credentials passed to agent-desktop.
+For GUI tasks only, both teach the client to load [agent-desktop guidance on demand](rpa.md#use-agent-desktop-on-a-worker). No separate harness skill installation is required to read the CLI's embedded desktop/platform skills. The opt-in [native adapter](desktop.md) uses Control's isolated Go helper mode and an installed FFI library configured by absolute `desktop.library` path. No separate helper build, C++, Python, or CGO is required. It provides secret-reference value setting and masked observations through `desktop.run`. Managed updates ship helper code but do not install the library, enable access, or grant OS permissions. The existing `rpa.run` path remains available. Missing protected input requires manual login or approved setup, not literal credentials passed to a CLI. Installation and OS permission changes need user approval.
 
 ## Files and startup
 
