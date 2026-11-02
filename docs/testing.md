@@ -195,6 +195,10 @@ The interval from the first package start to the last result fell from 80.4 to 3
 
 Go bounds parallel tests per package with `-parallel`, which defaults to `GOMAXPROCS`. On resource-constrained hosts, use `go test ./... -parallel=4 -timeout=180s`; `-p=1` also serializes packages. For a serial diagnostic run, use `-parallel=1 -p=1`. These flags preserve coverage. `-short` does not currently select a smaller internal suite.
 
+Native CI race tests allow five minutes per package, including serial fixtures and time spent waiting for parallel-test slots. The Intel macOS node suite exceeded the previous three-minute budget while individual tests were still progressing. Runbook peer-discovery transport cases use independent clusters and run in parallel; individual operation deadlines remain unchanged.
+
+Standalone peer fixtures select account-client routing explicitly rather than relying on an ephemeral port remaining unused after its listener closes. The concurrent-owner recovery fixture keeps a rejecting local API open and asserts that none of its account clients probe it, including after reconnect. Worker-runbook API failure coverage uses an owned HTTP 503 server. Authentication-error tests still verify that local failures never trigger fallback or replay.
+
 ### Throughput and allocation benchmarks
 
 `BenchmarkTaskLogPayload` measures snapshot and streaming reads of a 64 KiB log chunk with empty or large retained task payloads. On October 29, 2026, macOS arm64, Apple M4 Pro and Go 1.27.3, three one-second runs with 2 MiB each of arguments and inline result allocated about 4.42 MB per snapshot read and 4.35 MB per streaming read before removing task payload clones. Afterwards they allocated about 205 KB and 139 KB, respectively. These synthetic legacy-sized records exceed current new-task inline limits. The benchmark isolates local log reading, not end-to-end transport throughput or process peak memory. Full task reads still copy payloads; log reads retain owner checks and completion notifications.

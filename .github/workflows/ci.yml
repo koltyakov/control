@@ -44,7 +44,9 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
       - name: Run tests with race detector
-        run: go test -race ./... -timeout=180s
+        # The package-wide budget includes serial fixtures and queued parallel
+        # tests. Intel macOS runners need more time for the peer suite.
+        run: go test -race ./... -timeout=300s
       - name: Build native binary
         shell: bash
         run: |

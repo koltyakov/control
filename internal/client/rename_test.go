@@ -41,7 +41,7 @@ func TestRenameRoutesNewAndReusedAliasesWithoutClosingStreams(t *testing.T) {
 				}
 				workers[i] = w
 			}
-			c := (Client{URL: refusedAPI(t)}).WithStandalone(ctx, StandaloneConfig{Gateway: a, StateDir: t.TempDir(), RelayOnly: relay})
+			c := (Client{}).WithStandalone(ctx, StandaloneConfig{Gateway: a, StateDir: t.TempDir(), RelayOnly: relay, AccountRouting: true})
 			t.Cleanup(func() { _ = c.Close() })
 			var described struct{ ID string }
 			if err := c.Call(ctx, "original", "node.describe", map[string]any{}, &described); err != nil || described.ID != workers[0].Identity.ID {

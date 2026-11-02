@@ -21,19 +21,6 @@ import (
 	"github.com/koltyakov/control/internal/node"
 )
 
-func refusedAPI(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	address := l.Addr().String()
-	if err := l.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return "http://" + address
-}
-
 type ownerProvider struct{}
 
 func (ownerProvider) Capability() model.Capability {
@@ -86,8 +73,21 @@ func TestStandalonePeerOperations(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			local := Client{URL: refusedAPI(t)}
-			cfg := StandaloneConfig{Gateway: accounts[0], StateDir: t.TempDir(), RelayOnly: relay}
+			// Account-client routing must not probe a local API, including when
+			// a concurrent or resumed client initializes later in this fixture.
+			var localCalls atomic.Int32
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				localCalls.Add(1)
+				w.WriteHeader(http.StatusUnauthorized)
+			}))
+			t.Cleanup(api.Close)
+			t.Cleanup(func() {
+				if got := localCalls.Load(); got != 0 {
+					t.Errorf("account clients probed local API %d times", got)
+				}
+			})
+			local := Client{URL: api.URL}
+			cfg := StandaloneConfig{Gateway: accounts[0], StateDir: t.TempDir(), RelayOnly: relay, AccountRouting: true}
 			c := local.WithStandalone(ctx, cfg)
 			t.Cleanup(func() { _ = c.Close() })
 			var described struct{ ID string }

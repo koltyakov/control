@@ -149,10 +149,14 @@ func TestClientRunbooksUnavailableAndDeniedWorker(t *testing.T) {
 		}
 	}
 	c, _ := runbookClientFixture(t, false, true)
-	c.URL = refusedAPI(t)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(api.Close)
+	c.URL = api.URL
 	catalog, err := c.Runbooks(context.Background(), runbooks.Query{Node: "trader"})
 	if err != nil || len(catalog.Runbooks) != 2 || catalog.Sources[len(catalog.Sources)-1].Error == "" {
-		t.Fatalf("unreachable worker hid local runbooks: %+v, %v", catalog, err)
+		t.Fatalf("worker API failure hid local runbooks: %+v, %v", catalog, err)
 	}
 }
 

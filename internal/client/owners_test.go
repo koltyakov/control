@@ -45,8 +45,8 @@ func TestStableOwnerAccessRulesPreserveTransportBoundGrants(t *testing.T) {
 	if err := w.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	local := Client{URL: refusedAPI(t)}
-	cfg := StandaloneConfig{Gateway: Admin{URL: s.URL, Key: account}, StateDir: state, RelayOnly: true}
+	local := Client{}
+	cfg := StandaloneConfig{Gateway: Admin{URL: s.URL, Key: account}, StateDir: state, RelayOnly: true, AccountRouting: true}
 	c := local.WithStandalone(ctx, cfg)
 	defer func() { _ = c.Close() }()
 	other := local.WithStandalone(ctx, cfg)

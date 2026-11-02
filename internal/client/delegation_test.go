@@ -135,7 +135,7 @@ func TestInstructionDelegation(t *testing.T) {
 				t.Fatal("synchronous instruction replayed")
 			}
 			// The same fleet's common key cannot turn a CLI into an orchestrator.
-			common := (Client{URL: refusedAPI(t)}).WithStandalone(ctx, StandaloneConfig{Gateway: Admin{URL: admin.URL, Key: workers[0].Config.Token}, StateDir: t.TempDir(), RelayOnly: relay, AccountRouting: true})
+			common := (Client{}).WithStandalone(ctx, StandaloneConfig{Gateway: Admin{URL: admin.URL, Key: workers[0].Config.Token}, StateDir: t.TempDir(), RelayOnly: relay, AccountRouting: true})
 			defer func() { _ = common.Close() }()
 			if err := common.Call(ctx, "second", "test.owner", map[string]any{}, nil); err == nil {
 				t.Fatal("common-key client executed work")
@@ -206,7 +206,7 @@ func TestDelegatedTaskRevocation(t *testing.T) {
 				t.Fatal("child task lost root ownership")
 			}
 			// Delegation management remains owner-scoped even for account clients.
-			other := (Client{URL: refusedAPI(t)}).WithStandalone(ctx, StandaloneConfig{Gateway: admin, StateDir: t.TempDir(), RelayOnly: relay, AccountRouting: true})
+			other := (Client{}).WithStandalone(ctx, StandaloneConfig{Gateway: admin, StateDir: t.TempDir(), RelayOnly: relay, AccountRouting: true})
 			defer func() { _ = other.Close() }()
 			if err := other.Call(ctx, "second", "access.revoke", map[string]any{"id": grant.ID}, nil); err == nil {
 				t.Fatal("different orchestrator revoked grant")

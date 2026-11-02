@@ -36,8 +36,10 @@ func TestRunbooksRequireAuthorityButNotWorkAdmission(t *testing.T) {
 }
 
 func TestRunbooksPeerDiscovery(t *testing.T) {
+	t.Parallel()
 	for _, relay := range []bool{false, true} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
+			t.Parallel()
 			source, worker, consumer := cluster(t, relay, func(i int, cfg *Config) {
 				if i == 1 {
 					cfg.Allow = map[string][]string{"source": {"node.describe", "runbooks.*"}, "consumer": {"node.describe"}, "*": {"node.describe"}}

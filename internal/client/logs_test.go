@@ -112,10 +112,10 @@ func TestLogStreamingBinaryOffsetsCancellationAndOwnership(t *testing.T) {
 			}
 			api := httptest.NewServer(w.Handler())
 			defer api.Close()
-			cfg := StandaloneConfig{Gateway: Admin{URL: s.URL, Key: account}, StateDir: t.TempDir(), RelayOnly: true}
+			cfg := StandaloneConfig{Gateway: Admin{URL: s.URL, Key: account}, StateDir: t.TempDir(), RelayOnly: true, AccountRouting: true}
 			c := (Client{URL: api.URL, Token: token}).WithLifetime(ctx)
 			if standalone {
-				c = (Client{URL: refusedAPI(t)}).WithStandalone(ctx, cfg)
+				c = (Client{}).WithStandalone(ctx, cfg)
 			}
 			defer func() { _ = c.Close() }()
 			var task model.Task
@@ -154,7 +154,7 @@ func TestLogStreamingBinaryOffsetsCancellationAndOwnership(t *testing.T) {
 			}
 			foreignCfg := cfg
 			foreignCfg.StateDir = t.TempDir()
-			foreign := (Client{URL: refusedAPI(t)}).WithStandalone(ctx, foreignCfg)
+			foreign := (Client{}).WithStandalone(ctx, foreignCfg)
 			if err := foreign.FollowLogs(ctx, "worker", task.ID, 0, io.Discard); err == nil {
 				t.Fatal("log stream bypassed owner check")
 			}
