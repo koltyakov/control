@@ -27,7 +27,14 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = session.Close() }()
-	for name, text := range map[string]string{"mcp": session.InitializeResult().Instructions, "skill": string(skills.Control)} {
+	skill := strings.ReplaceAll(string(skills.Control), "\r\n", "\n")
+	for name, text := range map[string]string{
+		"mcp":        session.InitializeResult().Instructions,
+		"skill LF":   skill,
+		"skill CRLF": strings.ReplaceAll(skill, "\n", "\r\n"),
+	} {
+		// Windows checkouts can embed CRLF; these checks concern content, not line endings.
+		text = strings.ReplaceAll(text, "\r\n", "\n")
 		for _, term := range []string{"orchestrator", "worker", "gateway", "client", "node", "AI software"} {
 			if !strings.Contains(text, term) {
 				t.Errorf("%s instructions omit %q", name, term)
@@ -66,7 +73,7 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 			_, gui, found := strings.Cut(text, "## GUI work, only when needed\n")
 			gui, _, _ = strings.Cut(gui, "\n## ")
 			if !found || len(strings.Fields(gui)) > 200 {
-				t.Error("skill should keep GUI guidance brief and load details on demand")
+				t.Errorf("%s should keep GUI guidance brief and load details on demand", name)
 			}
 		}
 		// The skill uses Markdown code spans; MCP uses plain instructions.
