@@ -6,7 +6,9 @@
 
 ## Enable on a worker
 
-Install the [native library](../examples/agent-desktop/README.md) for the worker's OS and architecture. ABI major 6 and a 96-byte `AdAction` layout are required and checked at runtime. Configure its absolute path on the worker:
+Install only when a GUI task needs it, after user approval. Select the latest compatible release from the public [upstream releases](https://github.com/vercel-labs/agent-desktop/releases). Download its `agent-desktop-ffi-*` archive for the worker's OS/architecture and verify SHA-256 against `checksums.txt` from that same release. Extract the full package outside `workDir` into a directory private to the worker's OS user, retaining companion executables and the license. No GitHub login, compiler, Python runtime, or upstream CLI is required. Control requires ABI major 6 and a 96-byte `AdAction` layout; the isolated helper rejects mismatches at runtime. A newer release number alone does not establish compatibility. Do not bypass these checks or use credentials until native status succeeds. See [library setup](../examples/agent-desktop/README.md).
+
+Configure the library's absolute path in the worker's User profile:
 
 ```json
 {
@@ -16,9 +18,9 @@ Install the [native library](../examples/agent-desktop/README.md) for the worker
 }
 ```
 
-Use `.so` on Linux or `agent_desktop_ffi.dll` on Windows. Merge this fragment into the existing node profile and restart while idle. Without `desktop`, the node does not advertise `desktop.run`. Configuration and OS permissions are explicit; Control never installs dependencies or requests elevation automatically.
+Use `lib/libagent_desktop_ffi.so` on Linux or `lib/agent_desktop_ffi.dll` on Windows. Merge the fragment into the existing profile without replacing other settings, then restart while idle and check `desktop.run` status. Without `desktop`, the node does not advertise `desktop.run`. Request any missing OS permissions separately; installation does not grant them.
 
-`make update` ships the Go helper code with Control. It does not install the native library, add `desktop` configuration, or grant OS permissions. Existing explicit `desktop.command` configurations remain supported using the same private-pipe protocol. Do not combine `library` with `command`, `args`, `env`, or `dir`.
+Control releases, enrollment, startup, and managed updates do not download, bundle, or install the native library. `make update` ships only the Go helper code. An existing compatible library can be reused across Control releases. Existing explicit `desktop.command` helpers remain supported using the same private-pipe protocol. Do not combine `library` with `command`, `args`, `env`, or `dir`.
 
 Run as the logged-in desktop user, not a Hybrid System companion or Windows Session 0 service. Native platform permissions and dependencies still apply. No operation unlocks a desktop or bypasses OS access checks. Trust the helper and library with the worker's credentials and normal OS authority.
 

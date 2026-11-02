@@ -29,6 +29,15 @@ func TestManagedUpdateDefersWorkAndRestartsWholePool(t *testing.T) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build update: %v\n%s", err, output)
 	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Dependency installation is an approved GUI setup step, not release work.
+	// The network-isolated builder must emit only its binary and metadata.
+	if len(entries) != 3 {
+		t.Fatalf("bundle includes unexpected dependency assets: %v", entries)
+	}
 	admin := client.Admin{URL: os.Getenv("CONTROL_GATEWAY"), Key: os.Getenv("CONTROL_SUPERUSER_KEY")}
 	var keys struct {
 		Token string `json:"token"`

@@ -21,7 +21,7 @@ MCP uses `control_call` with `node: "worker"`, `method: "exec.run"`, and `params
 
 `version` checks presence, not desktop readiness. `status` reports platform and permissions. The worker still needs the logged-in user's graphical session and upstream OS dependencies and permissions. Do not switch to System to recover GUI access. Missing executables, execution denial, unavailable sessions, and missing OS grants must be reported rather than bypassed. If absent, use an already configured `desktop.run` or `rpa.run` when suitable, or ask for setup. Control does not automatically install agent-desktop or prompt for permissions.
 
-With user approval, install the binary on the worker using the upstream installation instructions. For an agent harness that supports skill installation, upstream also provides:
+When a GUI task needs missing protected input, suggest the [native adapter setup](desktop.md#enable-on-a-worker) and ask for approval. It uses the public upstream FFI archive and a verified checksum, without installing the CLI or Python. Control releases do not bundle these dependencies. If the ordinary CLI is needed instead, install it on the worker with approval using upstream instructions. For an agent harness that supports skill installation, upstream also provides:
 
 ```sh
 npx skills add https://github.com/vercel-labs/agent-desktop --skill agent-desktop

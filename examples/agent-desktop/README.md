@@ -2,13 +2,13 @@
 
 Control includes an isolated Go helper mode using purego. No separate helper build, C++ compiler, Python runtime, or agent-desktop CLI is needed. See [setup, API, and security limits](../../docs/desktop.md).
 
-Obtain the worker's OS/architecture FFI archive from [agent-desktop releases](https://github.com/vercel-labs/agent-desktop/releases) and verify its published checksum. The bindings target ABI major 6 and a 96-byte `AdAction`, as shipped in v1.0.2. Both are checked before dispatch. If building upstream yourself, use `cargo build --profile release-ffi -p agent-desktop-ffi`; the ordinary Rust release profile does not provide the same panic boundary.
+When a GUI task needs missing desktop support, suggest installation and ask for approval. After approval, select the latest compatible release from the public [upstream releases](https://github.com/vercel-labs/agent-desktop/releases). Download its `agent-desktop-ffi-*` archive for the worker's OS/architecture and verify SHA-256 against `checksums.txt` from the same release before extraction. Control releases do not bundle these archives. Compatibility requires ABI major 6 and a 96-byte `AdAction`; the isolated helper rejects mismatches before dispatch. Do not bypass these checks or use credentials until native status succeeds.
 
-Keep upstream native dependencies beside the library as required by its release. Install outside the worker's workspace in a location writable only by its trusted OS user or administrator.
+Extract the full package, keeping upstream companion executables and licenses beside the library. Install outside `workDir` in a directory private to the worker's OS user. Use the logged-in User profile, never a Hybrid System companion for GUI or credentials.
 
-Merge [node-config.json](node-config.json) into the worker profile, replacing `desktop.library` with an absolute path. Use `libagent_desktop_ffi.dylib` on macOS, `.so` on Linux, or `agent_desktop_ffi.dll` on Windows with JSON-escaped backslashes. Restart the node while idle. The serving node never loads this library; each request launches `control __desktop LIBRARY` in a separate process.
+Merge [node-config.json](node-config.json) into the worker profile, replacing `desktop.library` with an absolute path. Use `lib/libagent_desktop_ffi.dylib` on macOS, `lib/libagent_desktop_ffi.so` on Linux, or `lib/agent_desktop_ffi.dll` on Windows with JSON-escaped backslashes. Preserve other profile settings, restart while idle, and check `desktop.run` status. The serving node never loads this library; each request launches `control __desktop LIBRARY` in a separate process.
 
-`make update` ships the helper code, but does not install libraries, enable desktop access, or grant OS permissions. Existing external `desktop.command` configurations still work; they cannot be combined with `library`.
+`make update` ships the helper code, but does not install libraries, enable desktop access, or grant OS permissions. Reuse the installed compatible library across Control updates. Existing external `desktop.command` configurations still work; they cannot be combined with `library`. If building upstream yourself, use `cargo build --profile release-ffi -p agent-desktop-ffi` to retain its panic boundary.
 
 ## Tests
 

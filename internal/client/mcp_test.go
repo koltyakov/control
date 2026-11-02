@@ -45,6 +45,12 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 			"control secrets set NAME", "secret", "setValue", "profile",
 			"exec.run output is not secret-masked",
 			"desktop.run", "control_desktop", "private", "masked",
+			"suggest installation", "After approval", "latest compatible release", "agent-desktop-ffi-*",
+			"https://github.com/vercel-labs/agent-desktop/releases",
+			"SHA-256", "checksums.txt", "same release",
+			"ABI major 6", "96-byte AdAction", "reject incompatible libraries", "before credential use",
+			"companions outside workDir", "desktop.library",
+			"other settings", "while idle", "separate approval",
 		}
 		if name == "mcp" {
 			required = append(required,
