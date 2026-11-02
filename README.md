@@ -120,6 +120,8 @@ control artifact get worker ARTIFACT_ID ./output.mp4
 
 Dashboard polls read cached resource samples; connection tests run on request. Artifact downloads resume and verify SHA-256. See the [protocol reference](docs/protocol.md) for calls, grants, and workflows.
 
+For repeatable work, keep shared or machine-specific action instructions in [runbooks](docs/runbooks.md). Client node descriptions combine project/global runbooks with authorized worker stores. Use `control runbooks`, add `--node NAME` for worker discovery, or use MCP `control_runbooks`. Discovery never executes instructions or retrieves secret values.
+
 ## Install MCP and skills
 
 Install either or both on the orchestrator. MCP exposes tools; the skill teaches CLI usage. Both install globally by default.
@@ -160,7 +162,7 @@ Managed rollouts switch the gateway first, then nodes. Offline nodes catch up on
 - [Linux VPS gateway](docs/gateway.md), [gateway behind expose](docs/expose.md), [installation and enrollment](docs/installation.md), [users and private fleets](docs/users.md), [authority and delegation](docs/delegation.md).
 - [Configuration and protocol](docs/protocol.md), [web console](docs/console.md), [dashboard and metrics](docs/dashboard.md), [managed updates](docs/updates.md).
 - [TCP tunnels](docs/tunnels.md), [connection tests](docs/connections.md), [fleet streaming](docs/streaming.md).
-- [GUI automation](docs/rpa.md), [native agent-desktop](docs/desktop.md), [worker-local secrets](docs/secrets.md), [clipboard pastes](docs/clipboard.md), [local machine scenarios](docs/scenarios.md).
+- [GUI automation](docs/rpa.md), [native agent-desktop](docs/desktop.md), [worker-local secrets](docs/secrets.md), [clipboard pastes](docs/clipboard.md), [runbooks](docs/runbooks.md).
 - [Terminology](docs/terminology.md), [architecture](docs/architecture.md), [engineering principles](docs/principles.md), [design decisions](docs/decisions.md).
 - [Testing](docs/testing.md), [examples](examples), [contributor guide](AGENTS.md).
 

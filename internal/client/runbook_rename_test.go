@@ -53,7 +53,7 @@ func writeScenarioFixture(t *testing.T, p, text string) {
 func TestRenameMachineMigratesProjectScenarios(t *testing.T) {
 	t.Chdir(t.TempDir())
 	old, name := "win.02", "trader"
-	root := ".control-scenarios"
+	root := ".control/runbooks/machines"
 	markdown := "# Connect to VPN\nMachine: `win.02`\n`control call win.02 node.describe`\ncontrol task start win.02 @task.json\ncontrol tunnel start win.02 127.0.0.1:80\ncontrol system win.02-extra\nsecret: win.02\n"
 	writeScenarioFixture(t, filepath.Join(root, old, "connect-to-vpn.md"), markdown)
 	writeScenarioFixture(t, filepath.Join(root, old, "nested", "task.json"), `{"node":"win.02","args":{"target":"win\u002e02","secret":"win.02","text":"win.02"},"machine":"win.02","id":"win.02"}`)

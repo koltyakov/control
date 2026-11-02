@@ -18,17 +18,19 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/runbooks"
 	"github.com/koltyakov/control/internal/transport"
 )
 
 // Client submits and observes work on nodes without defining a fixed machine role.
 type Client struct {
-	URL        string
-	Token      string
-	routing    *routing
-	resources  *resources
-	pool       *poolActivityCache
-	persistent *persistentAccess
+	URL          string
+	Token        string
+	routing      *routing
+	resources    *resources
+	pool         *poolActivityCache
+	persistent   *persistentAccess
+	runbookRoots []runbooks.Root
 }
 
 // WithLifetime owns local listeners and streams until Close or cancellation.
@@ -65,6 +67,13 @@ func (c Client) request(ctx context.Context, path string, value any) (*http.Resp
 }
 
 func (c Client) Call(ctx context.Context, target, method string, params any, result any) error {
+	if method != "node.describe" || result == nil {
+		return c.call(ctx, target, method, params, result)
+	}
+	return c.describeWithRunbooks(ctx, target, params, result)
+}
+
+func (c Client) call(ctx context.Context, target, method string, params any, result any) error {
 	peer, err := c.backend(ctx)
 	if err != nil {
 		return err

@@ -24,6 +24,7 @@ import (
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/processutil"
+	"github.com/koltyakov/control/internal/runbooks"
 	"github.com/koltyakov/control/internal/system"
 	"github.com/koltyakov/control/internal/transport"
 	"github.com/koltyakov/control/internal/update"
@@ -114,6 +115,7 @@ type Node struct {
 	sendWake            func(context.Context, string, model.Node) (int, error)
 	delegationMu        sync.Mutex
 	delegations         map[string]*delegationState
+	runbookRoots        []runbooks.Root
 }
 
 func New(cfg Config) (*Node, error) {
@@ -513,6 +515,8 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		defer func() { activity.finish(err) }()
 	}
 	switch method {
+	case "runbooks.list", "runbooks.read":
+		return n.runbooks(ctx, method, args)
 	case model.ConnectionTestMethod:
 		return n.connectionTest(ctx, args)
 	case "access.grant", "access.list", "access.revoke":
@@ -552,7 +556,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		}
 		sort.Strings(agents)
 		sort.Strings(servers)
-		return map[string]any{"id": n.Identity.ID, "name": n.Config.Name, "capabilities": n.Capabilities(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "transport": n.Peer.Stats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot(), "clipboard": map[string]any{"protocol": clipboard.Protocol, "methods": []string{clipboard.OpenMethod, clipboard.PasteMethod}}, "connectionTest": map[string]any{"protocol": model.ConnectionTestProtocol, "methods": []string{model.ConnectionTestMethod, model.ConnectionOpenMethod}, "maxBytes": 256 << 20, "maxSamples": 100, "timeoutSeconds": 120}}, nil
+		return map[string]any{"id": n.Identity.ID, "name": n.Config.Name, "capabilities": n.Capabilities(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "transport": n.Peer.Stats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot(), "clipboard": map[string]any{"protocol": clipboard.Protocol, "methods": []string{clipboard.OpenMethod, clipboard.PasteMethod}}, "connectionTest": map[string]any{"protocol": model.ConnectionTestProtocol, "methods": []string{model.ConnectionTestMethod, model.ConnectionOpenMethod}, "maxBytes": 256 << 20, "maxSamples": 100, "timeoutSeconds": 120}, "runbooks": map[string]any{"protocol": runbooks.Protocol, "methods": []string{"runbooks.list", "runbooks.read"}}}, nil
 	case "capabilities.list":
 		return n.Capabilities(), nil
 	case "tasks.start":

@@ -18,7 +18,7 @@ func TestMachineRenameCommand(t *testing.T) {
 	for _, target := range []string{"hostname.local", "stable-id"} {
 		t.Run(target, func(t *testing.T) {
 			t.Chdir(t.TempDir())
-			scenario := filepath.Join(".control-scenarios", "hostname.local", "connect-to-vpn.md")
+			scenario := filepath.Join(".control", "runbooks", "machines", "hostname.local", "connect-to-vpn.md")
 			if err := os.MkdirAll(filepath.Dir(scenario), 0700); err != nil {
 				t.Fatal(err)
 			}
@@ -49,7 +49,7 @@ func TestMachineRenameCommand(t *testing.T) {
 			if err := machineCLI(context.Background(), c, []string{"rename", target, "render-01"}); err != nil || calls.Load() != 1 {
 				t.Fatal("rename failed", err, calls.Load())
 			}
-			b, err := os.ReadFile(filepath.Join(".control-scenarios", "render-01", "connect-to-vpn.md"))
+			b, err := os.ReadFile(filepath.Join(".control", "runbooks", "machines", "render-01", "connect-to-vpn.md"))
 			if err != nil || !strings.Contains(string(b), "control call render-01 node.describe") || strings.Contains(string(b), "hostname.local") {
 				t.Fatal("CLI scenario migration failed", err)
 			}

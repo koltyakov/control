@@ -18,10 +18,10 @@ func TestMachineForceCommands(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			t.Chdir(t.TempDir())
 			if action == "rename" {
-				if err := os.MkdirAll(filepath.Join(".control-scenarios", "original"), 0700); err != nil {
+				if err := os.MkdirAll(filepath.Join(".control", "runbooks", "machines", "original"), 0700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(".control-scenarios", "original", "run.md"), []byte("control call original node.describe\n"), 0600); err != nil {
+				if err := os.WriteFile(filepath.Join(".control", "runbooks", "machines", "original", "run.md"), []byte("control call original node.describe\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -57,7 +57,7 @@ func TestMachineForceCommands(t *testing.T) {
 				t.Fatal("force command failed", err, calls)
 			}
 			if action == "rename" {
-				if _, err := os.Stat(filepath.Join(".control-scenarios", "reserved", "run.md")); err != nil {
+				if _, err := os.Stat(filepath.Join(".control", "runbooks", "machines", "reserved", "run.md")); err != nil {
 					t.Fatal("force bypassed scenario migration", err)
 				}
 			}

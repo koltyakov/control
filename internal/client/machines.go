@@ -2,11 +2,15 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/runbooks"
 )
 
 func (c Admin) ManageMachine(ctx context.Context, id, action string) error {
@@ -22,13 +26,35 @@ func (c Admin) ManageMachine(ctx context.Context, id, action string) error {
 }
 
 func (c Admin) RenameMachine(ctx context.Context, id, name string) error {
-	return c.renameMachine(ctx, id, name, ".control-scenarios")
+	if err := checkRunbookParents(); err != nil {
+		return err
+	}
+	return c.renameMachine(ctx, id, name, filepath.Join(runbooks.ProjectDirectory, "machines"))
 }
 
 // ForceRenameMachine retracts pending invitations for the destination name.
 // Registered identities and redeemed enrollments remain protected.
 func (c Admin) ForceRenameMachine(ctx context.Context, id, name string) error {
-	return c.renameMachineWithForce(ctx, id, name, ".control-scenarios", true)
+	if err := checkRunbookParents(); err != nil {
+		return err
+	}
+	return c.renameMachineWithForce(ctx, id, name, filepath.Join(runbooks.ProjectDirectory, "machines"), true)
+}
+
+func checkRunbookParents() error {
+	for _, p := range []string{".control", runbooks.ProjectDirectory} {
+		info, err := os.Lstat(p)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return errors.New("runbook parent must be a directory, not a symlink")
+		}
+	}
+	return nil
 }
 
 func (c Admin) ResolveMachine(ctx context.Context, name string) (model.Node, error) {

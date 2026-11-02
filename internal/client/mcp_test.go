@@ -46,6 +46,9 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 			}
 		}
 		required := []string{
+			"runbooks", "control_runbooks", ".control/runbooks/",
+			"requires", "agent-friendly", "plain",
+			"before ad-hoc probing", "contentOmitted", "uncertain actions",
 			"https://github.com/vercel-labs/agent-desktop",
 			"version", "desktop", "platform", "data.content", "status",
 			"exec.run", "structured", "worker", "--headed", "explicit user permission",

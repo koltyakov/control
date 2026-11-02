@@ -114,6 +114,18 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	args = flags.Args()
+	if len(args) > 0 && args[0] == "runbooks" {
+		q, err := parseRunbookQuery(args[1:])
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if q.Node == "" || q.Local || q.Source == "project" || q.Source == "global" {
+			return runbooksCLI(ctx, client.Client{}, args[1:])
+		}
+	}
 	if len(args) == 0 {
 		fmt.Print(commandHelp(ctx, admin()))
 		return nil
@@ -146,7 +158,7 @@ func run(ctx context.Context, args []string) error {
 			c.Token = cfg.Token
 		}
 		switch args[0] {
-		case "mcp", "system", "call", "exec", "task", "artifact", "tunnel", "session", "clipboard", "dashboard", "speedtest", "diagnostics", "wake":
+		case "mcp", "system", "call", "exec", "task", "artifact", "tunnel", "session", "clipboard", "dashboard", "speedtest", "diagnostics", "wake", "runbooks":
 			if !explicitAPI && os.Getenv("CONTROL_API") == "" {
 				var override *string
 				if explicitToken {
@@ -169,6 +181,8 @@ func run(ctx context.Context, args []string) error {
 		return installation.StartTunnelService(ctx, binary, dir)
 	})
 	switch args[0] {
+	case "runbooks":
+		return runbooksCLI(ctx, c, args[1:])
 	case "login":
 		return loginCLI(ctx, args[1:])
 	case "secrets":
@@ -637,6 +651,8 @@ Environment: CONTROL_API, CONTROL_TOKEN
   speedtest NODE [--from WORKER] [--size MiB] [--samples N] [--timeout DURATION] [--json]
   wake NODE [--from WORKER|local] [--json]
   call NODE METHOD [JSON|@file]         Invoke any operation
+  runbooks [--node NAME] [--local]       Discover shared and machine-specific operational instructions
+    --source SOURCE --file FILE         Read one complete runbook from its exact origin
   exec NODE [--detach] [--id ID] [--timeout DURATION] [--] COMMAND [ARG...]
   task start NODE JSON|@file            Submit a durable task
   task get|wait|cancel|logs NODE ID      Inspect or manage a task

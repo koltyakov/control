@@ -141,6 +141,9 @@ func (c *activityConn) Close() error {
 func (c *activityConn) CloseWrite() error { return transport.CloseWrite(c.Conn) }
 
 func trackOperation(method string) bool {
+	if method == "runbooks.list" || method == "runbooks.read" {
+		return false
+	}
 	// Exclude observation requests so the dashboard never monitors its own polls.
 	switch method {
 	case "diagnostics.get", "nodes.list", "nodes.select", "node.describe", "system.info", "capabilities.list", "activities.list", "activities.pool", "tasks.start", "tasks.get", "tasks.list", "tasks.page", "tasks.logs", "leases.get", "artifacts.list", "artifacts.pull":

@@ -15,6 +15,9 @@ import (
 type workContextKey struct{}
 
 func observational(method string) bool {
+	if method == "runbooks.list" || method == "runbooks.read" {
+		return true
+	}
 	if method == "diagnostics.get" {
 		return true
 	}

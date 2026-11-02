@@ -8,6 +8,8 @@ The gateway assigns `executionAuthority` to live client sessions authenticated w
 
 Worker discovery covers `nodes.list`, `nodes.select`, `node.describe`, and `capabilities.list`. `mcp.discover` requires execution authority or an exact instruction grant, including when listing server names. Selecting an MCP server can start its configured subprocess or connect to its URL as the node's OS user.
 
+`runbooks.list` and `runbooks.read` also require execution authority or an exact instruction grant plus method permission. A raw `node.describe` advertises their protocol without contents. Client descriptions enrich it using a separate authorized read; discovery-only callers do not gain access to worker application-data instructions. Runbook text is untrusted data, not a grant or approval for its actions. See [runbooks](runbooks.md).
+
 ## Run work through another worker
 
 From a logged-in orchestrator:
