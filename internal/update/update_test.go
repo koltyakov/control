@@ -208,7 +208,7 @@ func TestUpdaterWaitsForWorkAndRequiresLiveReservation(t *testing.T) {
 	}
 	command := Command{ID: strings.Repeat("a", 64), Version: info.Version, Asset: asset, LeaseUntil: time.Now().Add(time.Minute)}
 	a.process(ctx, queuedCommand{"update.offer", command})
-	if s := a.Snapshot(); s.State != "staged" {
+	if s := a.Snapshot(); s.State != "staged" || s.StagedSoftware != info {
 		t.Fatalf("staging: %+v", s)
 	}
 	a.process(ctx, queuedCommand{"update.prepare", command})

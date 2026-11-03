@@ -253,6 +253,9 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 		defer a.cleanup(ctx)
 		a.resume()
 		a.target, a.staged = command, ""
+		a.mu.Lock()
+		a.status.StagedSoftware = buildinfo.Info{}
+		a.mu.Unlock()
 		if IsCurrent(a.options.Software, command.Version, command.Asset) {
 			a.set("applied", nil)
 			return
@@ -260,6 +263,7 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 		a.set("downloading", nil)
 		a.report(ctx)
 		path := a.stagePath(command.Asset)
+		var stagedInfo buildinfo.Info
 		err := a.whileReporting(ctx, func() error {
 			err := downloadCached(ctx, a.options.CacheDir, path, command.Asset, func() error {
 				return DownloadPreferred(ctx, command.ReleaseRepo, command.Version, a.options.Gateway+"/v1/updates/blobs/"+command.Asset.SHA256, a.options.Token, path, command.Asset)
@@ -267,7 +271,8 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 			if err != nil {
 				return err
 			}
-			return ValidateExecutable(ctx, path, command.Version, command.Asset)
+			stagedInfo, err = ValidatedExecutable(ctx, path, command.Version, command.Asset)
+			return err
 		})
 		if err != nil {
 			a.nextAttempt = time.Now().Add(30 * time.Second)
@@ -275,6 +280,9 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 			return
 		}
 		a.staged = path
+		a.mu.Lock()
+		a.status.StagedSoftware = stagedInfo
+		a.mu.Unlock()
 		a.set("staged", nil)
 	case "update.prepare":
 		if command.ID != a.target.ID || (a.staged == "" && !IsCurrent(a.options.Software, a.target.Version, a.target.Asset)) {

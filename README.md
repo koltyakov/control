@@ -155,7 +155,7 @@ Compose tests run a gateway, three nodes, and an FFmpeg workflow over WebRTC and
 
 `control update` updates the CLI from GitHub Releases. Managed node restarts wait for idle reservations. With saved superuser authorization, `make update` pushes a development bundle to the gateway and nodes; `make update-status` tracks it. See [managed updates](docs/updates.md).
 
-Managed rollouts switch the gateway first, then nodes. Offline nodes catch up on startup without blocking the available fleet indefinitely. Nodes prefer an exact signed GitHub release and use the gateway's retained bundle when GitHub is unavailable or its assets differ.
+Managed rollouts update idle nodes independently when their verified executables declare compatibility with the running gateway. Other nodes wait for the gateway; busy nodes remain pending. Gateway restarts separately drain relay traffic without cancelling streams. Offline nodes catch up on startup. Nodes prefer an exact signed GitHub release and use the gateway's retained bundle when GitHub is unavailable or its assets differ.
 
 ## Documentation
 

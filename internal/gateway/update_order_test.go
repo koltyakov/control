@@ -1,69 +1,136 @@
 package gateway
 
 import (
-	"errors"
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
-	"github.com/koltyakov/control/internal/protocol"
+	"github.com/koltyakov/control/internal/buildinfo"
+	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/update"
 )
 
-func TestGatewaySwitchesBeforeCommittingNodeUpdates(t *testing.T) {
-	g, d, info := deferralFixture(t)
-	delete(g.peers, "offline")
-	d.Deferred = []string{"offline"}
-	status := g.updateStatus["online"]
-	status.Software.Version = "older"
-	status.Software.SHA256 = "older"
-	status.Paused, status.State, status.LeaseUntil = true, "ready", time.Now().Add(time.Minute)
-	g.updateStatus["online"] = status
-	peers := g.rolloutPeers(d)
-	var switches, commits int
-	g.options.Apply = func(path string) error {
-		if path != "verified-gateway" || commits != 0 {
-			t.Fatal("nodes switched before gateway", path, commits)
-		}
-		switches++
-		return nil
-	}
-	send := func(id, kind string, command update.Command) {
-		if kind != "update.commit" || id != "online" || command.ID != d.ID {
-			t.Fatal("unexpected commit", id, kind, command)
-		}
-		commits++
-	}
-	requested := g.installReady(d, peers, "verified-gateway", false, send)
-	if !requested || switches != 1 || commits != 0 {
-		t.Fatal("gateway did not switch first", requested, switches, commits)
-	}
-	if !g.installReady(d, peers, "verified-gateway", requested, send) || switches != 1 || commits != 0 {
-		t.Fatal("gateway restart request was repeated or nodes started too early")
-	}
-	// The restarted gateway sees its binary already selected. Node reports may
-	// still show their previous software, but idle reservations remain required.
-	g.options.Software = info
-	g.restarting = false
-	if g.installReady(d, peers, "", false, send) || commits != 1 || switches != 1 {
-		t.Fatal("selected gateway did not proceed with node updates")
-	}
-	// A newly connected node not in the reserved snapshot prevents the switch.
-	g.peers["newcomer"] = &connection{out: make(chan *protocol.Packet, 1)}
-	if g.installReady(d, peers, "verified-gateway", false, send) || switches != 1 {
-		t.Fatal("gateway ignored changed live membership")
+func TestIndependentNodeCommitCompatibilityAndBusyPeer(t *testing.T) {
+	for _, test := range []struct {
+		name                      string
+		declared, current, commit bool
+	}{
+		{"compatible-before-gateway", true, false, true},
+		{"legacy-before-gateway", false, false, false},
+		{"legacy-after-gateway", false, true, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			g, d, info := deferralFixture(t)
+			delete(g.nodes, "offline")
+			delete(g.updateStatus, "offline")
+			d.Participants = nil
+			g.options.Software.GatewayProtocol = 1
+			s := g.updateStatus["online"]
+			s.Software.Version, s.Software.SHA256 = "older", "older"
+			s.Paused, s.State, s.LeaseUntil = true, "ready", time.Now().Add(time.Minute)
+			if test.declared {
+				info.NodeGatewayMax = 1
+				s.StagedSoftware = info
+			}
+			g.updateStatus["online"] = s
+			peers := g.rolloutPeers(d)
+			peers = append(peers, rolloutPeer{node: model.Node{ID: "busy", OS: "linux", Software: s.Software}, status: update.Status{ID: d.ID, Software: s.Software, State: "staged", Busy: true}, fresh: true})
+			commits := 0
+			_, err := g.advanceNodes(d, peers, test.current, func(id, kind string, command update.Command) {
+				if kind == "update.commit" {
+					if id != "online" || command.ID != d.ID {
+						t.Fatal("committed busy or wrong node")
+					}
+					if len(g.updates.Current().InFlight) != 1 {
+						t.Fatal("commit escaped durable intent")
+					}
+					commits++
+				}
+			})
+			if err != nil || (commits == 1) != test.commit {
+				t.Fatal("wrong independent commit", commits, err)
+			}
+		})
 	}
 }
 
-func TestFailedGatewaySwitchNeverCommitsNodes(t *testing.T) {
-	g, d, _ := deferralFixture(t)
-	d.Deferred = []string{"offline"}
-	status := g.updateStatus["online"]
-	status.Paused, status.LeaseUntil = true, time.Now().Add(time.Minute)
-	g.updateStatus["online"] = status
-	g.options.Apply = func(string) error { return errors.New("fixture switch failed") }
-	if g.installReady(d, g.rolloutPeers(d), "verified-gateway", false, func(string, string, update.Command) {
-		t.Fatal("node commit escaped failed gateway switch")
-	}) || g.restarting || g.updates.Current().Phase != "error" {
-		t.Fatal("failed gateway switch was acknowledged")
+func TestNodeCommitIntentSurvivesRestartAndFailedPersistence(t *testing.T) {
+	g, d, info := deferralFixture(t)
+	if err := g.updates.NodeInstall(d.ID, "online", true); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := update.OpenRepository(filepath.Join(filepath.Dir(g.path), "updates"))
+	if err != nil || !slices.Equal(repo.Current().InFlight, []string{"online"}) {
+		t.Fatal("lost commit intent", err)
+	}
+	copy := repo.Current()
+	copy.InFlight[0] = "changed"
+	if repo.Current().InFlight[0] != "online" {
+		t.Fatal("snapshot aliases commit intent")
+	}
+	peers := g.rolloutPeers(d)
+	for i := range peers {
+		peers[i].fresh = false
+	}
+	_, err = g.advanceNodes(g.updates.Current(), peers, true, func(string, string, update.Command) {})
+	if err != nil || len(g.updates.Current().InFlight) != 1 {
+		t.Fatal("stale report cleared commit intent", err)
+	}
+	peers = []rolloutPeer{{node: g.nodes["online"], status: update.Status{ID: d.ID, Software: info, State: "applied", Paused: true}, fresh: true}}
+	_, err = g.advanceNodes(g.updates.Current(), peers, true, func(string, string, update.Command) {})
+	if err != nil || len(g.updates.Current().InFlight) != 1 {
+		t.Fatal("paused report cleared commit intent", err)
+	}
+	peers[0].status.Paused = false
+	_, err = g.advanceNodes(g.updates.Current(), peers, true, func(string, string, update.Command) {})
+	if err != nil || len(g.updates.Current().InFlight) != 0 {
+		t.Fatal("fresh resumed report did not confirm commit", err)
+	}
+	path := filepath.Join(filepath.Dir(g.path), "updates", "deployment.json")
+	if err := os.Rename(path, path+".saved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	s := update.Status{ID: d.ID, Software: info, State: "ready", Paused: true, LeaseUntil: time.Now().Add(time.Minute)}
+	s.Software.Version, s.Software.SHA256 = "older", "older"
+	peers[0].status = s
+	_, err = g.advanceNodes(g.updates.Current(), peers, true, func(_ string, kind string, _ update.Command) {
+		if kind == "update.commit" {
+			t.Error("failed persistence dispatched a commit")
+		}
+	})
+	if err == nil || len(g.updates.Current().InFlight) != 0 {
+		t.Fatal("failed commit intent was acknowledged", err)
+	}
+}
+
+func TestNodeReservationsAreBoundedAndDoNotPauseBusyNodes(t *testing.T) {
+	g, d, info := deferralFixture(t)
+	var peers []rolloutPeer
+	for _, id := range []string{"a", "b", "c", "busy"} {
+		s := update.Status{ID: d.ID, Software: info, State: "staged", Busy: id == "busy"}
+		s.Software.Version, s.Software.SHA256 = "older", "older"
+		peers = append(peers, rolloutPeer{node: model.Node{ID: id, OS: info.OS, Software: info, Online: true}, status: s, fresh: true})
+	}
+	prepared := []string{}
+	_, err := g.advanceNodes(d, peers, true, func(id, kind string, _ update.Command) {
+		if kind == "update.prepare" {
+			prepared = append(prepared, id)
+		}
+	})
+	if err != nil || !slices.Equal(prepared, []string{"a", "b"}) {
+		t.Fatal("unbounded reservations", prepared, err)
+	}
+}
+
+func TestIncompatibleExecutableDoesNotBypassSelectedGateway(t *testing.T) {
+	g := &Gateway{options: Options{Software: buildinfo.Info{GatewayProtocol: 1}}}
+	s := update.Status{StagedSoftware: buildinfo.Info{NodeGatewayMin: 2, NodeGatewayMax: 2}}
+	if g.nodeMayUpdate(&update.Deployment{}, s, false) || g.nodeMayUpdate(&update.Deployment{}, s, true) {
+		t.Fatal("incompatible node was eligible")
 	}
 }

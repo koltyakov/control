@@ -111,6 +111,9 @@ func TestUpdateStatusSurvivesDisconnectReconnectAndGatewayRestart(t *testing.T) 
 		if err := (testAdmin{URL: s.URL, Key: commonKey}).JSON(ctx, "GET", "/v1/status", nil, &pool); err != nil || len(pool.Nodes) != 1 {
 			t.Fatal("status", err)
 		}
+		if pool.Nodes[0].UpdateState != "" {
+			t.Fatal("common key learned owner-only update/work detail")
+		}
 		return pool.Nodes[0]
 	}
 	if got := read(); got.Status != "update" || got.Online {
@@ -263,7 +266,7 @@ func TestResumedUpdateClearsGraceAndRestoresHealthDurably(t *testing.T) {
 		}
 		return pool.Nodes[0]
 	}
-	if read().Status != "update" {
+	if got := read(); got.Status != "update" || got.UpdateState != "reserved" {
 		t.Fatal("maintenance was not displayed")
 	}
 	if !g.receiveUpdateStatus(n, c, model.JSON(update.Status{ID: d.ID, State: "applied", Software: current})) {

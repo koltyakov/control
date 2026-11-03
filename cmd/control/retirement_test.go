@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +21,27 @@ import (
 	"github.com/koltyakov/control/internal/node"
 	"github.com/koltyakov/control/internal/store"
 )
+
+var retirementPort atomic.Uint32
+
+func retirementAPIAddress(t *testing.T) string {
+	t.Helper()
+	// The node starts in another process after this listener closes. Keep its
+	// API port below the default ephemeral ranges so outbound sockets, including
+	// readiness probes, cannot claim it before startup or during a restart.
+	for range 20000 {
+		port := 10000 + (retirementPort.Add(1)-1)%20000
+		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			continue
+		}
+		address := listener.Addr().String()
+		_ = listener.Close()
+		return address
+	}
+	t.Fatal("no retirement test API port available outside the ephemeral range")
+	return ""
+}
 
 func TestInstalledNodeUninstallsAfterOnlineOrOfflineUnregistration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -54,13 +77,7 @@ func TestInstalledNodeUninstallsAfterOnlineOrOfflineUnregistration(t *testing.T)
 			if err = os.WriteFile(binary, bytes, 0700); err != nil {
 				t.Fatal(err)
 			}
-			listener, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			listen := listener.Addr().String()
-			_ = listener.Close()
-			cfg := node.Config{Name: "retirement-" + mode, Token: token, Gateway: server.URL, Listen: listen, DataDir: filepath.Join(home, "state"), WorkDir: filepath.Join(home, "work"), MetricsIntervalSeconds: -1}
+			cfg := node.Config{Name: "retirement-" + mode, Token: token, Gateway: server.URL, Listen: retirementAPIAddress(t), DataDir: filepath.Join(home, "state"), WorkDir: filepath.Join(home, "work"), MetricsIntervalSeconds: -1}
 			if err = store.Write(config, cfg); err != nil {
 				t.Fatal(err)
 			}
@@ -74,7 +91,8 @@ func TestInstalledNodeUninstallsAfterOnlineOrOfflineUnregistration(t *testing.T)
 				_ = installation.Service(cleanup, "uninstall", binary, config, "process")
 			}()
 			if err = installation.Service(ctx, "start", binary, config, "process"); err != nil {
-				t.Fatal(err)
+				log, _ := os.ReadFile(filepath.Join(home, "node.log"))
+				t.Fatalf("start installed node: %v\n%s", err, log)
 			}
 			admin := client.Admin{URL: server.URL, Key: adminKey}
 			if mode != "online" {

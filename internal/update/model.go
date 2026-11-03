@@ -40,6 +40,9 @@ type Deployment struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 	Participants []string  `json:"participants,omitempty"`
 	Deferred     []string  `json:"deferred,omitempty"`
+	Contract     int       `json:"contract,omitempty"`
+	InFlight     []string  `json:"inFlight,omitempty"`
+	GatewayState string    `json:"gatewayState,omitempty"`
 }
 
 // Selection exposes software metadata without cross-fleet rollout identities.
@@ -58,14 +61,15 @@ type Command struct {
 }
 
 type Status struct {
-	Software   buildinfo.Info `json:"software"`
-	ID         string         `json:"id,omitempty"`
-	State      string         `json:"state"`
-	Busy       bool           `json:"busy"`
-	Paused     bool           `json:"paused"`
-	LeaseUntil time.Time      `json:"leaseUntil,omitempty"`
-	Error      string         `json:"error,omitempty"`
-	SeenAt     time.Time      `json:"seenAt"`
+	Software       buildinfo.Info `json:"software"`
+	StagedSoftware buildinfo.Info `json:"stagedSoftware,omitzero"`
+	ID             string         `json:"id,omitempty"`
+	State          string         `json:"state"`
+	Busy           bool           `json:"busy"`
+	Paused         bool           `json:"paused"`
+	LeaseUntil     time.Time      `json:"leaseUntil,omitempty"`
+	Error          string         `json:"error,omitempty"`
+	SeenAt         time.Time      `json:"seenAt"`
 }
 
 var digestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)

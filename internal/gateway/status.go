@@ -83,6 +83,9 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 		}
 		if nodeUpdating(n, entry.status, result.ObservedAt, deployment) {
 			snapshot.Status = "update"
+			if p.Role == "user" || p.Role == "superuser" {
+				snapshot.UpdateState = g.nodeUpdateProgress(deployment, entry.status, result.ObservedAt)
+			}
 		}
 		result.Nodes = append(result.Nodes, snapshot)
 	}

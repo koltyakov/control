@@ -641,7 +641,8 @@ function statusDetail(node) {
     return age(node.lastSeen) === "Unknown"
       ? ""
       : "Seen " + age(node.lastSeen).split(" ")[0] + " ago";
-  if (node.status === "update") return "";
+  if (node.status === "update")
+    return ({ "waiting-idle": "Waiting for idle", "waiting-gateway": "Waiting for gateway", "downloading": "Downloading", "staged": "Staged", "reserved": "Restart reserved", "restarting": "Restarting" })[node.updateState] || "";
   if (!["summary", "ready"].includes(node.status)) return "No health report";
   if (node.activeCount > 0) return workSummary(node);
   if (node.leased && known(node.leaseExpires))
@@ -1103,7 +1104,7 @@ function renderUsers(items) {
 function renderUpdates(result) {
   const d = result.deployment;
   const body = d
-    ? `<dl class="metadata padded"><dt>Selected version</dt><dd>${esc(d.manifest?.version)}</dd><dt>Phase</dt><dd>${badge(d.phase === "complete" ? "Complete" : d.phase === "failed" ? "Failed" : d.phase)}</dd><dt>Source</dt><dd>${esc(d.source)}</dd><dt>Updated</dt><dd>${esc(date(d.updatedAt))}</dd><dt>Deployment ID</dt><dd class="mono">${esc(d.id)}</dd></dl>${d.error ? `<p class="form-error padded">${esc(d.error)}</p>` : ""}`
+    ? `<dl class="metadata padded"><dt>Selected version</dt><dd>${esc(d.manifest?.version)}</dd><dt>Phase</dt><dd>${badge(d.phase === "complete" ? "Complete" : d.phase === "failed" ? "Failed" : d.phase)}</dd><dt>Gateway</dt><dd>${esc(result.gatewayUpdate?.state || d.gatewayState || "Staging")}${result.gatewayUpdate?.relayCarriers ? `, ${esc(result.gatewayUpdate.relayCarriers)} relay carrier(s) pending` : ""}</dd><dt>Source</dt><dd>${esc(d.source)}</dd><dt>Updated</dt><dd>${esc(date(d.updatedAt))}</dd><dt>Deployment ID</dt><dd class="mono">${esc(d.id)}</dd></dl>${d.error ? `<p class="form-error padded">${esc(d.error)}</p>` : ""}`
     : empty(
         "No selected deployment",
         "Publish a bundle through the CLI or check for a stable release.",
@@ -1113,7 +1114,8 @@ function renderUpdates(result) {
   for (const id of deferred) acknowledgments[id] ||= {};
   const rows = Object.entries(acknowledgments).map(([id, s]) => {
     const name = state.snapshot?.nodes.find((n) => n.id === id)?.name;
-    return `<tr><td>${name ? `<strong>${esc(name)}</strong><small class="mono muted id-line">${esc(id.slice(0, 16))}</small>` : `<span class="mono">${esc(id)}</span>`}</td><td>${esc(s.software?.version)}</td><td>${deferred.has(id) ? "Deferred, awaiting confirmation" : esc(s.state ? s.state[0].toUpperCase() + s.state.slice(1) : "")}</td><td>${deferred.has(id) ? "Unknown" : s.paused ? "Paused" : "Open"}</td><td${s.error ? "" : ' class="muted"'}>${esc(s.error || "None")}</td></tr>`;
+    const progress = result.nodeProgress?.[id] || s.state;
+    return `<tr><td>${name ? `<strong>${esc(name)}</strong><small class="mono muted id-line">${esc(id.slice(0, 16))}</small>` : `<span class="mono">${esc(id)}</span>`}</td><td>${esc(s.software?.version)}</td><td>${deferred.has(id) ? "Deferred, awaiting confirmation" : esc(progress || "Awaiting status")}</td><td>${deferred.has(id) || progress === "offline-pending" ? "Unknown" : s.paused ? "Paused" : "Open"}</td><td${s.error ? "" : ' class="muted"'}>${esc(s.error || "None")}</td></tr>`;
   });
   return (
     panel(
@@ -1121,7 +1123,7 @@ function renderUpdates(result) {
       body,
       '<button class="secondary compact" data-action="check-release">Check for release</button>',
     ) +
-    `<p class="notice">Updates cover all fleets and wait for idle reservations. ${deferred.size ? `${deferred.size} offline participant(s) deferred; they will update when they reconnect. ` : ""}Publish development bundles with <code>control update push DIR</code>. Browser access does not bypass binary verification or maintenance admission.</p>` +
+    `<p class="notice">Idle nodes update independently, up to two contexts at a time. Busy nodes remain pending. The gateway separately waits for relay traffic to drain. ${deferred.size ? `${deferred.size} offline participant(s) deferred; they will update when they reconnect. ` : ""}Publish development bundles with <code>control update push DIR</code>. Browser access does not bypass binary verification or maintenance admission.</p>` +
     (rows.length
       ? panel(
           "Node acknowledgments",

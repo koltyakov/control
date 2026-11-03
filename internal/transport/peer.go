@@ -101,6 +101,8 @@ type Peer struct {
 	streamSlots         chan struct{}
 	outgoingSlots       map[Lane]chan struct{}
 	closed              bool
+	relayDrainUntil     time.Time
+	relayDrainID        string
 	closeOnce           sync.Once
 	handler             func(string, net.Conn)
 	log                 *slog.Logger
@@ -254,6 +256,8 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		MachineStatePush bool     `json:"machineStatePush"`
 		LANDiscovery     bool     `json:"lanDiscovery"`
 		GatewayHeartbeat bool     `json:"gatewayHeartbeat"`
+		RelayDrain       bool     `json:"relayDrain"`
+		GatewayProtocol  int      `json:"gatewayProtocol"`
 		TrickleICE       bool     `json:"trickleICE"`
 		STUNServers      []string `json:"stunServers"`
 	}
@@ -264,6 +268,9 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	}
 	if scope.UserID == "" {
 		return nil, errors.New("gateway did not authenticate fleet membership; upgrade the gateway before this node")
+	}
+	if !p.cfg.Client && p.cfg.Node.Software.NodeGatewayMax != 0 && !p.cfg.Node.Software.SupportsGateway(scope.GatewayProtocol) {
+		return nil, errors.New("node executable is incompatible with the running gateway protocol")
 	}
 	if p.cfg.Client && !scope.ClientSessions {
 		return nil, errors.New("gateway does not support client sessions; upgrade the gateway and target nodes before standalone CLI use")
@@ -336,7 +343,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		err = errors.New("invalid gateway challenge")
 	}
 	if err == nil {
-		hello := gateway.Hello{Version: model.Version, Node: p.cfg.Node, Client: p.cfg.Client, GatewayHeartbeat: scope.GatewayHeartbeat}
+		hello := gateway.Hello{Version: model.Version, Node: p.cfg.Node, Client: p.cfg.Client, GatewayHeartbeat: scope.GatewayHeartbeat, RelayDrain: scope.RelayDrain}
 		if nodeBytes {
 			// Sign the exact registration bytes so a gateway that does not know
 			// a newer field ignores it instead of failing signature verification.
@@ -347,6 +354,10 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 			info := *hello.Node.System
 			info.GPUs = nil
 			hello.Node.System = &info
+		}
+		if !nodeBytes {
+			hello.Node.Software.GatewayProtocol = 0
+			hello.Node.Software.NodeGatewayMin, hello.Node.Software.NodeGatewayMax = 0, 0
 		}
 		hello.Signature = ed25519.Sign(p.cfg.Identity.Private, hello.Message(challenge))
 		if p.cfg.ClientOwner != nil {
@@ -373,6 +384,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		return nil, gatewayNetworkError(errors.New("network changed during gateway connection"))
 	}
 	p.ws = ws
+	p.relayDrainUntil, p.relayDrainID = time.Time{}, ""
 	p.gatewayWS.Store(ws)
 	// A reconnect may have missed an owner rename. Keep identity-bound sessions,
 	// but resolve names again before opening new streams through them.
@@ -499,6 +511,10 @@ func (p *Peer) send(ctx context.Context, msg *protocol.Packet) error {
 }
 
 func (p *Peer) receive(msg *protocol.Packet) {
+	if msg.Kind == "gateway.drain" || msg.Kind == "gateway.resume" {
+		p.receiveGatewayDrain(msg)
+		return
+	}
 	if msg.Kind == "lan.probe" {
 		p.receiveLANProbe(msg)
 		return
@@ -1078,6 +1094,14 @@ func (p *Peer) IdentityID() string { return p.cfg.Identity.ID }
 func (p *Peer) dial(ctx context.Context, remote, mode string, lane Lane) (_ *peerSession, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if mode == "relay" {
+		p.mu.Lock()
+		draining := time.Now().Before(p.relayDrainUntil)
+		p.mu.Unlock()
+		if draining {
+			return nil, errors.New("gateway relay is draining for maintenance")
+		}
 	}
 	if mode == "webrtc" {
 		p.mu.Lock()

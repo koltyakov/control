@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -95,6 +96,7 @@ func (r *Repository) Current() *Deployment {
 	copy.Manifest.Assets = append([]Asset(nil), copy.Manifest.Assets...)
 	copy.Participants = append([]string(nil), copy.Participants...)
 	copy.Deferred = append([]string(nil), copy.Deferred...)
+	copy.InFlight = append([]string(nil), copy.InFlight...)
 	return &copy
 }
 
@@ -114,10 +116,10 @@ func (r *Repository) Publish(manifest Manifest, source string) (*Deployment, err
 		copy := *r.current
 		return &copy, nil
 	}
-	if r.current != nil && r.current.Phase == "installing" {
+	if r.current != nil && (len(r.current.InFlight) != 0 || r.current.GatewayState == "switching" || r.current.Contract == 0 && r.current.Phase == "installing") {
 		return nil, errors.New("another update is installing; wait for it to complete")
 	}
-	d := &Deployment{ID: id, Manifest: manifest, Source: source, Phase: "staging", UpdatedAt: time.Now().UTC()}
+	d := &Deployment{ID: id, Manifest: manifest, Source: source, Phase: "staging", Contract: 2, UpdatedAt: time.Now().UTC()}
 	if err := store.Write(filepath.Join(r.dir, "deployment.json"), d); err != nil {
 		return nil, err
 	}
@@ -148,6 +150,8 @@ func (r *Repository) BeginInstall(id string, participants []string) error {
 		return errors.New("update superseded")
 	}
 	copy := *r.current
+	// Legacy callers retain their conservative publication barrier.
+	copy.Contract = 0
 	copy.Phase, copy.Error, copy.UpdatedAt = "installing", "", time.Now().UTC()
 	copy.Participants = append([]string(nil), participants...)
 	// Keep deferred identities visible until they acknowledge the selected build.
@@ -160,6 +164,54 @@ func (r *Repository) BeginInstall(id string, participants []string) error {
 			copy.Participants = append(copy.Participants, deferred)
 		}
 	}
+	if err := store.Write(filepath.Join(r.dir, "deployment.json"), &copy); err != nil {
+		return err
+	}
+	r.current = &copy
+	return nil
+}
+
+// NodeInstall durably records commit intent, or clears it only after a fresh
+// applied/resumed or explicit failed/resumed acknowledgement. Disconnection is
+// not an acknowledgement and must not unlock publication.
+func (r *Repository) NodeInstall(id, node string, pending bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.current == nil || r.current.ID != id {
+		return errors.New("update superseded")
+	}
+	copy := *r.current
+	copy.InFlight = slices.Clone(copy.InFlight)
+	copy.Participants = slices.Clone(copy.Participants)
+	if pending {
+		if slices.Contains(copy.InFlight, node) {
+			return nil
+		}
+		copy.InFlight = append(copy.InFlight, node)
+		if !slices.Contains(copy.Participants, node) {
+			copy.Participants = append(copy.Participants, node)
+		}
+	} else {
+		copy.InFlight = slices.DeleteFunc(copy.InFlight, func(n string) bool { return n == node })
+	}
+	if err := store.Write(filepath.Join(r.dir, "deployment.json"), &copy); err != nil {
+		return err
+	}
+	r.current = &copy
+	return nil
+}
+
+func (r *Repository) SetGatewayState(id, state string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.current == nil || r.current.ID != id {
+		return errors.New("update superseded")
+	}
+	if r.current.GatewayState == state {
+		return nil
+	}
+	copy := *r.current
+	copy.GatewayState = state
 	if err := store.Write(filepath.Join(r.dir, "deployment.json"), &copy); err != nil {
 		return err
 	}

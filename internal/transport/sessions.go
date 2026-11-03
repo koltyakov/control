@@ -75,7 +75,7 @@ func (p *Peer) worker(fn func()) bool {
 func (p *Peer) registerSession(s *peerSession) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed || p.ctx.Err() != nil || (s.link != nil && (s.link.generation != p.networkGeneration || s.link.conn.ctx.Err() != nil)) {
+	if p.closed || p.ctx.Err() != nil || (s.mode == "relay" && s.lane != IncomingLane && time.Now().Before(p.relayDrainUntil)) || (s.link != nil && (s.link.generation != p.networkGeneration || s.link.conn.ctx.Err() != nil)) {
 		return false
 	}
 	p.allSessions[s.id] = s
@@ -170,7 +170,7 @@ func (p *Peer) session(ctx context.Context, target string, lane Lane) (*peerSess
 		id = target
 	}
 	key := sessionKey{id, lane}
-	if s := p.sessions[key]; s != nil && s.usableLocked() {
+	if s := p.sessions[key]; s != nil && !s.draining && s.usableLocked() {
 		if s.mode == "relay" && !p.cfg.RelayOnly && p.pending[key] == nil && p.directAvailableLocked(s.remote, time.Now()) {
 			// Keep the relay available while a bounded setup probes a better path.
 			// Only new streams switch; existing bytes are never replayed.

@@ -55,6 +55,7 @@ type NodeActivitySnapshot struct {
 	// online for directory-only presence, update during managed updates,
 	// offline, or unavailable.
 	Status           string                 `json:"status"`
+	UpdateState      string                 `json:"updateState,omitempty"`
 	Error            string                 `json:"error,omitempty"`
 	ObservedAt       time.Time              `json:"observedAt,omitempty"`
 	Active           []Activity             `json:"active"`

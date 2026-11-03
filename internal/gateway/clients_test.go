@@ -257,12 +257,13 @@ func TestClientSessionsAreNotFleetMachines(t *testing.T) {
 	if queued != 0 {
 		t.Fatal("client received an update command")
 	}
-	if !g.reserveRestart(&update.Deployment{}, nil) {
+	if !g.reserveRestart(1) {
 		t.Fatal("idle client connection blocked gateway restart")
 	}
 	g.mu.Lock()
 	g.restarting = false
 	g.mu.Unlock()
+	g.cancelGatewayDrain()
 	if err := a.JSON(ctx, "DELETE", "/v1/fleet/keys/"+issued.Key.ID, nil, nil); err != nil {
 		t.Fatal(err)
 	}

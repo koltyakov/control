@@ -178,32 +178,10 @@ func TestReleaseFetchChecksManifestAndDoesNotReplaceNewerDevelopment(t *testing.
 	}
 }
 
-func TestGatewayRestartRequiresCurrentReservedMembership(t *testing.T) {
-	asset := update.Asset{OS: "linux", Arch: "amd64", SHA256: strings.Repeat("a", 64)}
-	d := &update.Deployment{ID: "deployment", Manifest: update.Manifest{Assets: []update.Asset{asset}}}
-	status := update.Status{ID: d.ID, Software: buildinfo.Info{OS: asset.OS, Arch: asset.Arch, SHA256: asset.SHA256}, Paused: true, SeenAt: time.Now(), LeaseUntil: time.Now().Add(time.Minute)}
-	g := &Gateway{peers: map[string]*connection{"worker": {}}, updateStatus: map[string]update.Status{"worker": status}}
-	peers := []rolloutPeer{{node: model.Node{ID: "worker"}}}
-	g.peers["newcomer"] = &connection{}
-	if g.reserveRestart(d, peers) {
-		t.Fatal("gateway reserved despite new peer absent from idle snapshot")
-	}
-	delete(g.peers, "newcomer")
-	busy := status
-	busy.Busy = true
-	g.updateStatus["worker"] = busy
-	if g.reserveRestart(d, peers) {
-		t.Fatal("gateway reserved with newly active peer")
-	}
-	g.updateStatus["worker"] = status
-	if !g.reserveRestart(d, peers) || !g.restarting {
-		t.Fatal("idle acknowledged membership did not reserve restart")
-	}
-	d.Manifest.Version, status.Software.Version = "v1", "v1"
-	status.Software.SHA256 = strings.Repeat("b", 64)
-	g.updateStatus["worker"] = status
-	if !g.reserveRestart(d, peers) {
-		t.Fatal("same-version participant blocked gateway restart despite a live idle reservation")
+func TestGatewayRestartDoesNotRequireIdleMembership(t *testing.T) {
+	g := &Gateway{peers: map[string]*connection{"worker": {}, "client": {client: true}}, updateStatus: map[string]update.Status{"worker": {Busy: true}}}
+	if !g.reserveRestart(1) || !g.restarting {
+		t.Fatal("busy local work or an idle client blocked a relay-free gateway restart")
 	}
 }
 

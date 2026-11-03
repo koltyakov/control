@@ -41,6 +41,7 @@ type Hello struct {
 	NodeBytes        []byte `json:"nodeBytes,omitempty"`
 	Client           bool   `json:"client,omitempty"`
 	GatewayHeartbeat bool   `json:"gatewayHeartbeat,omitempty"`
+	RelayDrain       bool   `json:"relayDrain,omitempty"`
 	OwnerKey         []byte `json:"ownerKey,omitempty"`
 	OwnerSignature   []byte `json:"ownerSignature,omitempty"`
 	Signature        []byte `json:"signature"`
@@ -56,6 +57,9 @@ func (h Hello) Message(challenge []byte) []byte {
 	}
 	if h.GatewayHeartbeat {
 		b = append(b, []byte("control-gateway-heartbeat-v1\x00")...)
+	}
+	if h.RelayDrain {
+		b = append(b, []byte("control-relay-drain-v1\x00")...)
 	}
 	if len(h.NodeBytes) != 0 {
 		b = append(b, []byte("control-node-bytes-v1\x00")...)
@@ -86,6 +90,8 @@ func (h Hello) OwnerMessage(challenge []byte) []byte {
 }
 
 type connection struct {
+	relayDrain        bool
+	drainID           string // Protected by the gateway mutex.
 	heartbeat         bool
 	pong              chan string
 	client            bool
@@ -122,6 +128,7 @@ type Gateway struct {
 	wg               sync.WaitGroup
 	closed           bool
 	restarting       bool
+	maintenance      gatewayMaintenance
 	lock             *flock.Flock
 	superuser        string
 	keys             map[string]keyRecord
@@ -306,7 +313,7 @@ func (g *Gateway) Handler() http.Handler {
 	g.installationRoutes(mux)
 	g.machineRoutes(mux)
 	g.consoleRoutes(mux)
-	return mux
+	return g.maintenanceHandler(mux)
 }
 
 func (g *Gateway) auth(next http.HandlerFunc) http.HandlerFunc {
@@ -526,7 +533,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		return
 	}
 	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, relayQueuePackets),
-		keyID: p.KeyID, userID: p.UserID, heartbeat: hello.GatewayHeartbeat, pong: make(chan string, 1), lanDiscovery: n.LANDiscovery, machineStatePush: n.MachineStatePush && !client, relay: newRelayScheduler(),
+		keyID: p.KeyID, userID: p.UserID, heartbeat: hello.GatewayHeartbeat, relayDrain: hello.RelayDrain, pong: make(chan string, 1), lanDiscovery: n.LANDiscovery, machineStatePush: n.MachineStatePush && !client, relay: newRelayScheduler(),
 		queues: &packetQueues{local: packetBudget{limit: relayQueueBytes}, global: &g.admission.packets, account: &reservation.account.packets, rejected: g.admission}}
 	defer c.closeQueues()
 	n.Online = true
@@ -623,6 +630,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			delete(g.routes, n.ID)
 		}
 		g.routeMu.Unlock()
+		g.forgetRelays(c)
 		delete(g.clients, n.ID)
 		if latest, exists := g.nodes[n.ID]; exists {
 			latest.Online = false
@@ -750,6 +758,10 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			if p.Kind == "open" && !c.enqueue(&protocol.Packet{Kind: "close", From: p.To, Session: p.Session, Data: []byte("peer offline")}) {
 				return
 			}
+			continue
+		}
+		if !g.admitRelay(n.ID, c, dest, &p) {
+			_ = c.enqueue(&protocol.Packet{Kind: "close", From: p.To, Session: p.Session, Data: []byte("gateway relay maintenance or session limit")})
 			continue
 		}
 		if dest.enqueue(&p) {

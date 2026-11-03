@@ -177,12 +177,30 @@ func (g *Gateway) updateRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/admin/updates", g.admin(func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		statuses := map[string]update.Status{}
+		online := map[string]bool{}
+		for id, node := range g.nodes {
+			statuses[id] = update.Status{Software: node.Software}
+			online[id] = node.Online
+		}
 		for id, status := range g.updateStatus {
 			statuses[id] = status
 		}
 		g.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"deployment": g.updates.Current(), "gateway": g.options.Software, "nodes": statuses})
+		d := g.updates.Current()
+		progress := map[string]string{}
+		for id, status := range statuses {
+			if !online[id] {
+				progress[id] = "offline-pending"
+			} else {
+				progress[id] = g.nodeUpdateProgress(d, status, time.Now())
+			}
+		}
+		gatewayProgress := g.gatewayBlockers()
+		if d != nil {
+			gatewayProgress["state"] = d.GatewayState
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"deployment": d, "gateway": g.options.Software, "nodes": statuses, "nodeProgress": progress, "gatewayUpdate": gatewayProgress})
 	}))
 	mux.HandleFunc("POST /v1/admin/updates/check", g.admin(func(w http.ResponseWriter, r *http.Request) {
 		d, err := g.fetchRelease(r.Context())
@@ -308,6 +326,7 @@ func (g *Gateway) rolloutPeers(d *update.Deployment) []rolloutPeer {
 		status, ok := g.updateStatus[id]
 		peers = append(peers, rolloutPeer{g.nodes[id], status, g.peers[id] != nil && ok && time.Since(status.SeenAt) < updateStatusFreshness})
 	}
+	slices.SortFunc(peers, func(a, b rolloutPeer) int { return strings.Compare(a.node.ID, b.node.ID) })
 	return peers
 }
 
@@ -362,40 +381,44 @@ func (g *Gateway) reconcileDeferred(d *update.Deployment, now time.Time) (*updat
 	return g.updates.Current(), nil
 }
 
-func (g *Gateway) stageGateway(ctx context.Context, d *update.Deployment) (string, error) {
+func (g *Gateway) stageGateway(ctx context.Context, d *update.Deployment) (string, buildinfo.Info, error) {
 	asset, ok := d.Manifest.Asset(g.options.Software.OS, g.options.Software.Arch)
 	if !ok {
-		return "", errors.New("gateway platform missing")
+		return "", buildinfo.Info{}, errors.New("gateway platform missing")
 	}
 	if update.IsCurrent(g.options.Software, d.Manifest.Version, asset) {
-		return "", nil
+		return "", g.options.Software, nil
 	}
 	path := filepath.Join(filepath.Dir(g.path), "updates", "staged", asset.SHA256, asset.File)
 	if update.Verify(path, asset) != nil {
 		f, err := os.Open(g.updates.Blob(asset.SHA256))
 		if err != nil {
-			return "", err
+			return "", buildinfo.Info{}, err
 		}
 		err = update.SaveBinary(f, path, asset)
 		_ = f.Close()
 		if err != nil {
-			return "", err
+			return "", buildinfo.Info{}, err
 		}
 	}
-	if err := update.ValidateExecutable(ctx, path, d.Manifest.Version, asset); err != nil {
-		return "", err
-	}
-	return path, nil
+	info, err := update.ValidatedExecutable(ctx, path, d.Manifest.Version, asset)
+	return path, info, err
 }
 
 func (g *Gateway) rolloutLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	var stagedID, stagedPath string
+	var stagedInfo buildinfo.Info
 	var nextAttempt time.Time
 	var cleanedID string
 	var nextCleanup time.Time
 	requestedRestart := false
+	defer func() {
+		if !requestedRestart {
+			g.cancelGatewayDrain()
+		}
+	}()
 	type commandKey struct{ id, kind string }
 	lastSent := map[commandKey]time.Time{}
 	var sentDeployment string
@@ -422,21 +445,22 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 				return
 			}
 			if sentDeployment != d.ID {
+				g.cancelGatewayDrain()
 				clear(lastSent)
 				sentDeployment = d.ID
 			}
 			if stagedID != d.ID {
-				if time.Now().Before(nextAttempt) {
-					return
+				if !time.Now().Before(nextAttempt) {
+					path, info, err := g.stageGateway(ctx, d)
+					if err != nil {
+						_ = g.updates.SetPhase(d.ID, "error", err)
+						nextAttempt = time.Now().Add(30 * time.Second)
+					} else {
+						stagedID, stagedPath = d.ID, path
+						stagedInfo = info
+						requestedRestart = false
+					}
 				}
-				path, err := g.stageGateway(ctx, d)
-				if err != nil {
-					_ = g.updates.SetPhase(d.ID, "error", err)
-					nextAttempt = time.Now().Add(30 * time.Second)
-					return
-				}
-				stagedID, stagedPath = d.ID, path
-				requestedRestart = false
 			}
 			var err error
 			d, err = g.reconcileDeferred(d, time.Now())
@@ -453,30 +477,19 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 					delete(lastSent, key)
 				}
 			}
-			allStaged, allIdle, allReady, peersApplied := true, true, true, true
-			for _, peer := range peers {
-				asset, ok := d.Manifest.Asset(peer.node.OS, peer.node.Software.Arch)
-				if !ok {
-					allStaged, peersApplied = false, false
-					continue
-				}
-				command := update.Command{ID: d.ID, Version: d.Manifest.Version, Asset: asset, ReleaseRepo: g.updateReleaseRepo(d)}
-				matching := peer.fresh && peer.status.ID == d.ID
-				applied := matching && update.IsCurrent(peer.status.Software, d.Manifest.Version, asset)
-				staged := matching && (applied || peer.status.State == "staged" || peer.status.State == "ready" || peer.status.State == "busy" || peer.status.State == "restarting")
-				if !staged {
-					send(peer.node.ID, "update.offer", command)
-				}
-				allStaged = allStaged && staged
-				allIdle = allIdle && matching && !peer.status.Busy
-				allReady = allReady && matching && peer.status.Paused && !peer.status.Busy && time.Until(peer.status.LeaseUntil) > 30*time.Second
-				peersApplied = peersApplied && applied
+			if requestedRestart {
+				return
 			}
-			if peersApplied && stagedPath == "" {
-				for _, peer := range peers {
-					if peer.status.Paused {
-						send(peer.node.ID, "update.resume", update.Command{ID: d.ID})
-					}
+			gatewayAsset, hasGateway := d.Manifest.Asset(g.options.Software.OS, g.options.Software.Arch)
+			gatewayCurrent := hasGateway && update.IsCurrent(g.options.Software, d.Manifest.Version, gatewayAsset)
+			peersApplied, err := g.advanceNodes(d, peers, gatewayCurrent, send)
+			if err != nil {
+				return
+			}
+			d = g.updates.Current()
+			if peersApplied && gatewayCurrent {
+				if err := g.updates.SetGatewayState(d.ID, "applied"); err != nil {
+					return
 				}
 				if d.Phase != "complete" {
 					if err := g.updates.SetPhase(d.ID, "complete", nil); err != nil {
@@ -489,65 +502,173 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 				}
 				return
 			}
-			if !allStaged {
-				if d.Phase != "installing" && d.Phase != "staging" {
-					_ = g.updates.SetPhase(d.ID, "staging", nil)
-				}
+			if stagedID != d.ID {
 				return
 			}
-			if !allIdle {
-				for _, peer := range peers {
-					send(peer.node.ID, "update.resume", update.Command{ID: d.ID})
-				}
-				if d.Phase != "waiting-idle" && d.Phase != "installing" {
-					_ = g.updates.SetPhase(d.ID, "waiting-idle", nil)
-				}
+			if d.Phase != "installing" || d.Error != "" {
+				_ = g.updates.SetPhase(d.ID, "installing", nil)
+			}
+			if stagedPath == "" {
+				_ = g.updates.SetGatewayState(d.ID, "applied")
 				return
 			}
-			lease := time.Now().Add(2 * time.Minute).UTC()
+			// Do not interrupt a node commit handshake. Unknown offline commits
+			// remain durable pending records, never fabricated success.
+			if len(d.InFlight) != 0 {
+				_ = g.updates.SetGatewayState(d.ID, "waiting-nodes")
+				return
+			}
 			for _, peer := range peers {
-				ready := peer.fresh && peer.status.ID == d.ID && peer.status.Paused && !peer.status.Busy && time.Until(peer.status.LeaseUntil) > 30*time.Second
-				if !ready {
-					send(peer.node.ID, "update.prepare", update.Command{ID: d.ID, LeaseUntil: lease})
-				}
-			}
-			if !allReady {
-				return
-			}
-			if d.Phase != "installing" {
-				ids := []string{}
-				for _, peer := range peers {
-					ids = append(ids, peer.node.ID)
-				}
-				if err := g.updates.BeginInstall(d.ID, ids); err != nil {
+				if peer.status.Software.NodeGatewayMax > 0 && !peer.status.Software.SupportsGateway(stagedInfo.GatewayProtocol) {
+					_ = g.updates.SetGatewayState(d.ID, "waiting-nodes")
 					return
 				}
 			}
-			requestedRestart = g.installReady(d, peers, stagedPath, requestedRestart, send)
+			if !g.drainGateway(time.Now()) {
+				_ = g.updates.SetGatewayState(d.ID, "waiting-relays")
+				return
+			}
+			if err := g.updates.SetGatewayState(d.ID, "draining"); err != nil {
+				g.cancelGatewayDrain()
+				return
+			}
+			if !g.reserveRestart(stagedInfo.GatewayProtocol) {
+				return
+			}
+			if err := g.updates.SetGatewayState(d.ID, "switching"); err != nil {
+				g.releaseRestart()
+				return
+			}
+			if err := g.options.Apply(stagedPath); err != nil {
+				g.releaseRestart()
+				_ = g.updates.SetGatewayState(d.ID, "error")
+				_ = g.updates.SetPhase(d.ID, "error", err)
+				return
+			}
+			requestedRestart = true
 		}()
 	}
 }
 
-// Called under rolloutMu after staging and idle admission. Only a gateway that
-// already runs the selection may commit node replacements.
-func (g *Gateway) installReady(d *update.Deployment, peers []rolloutPeer, stagedPath string, requestedRestart bool, send func(string, string, update.Command)) bool {
-	if stagedPath != "" {
-		if !requestedRestart && g.reserveRestart(d, peers) {
-			requestedRestart = true
-			if err := g.options.Apply(stagedPath); err != nil {
-				g.mu.Lock()
-				g.restarting = false
-				g.mu.Unlock()
-				requestedRestart = false
-				_ = g.updates.SetPhase(d.ID, "error", err)
+func (g *Gateway) releaseRestart() {
+	g.mu.Lock()
+	g.restarting = false
+	g.mu.Unlock()
+	g.cancelGatewayDrain()
+}
+
+func stagedStatus(s update.Status) bool {
+	return s.State == "staged" || s.State == "ready" || s.State == "busy" || s.State == "restarting"
+}
+
+func (g *Gateway) nodeMayUpdate(d *update.Deployment, s update.Status, gatewayCurrent bool) bool {
+	if s.StagedSoftware.NodeGatewayMax != 0 {
+		asset, ok := d.Manifest.Asset(s.Software.OS, s.Software.Arch)
+		return ok && s.StagedSoftware.Version == d.Manifest.Version && update.Matches(s.StagedSoftware, asset) && s.StagedSoftware.SupportsGateway(g.options.Software.GatewayProtocol)
+	}
+	return gatewayCurrent
+}
+
+func (g *Gateway) nodeUpdateProgress(d *update.Deployment, s update.Status, now time.Time) string {
+	if d == nil || s.ID != d.ID || now.Sub(s.SeenAt) >= updateStatusFreshness {
+		return "awaiting-status"
+	}
+	if updateAppliedAndResumed(d, s) {
+		return "applied"
+	}
+	if s.State == "error" || s.State == "downloading" || s.State == "restarting" {
+		return s.State
+	}
+	asset, ok := d.Manifest.Asset(g.options.Software.OS, g.options.Software.Arch)
+	if stagedStatus(s) && !g.nodeMayUpdate(d, s, ok && update.IsCurrent(g.options.Software, d.Manifest.Version, asset)) {
+		return "waiting-gateway"
+	}
+	if s.Busy {
+		return "waiting-idle"
+	}
+	if s.Paused {
+		return "reserved"
+	}
+	return s.State
+}
+
+// advanceNodes never reserves an unrelated node or waits for a fleet-wide idle
+// snapshot. At most two live contexts receive commit intent concurrently.
+// Excess reservations, including those left by an older coordinator, are
+// released. Node-owned admission rechecks work immediately before replacement.
+func (g *Gateway) advanceNodes(d *update.Deployment, peers []rolloutPeer, gatewayCurrent bool, send func(string, string, update.Command)) (bool, error) {
+	for _, peer := range peers {
+		if peer.fresh && peer.status.ID == d.ID && slices.Contains(d.InFlight, peer.node.ID) &&
+			(updateAppliedAndResumed(d, peer.status) || peer.status.State == "error" && !peer.status.Paused) {
+			if err := g.updates.NodeInstall(d.ID, peer.node.ID, false); err != nil {
+				return false, err
 			}
 		}
-		return requestedRestart
 	}
+	d = g.updates.Current()
+	slots := 0
 	for _, peer := range peers {
+		if slices.Contains(d.Deferred, peer.node.ID) && !peer.node.Online {
+			continue
+		}
+		if slices.Contains(d.InFlight, peer.node.ID) {
+			slots++
+		}
+	}
+	allApplied := true
+	for _, peer := range peers {
+		asset, ok := d.Manifest.Asset(peer.node.OS, peer.node.Software.Arch)
+		if !ok {
+			allApplied = false
+			continue
+		}
+		s := peer.status
+		matching := peer.fresh && s.ID == d.ID
+		applied := matching && update.IsCurrent(s.Software, d.Manifest.Version, asset)
+		allApplied = allApplied && applied && !s.Paused
+		command := update.Command{ID: d.ID, Version: d.Manifest.Version, Asset: asset, ReleaseRepo: g.updateReleaseRepo(d)}
+		if applied {
+			if s.Paused {
+				send(peer.node.ID, "update.resume", update.Command{ID: d.ID})
+			}
+			continue
+		}
+		if !matching || !stagedStatus(s) {
+			send(peer.node.ID, "update.offer", command)
+			continue
+		}
+		if !g.nodeMayUpdate(d, s, gatewayCurrent) {
+			continue
+		}
+		if s.State == "restarting" {
+			continue
+		}
+		if s.Busy {
+			if s.Paused {
+				send(peer.node.ID, "update.resume", update.Command{ID: d.ID})
+			}
+			continue
+		}
+		owned := slices.Contains(d.InFlight, peer.node.ID)
+		if !owned && slots >= 2 {
+			if s.Paused {
+				send(peer.node.ID, "update.resume", update.Command{ID: d.ID})
+			}
+			continue
+		}
+		if !owned {
+			slots++
+		}
+		if !s.Paused || time.Until(s.LeaseUntil) <= 30*time.Second {
+			send(peer.node.ID, "update.prepare", update.Command{ID: d.ID, LeaseUntil: time.Now().Add(2 * time.Minute).UTC()})
+			continue
+		}
+		if err := g.updates.NodeInstall(d.ID, peer.node.ID, true); err != nil {
+			return false, err
+		}
 		send(peer.node.ID, "update.commit", update.Command{ID: d.ID})
 	}
-	return false
+	return allApplied, nil
 }
 
 // Called under rolloutMu, after the gateway and online participants acknowledge
@@ -573,29 +694,4 @@ func (g *Gateway) cleanupUpdates(ctx context.Context, id string) {
 	if result.Blobs != 0 || result.Staged != 0 {
 		slog.Info("update cleanup", "blobs", result.Blobs, "staged", result.Staged)
 	}
-}
-
-// Freeze registration atomically with the final idle check. A peer joining
-// after the loop's snapshot must not start relay work during gateway shutdown.
-func (g *Gateway) reserveRestart(d *update.Deployment, peers []rolloutPeer) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	machines := 0
-	for _, c := range g.peers {
-		if !c.client {
-			machines++
-		}
-	}
-	if machines != len(peers) {
-		return false
-	}
-	for _, peer := range peers {
-		status := g.updateStatus[peer.node.ID]
-		_, ok := d.Manifest.Asset(status.Software.OS, status.Software.Arch)
-		if !ok || g.peers[peer.node.ID] == nil || status.ID != d.ID || !status.Paused || status.Busy || time.Since(status.SeenAt) >= updateStatusFreshness || time.Until(status.LeaseUntil) <= 30*time.Second {
-			return false
-		}
-	}
-	g.restarting = true
-	return true
 }

@@ -80,8 +80,8 @@ func TestDeferredParticipantsKeepRestartGraceAndRequireAcknowledgment(t *testing
 	// A returning node immediately participates again, even before it has any
 	// fresh report. Its stale pre-restart readiness cannot authorize a restart.
 	g.peers["offline"] = &connection{out: make(chan *protocol.Packet, 16)}
-	if len(g.rolloutPeers(current)) != 2 || g.reserveRestart(current, g.rolloutPeers(current)) {
-		t.Fatal("returning deferred node bypassed current idle admission")
+	if len(g.rolloutPeers(current)) != 2 {
+		t.Fatal("returning deferred node did not rejoin independent coordination")
 	}
 	for _, status := range []update.Status{
 		{ID: d.ID, Software: info, State: "applied", SeenAt: now.Add(-time.Minute)},

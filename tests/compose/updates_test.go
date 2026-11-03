@@ -19,7 +19,7 @@ import (
 	"github.com/koltyakov/control/internal/update"
 )
 
-func TestManagedUpdateDefersWorkAndRestartsWholePool(t *testing.T) {
+func TestManagedUpdateIndependentlyRestartsIdleNodesAndDrainsGateway(t *testing.T) {
 	ctx, c := environment(t)
 	before := nodes(t, ctx, c)
 	dir := t.TempDir()
@@ -56,9 +56,16 @@ func TestManagedUpdateDefersWorkAndRestartsWholePool(t *testing.T) {
 	// Use an explicit lease to make the no-work reservation deterministic, then
 	// leave a real accepted task running while the rollout stages its binaries.
 	var lease model.Lease
-	call(t, ctx, c, "worker", "leases.acquire", map[string]any{"ttlSeconds": 60}, &lease)
+	call(t, ctx, c, "worker", "leases.acquire", map[string]any{"ttlSeconds": 300}, &lease)
+	// A reverse listener holds an interactive stream even without connected
+	// sockets. In relay mode this must block only the gateway and this worker.
+	listener, err := c.StartForward(ctx, client.ForwardSpec{Node: "worker", Address: "127.0.0.1:1", Listen: "127.0.0.1:0", Reverse: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
 	var task model.Task
-	call(t, ctx, c, "worker", "tasks.start", model.TaskSpec{ID: "update-held-task", Capability: "exec.run", LeaseID: lease.ID, Args: model.JSON(map[string]any{"command": "sleep", "args": []string{"60"}})}, &task)
+	call(t, ctx, c, "worker", "tasks.start", model.TaskSpec{ID: "update-held-task", Capability: "exec.run", LeaseID: lease.ID, Args: model.JSON(map[string]any{"command": "sleep", "args": []string{"300"}})}, &task)
 	defer func() {
 		_ = c.Call(context.Background(), "worker", "tasks.cancel", map[string]string{"id": task.ID}, nil)
 	}()
@@ -76,16 +83,56 @@ func TestManagedUpdateDefersWorkAndRestartsWholePool(t *testing.T) {
 		if admin.JSON(ctx, "GET", "/v1/admin/updates", nil, &status) != nil || status.Deployment == nil {
 			return false
 		}
-		return status.Deployment.ID == deployment.ID && status.Deployment.Phase == "waiting-idle"
-	})
-	if status.Gateway.Version == version {
-		t.Fatal("gateway updated while work was active")
-	}
-	for _, s := range status.Nodes {
-		if s.Software.Version == version {
-			t.Fatal("node updated while work was active")
+		if status.Deployment.ID != deployment.ID {
+			return false
 		}
+		for name, node := range before {
+			s, ok := status.Nodes[node.ID]
+			if !ok {
+				return false
+			}
+			if name == "worker" {
+				if s.Software.Version == version {
+					t.Fatal("busy worker was interrupted")
+				}
+			} else if s.Software.Version != version || s.Paused {
+				return false
+			}
+		}
+		return true
+	})
+	if os.Getenv("CONTROL_EXPECT_TRANSPORT") == "relay" && status.Gateway.Version == version {
+		t.Fatal("gateway interrupted an open relayed reverse listener")
 	}
+	listener.Close()
+	// Local accepted work and the lease still run. With the relay drained they
+	// must no longer veto the gateway restart.
+	waitUpdate(t, ctx, func() bool {
+		return admin.JSON(ctx, "GET", "/v1/admin/updates", nil, &status) == nil && status.Gateway.Version == version
+	})
+	if status.Nodes[before["worker"].ID].Software.Version == version {
+		t.Fatal("gateway restart also restarted busy worker")
+	}
+	// A running task survives independently of the gateway connection. Wait
+	// for fresh directory presence before sending a mutation, never replay it
+	// after an offline response or an uncertain delivery.
+	waitUpdate(t, ctx, func() bool {
+		var directory []model.Node
+		if common.JSON(ctx, "GET", "/v1/nodes", nil, &directory) != nil {
+			return false
+		}
+		for _, node := range directory {
+			if node.ID == before["worker"].ID {
+				return node.Online
+			}
+		}
+		return false
+	})
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	c = newTestClient(ctx)
+	t.Cleanup(func() { _ = c.Close() })
 	call(t, ctx, c, "worker", "tasks.cancel", map[string]string{"id": task.ID}, nil)
 	finished, err := c.Wait(ctx, "worker", task.ID)
 	if err != nil {
@@ -98,11 +145,6 @@ func TestManagedUpdateDefersWorkAndRestartsWholePool(t *testing.T) {
 	waitUpdate(t, ctx, func() bool {
 		if admin.JSON(ctx, "GET", "/v1/admin/updates", nil, &status) != nil || status.Deployment == nil {
 			return false
-		}
-		for _, node := range status.Nodes {
-			if node.Software.Version == version && status.Gateway.Version != version {
-				t.Fatal("managed node switched before the gateway")
-			}
 		}
 		if status.Deployment.Phase != "complete" || status.Gateway.Version != version {
 			return false
@@ -166,7 +208,7 @@ func TestManagedUpdateDefersWorkAndRestartsWholePool(t *testing.T) {
 	if status.Gateway.ReleaseRepo != "compose/fixture" {
 		t.Fatalf("embedded repository missing: %q", status.Gateway.ReleaseRepo)
 	}
-	t.Log("common key denied; active task deferred rollout; gateway and three nodes restarted; a fresh client retained its owner and recovered task state")
+	t.Log("idle nodes updated independently; active relay protected gateway restart; busy worker stayed pending; fresh client recovered task state")
 }
 
 func waitUpdate(t *testing.T, ctx context.Context, condition func() bool) {

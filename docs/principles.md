@@ -48,6 +48,8 @@ Preserve the same instruction checks when coordinated work targets its own node.
 
 Only the gateway's superuser role can publish executable updates or provision user accounts. A user can issue common keys only within their own fleet. A node must acknowledge an idle maintenance reservation before updating. Never interrupt accepted work to apply an update, and never equate a disconnected participant with a successful restart.
 
+Reserve node updates independently. Require explicit compatibility from verified executable bytes before updating a node ahead of its gateway. Gate gateway restarts on live relay lifetimes and atomic transport/request admission, never on empty byte queues alone. Include standalone clients and silent tunnels. Maintenance timeouts postpone replacement rather than cancel accepted traffic, and unresolved commit intent remains durable until reconciled.
+
 Document the authority under which providers run. A filesystem root limits filesystem API paths; it does not sandbox an executable. An AI CLI is a provider running as the node's OS user, with the authority available to that process.
 
 ## Resource ownership includes cleanup

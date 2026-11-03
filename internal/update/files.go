@@ -102,17 +102,23 @@ func Download(ctx context.Context, client *http.Client, url, token, path string,
 }
 
 func ValidateExecutable(ctx context.Context, path, version string, asset Asset) error {
+	_, err := ValidatedExecutable(ctx, path, version, asset)
+	return err
+}
+
+// ValidatedExecutable reads compatibility only after authenticating the bytes.
+func ValidatedExecutable(ctx context.Context, path, version string, asset Asset) (buildinfo.Info, error) {
 	if err := Verify(path, asset); err != nil {
-		return err
+		return buildinfo.Info{}, err
 	}
 	info, err := InspectExecutable(ctx, path)
 	if err != nil {
-		return err
+		return buildinfo.Info{}, err
 	}
 	if info.Version != version || !Matches(info, asset) {
-		return errors.New("staged executable does not match its manifest")
+		return buildinfo.Info{}, errors.New("staged executable does not match its manifest")
 	}
-	return nil
+	return info, nil
 }
 
 func InspectExecutable(ctx context.Context, path string) (buildinfo.Info, error) {
