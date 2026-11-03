@@ -27,6 +27,8 @@ type installation struct {
 	// Cleared hides a redeemed invitation from listings. The record stays
 	// because it holds the enrolled machine's credential.
 	Cleared bool `json:"cleared,omitempty"`
+	// HybridComplete survives later independent lifecycle changes to either context.
+	HybridComplete bool `json:"hybridComplete,omitempty"`
 }
 
 // Called under g.mu. Never overwrite another fleet's ticket or a retained
@@ -196,6 +198,10 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	if err := g.cleanupHybridInstallations(time.Now()); err != nil {
+		http.Error(w, "could not clean up expired hybrid installations", http.StatusInternalServerError)
+		return
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	ticket, err := g.newInstallationTicket(rand.Reader, q.ServiceMode == "hybrid")
@@ -236,7 +242,7 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 		if old.UserID != p.UserID {
 			continue
 		}
-		if old.RedeemedID == "" && now.After(old.ExpiresAt) {
+		if old.RedeemedID == "" && now.After(old.ExpiresAt) && !old.pendingHybrid() {
 			expired[hash] = old
 			continue
 		}
@@ -408,6 +414,10 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 	u, userOK := g.users[i.UserID]
 	if !ok || !userOK || u.Disabled || i.Revoked {
 		http.Error(w, "invitation unavailable", http.StatusGone)
+		return
+	}
+	if i.pendingHybrid() && !time.Now().Before(i.ExpiresAt) {
+		http.Error(w, "hybrid installation expired", http.StatusGone)
 		return
 	}
 	if i.RedeemedID != "" {
@@ -582,6 +592,10 @@ func (g *Gateway) revokeInstallation(w http.ResponseWriter, r *http.Request) {
 func (g *Gateway) clearInstallations(w http.ResponseWriter, r *http.Request) {
 	p := g.requestPrincipal(r)
 	now := time.Now()
+	if err := g.cleanupHybridInstallations(now); err != nil {
+		http.Error(w, "could not clean up expired hybrid installations", http.StatusInternalServerError)
+		return
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	previous := map[string]installation{}
@@ -593,6 +607,9 @@ func (g *Gateway) clearInstallations(w http.ResponseWriter, r *http.Request) {
 		}
 		old := i
 		switch {
+		case i.pendingHybrid():
+			// Keep the whole pair until timeout cleanup can retire redeemed contexts.
+			continue
 		case i.Revoked || (i.RedeemedID == "" && !now.Before(i.ExpiresAt)):
 			delete(g.installations, hash)
 			removed++
@@ -636,7 +653,7 @@ func (g *Gateway) allowInstallation(keyID string, n model.Node) bool {
 			continue
 		}
 		if keyID == "install:"+i.ID {
-			if i.Revoked || i.RedeemedID != n.ID || g.installationName(i) != n.Name || i.Asset.OS != n.OS || i.Asset.Arch != n.Software.Arch {
+			if i.Revoked || (i.pendingHybrid() && !time.Now().Before(i.ExpiresAt)) || i.RedeemedID != n.ID || g.installationName(i) != n.Name || i.Asset.OS != n.OS || i.Asset.Arch != n.Software.Arch {
 				return false
 			}
 			if i.HybridRole == "system" && (!n.InstructionOnly || n.RunAs != "system") {

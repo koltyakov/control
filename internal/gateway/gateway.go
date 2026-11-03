@@ -134,6 +134,8 @@ type Gateway struct {
 	updateWG         sync.WaitGroup
 	rolloutMu        sync.Mutex
 	installations    map[string]installation
+	hybridCancel     context.CancelFunc
+	hybridWG         sync.WaitGroup
 	metrics          *system.Collector
 	metricsCancel    context.CancelFunc
 	metricsWG        sync.WaitGroup
@@ -227,6 +229,26 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 			g.nodes[n.ID] = n
 		}
 	}
+	// Migrate already registered pairs before expiring old partial installations.
+	var completed []string
+	for _, invitation := range g.installations {
+		if invitation.pendingHybrid() {
+			for hash := range g.completeHybrid(invitation.UserID, invitation.HybridID) {
+				completed = append(completed, hash)
+			}
+		}
+	}
+	if len(completed) != 0 {
+		err = g.commit(change{invitations: completed})
+	}
+	if err == nil {
+		err = g.cleanupHybridInstallations(time.Now())
+	}
+	if err != nil {
+		_ = g.db.Close()
+		_ = lock.Close()
+		return nil, err
+	}
 	var reset []string
 	for id, n := range g.nodes {
 		if n.Online {
@@ -256,6 +278,13 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 		defer g.metricsWG.Done()
 		_, _ = g.metrics.Refresh(metricsCtx)
 		g.metrics.Run(metricsCtx)
+	}()
+	hybridCtx, hybridCancel := context.WithCancel(context.Background())
+	g.hybridCancel = hybridCancel
+	g.hybridWG.Add(1)
+	go func() {
+		defer g.hybridWG.Done()
+		g.runHybridCleanup(hybridCtx)
 	}()
 	return g, nil
 }
@@ -528,10 +557,14 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	} else {
 		persisted.nodes = []string{n.ID}
 	}
+	completed := g.completeHybrid(n.UserID, n.HybridID)
+	for hash := range completed {
+		persisted.invitations = append(persisted.invitations, hash)
+	}
 	// A reconnect that changes no enrollment record must not pay a
 	// synchronous commit for volatile Online/LastSeen fields; startup
 	// resets Online for every stored node before serving.
-	durable := previousOwner != n.UserID
+	durable := previousOwner != n.UserID || len(completed) != 0
 	if client {
 		durable = durable || !previousClient || (n.ID != ownerID && (previousTransportOwner != n.UserID || previousTransport != ownerID))
 	} else {
@@ -541,6 +574,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		err = g.commit(persisted)
 	}
 	if err != nil {
+		for hash, invitation := range completed {
+			g.installations[hash] = invitation
+		}
 		if previousOwner == "" {
 			delete(g.owners, ownerID)
 		}
@@ -739,6 +775,10 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 }
 
 func (g *Gateway) Close() error {
+	if g.hybridCancel != nil {
+		g.hybridCancel()
+		g.hybridWG.Wait()
+	}
 	if g.metricsCancel != nil {
 		g.metricsCancel()
 		g.metricsWG.Wait()
