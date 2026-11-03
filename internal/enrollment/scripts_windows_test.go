@@ -13,6 +13,45 @@ import (
 	"github.com/koltyakov/control/internal/update"
 )
 
+func windowsPowerShellCommand(t *testing.T, script string) *exec.Cmd {
+	t.Helper()
+	// CI starts tests in PowerShell 7. -NoProfile does not clear its inherited
+	// PSModulePath, whose modules can fail to load in Windows PowerShell 5.1.
+	// Change only the child process, never the test runner's environment.
+	script = "$env:PSModulePath = $PSHOME + '\\Modules'\n" + script
+	return exec.CommandContext(t.Context(), "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
+}
+
+func TestWindowsPowerShellIgnoresInheritedModulePath(t *testing.T) {
+	root := t.TempDir()
+	module := filepath.Join(root, "contaminated", "Microsoft.PowerShell.Utility")
+	if err := os.MkdirAll(module, 0700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "@{ ModuleVersion = '99.0'; GUID = 'eed74dfb-5093-46dd-9b75-c317d96d68cd'; RootModule = 'utility.psm1'; FunctionsToExport = @('Get-FileHash') }"
+	if err := os.WriteFile(filepath.Join(module, "Microsoft.PowerShell.Utility.psd1"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(module, "utility.psm1"), []byte("throw 'inherited utility module was loaded'"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PSModulePath", filepath.Dir(module))
+	file := filepath.Join(root, "binary.exe")
+	if err := os.WriteFile(file, []byte("pinned binary"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	verify := `$ErrorActionPreference = 'Stop'
+if ($env:PSModulePath -cne ($PSHOME + '\Modules')) { throw 'Inherited module path leaked' }
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath ` + PowerShellQuote(file) + `).Hash.ToLowerInvariant() -ne ` + PowerShellQuote(Hash("pinned binary")) + `) { throw 'Incorrect file checksum' }
+`
+	if output, err := windowsPowerShellCommand(t, verify).CombinedOutput(); err != nil {
+		t.Fatalf("native checksum module unavailable: %v\n%s", err, output)
+	}
+	if got := os.Getenv("PSModulePath"); got != filepath.Dir(module) {
+		t.Fatalf("parent module path changed: %q", got)
+	}
+}
+
 func TestWindowsInstallerParsesAndLoadsWholeResponse(t *testing.T) {
 	for _, mode := range []string{"", "user", "system", "hybrid", "hybrid-system"} {
 		for _, link := range []string{"https://gateway.example/install/token", "https://gateway.example/日本'$path/install/token"} {
@@ -48,7 +87,7 @@ if ($true) {
 ` + command + `
 if ($global:installerResult -ne 'executed') { throw 'Multi-line response was not executed as a whole' }
 `
-				cmd := exec.CommandContext(t.Context(), "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", verify)
+				cmd := windowsPowerShellCommand(t, verify)
 				if output, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("Windows PowerShell validation: %v\n%s", err, output)
 				}
@@ -66,7 +105,7 @@ func TestWindowsInstallCommandRunsInPowerShell(t *testing.T) {
 	for _, path := range []string{"/install/token", "/a'b/install/token", "/$path/install/token"} {
 		command := InstallCommand(server.URL+path, true, "user")
 		t.Run(path, func(t *testing.T) {
-			cmd := exec.CommandContext(t.Context(), "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command)
+			cmd := windowsPowerShellCommand(t, command)
 			var stderr bytes.Buffer
 			cmd.Stderr = &stderr
 			output, err := cmd.Output()
@@ -120,13 +159,13 @@ try {
 ` + script[start:end] + `
 } catch { $failure = $_.Exception.Message }
 if ($scenario -eq 'corrupt-download') {
-  if ($failure -ne 'Binary checksum mismatch') { throw 'Corrupt fallback was not rejected' }
+  if ($failure -ne 'Binary checksum mismatch') { throw "Corrupt fallback was not rejected: $failure" }
 } elseif ($failure) { throw $failure }
 $expectedDownloads = if ($scenario -eq 'matching') { 0 } else { 1 }
 if ($script:downloads -ne $expectedDownloads) { throw 'Unexpected binary download count' }
 if ([IO.File]::ReadAllText($systemExe) -cne ` + PowerShellQuote(installed) + `) { throw 'System binary was modified' }
 `
-			cmd := exec.CommandContext(t.Context(), "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", verify)
+			cmd := windowsPowerShellCommand(t, verify)
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("PowerShell staging: %v\n%s", err, output)
 			}
