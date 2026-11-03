@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -54,7 +55,7 @@ func TestUpdaterChecksSelectionAtStartupAndStagesWithoutApplying(t *testing.T) {
 	old.Version, old.SHA256 = "older-node", strings.Repeat("0", 64)
 	reports := make(chan Status, 16)
 	var applied int
-	a, err := NewUpdater(UpdaterOptions{Gateway: server.URL, Token: "node-credential", Dir: t.TempDir(), Software: old,
+	a, err := NewUpdater(UpdaterOptions{Gateway: server.URL, Token: "node-credential", Dir: t.TempDir(), CacheDir: filepath.Join(t.TempDir(), "cache"), Software: old,
 		Busy: func() bool { n, _ := gate.State(); return n > 0 }, Pause: gate.PauseIfIdle, Resume: gate.Resume,
 		Report: func(_ context.Context, s Status) error { reports <- s; return nil },
 		Apply:  func(path string) error { applied++; return Verify(path, asset) },

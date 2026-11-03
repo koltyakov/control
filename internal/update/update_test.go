@@ -142,7 +142,7 @@ func TestUpdaterSkipsSameVersionWithoutDownloadOrRestart(t *testing.T) {
 	}
 	defer active()
 	info := buildinfo.Info{Version: "v1", OS: "linux", Arch: "amd64", SHA256: strings.Repeat("a", 64)}
-	options := UpdaterOptions{Dir: t.TempDir(), Gateway: server.URL, Software: info,
+	options := UpdaterOptions{Dir: t.TempDir(), CacheDir: filepath.Join(t.TempDir(), "cache"), Gateway: server.URL, Software: info,
 		Busy: func() bool { n, _ := gate.State(); return n > 0 }, Pause: gate.PauseIfIdle, Resume: gate.Resume,
 		Report: func(context.Context, Status) error { return nil },
 		Apply:  func(string) error { t.Error("same-version update restarted node"); return nil },
@@ -201,7 +201,7 @@ func TestUpdaterWaitsForWorkAndRequiresLiveReservation(t *testing.T) {
 	old.Version = "old-version"
 	old.SHA256 = strings.Repeat("0", 64)
 	applied := 0
-	options := UpdaterOptions{Dir: t.TempDir(), Gateway: server.URL, Software: old, Busy: func() bool { n, _ := gate.State(); return n > 0 }, Pause: gate.PauseIfIdle, Resume: gate.Resume, Report: func(context.Context, Status) error { return nil }, Apply: func(path string) error { applied++; return Verify(path, asset) }}
+	options := UpdaterOptions{Dir: t.TempDir(), CacheDir: filepath.Join(t.TempDir(), "cache"), Gateway: server.URL, Software: old, Busy: func() bool { n, _ := gate.State(); return n > 0 }, Pause: gate.PauseIfIdle, Resume: gate.Resume, Report: func(context.Context, Status) error { return nil }, Apply: func(path string) error { applied++; return Verify(path, asset) }}
 	a, err := NewUpdater(options)
 	if err != nil {
 		t.Fatal(err)

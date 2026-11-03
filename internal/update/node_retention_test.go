@@ -211,7 +211,7 @@ func TestNodeUpdaterCleansOnlyEligibleRetries(t *testing.T) {
 	}))
 	defer server.Close()
 	a, err := NewUpdater(UpdaterOptions{
-		Dir: dir, Gateway: server.URL, Software: buildinfo.Info{Version: current.Version, OS: current.Asset.OS, Arch: current.Asset.Arch, SHA256: current.Asset.SHA256},
+		Dir: dir, CacheDir: filepath.Join(t.TempDir(), "cache"), Gateway: server.URL, Software: buildinfo.Info{Version: current.Version, OS: current.Asset.OS, Arch: current.Asset.Arch, SHA256: current.Asset.SHA256},
 		Busy: func() bool { return false }, Pause: func() bool { return true }, Resume: func() {},
 		Report: func(context.Context, Status) error { return nil },
 	})

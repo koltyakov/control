@@ -21,6 +21,7 @@ import (
 // UpdaterOptions supplies node-owned work admission and restart callbacks.
 type UpdaterOptions struct {
 	Gateway, Token, Dir string
+	CacheDir            string // Empty selects the OS machine-wide download cache.
 	Software            buildinfo.Info
 	Busy                func() bool
 	Pause               func() bool
@@ -241,7 +242,9 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 		a.set("downloading", nil)
 		a.report(ctx)
 		path := a.stagePath(command.Asset)
-		err := DownloadPreferred(ctx, command.ReleaseRepo, command.Version, a.options.Gateway+"/v1/updates/blobs/"+command.Asset.SHA256, a.options.Token, path, command.Asset)
+		err := downloadCached(ctx, a.options.CacheDir, path, command.Asset, func() error {
+			return DownloadPreferred(ctx, command.ReleaseRepo, command.Version, a.options.Gateway+"/v1/updates/blobs/"+command.Asset.SHA256, a.options.Token, path, command.Asset)
+		})
 		if err == nil {
 			err = ValidateExecutable(ctx, path, command.Version, command.Asset)
 		}

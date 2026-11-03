@@ -14,6 +14,14 @@ Release-sourced selections use their recorded GitHub repository. Development sel
 
 [Hybrid installations](installation.md#hybrid-user-and-system-contexts) have two managed node profiles. Each owns its idle reservation, staged binaries, supervisor, task state, and restart. Updating one context does not restart the other, and an offline User context is not replaced by System execution. Publish new installers with `--hybrid-system` support before offering Hybrid invitations.
 
+### Machine-wide download reuse
+
+Automatic managed updates and `make update` rollouts share a content-addressed download cache across User and System profiles on the same machine. A cross-process filesystem lock covers cache lookup, download, and publication. Sequential and concurrent requests for the same SHA-256 download the binary once while its valid cache entry remains available. GitHub-first delivery and authenticated gateway fallback are unchanged. Repeated offers and restarts also reuse each profile's verified staged copy.
+
+The cache is `/var/tmp/control-update-cache-v1` on Linux and macOS, or `Control Update Cache v1` under Windows' common ProgramData directory. It is writable across execution accounts and contains no credentials, configuration, or runtime selections. Treat its contents as untrusted. Cache reads reject symlinks and non-regular files, copy into private profile staging, and verify the copied size and SHA-256 before executable-version validation. Profiles never execute from the cache or hard-link it into their runtime. Modifying cached bytes cannot modify an already staged private binary or authorize different System executable bytes.
+
+The cache retains the requested binary and up to three other binaries, at most 512 MiB of verified blobs. Pruning runs under the same lock and leaves the lock file in place. An evicted, missing, or corrupt entry needs a fresh download. If cache creation, access, or publication fails, updates retain private verified downloads; lock acquisition waits at most five minutes before falling back. Cancellation stops the wait without starting another download. Deduplication therefore requires a usable cache and participating updater versions in both profiles. Existing installations gain it when their managed children upgrade; standalone `control update` remains a separate CLI operation.
+
 ## Update the local CLI
 
 ```sh
