@@ -12,6 +12,7 @@ Run these commands yourself on the worker, under the OS account that owns its pr
 control secrets set app.password
 control secrets set api.token
 control secrets list
+control secrets list --metadata
 control secrets delete app.password
 ```
 
@@ -19,7 +20,13 @@ control secrets delete app.password
 
 Names contain 1..128 ASCII letters, digits, dots, underscores, or hyphens and begin with a letter or digit. Values contain 1..4096 UTF-8 bytes without NUL. Each profile stores at most 128 secrets and at most 1 MiB of encoded data. `list` returns names only. `delete` removes the named entry without returning its value.
 
+`list --metadata` returns a name-sorted JSON array containing `name` and known `createdAt` and `updatedAt` timestamps, never values. Timestamps use UTC RFC 3339 with fractional seconds when needed. Compare `updatedAt` with the current time to check the age of the last local credential entry. These dates describe Control storage, not when the credential was issued or changed in the application.
+
+New secrets receive identical creation and update timestamps. Every successful `set`, including setting the same value, refreshes `updatedAt` and preserves the original `createdAt`. Deleting and recreating a name starts a new record. Unknown timestamps are omitted, not inferred from the storage file's modification time. Legacy secrets remain usable with both dates unknown until explicitly set again; that first update records only `updatedAt`, because their original creation date is still unknown. Reading, changing another secret, or deleting another secret does not invent or refresh their dates.
+
 Storage is `<dataDir>/secrets/values.json`, outside `workDir`. Mutations use a separate file lock and atomic replacement. Unix directories use `0700` and files `0600`; Windows relies on the profile directory's inherited ACLs. Storage is not encrypted and is not an OS keychain. Protect the worker account, filesystem, and backups. If `dataDir` is inside `workDir`, move the profile's state or workspace before adding secrets. Existing secret storage inside `workDir` prevents node startup and credential use, including paths resolved through directory symlinks.
+
+The reader accepts legacy name-to-string entries and records containing `value` with optional `createdAt` and `updatedAt`. Reads never rewrite storage. A successful mutation atomically writes records and their metadata together, retaining unknown dates on untouched legacy entries. Upgrade both the worker node and the local management CLI before mutating secrets with this format; older binaries cannot read the record format.
 
 ## Fill application fields by reference
 

@@ -18,7 +18,7 @@ import (
 // Credentials are entered on the worker, never as CLI arguments or MCP inputs.
 func secretsCLI(ctx context.Context, args []string, profile string) error {
 	if len(args) == 0 {
-		return errors.New("usage: control secrets set NAME [--stdin] | list | delete NAME")
+		return errors.New("usage: control secrets set NAME [--stdin] | list [--metadata] | delete NAME")
 	}
 	cfg, err := node.LoadConfig(profile)
 	if err != nil {
@@ -27,8 +27,21 @@ func secretsCLI(ctx context.Context, args []string, profile string) error {
 	s := secrets.Store{Dir: filepath.Join(cfg.DataDir, "secrets"), WorkDir: cfg.WorkDir}
 	switch args[0] {
 	case "list":
-		if len(args) != 1 {
-			return errors.New("usage: control secrets list")
+		f := flag.NewFlagSet("secrets list", flag.ContinueOnError)
+		metadata := f.Bool("metadata", false, "include creation and update timestamps, never values")
+		if err := f.Parse(args[1:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 {
+			return errors.New("usage: control secrets list [--metadata]")
+		}
+		if *metadata {
+			entries, err := s.List()
+			if err != nil {
+				return err
+			}
+			printJSON(entries)
+			return nil
 		}
 		names, err := s.Names()
 		if err != nil {

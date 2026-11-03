@@ -637,7 +637,8 @@ Environment: CONTROL_API, CONTROL_TOKEN
   node --config control.json
   login --gateway URL [--key-stdin]      Save an API key for future commands
   secrets set NAME [--stdin]            Enter a worker-local secret outside chat
-  secrets list|delete [NAME]            List names or delete a local secret; no read command
+  secrets list [--metadata]             List local names and optional timestamps, never values
+  secrets delete NAME                   Delete a local secret; no read command
   update [--version TAG]                Update this CLI from GitHub Releases; alias: upgrade
   setup [--gateway URL] --name NAME [--client opencode]  Configure and start this host
   service start|stop|status|uninstall    Manage the installed background node

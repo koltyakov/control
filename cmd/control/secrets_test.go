@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -21,6 +22,13 @@ func TestSecretsCLI(t *testing.T) {
 	profile := filepath.Join(root, "node.json")
 	data, _ := json.Marshal(cfg)
 	if err := os.WriteFile(profile, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	secretDir := filepath.Join(cfg.DataDir, "secrets")
+	if err := os.MkdirAll(secretDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secretDir, "values.json"), []byte(`{"legacy":"private-legacy-password"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	input, err := os.CreateTemp(root, "stdin-*")
@@ -45,19 +53,47 @@ func TestSecretsCLI(t *testing.T) {
 	if err != nil || values["app.password"] != "  private-cli-password  " {
 		t.Fatalf("value not preserved: %v", err)
 	}
-	for _, args := range [][]string{{"get", "app.password"}, {"set", "app.password", "secret-as-argument"}, {"list", "extra"}} {
+	for _, args := range [][]string{{"get", "app.password"}, {"set", "app.password", "secret-as-argument"}, {"list", "extra"}, {"list", "--metadata", "extra"}} {
 		if err := secretsCLI(context.Background(), args, profile); err == nil || strings.Contains(err.Error(), "private-cli-password") {
 			t.Fatal("invalid secret command accepted or value exposed")
 		}
 	}
-	if err := secretsCLI(context.Background(), []string{"list"}, profile); err != nil {
-		t.Fatal(err)
+	output, err := captureUpdatePushOutput(t, func() error {
+		return secretsCLI(context.Background(), []string{"list"}, profile)
+	})
+	var listedNames []string
+	if err != nil || json.Unmarshal([]byte(output), &listedNames) != nil || !reflect.DeepEqual(listedNames, []string{"app.password", "legacy"}) {
+		t.Fatalf("names-only listing changed: %q, %v", output, err)
+	}
+	output, err = captureUpdatePushOutput(t, func() error {
+		return secretsCLI(context.Background(), []string{"list", "--metadata"}, profile)
+	})
+	var metadata []secrets.Metadata
+	if err != nil || json.Unmarshal([]byte(output), &metadata) != nil || len(metadata) != 2 {
+		t.Fatalf("invalid metadata listing: %v", err)
+	}
+	if metadata[0].Name != "app.password" || metadata[0].CreatedAt.IsZero() || !metadata[0].CreatedAt.Equal(metadata[0].UpdatedAt) ||
+		metadata[1] != (secrets.Metadata{Name: "legacy"}) || strings.Contains(output, "private-") || strings.Contains(output, `"value"`) {
+		t.Fatal("metadata listing exposes values or has invalid timestamps")
+	}
+	var raw []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(output), &raw); err != nil || len(raw[0]) != 3 || len(raw[1]) != 1 {
+		t.Fatal("metadata must omit unknown dates and return only names and known timestamps")
 	}
 	if err := secretsCLI(context.Background(), []string{"delete", "app.password"}, profile); err != nil {
+		t.Fatal(err)
+	}
+	if err := secretsCLI(context.Background(), []string{"delete", "legacy"}, profile); err != nil {
 		t.Fatal(err)
 	}
 	names, err := s.Names()
 	if err != nil || len(names) != 0 {
 		t.Fatalf("secret not deleted: %v", err)
+	}
+	output, err = captureUpdatePushOutput(t, func() error {
+		return secretsCLI(context.Background(), []string{"list", "--metadata"}, profile)
+	})
+	if err != nil || strings.TrimSpace(output) != "[]" {
+		t.Fatalf("empty metadata must be an array: %q, %v", output, err)
 	}
 }

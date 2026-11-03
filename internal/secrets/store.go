@@ -31,6 +31,19 @@ type Store struct {
 	WorkDir string
 }
 
+// Metadata describes a secret without its value. Zero timestamps mean unknown.
+type Metadata struct {
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"createdAt,omitzero"`
+	UpdatedAt time.Time `json:"updatedAt,omitzero"`
+}
+
+type record struct {
+	Value     string    `json:"value"`
+	CreatedAt time.Time `json:"createdAt,omitzero"`
+	UpdatedAt time.Time `json:"updatedAt,omitzero"`
+}
+
 func (s Store) check() error {
 	dir, err := filepath.EvalSymlinks(s.Dir)
 	if err != nil {
@@ -71,10 +84,22 @@ func (s Store) check() error {
 
 // Snapshot is for destination-side injection and redaction only, never RPC results.
 func (s Store) Snapshot() (map[string]string, error) {
+	records, err := s.read()
+	if err != nil {
+		return nil, err
+	}
 	values := map[string]string{}
+	for name, entry := range records {
+		values[name] = entry.Value
+	}
+	return values, nil
+}
+
+func (s Store) read() (map[string]record, error) {
+	records := map[string]record{}
 	f, err := os.Open(filepath.Join(s.Dir, "values.json"))
 	if errors.Is(err, os.ErrNotExist) {
-		return values, nil
+		return records, nil
 	}
 	if err != nil {
 		return nil, errors.New("cannot open secret storage")
@@ -84,15 +109,25 @@ func (s Store) Snapshot() (map[string]string, error) {
 		return nil, err
 	}
 	b, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
-	if err != nil || len(b) > 1<<20 || json.Unmarshal(b, &values) != nil || values == nil || len(values) > 128 {
+	var entries map[string]json.RawMessage
+	if err != nil || len(b) > 1<<20 || json.Unmarshal(b, &entries) != nil || entries == nil || len(entries) > 128 {
 		return nil, errors.New("invalid secret storage")
 	}
-	for name, value := range values {
-		if !ValidName(name) || !validValue(value) {
+	for name, raw := range entries {
+		var entry record
+		// Legacy entries contain only a string. Never infer their dates from
+		// file metadata or another entry's update.
+		if len(raw) > 0 && raw[0] == '"' {
+			err = json.Unmarshal(raw, &entry.Value)
+		} else {
+			err = json.Unmarshal(raw, &entry)
+		}
+		if err != nil || !ValidName(name) || !validValue(entry.Value) {
 			return nil, errors.New("invalid secret storage")
 		}
+		records[name] = entry
 	}
-	return values, nil
+	return records, nil
 }
 
 func validValue(value string) bool {
@@ -103,11 +138,18 @@ func (s Store) Set(ctx context.Context, name, value string) error {
 	if !ValidName(name) || !validValue(value) {
 		return errors.New("secret requires a valid name and 1..4096 UTF-8 bytes without NUL")
 	}
-	return s.change(ctx, func(values map[string]string) error {
-		if _, exists := values[name]; !exists && len(values) >= 128 {
+	return s.change(ctx, func(records map[string]record) error {
+		entry, exists := records[name]
+		if !exists && len(records) >= 128 {
 			return errors.New("at most 128 secrets may be stored")
 		}
-		values[name] = value
+		now := time.Now().UTC()
+		if !exists {
+			entry.CreatedAt = now
+		}
+		entry.Value = value
+		entry.UpdatedAt = now
+		records[name] = entry
 		return nil
 	})
 }
@@ -116,26 +158,39 @@ func (s Store) Delete(ctx context.Context, name string) error {
 	if !ValidName(name) {
 		return errors.New("invalid secret name")
 	}
-	return s.change(ctx, func(values map[string]string) error {
-		delete(values, name)
+	return s.change(ctx, func(records map[string]record) error {
+		delete(records, name)
 		return nil
 	})
 }
 
 func (s Store) Names() ([]string, error) {
-	values, err := s.Snapshot()
+	entries, err := s.List()
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(values))
-	for name := range values {
-		names = append(names, name)
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name)
 	}
-	sort.Strings(names)
 	return names, nil
 }
 
-func (s Store) change(ctx context.Context, update func(map[string]string) error) error {
+// List returns sorted metadata only, never secret values.
+func (s Store) List() ([]Metadata, error) {
+	records, err := s.read()
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]Metadata, 0, len(records))
+	for name, entry := range records {
+		entries = append(entries, Metadata{Name: name, CreatedAt: entry.CreatedAt, UpdatedAt: entry.UpdatedAt})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	return entries, nil
+}
+
+func (s Store) change(ctx context.Context, update func(map[string]record) error) error {
 	if err := os.MkdirAll(s.Dir, 0700); err != nil {
 		return err
 	}
@@ -151,17 +206,17 @@ func (s Store) change(ctx context.Context, update func(map[string]string) error)
 	if !locked {
 		return errors.New("secret storage is busy")
 	}
-	values, err := s.Snapshot()
+	records, err := s.read()
 	if err != nil {
 		return err
 	}
-	if err := update(values); err != nil {
+	if err := update(records); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	b, err := json.Marshal(values)
+	b, err := json.Marshal(records)
 	if err != nil || len(b) > 1<<20 {
 		return errors.New("secret storage exceeds 1 MiB")
 	}

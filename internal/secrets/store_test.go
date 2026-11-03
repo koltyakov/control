@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestStore(t *testing.T) {
@@ -81,6 +82,185 @@ func TestConcurrentChanges(t *testing.T) {
 	names, err := s.Names()
 	if err != nil || len(names) != 4 {
 		t.Fatalf("lost changes: %v, %v", names, err)
+	}
+	entries, err := s.List()
+	if err != nil || len(entries) != 4 {
+		t.Fatalf("lost metadata: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.CreatedAt.IsZero() || !entry.CreatedAt.Equal(entry.UpdatedAt) {
+			t.Fatalf("missing timestamps for %s", entry.Name)
+		}
+	}
+}
+
+func TestStoreTimestamps(t *testing.T) {
+	t.Parallel()
+	s := Store{Dir: filepath.Join(t.TempDir(), "secrets"), WorkDir: t.TempDir()}
+	ctx := context.Background()
+	before := time.Now().UTC()
+	if err := s.Set(ctx, "api", "private-original"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := s.List()
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("created metadata: %v", err)
+	}
+	created := entries[0]
+	if created.Name != "api" || created.CreatedAt.Before(before) || created.CreatedAt.After(time.Now()) ||
+		!created.CreatedAt.Equal(created.UpdatedAt) || created.CreatedAt.Location() != time.UTC {
+		t.Fatalf("invalid creation timestamps: %+v", created)
+	}
+	for _, value := range []string{"private-replacement", "private-replacement"} {
+		before = time.Now().UTC()
+		if err := s.Set(ctx, "api", value); err != nil {
+			t.Fatal(err)
+		}
+		// Reopen to verify that both timestamps survive persistence, including
+		// an explicit set that supplies the same value.
+		reopened := Store{Dir: s.Dir, WorkDir: s.WorkDir}
+		entries, err = reopened.List()
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("updated metadata: %v", err)
+		}
+		got := entries[0]
+		if !got.CreatedAt.Equal(created.CreatedAt) || got.UpdatedAt.Before(before) || got.UpdatedAt.After(time.Now()) || got.UpdatedAt.Location() != time.UTC {
+			t.Fatalf("invalid update timestamps: %+v", got)
+		}
+		values, err := reopened.Snapshot()
+		if err != nil || values["api"] != value {
+			t.Fatalf("updated value unavailable for injection: %v", err)
+		}
+		data, err := json.Marshal(entries)
+		if err != nil || strings.Contains(string(data), "private-") || strings.Contains(string(data), `"value"`) {
+			t.Fatal("metadata exposes a value or cannot be encoded")
+		}
+	}
+	if err := s.Delete(ctx, "api"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = s.List()
+	if err != nil || entries == nil || len(entries) != 0 {
+		t.Fatalf("deleted metadata retained: %v", err)
+	}
+	before = time.Now().UTC()
+	if err := s.Set(ctx, "api", "recreated"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = s.List()
+	if err != nil || len(entries) != 1 || entries[0].CreatedAt.Before(before) || !entries[0].CreatedAt.Equal(entries[0].UpdatedAt) {
+		t.Fatalf("recreated secret did not start new metadata: %v", err)
+	}
+}
+
+func TestLegacyStoreMetadata(t *testing.T) {
+	t.Parallel()
+	s := Store{Dir: t.TempDir(), WorkDir: t.TempDir()}
+	path := filepath.Join(s.Dir, "values.json")
+	legacy := `{"old":"private-legacy","untouched":"private-untouched"}`
+	if err := os.WriteFile(path, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := s.List()
+	if err != nil || !reflect.DeepEqual(entries, []Metadata{{Name: "old"}, {Name: "untouched"}}) {
+		t.Fatalf("legacy timestamps must be unknown: %v, %v", entries, err)
+	}
+	values, err := s.Snapshot()
+	if err != nil || values["old"] != "private-legacy" || values["untouched"] != "private-untouched" {
+		t.Fatalf("legacy injection unavailable: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != legacy {
+		t.Fatal("read rewrote legacy storage")
+	}
+	if err := s.Set(context.Background(), "new", "private-new"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = s.List()
+	if err != nil || len(entries) != 3 || entries[0].CreatedAt.IsZero() ||
+		!reflect.DeepEqual(entries[1:], []Metadata{{Name: "old"}, {Name: "untouched"}}) {
+		t.Fatalf("unrelated set invented legacy dates: %v, %v", entries, err)
+	}
+	before := time.Now().UTC()
+	if err := s.Set(context.Background(), "old", "private-rotated"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = s.List()
+	if err != nil || len(entries) != 3 || !entries[1].CreatedAt.IsZero() || entries[1].UpdatedAt.Before(before) ||
+		entries[1].UpdatedAt.After(time.Now()) || entries[2] != (Metadata{Name: "untouched"}) {
+		t.Fatalf("legacy update did not preserve unknown dates: %v, %v", entries, err)
+	}
+	updated := entries[1]
+	values, err = s.Snapshot()
+	if err != nil || len(values) != 3 || values["old"] != "private-rotated" || values["untouched"] != "private-untouched" || values["new"] != "private-new" {
+		t.Fatalf("migration lost secret values: %v", err)
+	}
+	if err := s.Delete(context.Background(), "new"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = s.List()
+	if err != nil || !reflect.DeepEqual(entries, []Metadata{updated, {Name: "untouched"}}) {
+		t.Fatalf("unrelated delete changed metadata: %v", err)
+	}
+}
+
+func TestFailedChangesPreserveMetadata(t *testing.T) {
+	t.Parallel()
+	s := Store{Dir: t.TempDir(), WorkDir: t.TempDir()}
+	if err := s.Set(context.Background(), "api", "original"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(s.Dir, "values.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, change := range []func() error{
+		func() error { return s.Set(ctx, "api", "replacement") },
+		func() error { return s.Delete(ctx, "api") },
+		func() error { return s.Set(context.Background(), "api", "") },
+	} {
+		if err := change(); err == nil {
+			t.Fatal("failed change accepted")
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != string(before) {
+			t.Fatal("failed change modified the value or timestamps")
+		}
+	}
+}
+
+func TestInvalidRecordMetadata(t *testing.T) {
+	t.Parallel()
+	for _, data := range []string{
+		`{"api":{"value":"private-value","createdAt":"private-invalid-date"}}`,
+		`{"api":{"value":"private-value","updatedAt":123}}`,
+		`{"api":{"value":123}}`,
+		`{"api":{}}`,
+		`{"api":null}`,
+	} {
+		s := Store{Dir: t.TempDir(), WorkDir: t.TempDir()}
+		path := filepath.Join(s.Dir, "values.json")
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+		for _, read := range []func() error{
+			func() error { _, err := s.Snapshot(); return err },
+			func() error { _, err := s.List(); return err },
+			func() error { _, err := s.Names(); return err },
+			func() error { return s.Set(context.Background(), "other", "replacement") },
+			func() error { return s.Delete(context.Background(), "api") },
+		} {
+			if err := read(); err == nil || err.Error() != "invalid secret storage" {
+				t.Fatal("invalid record must fail without value or timestamp diagnostics")
+			}
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != data {
+			t.Fatal("invalid record was overwritten")
+		}
 	}
 }
 
