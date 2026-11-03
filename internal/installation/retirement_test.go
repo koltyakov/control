@@ -62,6 +62,75 @@ func TestRetiredUninstallPreservesDataAndIsRepeatable(t *testing.T) {
 	}
 }
 
+func TestRetiredHybridCompanionRemovesBinaries(t *testing.T) {
+	for _, shared := range []bool{false, true} {
+		t.Run(map[bool]string{false: "own launcher", true: "shared launcher"}[shared], func(t *testing.T) {
+			p, cfg := retirementFixture(t)
+			cfg.InstructionOnly, cfg.HybridSystem = true, true
+			if err := store.Write(p.Config, cfg); err != nil {
+				t.Fatal(err)
+			}
+			// A pair's launcher lives in its own directory, removed when emptied.
+			pair := filepath.Join(t.TempDir(), "pair")
+			if err := os.MkdirAll(pair, 0700); err != nil {
+				t.Fatal(err)
+			}
+			binary := filepath.Join(pair, "control")
+			if err := os.Rename(p.Binary, binary); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(p.Binary + ".profiles"); err != nil {
+				t.Fatal(err)
+			}
+			if err := rememberInstallation(context.Background(), binary, p.Config, "process", cfg); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Read(installationRecord(cfg), &p); err != nil {
+				t.Fatal(err)
+			}
+			if shared {
+				other := p
+				other.Config = filepath.Join(t.TempDir(), "node.json")
+				if err := store.Write(binaryRegistration(other), other); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stale := []string{filepath.Join(cfg.DataDir, "updates", "digest", "control"), filepath.Join(cfg.DataDir, "runtime", "control.exe")}
+			for _, path := range stale {
+				if err := store.Bytes(path, []byte("binary"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			work := filepath.Join(cfg.WorkDir, "keep.txt")
+			if err := store.Bytes(work, []byte("user work"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := UninstallRetired(context.Background(), p.Config, cfg.DataDir, p.ID); err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range stale {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatal("retired companion kept a binary", path, err)
+				}
+			}
+			for _, path := range []string{p.Config, work, filepath.Join(cfg.DataDir, "identity.key"), filepath.Join(cfg.DataDir, "machine-state.json")} {
+				if _, err := os.Stat(path); err != nil {
+					t.Fatal("retirement removed retained files", path, err)
+				}
+			}
+			if _, err := os.Stat(binary); os.IsNotExist(err) == shared {
+				t.Fatal("wrong launcher handling", shared, err)
+			}
+			if _, err := os.Stat(pair); os.IsNotExist(err) == shared {
+				t.Fatal("wrong pair directory handling", shared, err)
+			}
+			if err := UninstallRetired(context.Background(), p.Config, cfg.DataDir, p.ID); err != nil {
+				t.Fatal("repeat cleanup failed", err)
+			}
+		})
+	}
+}
+
 func TestRetiredUninstallRequiresIdentityAndPolicy(t *testing.T) {
 	for _, kind := range []string{"wrong identity", "enabled", "disabled", "missing key"} {
 		t.Run(kind, func(t *testing.T) {

@@ -173,7 +173,13 @@ func TestMachineLifecycleBlocksSchedulingAndStopsNode(t *testing.T) {
 			if code := request("PATCH", path, map[string]bool{"disabled": true}, nil); code != 200 {
 				t.Fatal("disable", code)
 			}
-			eventually(t, ctx, func() bool { return worker.currentMachineState().Disabled })
+			// Well inside the 30-second pushed poll, so this proves the hint arrived.
+			pushed, cancelPushed := context.WithTimeout(ctx, 10*time.Second)
+			eventually(t, pushed, func() bool { return worker.currentMachineState().Disabled })
+			cancelPushed()
+			if !worker.Peer.MachineStatePushed() {
+				t.Fatal("worker did not negotiate pushed machine state")
+			}
 			if err := testCall(t, source, ctx, "", "nodes.select", map[string]any{"labels": map[string]string{"role": "worker"}}, nil); err == nil {
 				t.Fatal("disabled worker selected")
 			}

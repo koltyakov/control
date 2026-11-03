@@ -89,6 +89,7 @@ func (g *Gateway) installationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /install/{ticket}/info", g.installInfo)
 	mux.HandleFunc("GET /install/{ticket}/binary", g.installBinary)
 	mux.HandleFunc("POST /install/{ticket}/redeem", g.redeemInstallation)
+	mux.HandleFunc("POST /install/{ticket}/check", g.checkInstallation)
 }
 
 func (g *Gateway) installationAsset(r *http.Request, osName, arch string) (update.Asset, string, error) {
@@ -145,6 +146,10 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	if q.ServiceMode != "" && q.ServiceMode != "user" && q.ServiceMode != "system" && q.ServiceMode != "hybrid" {
 		http.Error(w, "serviceMode must be user, system, hybrid, or omitted", http.StatusBadRequest)
+		return
+	}
+	if q.Linger && (q.ServiceMode != "hybrid" || q.OS != "linux") {
+		http.Error(w, "linger requires a Linux Hybrid invitation", http.StatusBadRequest)
 		return
 	}
 	if q.ServiceMode == "hybrid" && !q.AutoName && len(enrollment.SystemName(q.Name)) > 63 {
@@ -210,7 +215,7 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
-	i := installation{Invitation: enrollment.Invitation{UserID: p.UserID, ID: identity.NewID(), Name: q.Name, AutoName: q.AutoName, ServiceMode: q.ServiceMode, Gateway: base, Asset: asset, Assets: assets, Version: version, CreatedAt: now, ExpiresAt: now.Add(time.Duration(q.TTLSeconds) * time.Second)}}
+	i := installation{Invitation: enrollment.Invitation{UserID: p.UserID, ID: identity.NewID(), Name: q.Name, AutoName: q.AutoName, ServiceMode: q.ServiceMode, Linger: q.Linger, Gateway: base, Asset: asset, Assets: assets, Version: version, CreatedAt: now, ExpiresAt: now.Add(time.Duration(q.TTLSeconds) * time.Second)}}
 	var companion installation
 	companionHash := ""
 	if q.ServiceMode == "hybrid" {
@@ -343,7 +348,9 @@ func (g *Gateway) pendingInstallation(w http.ResponseWriter, r *http.Request) (i
 	i, ok := g.installations[enrollment.Hash(ticket)]
 	u, userOK := g.users[i.UserID]
 	g.mu.Unlock()
-	if !ok || !userOK || u.Disabled || i.Revoked || i.RedeemedID != "" || !time.Now().Before(i.ExpiresAt) {
+	// An incomplete Hybrid pair stays downloadable until its deadline, so the
+	// original command can finish a context that failed after redemption.
+	if !ok || !userOK || u.Disabled || i.Revoked || (i.RedeemedID != "" && !i.pendingHybrid()) || !time.Now().Before(i.ExpiresAt) {
 		http.Error(w, "invitation expired, revoked, or already redeemed", http.StatusGone)
 		return i, false
 	}
@@ -397,6 +404,118 @@ func (g *Gateway) installBinary(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, g.updates.Blob(i.Asset.SHA256))
 }
 
+// checkInstallation reports whether redemption would be accepted now, without
+// consuming the ticket or reserving a name. An omitted key describes a new
+// identity; a supplied key must prove possession so a ticket holder cannot probe
+// other identities.
+func (g *Gateway) checkInstallation(w http.ResponseWriter, r *http.Request) {
+	defer g.trimIdentityCache()
+	w.Header().Set("Cache-Control", "no-store")
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	ticket := r.PathValue("ticket")
+	var q enrollment.Redemption
+	if !validInstallationTicket(ticket) || json.NewDecoder(r.Body).Decode(&q) != nil {
+		http.Error(w, "invalid enrollment check", http.StatusBadRequest)
+		return
+	}
+	id := ""
+	if len(q.PublicKey) != 0 {
+		if len(q.PublicKey) != ed25519.PublicKeySize || !ed25519.Verify(q.PublicKey, enrollment.CheckMessage(ticket, q), q.Signature) {
+			http.Error(w, "invalid enrollment check", http.StatusBadRequest)
+			return
+		}
+		id = identity.ID(q.PublicKey)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	i, ok := g.installations[enrollment.Hash(ticket)]
+	u, userOK := g.users[i.UserID]
+	if !ok || !userOK || u.Disabled || i.Revoked || !time.Now().Before(i.ExpiresAt) {
+		http.Error(w, "invitation expired or revoked", http.StatusGone)
+		return
+	}
+	if i.RedeemedID != "" {
+		if i.RedeemedID != id {
+			http.Error(w, "invitation already redeemed", http.StatusGone)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if text, status := g.redemptionConflict(i, id, q); text != "" {
+		http.Error(w, text, status)
+		return
+	}
+	// Names of automatic pairs are unreserved until redemption, so report a
+	// taken companion name before the System context is installed.
+	if i.AutoName && i.HybridRole == "user" && g.companionNameTaken(i, enrollment.SystemName(q.Name)) {
+		http.Error(w, "hybrid companion name has an existing invitation or enrollment", http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Called under g.mu.
+func (g *Gateway) companionNameTaken(i installation, name string) bool {
+	if g.clientNameReserved(i.UserID, name) {
+		return true
+	}
+	for _, n := range g.nodes {
+		if n.UserID == i.UserID && n.Name == name && n.HybridID != i.HybridID {
+			return true
+		}
+	}
+	for _, other := range g.installations {
+		if other.UserID == i.UserID && other.HybridID != i.HybridID && g.installationName(other) == name && !other.Revoked && (other.RedeemedID != "" || time.Now().Before(other.ExpiresAt)) {
+			return true
+		}
+	}
+	return false
+}
+
+// Called under g.mu. Redemption and its preflight share these identity and name
+// rules. The empty id is a new identity, which no enrollment can already own.
+func (g *Gateway) redemptionConflict(i installation, id string, q enrollment.Redemption) (string, int) {
+	if id != "" {
+		if err := g.loadIdentityLocked(id); err != nil {
+			return "could not verify identity", http.StatusInternalServerError
+		}
+		if owner := g.owners[id]; owner != "" && owner != i.UserID {
+			return "identity cannot be enrolled", http.StatusConflict
+		}
+		if g.clientOwners[id] || g.clientTransports[id] != "" || g.machineStates[id].Unregistered {
+			return "invitation requires an eligible local identity", http.StatusConflict
+		}
+	}
+	if i.ReplaceID != "" && i.ReplaceID != id {
+		return "invitation requires an eligible local identity", http.StatusConflict
+	}
+	name := i.Name
+	if i.AutoName {
+		if !validName.MatchString(q.Name) {
+			return "auto-name invitation requires a valid signed target hostname", http.StatusBadRequest
+		}
+		name = q.Name
+		for _, previous := range g.installations {
+			sameIdentity := id != "" && (previous.RedeemedID == id || previous.ReplaceID == id)
+			if previous.ID != i.ID && previous.UserID == i.UserID && g.installationName(previous) == name && !previous.Revoked && !sameIdentity && (previous.RedeemedID != "" || time.Now().Before(previous.ExpiresAt)) {
+				return "name has an existing invitation or enrollment", http.StatusConflict
+			}
+		}
+	} else if q.Name != "" {
+		return "named invitation does not accept a target-selected name", http.StatusBadRequest
+	}
+	if g.clientNameReserved(i.UserID, name) {
+		return "name is reserved for a client identity", http.StatusConflict
+	}
+	for _, n := range g.nodes {
+		if n.UserID == i.UserID && n.Name == name && n.ID != id {
+			return "name is already registered", http.StatusConflict
+		}
+	}
+	return "", 0
+}
+
 func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 	defer g.trimIdentityCache()
 	w.Header().Set("Cache-Control", "no-store")
@@ -433,44 +552,13 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invitation expired", http.StatusGone)
 		return
 	}
-	if err := g.loadIdentityLocked(id); err != nil {
-		http.Error(w, "could not verify identity", http.StatusInternalServerError)
-		return
-	}
-	if owner := g.owners[id]; owner != "" && owner != i.UserID {
-		http.Error(w, "identity cannot be enrolled", http.StatusConflict)
-		return
-	}
-	if g.clientOwners[id] || g.clientTransports[id] != "" || g.machineStates[id].Unregistered || (i.ReplaceID != "" && i.ReplaceID != id) {
-		http.Error(w, "invitation requires an eligible local identity", http.StatusConflict)
+	if text, status := g.redemptionConflict(i, id, q); text != "" {
+		http.Error(w, text, status)
 		return
 	}
 	old := i
 	if i.AutoName {
-		if !validName.MatchString(q.Name) {
-			http.Error(w, "auto-name invitation requires a valid signed target hostname", http.StatusBadRequest)
-			return
-		}
 		i.Name = q.Name
-		for h, previous := range g.installations {
-			if h != hash && previous.UserID == i.UserID && g.installationName(previous) == i.Name && !previous.Revoked && previous.RedeemedID != id && previous.ReplaceID != id && (previous.RedeemedID != "" || time.Now().Before(previous.ExpiresAt)) {
-				http.Error(w, "name has an existing invitation or enrollment", http.StatusConflict)
-				return
-			}
-		}
-	} else if q.Name != "" {
-		http.Error(w, "named invitation does not accept a target-selected name", http.StatusBadRequest)
-		return
-	}
-	if g.clientNameReserved(i.UserID, i.Name) {
-		http.Error(w, "name is reserved for a client identity", http.StatusConflict)
-		return
-	}
-	for _, n := range g.nodes {
-		if n.UserID == i.UserID && n.Name == i.Name && n.ID != id {
-			http.Error(w, "name is already registered", http.StatusConflict)
-			return
-		}
 	}
 	if q.Arch != "" || len(i.Assets) > 0 {
 		asset, found := i.Select(q.Arch)

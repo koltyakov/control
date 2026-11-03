@@ -14,6 +14,22 @@ import (
 	"github.com/koltyakov/control/internal/model"
 )
 
+// MachineStateWake signals that this node should read its policy now.
+func (p *Peer) MachineStateWake() <-chan struct{} { return p.machineStateWake }
+
+// MachineStatePushed reports whether a live gateway connection will hint at
+// policy changes, so the node can rely on a slower poll as its fallback.
+func (p *Peer) MachineStatePushed() bool {
+	return p.machineStatePush.Load() && p.gatewayWS.Load() != nil
+}
+
+func (p *Peer) signalMachineState() {
+	select {
+	case p.machineStateWake <- struct{}{}:
+	default:
+	}
+}
+
 func (p *Peer) MachineState(ctx context.Context, revision uint64) (model.MachineState, bool, error) {
 	return ReadMachineState(ctx, p.cfg.Gateway, p.cfg.Identity, revision, false)
 }

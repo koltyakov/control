@@ -103,6 +103,7 @@ type connection struct {
 	healthAt          time.Time
 	lifecycleAt       time.Time
 	lifecycleRevision uint64
+	machineStatePush  bool
 }
 
 // Gateway manages fleet membership and connectivity for nodes and clients.
@@ -525,7 +526,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		return
 	}
 	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, relayQueuePackets),
-		keyID: p.KeyID, userID: p.UserID, heartbeat: hello.GatewayHeartbeat, pong: make(chan string, 1), lanDiscovery: n.LANDiscovery, relay: newRelayScheduler(),
+		keyID: p.KeyID, userID: p.UserID, heartbeat: hello.GatewayHeartbeat, pong: make(chan string, 1), lanDiscovery: n.LANDiscovery, machineStatePush: n.MachineStatePush && !client, relay: newRelayScheduler(),
 		queues: &packetQueues{local: packetBudget{limit: relayQueueBytes}, global: &g.admission.packets, account: &reservation.account.packets, rejected: g.admission}}
 	defer c.closeQueues()
 	n.Online = true
@@ -608,6 +609,8 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	delete(g.updateStatus, n.ID)
 	if !client {
 		g.publishObservations(n.ID)
+		// A new connection is unacknowledged until the node's next query.
+		g.notifyMachineState(n.ID)
 	}
 	g.mu.Unlock()
 	g.counters.connects.Add(1)

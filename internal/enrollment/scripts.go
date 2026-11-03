@@ -55,15 +55,8 @@ else
   system_home='/Library/Application Support/control/hybrid/{{.HybridID}}'
   system_bin='/Library/PrivilegedHelperTools/Control/{{.HybridID}}/control'
 fi
-if sudo test -x "$system_bin" && sudo test -f "$system_home/node.json"; then
-  if sudo test -f "$system_home/pending-enrollment.json"; then
-    sudo env CONTROL_HOME="$system_home" CONTROL_INSTALL_DIR="$(dirname "$system_bin")" "$system_bin" --config "$system_home/node.json" enroll --url {{q .SystemLink}} --service system --hybrid-system
-  else
-    sudo "$system_bin" --config "$system_home/node.json" service start
-  fi
-else
-  curl -fsSL {{q .SystemLink}} | sudo bash
-fi
+system_installed=false
+if sudo test -x "$system_bin" && sudo test -f "$system_home/node.json"; then system_installed=true; fi
 service_mode=user
 {{end}}set --
 if [ -n "$service_mode" ]; then set -- --service "$service_mode"; fi
@@ -90,7 +83,7 @@ try_local_binary() {
 }
 reused=false
 {{if eq .ServiceMode "hybrid"}}# Copy out of the protected installation; never share a writable runtime.
-if sudo cat "$system_bin" > "$tmp/control"; then
+if [ "$system_installed" = true ] && sudo cat "$system_bin" > "$tmp/control"; then
   if command -v sha256sum >/dev/null; then actual="$(sha256sum "$tmp/control" | awk '{print $1}')"; else actual="$(shasum -a 256 "$tmp/control" | awk '{print $1}')"; fi
   if [ "$actual" = "$checksum" ]; then reused=true; fi
 fi
@@ -105,7 +98,20 @@ fi
 if command -v sha256sum >/dev/null; then actual="$(sha256sum "$tmp/control" | awk '{print $1}')"; else actual="$(shasum -a 256 "$tmp/control" | awk '{print $1}')"; fi
 if [ "$actual" != "$checksum" ]; then echo 'Binary checksum mismatch' >&2; exit 1; fi
 chmod 700 "$tmp/control"
-"$tmp/control" enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}}{{if eq .HybridRole "system"}} --hybrid-system{{end}} "$@"
+{{if eq .ServiceMode "hybrid"}}# Find User problems before any privileged change or consumed ticket.
+"$tmp/control" enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}} --preflight "$@"
+if [ "$system_installed" = true ]; then
+  if sudo test -f "$system_home/pending-enrollment.json"; then
+    sudo env CONTROL_HOME="$system_home" CONTROL_INSTALL_DIR="$(dirname "$system_bin")" "$system_bin" --config "$system_home/node.json" enroll --url {{q .SystemLink}} --service system --hybrid-system
+  else
+    sudo "$system_bin" --config "$system_home/node.json" service start
+  fi
+else
+  # The System installer verifies ./control against the same pinned checksum.
+  (cd "$tmp" && curl -fsSL {{q .SystemLink}} | sudo bash)
+fi
+{{if .Linger}}if [ "$os" = linux ] && ! sudo loginctl enable-linger "$(id -un)"; then echo 'Warning: could not enable linger; the User context stops at logout.' >&2; fi
+{{end}}{{end}}"$tmp/control" enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}}{{if eq .HybridRole "system"}} --hybrid-system{{end}} "$@"
 `
 
 const powershellScript = `#Requires -Version 5.1
@@ -117,31 +123,13 @@ if ($serviceMode -ne 'process' -and $serviceMode -ne 'user') {
   $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
   if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run this installation command in Administrator PowerShell to install the automatic Windows service.' }
 }
-{{if eq .ServiceMode "hybrid"}}# Install the protected System companion before starting the limited user task.
-$savedHome, $savedConfig, $savedInstallDir = $env:CONTROL_HOME, $env:CONTROL_CONFIG, $env:CONTROL_INSTALL_DIR
-try {
-  $systemHome = Join-Path $env:ProgramFiles 'Control Hybrid\{{.HybridID}}'
-  $systemExe = Join-Path $systemHome 'bin\control.exe'
-  $systemConfig = Join-Path $systemHome 'node.json'
-  if ((Test-Path -LiteralPath $systemExe) -and (Test-Path -LiteralPath $systemConfig)) {
-    if (Test-Path -LiteralPath (Join-Path $systemHome 'pending-enrollment.json')) {
-      $env:CONTROL_HOME = $systemHome
-      $env:CONTROL_INSTALL_DIR = Join-Path $systemHome 'bin'
-      & $systemExe --config $systemConfig enroll --url {{q .SystemLink}} --service system --hybrid-system --firewall
-    } else {
-      & $systemExe --config $systemConfig service start
-    }
-    if ($LASTEXITCODE -ne 0) { throw 'Hybrid System recovery failed; User installation was not started' }
-  } else {
-    $systemScript = Invoke-RestMethod -Uri {{q .SystemLink}}
-    & ([ScriptBlock]::Create($systemScript))
-  }
-} finally {
-  $env:CONTROL_HOME, $env:CONTROL_CONFIG, $env:CONTROL_INSTALL_DIR = $savedHome, $savedConfig, $savedInstallDir
-}
+{{if or (eq .ServiceMode "hybrid") (eq .HybridRole "system")}}# Elevated code must not run from a folder the limited user token can write.
+$protectedHome = Join-Path $env:ProgramFiles 'Control Hybrid\{{.HybridID}}'
+{{if eq .ServiceMode "hybrid"}}$systemExe = Join-Path $protectedHome 'bin\control.exe'
+$systemConfig = Join-Path $protectedHome 'node.json'
+$systemInstalled = (Test-Path -LiteralPath $systemExe) -and (Test-Path -LiteralPath $systemConfig)
 $serviceMode = 'user'
-{{end}}{{if eq .HybridRole "system"}}$protectedHome = Join-Path $env:ProgramFiles 'Control Hybrid\{{.HybridID}}'
-foreach ($directory in @((Split-Path $protectedHome), $protectedHome)) {
+{{end}}foreach ($directory in @((Split-Path $protectedHome), $protectedHome)) {
   New-Item -ItemType Directory -Force -Path $directory | Out-Null
   if ((Get-Item -LiteralPath $directory).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Hybrid System directories must not be reparse points' }
   $acl = New-Object Security.AccessControl.DirectorySecurity
@@ -153,7 +141,7 @@ foreach ($directory in @((Split-Path $protectedHome), $protectedHome)) {
   }
   Set-Acl -LiteralPath $directory -AclObject $acl
 }
-$env:CONTROL_HOME = $protectedHome
+{{end}}{{if eq .HybridRole "system"}}$env:CONTROL_HOME = $protectedHome
 $env:CONTROL_CONFIG = Join-Path $protectedHome 'node.json'
 $env:CONTROL_INSTALL_DIR = Join-Path $protectedHome 'bin'
 {{end}}
@@ -164,16 +152,19 @@ $checksum = switch ($arch) {
 {{range .Candidates}}  {{q .Arch}} { {{q .SHA256}} }
 {{end}}  default { throw 'No installer for this architecture' }
 }
-$tmp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
-New-Item -ItemType Directory -Path $tmp | Out-Null
+{{if or (eq .ServiceMode "hybrid") (eq .HybridRole "system")}}$tmp = Join-Path $protectedHome ([IO.Path]::GetRandomFileName())
+{{else}}$tmp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
+{{end}}New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
   $exe = Join-Path $tmp 'control.exe'
   $reused = $false
 {{if eq .ServiceMode "hybrid"}}  # Copy out of the protected installation; never share a writable runtime.
-  try {
-    Copy-Item -LiteralPath $systemExe -Destination $exe
-    $reused = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -eq $checksum
-  } catch { $reused = $false }
+  if ($systemInstalled) {
+    try {
+      Copy-Item -LiteralPath $systemExe -Destination $exe
+      $reused = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -eq $checksum
+    } catch { $reused = $false }
+  }
 {{end}}  if (-not $reused) {
     $installDir = if ($env:CONTROL_INSTALL_DIR) { $env:CONTROL_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\control' }
     $asset = 'control_windows_' + $arch + '.exe'
@@ -189,7 +180,35 @@ try {
   }
   if (-not $reused) { Invoke-WebRequest -UseBasicParsing -Uri ({{q .Binary}} + '?arch=' + $arch) -OutFile $exe }
   if ((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -ne $checksum) { throw 'Binary checksum mismatch' }
-  & $exe enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}}{{if eq .HybridRole "system"}} --hybrid-system{{end}} --service $serviceMode --firewall
+{{if eq .ServiceMode "hybrid"}}  # Find User problems before any privileged change or consumed ticket.
+  & $exe enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}} --preflight --service $serviceMode
+  if ($LASTEXITCODE -ne 0) { throw 'Hybrid preflight failed; nothing was installed' }
+  $savedHome, $savedConfig, $savedInstallDir = $env:CONTROL_HOME, $env:CONTROL_CONFIG, $env:CONTROL_INSTALL_DIR
+  try {
+    if ($systemInstalled) {
+      if (Test-Path -LiteralPath (Join-Path $protectedHome 'pending-enrollment.json')) {
+        $env:CONTROL_HOME = $protectedHome
+        $env:CONTROL_INSTALL_DIR = Join-Path $protectedHome 'bin'
+        & $systemExe --config $systemConfig enroll --url {{q .SystemLink}} --service system --hybrid-system --firewall
+      } else {
+        & $systemExe --config $systemConfig service start
+      }
+      if ($LASTEXITCODE -ne 0) { throw 'Hybrid System recovery failed; User installation was not started' }
+    } else {
+      # The System installer verifies .\control.exe against the same pinned checksum.
+      Push-Location -LiteralPath $tmp
+      try {
+        $systemScript = Invoke-RestMethod -Uri {{q .SystemLink}}
+        & ([ScriptBlock]::Create($systemScript))
+      } finally { Pop-Location }
+    }
+  } finally {
+    $env:CONTROL_HOME, $env:CONTROL_CONFIG, $env:CONTROL_INSTALL_DIR = $savedHome, $savedConfig, $savedInstallDir
+  }
+{{end}}  & $exe enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}}{{if eq .HybridRole "system"}} --hybrid-system{{end}} --service $serviceMode --firewall
   if ($LASTEXITCODE -ne 0) { throw 'Control enrollment failed' }
-} finally { Remove-Item -LiteralPath $tmp -Recurse -Force }
+} finally {
+  Remove-Item -LiteralPath $tmp -Recurse -Force
+{{if eq .ServiceMode "hybrid"}}  if (-not (Get-ChildItem -LiteralPath $protectedHome -Force)) { Remove-Item -LiteralPath $protectedHome -ErrorAction SilentlyContinue }
+{{end}}}
 `

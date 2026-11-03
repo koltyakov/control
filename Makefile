@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help tidy deps deps-update deps-check go-update fmt fmt-check lint lint-hint lint-hint-all vet test test-race check cov test-coverage test-cov-check bench build build-all bundle install uninstall release-local release-check ci ci-compose vuln clean proto test-compose test-compose-webrtc test-compose-relay update update-status
+.PHONY: help tidy deps deps-update deps-check go-update fmt fmt-check lint lint-hint lint-hint-all vet test test-race check cov test-coverage test-cov-check bench build build-all bundle install uninstall release-local release-check ci ci-compose vuln clean proto test-compose test-compose-webrtc test-compose-relay test-compose-hybrid update update-status
 
 GO ?= go
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -35,6 +35,7 @@ help:
 	@echo "  make vuln               - Scan dependencies for vulnerabilities"
 	@echo "  make ci / ci-compose    - Local CI checks / CI plus Compose integration"
 	@echo "  make test-compose       - Test WebRTC and relay deployments"
+	@echo "  make test-compose-hybrid - Install a Hybrid pair under real systemd"
 	@echo "  make update             - Push local build to gateway and all enrolled nodes"
 	@echo "  make update-status      - Show managed rollout status"
 	@echo "  make uninstall          - Run the per-user uninstaller"
@@ -158,6 +159,9 @@ test-compose-webrtc:
 
 test-compose-relay:
 	sh tests/compose/test.sh relay
+
+test-compose-hybrid:
+	sh tests/compose/test-hybrid.sh
 
 # Install protoc and protoc-gen-go before regenerating the checked-in bindings.
 proto:

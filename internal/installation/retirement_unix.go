@@ -6,7 +6,11 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"path/filepath"
 )
+
+// Unix allows unlinking a running executable.
+func removeRunningExecutable(path string) error { return os.RemoveAll(filepath.Dir(path)) }
 
 func checkRetiredServiceFile(path, configText string) (bool, error) {
 	content, err := os.ReadFile(path)

@@ -21,6 +21,15 @@ func (g *Gateway) machineRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/fleet/nodes/{id}/startup", g.fleetAdmin(g.changeStartup))
 }
 
+// Called under g.mu after persisting a policy change. The hint carries no state:
+// the node reads and acknowledges it with a signed query. A full queue is safe
+// to drop because the node's slower poll still finds the change.
+func (g *Gateway) notifyMachineState(id string) {
+	if c := g.peers[id]; c != nil && c.machineStatePush {
+		c.enqueue(&protocol.Packet{Kind: "machine.state", From: update.GatewaySender})
+	}
+}
+
 // Called under g.mu. An enabling machine remains ineligible until it has
 // acknowledged the persisted policy, so selectors never race ahead of it.
 func (g *Gateway) machinePending(id string) bool {
@@ -126,6 +135,7 @@ func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "could not persist machine state", 500)
 			return
 		}
+		g.notifyMachineState(id)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(state)
@@ -176,6 +186,7 @@ func (g *Gateway) renameMachine(w http.ResponseWriter, r *http.Request, n model.
 		http.Error(w, "could not persist machine name", 500)
 		return
 	}
+	g.notifyMachineState(n.ID)
 	for _, peer := range g.peers {
 		if peer.userID != n.UserID {
 			continue

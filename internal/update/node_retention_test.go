@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/koltyakov/control/internal/buildinfo"
@@ -274,6 +275,61 @@ func TestNodePruneFailsClosed(t *testing.T) {
 				t.Fatal("unsafe cleanup removed binary", err)
 			}
 		})
+	}
+}
+
+func TestUpdaterReportsDuringLongStaging(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var reports atomic.Int32
+		a := &Updater{options: UpdaterOptions{
+			Busy:   func() bool { return false },
+			Report: func(context.Context, Status) error { reports.Add(1); return nil },
+		}}
+		release := make(chan struct{})
+		result := make(chan error, 1)
+		go func() { result <- a.whileReporting(t.Context(), func() error { <-release; return nil }) }()
+		time.Sleep(61 * time.Second)
+		synctest.Wait()
+		// The first report is due at the first tick, then at least every five seconds.
+		if got := reports.Load(); got < 10 {
+			t.Fatalf("got %d status reports during a one-minute stage", got)
+		}
+		close(release)
+		if err := <-result; err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestNodePruneHashesOnlyWhenDeleting(t *testing.T) {
+	dir := t.TempDir()
+	current := nodeRetentionBinary(t, dir, "current")
+	if err := store.Write(filepath.Join(dir, "runtime.json"), current); err != nil {
+		t.Fatal(err)
+	}
+	a := &Updater{options: UpdaterOptions{Dir: dir, Software: buildinfo.Info{Version: current.Version, OS: current.Asset.OS, Arch: current.Asset.Arch, SHA256: current.Asset.SHA256}}}
+	// A corrupt binary proves whether hashing ran: with nothing to delete, it did not.
+	if err := os.WriteFile(current.Path, []byte("corrupt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.prune(t.Context()); err != nil {
+		t.Fatal("idle cleanup hashed the running binary", err)
+	}
+	old := nodeRetentionBinary(t, dir, "old")
+	if err := a.prune(t.Context()); err == nil {
+		t.Fatal("cleanup deleted a binary without verifying the current one")
+	}
+	if err := Verify(old.Path, old.Asset); err != nil {
+		t.Fatal("failed verification still removed a binary", err)
+	}
+	if err := store.Write(filepath.Join(dir, "runtime-previous.json"), old); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.prune(t.Context()); err == nil {
+		t.Fatal("cleanup removed recovery state without verifying the current binary")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "runtime-previous.json")); err != nil {
+		t.Fatal("failed verification removed recovery state", err)
 	}
 }
 

@@ -22,6 +22,13 @@ func servicePath() (string, error) {
 func systemdQuote(s string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, `%`, `%%`, `$`, `$$`).Replace(s) + `"`
 }
+func checkUserStartup(ctx context.Context) error {
+	if err := run(ctx, "systemctl", "--user", "show-environment"); err != nil {
+		return fmt.Errorf("user startup needs this user's systemd manager; run the command from the user's own login, not su or sudo: %w", err)
+	}
+	return nil
+}
+func UserStartupWarning() string { return "" }
 func installService(ctx context.Context, binary, config string) error {
 	if err := run(ctx, "systemctl", "--user", "show-environment"); err != nil {
 		return err

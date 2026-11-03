@@ -105,6 +105,7 @@ Your fleet:
   console password [USER] [--password-stdin] Set a browser password; operators may select a user
   machines add [NAME|auto] --platform macos|windows|linux  Create install command; default uses target hostname
     --service user|system|hybrid         Choose User, System, or paired contexts
+    --linger                             Linux Hybrid: keep User running without a login
     --force                              Retract a pending invitation for that name
   machines invites [clear]             List installation status, or remove revoked and expired ones
   machines revoke ID                   Revoke an invitation and its machine key
@@ -289,6 +290,7 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 	f := flag.NewFlagSet("machines add", flag.ContinueOnError)
 	platform := f.String("platform", "", "macos, windows, or linux; architecture is detected by the installer")
 	service := f.String("service", "", "user (login session), system (boot-time service), or hybrid (isolated User and System profiles)")
+	linger := f.Bool("linger", false, "Linux Hybrid only: keep the User context running without a login")
 	ttl := f.Duration("ttl", 15*time.Minute, "installation link lifetime")
 	asJSON := f.Bool("json", false, "print installation JSON")
 	force := f.Bool("force", false, "retract pending invitations for this name immediately")
@@ -301,6 +303,9 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 	if *service != "" && *service != "user" && *service != "system" && *service != "hybrid" {
 		return errors.New("service must be user, system, or hybrid")
 	}
+	if *linger && *service != "hybrid" {
+		return errors.New("--linger requires --service hybrid")
+	}
 	parts := strings.Split(strings.ToLower(*platform), "/")
 	if len(parts) > 2 || *ttl < time.Minute || *ttl > 24*time.Hour {
 		return errors.New("provide --platform macos|windows|linux and a TTL between 1m and 24h")
@@ -311,11 +316,14 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 	if parts[0] != "darwin" && parts[0] != "windows" && parts[0] != "linux" {
 		return errors.New("platform must be macos, windows, or linux")
 	}
+	if *linger && parts[0] != "linux" {
+		return errors.New("--linger applies only to Linux")
+	}
 	arch := ""
 	if len(parts) == 2 {
 		arch = parts[1]
 	}
-	link, err := c.Invite(ctx, enrollment.Request{Name: name, OS: parts[0], Arch: arch, ServiceMode: *service, TTLSeconds: int(ttl.Seconds()), Force: *force})
+	link, err := c.Invite(ctx, enrollment.Request{Name: name, OS: parts[0], Arch: arch, ServiceMode: *service, Linger: *linger, TTLSeconds: int(ttl.Seconds()), Force: *force})
 	if err != nil {
 		return err
 	}

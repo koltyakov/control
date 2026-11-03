@@ -27,6 +27,7 @@ type Request struct {
 	TTLSeconds  int    `json:"ttlSeconds,omitempty"`
 	Gateway     string `json:"gateway"`
 	ServiceMode string `json:"serviceMode,omitempty"`
+	Linger      bool   `json:"linger,omitempty"` // Linux Hybrid only: keep the User manager running without a login.
 	Force       bool   `json:"force,omitempty"`
 }
 
@@ -37,6 +38,7 @@ type Invitation struct {
 	AutoName    bool   `json:"autoName,omitempty"` // Hostname selected and signed by the target installer.
 	Gateway     string `json:"gateway"`
 	ServiceMode string `json:"serviceMode,omitempty"`
+	Linger      bool   `json:"linger,omitempty"`
 	// HybridID links independently enrolled User and System contexts. The
 	// companion uses a separate ticket, credential, identity, and profile.
 	HybridID   string         `json:"hybridId,omitempty"`
@@ -86,6 +88,17 @@ func Message(ticket string, r Redemption) []byte {
 		Arch                        string `json:"arch,omitempty"`
 		Name                        string `json:"name,omitempty"`
 	}{"control-enrollment-v1", Hash(ticket), r.CredentialHash, r.PublicKey, r.Arch, r.Name})
+	return b
+}
+
+// CheckMessage uses a separate purpose so a preflight proof cannot redeem.
+func CheckMessage(ticket string, r Redemption) []byte {
+	b, _ := json.Marshal(struct {
+		Purpose, Ticket string
+		PublicKey       []byte
+		Arch            string `json:"arch,omitempty"`
+		Name            string `json:"name,omitempty"`
+	}{"control-enrollment-check-v1", Hash(ticket), r.PublicKey, r.Arch, r.Name})
 	return b
 }
 

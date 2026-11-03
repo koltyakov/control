@@ -19,6 +19,9 @@ func (c Admin) Invite(ctx context.Context, q enrollment.Request) (enrollment.Lin
 	if err == nil && q.ServiceMode != "" && link.ServiceMode != q.ServiceMode {
 		return link, errors.New("gateway did not confirm the requested startup context; upgrade the gateway and check control machines invites before creating another invitation")
 	}
+	if err == nil && q.Linger && !link.Linger {
+		return link, errors.New("gateway did not confirm the requested linger setting; upgrade the gateway and check control machines invites before creating another invitation")
+	}
 	return link, err
 }
 

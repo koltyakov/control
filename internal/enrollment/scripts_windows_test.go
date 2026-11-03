@@ -22,6 +22,19 @@ func windowsPowerShellCommand(t *testing.T, script string) *exec.Cmd {
 	return exec.CommandContext(t.Context(), "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
 }
 
+// windowsPowerShellFileCommand keeps installer one-liners off the command line,
+// where Microsoft Defender can deny process creation based on their text.
+func windowsPowerShellFileCommand(t *testing.T, script string) *exec.Cmd {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), "verify.ps1")
+	// Windows PowerShell 5.1 reads a script without a BOM as ANSI.
+	content := "\ufeff$env:PSModulePath = $PSHOME + '\\Modules'\n" + script
+	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return exec.CommandContext(t.Context(), "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", file)
+}
+
 func TestWindowsPowerShellIgnoresInheritedModulePath(t *testing.T) {
 	root := t.TempDir()
 	module := filepath.Join(root, "contaminated", "Microsoft.PowerShell.Utility")
@@ -87,7 +100,7 @@ if ($true) {
 ` + command + `
 if ($global:installerResult -ne 'executed') { throw 'Multi-line response was not executed as a whole' }
 `
-				cmd := windowsPowerShellCommand(t, verify)
+				cmd := windowsPowerShellFileCommand(t, verify)
 				if output, err := cmd.CombinedOutput(); err != nil {
 					t.Fatalf("Windows PowerShell validation: %v\n%s", err, output)
 				}
@@ -105,7 +118,7 @@ func TestWindowsInstallCommandRunsInPowerShell(t *testing.T) {
 	for _, path := range []string{"/install/token", "/a'b/install/token", "/$path/install/token"} {
 		command := InstallCommand(server.URL+path, true, "user")
 		t.Run(path, func(t *testing.T) {
-			cmd := windowsPowerShellCommand(t, command)
+			cmd := windowsPowerShellFileCommand(t, command)
 			var stderr bytes.Buffer
 			cmd.Stderr = &stderr
 			output, err := cmd.Output()
@@ -145,6 +158,7 @@ func TestHybridPowerShellReusesSystemBinary(t *testing.T) {
 			verify := `$ErrorActionPreference = 'Stop'
 $tmp = ` + PowerShellQuote(root) + `
 $systemExe = ` + PowerShellQuote(systemExe) + `
+$systemInstalled = Test-Path -LiteralPath $systemExe
 $arch = 'amd64'
 $checksum = ` + PowerShellQuote(Hash(binary)) + `
 $scenario = ` + PowerShellQuote(scenario) + `

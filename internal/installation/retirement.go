@@ -7,10 +7,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -204,7 +206,55 @@ func UninstallRetired(ctx context.Context, config, dataDir, id string) error {
 	if err = os.Remove(binaryRegistration(p)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return finishRetiredUninstall(ctx, p)
+	if err = finishRetiredUninstall(ctx, p); err != nil {
+		return err
+	}
+	if cfg.HybridSystem {
+		_ = registry.Close()
+		removeRetiredHybridBinaries(cfg, p, shared)
+	}
+	return nil
+}
+
+// A Hybrid companion's paths include its pair ID, so no later invitation reuses
+// them. Remove its executables, keeping the identity, state, and work files. This
+// is best effort: the node has already been retired and cannot start again.
+func removeRetiredHybridBinaries(cfg node.Config, p installedNode, shared bool) {
+	for _, name := range []string{"updates", "runtime"} {
+		if err := os.RemoveAll(filepath.Join(cfg.DataDir, name)); err != nil {
+			slog.Warn("remove retired companion binaries", "error", err)
+		}
+	}
+	if shared {
+		return
+	}
+	if err := os.RemoveAll(p.Binary + ".profiles"); err != nil {
+		slog.Warn("remove retired companion registry", "error", err)
+	}
+	// Remove only directories this removal emptied, up to the per-pair parent.
+	for path, depth := filepath.Dir(p.Binary), 0; depth < 2 && os.Remove(path) == nil; path, depth = filepath.Dir(path), depth+1 {
+	}
+}
+
+// RemoveRetiredHelper deletes the running uninstall helper of a retired Hybrid
+// companion after cleanup succeeds. Other profiles reuse their state directory,
+// and retry cleanup with the same helper if it fails.
+func RemoveRetiredHelper(config string) {
+	cfg, err := node.LoadConfig(config)
+	if err != nil || !cfg.HybridSystem {
+		return
+	}
+	helper, err := os.Executable()
+	if err != nil {
+		return
+	}
+	dir := filepath.Dir(helper)
+	if !strings.HasPrefix(filepath.Base(dir), "uninstall-") || filepath.Dir(dir) != cfg.DataDir {
+		return
+	}
+	if err = removeRunningExecutable(helper); err != nil {
+		slog.Warn("remove retired uninstall helper", "error", err)
+	}
 }
 
 func requireRetiredIdentity(cfg node.Config, id string) error {

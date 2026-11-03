@@ -112,6 +112,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Test WebRTC and relay deployments
         run: make test-compose
+      - name: Test Hybrid installation under systemd
+        run: make test-compose-hybrid
 
   vulnerabilities:
     runs-on: ubuntu-24.04

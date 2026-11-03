@@ -19,3 +19,15 @@ RUN apt-get update \
 COPY --from=build /out/control /usr/local/bin/control
 COPY tests/compose/node.sh /usr/local/bin/control-test-node
 ENTRYPOINT ["control"]
+
+# Real systemd, sudo, and an unprivileged login for the Hybrid installation test.
+# The generated installer supplies Control itself.
+FROM debian:bookworm-slim AS hybrid-host
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl dbus dbus-user-session jq libpam-systemd procps socat sudo systemd systemd-sysv \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 1000 --shell /bin/bash fixture \
+    && echo 'fixture ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/fixture \
+    && chmod 0440 /etc/sudoers.d/fixture
+STOPSIGNAL SIGRTMIN+3
+ENTRYPOINT ["/lib/systemd/systemd"]

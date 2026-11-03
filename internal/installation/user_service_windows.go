@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unsafe"
 
 	"github.com/koltyakov/control/internal/node"
 	"github.com/koltyakov/control/internal/processutil"
@@ -39,6 +40,50 @@ func resolveServiceMode(config, mode string) (string, error) {
 		return "", errors.New("invalid saved Windows startup mode")
 	}
 	return profile.Mode, nil
+}
+
+func checkUserStartup(context.Context) error { return CheckServiceMode("user") }
+
+// UserStartupWarning detects over-the-shoulder elevation. User startup installs
+// for the account running this process, which may not be the logged-on user.
+func UserStartupWarning() string {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return ""
+	}
+	account, domain, _, err := user.User.Sid.LookupAccount("")
+	if err != nil {
+		return ""
+	}
+	sessionAccount, sessionDomain := sessionUser()
+	if sessionAccount == "" || (strings.EqualFold(account, sessionAccount) && strings.EqualFold(domain, sessionDomain)) {
+		return ""
+	}
+	return fmt.Sprintf("this installation runs as %s\\%s, but %s\\%s is logged on here. The User context and its files will belong to %s; run the command in that user's own elevated session to install it for them.", domain, account, sessionDomain, sessionAccount, account)
+}
+
+// sessionUser returns this session's logged-on user, or empty names for a
+// session without one, such as a service or remote command session.
+func sessionUser() (account, domain string) {
+	var session uint32
+	if windows.ProcessIdToSessionId(windows.GetCurrentProcessId(), &session) != nil {
+		return "", ""
+	}
+	wts := windows.NewLazySystemDLL("wtsapi32.dll").NewProc("WTSQuerySessionInformationW")
+	if wts.Find() != nil {
+		return "", ""
+	}
+	query := func(class uintptr) string {
+		var text *uint16
+		var size uint32
+		if result, _, _ := wts.Call(0, uintptr(session), class, uintptr(unsafe.Pointer(&text)), uintptr(unsafe.Pointer(&size))); result == 0 || text == nil {
+			return ""
+		}
+		defer windows.WTSFreeMemory(uintptr(unsafe.Pointer(text)))
+		return windows.UTF16PtrToString(text)
+	}
+	const wtsUserName, wtsDomainName = 5, 7
+	return query(wtsUserName), query(wtsDomainName)
 }
 
 func userPowerShell(ctx context.Context, script string) error {

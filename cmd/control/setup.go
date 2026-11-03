@@ -190,6 +190,7 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 	requireAutoName := f.Bool("auto-name", false, "require an automatic-name invitation")
 	firewall := f.Bool("firewall", false, "configure Windows firewall rules, requesting UAC elevation if needed")
 	hybridSystem := f.Bool("hybrid-system", false, "require a protected Hybrid System companion invitation")
+	preflight := f.Bool("preflight", false, "validate this invitation and machine without changing the installation or using the invitation")
 	mode := f.String("service", os.Getenv("CONTROL_SERVICE_MODE"), "auto, user (at login), system (at boot), or process; defaults to saved mode")
 	if err := f.Parse(args); err != nil {
 		return err
@@ -208,6 +209,9 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 	}
 	if _, err := enrollment.GatewayURL(*link); err != nil {
 		return err
+	}
+	if *preflight {
+		return preflightEnrollment(ctx, config, *link, *mode, *requireAutoName)
 	}
 	if err := os.MkdirAll(filepath.Dir(config), 0700); err != nil {
 		return err
@@ -302,6 +306,14 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 			return err
 		}
 	}
+	// A busy port would otherwise surface only after the ticket is used.
+	apiCfg := cfg
+	if *hybridSystem && !cfg.HybridSystem {
+		apiCfg.Listen = hybridSystemListen
+	}
+	if err = installation.CheckLocalAPI(ctx, apiCfg, id); err != nil {
+		return err
+	}
 	if err = c.JSON(ctx, "POST", "/redeem", q, nil); err != nil {
 		return fmt.Errorf("enrollment pending; resume with control enroll --url using the same link: %w", err)
 	}
@@ -335,6 +347,13 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 	return nil
 }
 
+const (
+	hybridSystemListen = "127.0.0.1:7332"
+	// The console shows System telemetry only while User is offline, so sample
+	// less often than the User context. Explicit refreshes stay immediate.
+	hybridSystemMetricsSeconds = 60
+)
+
 func configureHybridSystem(config string) (node.Config, error) {
 	data, err := os.ReadFile(config)
 	if err != nil {
@@ -348,7 +367,10 @@ func configureHybridSystem(config string) (node.Config, error) {
 		return node.Config{}, errors.New("hybrid system profile must be a JSON object")
 	}
 	if string(fields["hybridSystem"]) != "true" {
-		fields["listen"] = model.JSON("127.0.0.1:7332")
+		fields["listen"] = model.JSON(hybridSystemListen)
+		if _, set := fields["metricsIntervalSeconds"]; !set {
+			fields["metricsIntervalSeconds"] = model.JSON(hybridSystemMetricsSeconds)
+		}
 	}
 	fields["instructionOnly"], fields["hybridSystem"] = model.JSON(true), model.JSON(true)
 	if err = store.Write(config, fields); err != nil {

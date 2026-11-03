@@ -14,6 +14,22 @@ func launchRetiredUninstall(_ context.Context, helper string, args []string, _ i
 	return launchDetachedUninstall(helper, args)
 }
 
+// Windows cannot delete a running executable, so schedule it and its folder for
+// the next restart. Only an administrator-level process, which a Hybrid
+// companion's LocalSystem helper is, may schedule this.
+func removeRunningExecutable(path string) error {
+	for _, target := range []string{path, filepath.Dir(path)} {
+		pointer, err := windows.UTF16PtrFromString(target)
+		if err != nil {
+			return err
+		}
+		if err = windows.MoveFileEx(pointer, nil, windows.MOVEFILE_DELAY_UNTIL_REBOOT); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func removeRetiredStartup(ctx context.Context, p installedNode) error {
 	if p.Mode == "process" {
 		return nil

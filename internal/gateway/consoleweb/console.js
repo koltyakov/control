@@ -2188,10 +2188,16 @@ document.addEventListener("click", async (event) => {
           }),
         node.disabled ? "Enable machine" : "Disable machine",
       );
-    if (action === "unregister" && node)
+    if (action === "unregister" && node) {
+      const companion = node.hybridId
+        ? (state.snapshot?.nodes || []).find((n) => n.hybridId === node.hybridId && n.id !== node.id)
+        : null;
+      const companionField = companion
+        ? `<p class="notice">${esc(companion.name)} is this host's other Hybrid context${companion.runAs === "system" ? ", running with full system privileges" : ""}. It stays registered and running unless you also remove it.</p><label class="force-confirm"><input name="companion" type="checkbox">Also unregister ${esc(companion.name)}</label>`
+        : "";
       formDialog(
         "Unregister " + node.name,
-        `<p>This permanently retires this identity. Current installations cancel work and uninstall startup and their unshared launcher when they receive the policy. Local data is retained. Older nodes may need local cleanup.</p><label>Type ${esc(node.name)} to confirm<input name="confirmation" required autocomplete="off"></label>`,
+        `<p>This permanently retires this identity. Current installations cancel work and uninstall startup and their unshared launcher when they receive the policy. Local data is retained. Older nodes may need local cleanup.</p>${companionField}<label>Type ${esc(node.name)} to confirm<input name="confirmation" required autocomplete="off"></label>`,
         async (fields) => {
           if (fields.confirmation !== node.name)
             throw new Error("The machine name does not match.");
@@ -2199,11 +2205,22 @@ document.addEventListener("click", async (event) => {
             "fleet/nodes/" + encodeURIComponent(id) + "?stop=true",
             "DELETE",
           );
-          toast("Machine unregistered");
+          if (companion && fields.companion) {
+            try {
+              await api(
+                "fleet/nodes/" + encodeURIComponent(companion.id) + "?stop=true",
+                "DELETE",
+              );
+            } catch (error) {
+              throw new Error(`${node.name} was unregistered, but ${companion.name} was not: ${error.message}`);
+            }
+          }
+          toast(companion && fields.companion ? "Both contexts unregistered" : "Machine unregistered");
         },
         "Unregister machine",
         true,
       );
+    }
     if (action === "clear-audit") {
       const operator = state.session.role === "superuser";
       formDialog(

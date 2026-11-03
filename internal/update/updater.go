@@ -216,6 +216,24 @@ func (a *Updater) resume() {
 	}
 }
 
+// whileReporting keeps status fresh during staging, which can include a long
+// wait for another context's download on this machine. It waits for work, which
+// must honor ctx, so the command loop never runs two stages at once.
+func (a *Updater) whileReporting(ctx context.Context, work func() error) error {
+	done := make(chan error, 1)
+	go func() { done <- work() }()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-ticker.C:
+			a.report(ctx)
+		}
+	}
+}
+
 func (a *Updater) process(ctx context.Context, message queuedCommand) {
 	command := message.command
 	switch message.kind {
@@ -242,12 +260,15 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 		a.set("downloading", nil)
 		a.report(ctx)
 		path := a.stagePath(command.Asset)
-		err := downloadCached(ctx, a.options.CacheDir, path, command.Asset, func() error {
-			return DownloadPreferred(ctx, command.ReleaseRepo, command.Version, a.options.Gateway+"/v1/updates/blobs/"+command.Asset.SHA256, a.options.Token, path, command.Asset)
+		err := a.whileReporting(ctx, func() error {
+			err := downloadCached(ctx, a.options.CacheDir, path, command.Asset, func() error {
+				return DownloadPreferred(ctx, command.ReleaseRepo, command.Version, a.options.Gateway+"/v1/updates/blobs/"+command.Asset.SHA256, a.options.Token, path, command.Asset)
+			})
+			if err != nil {
+				return err
+			}
+			return ValidateExecutable(ctx, path, command.Version, command.Asset)
 		})
-		if err == nil {
-			err = ValidateExecutable(ctx, path, command.Version, command.Asset)
-		}
 		if err != nil {
 			a.nextAttempt = time.Now().Add(30 * time.Second)
 			a.set("error", err)

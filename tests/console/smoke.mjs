@@ -449,6 +449,48 @@ async function assertStartupCommands(page, snapshot) {
   await refresh();
 }
 
+// Removing one context of a grouped host must name the one left running.
+async function assertHybridUnregister(page, snapshot) {
+  const baseNode = { ...snapshot.nodes[0], status: "summary", activeCount: 0, leased: false, disabled: false, controlPending: false, online: true },
+    user = { ...baseNode, id: "paired-user", name: "paired-host", hybridId: "pair-1", hybridRole: "user", runAs: "user" },
+    system = { ...baseNode, id: "paired-system", name: "paired-host-system", hybridId: "pair-1", hybridRole: "system", runAs: "system" };
+  const statusRoute = (route) => route.fulfill({ json: { ...snapshot, nodes: [system, user] } });
+  const removeURL = /\/console\/api\/fleet\/nodes\/[^/]+\?stop=true$/;
+  const removed = [];
+  const removeRoute = (route) => {
+    if (route.request().method() !== "DELETE") return route.fallback();
+    removed.push(new URL(route.request().url()).pathname.split("/").pop());
+    return route.fulfill({ status: 204 });
+  };
+  await page.route("**/console/api/status", statusRoute);
+  await page.route(removeURL, removeRoute);
+  await page.waitForFunction(() => !state.busy);
+  await page.evaluate(() => refresh(true));
+  const openUnregister = async () => {
+    await page.getByRole("button", { name: "paired-host", exact: true }).click();
+    await page.getByRole("button", { name: "More actions for paired-host", exact: true }).click();
+    await page.locator("#machine-menu").getByRole("menuitem", { name: "Unregister", exact: true }).click();
+    await page.getByLabel("Type paired-host to confirm").waitFor();
+  };
+  await openUnregister();
+  await page.locator("#modal-form .notice").filter({ hasText: "paired-host-system" }).filter({ hasText: "stays registered and running" }).waitFor();
+  await page.getByLabel("Type paired-host to confirm").fill("paired-host");
+  await page.locator("#modal-form button[type=submit]").click();
+  await page.locator("#modal-form").waitFor({ state: "detached" });
+  assert.deepEqual(removed, [user.id], "Unregistering User must not remove System unless asked");
+  removed.length = 0;
+  await openUnregister();
+  await page.getByLabel("Also unregister paired-host-system").check();
+  await page.getByLabel("Type paired-host to confirm").fill("paired-host");
+  await page.locator("#modal-form button[type=submit]").click();
+  await page.locator("#modal-form").waitFor({ state: "detached" });
+  assert.deepEqual(removed, [user.id, system.id], "The explicit choice removes both contexts");
+  await page.unroute(removeURL, removeRoute);
+  await page.unroute("**/console/api/status", statusRoute);
+  await page.waitForFunction(() => !state.busy);
+  await page.evaluate(() => refresh(true));
+}
+
 async function assertHybridGrouping(page, snapshot) {
   const baseNode = { ...snapshot.nodes[0], status: "summary", activeCount: 0, leased: false, disabled: false, controlPending: false },
     resources = (cpu, used) => ({ ...baseNode.system, cpuUsagePercent: cpu, memoryUsedBytes: used, memoryTotalBytes: 100, disks: [{ path: "work", usedBytes: used, totalBytes: 100 }], gpus: [] }),
@@ -1289,6 +1331,7 @@ try {
   await assertHybridGrouping(page, snapshot);
   await assertAcceleratorPresence(page, snapshot);
   assert.equal(machineMutations, mutationsBeforeStartup, "Preparing startup commands must not mutate machine lifecycle policy");
+  await assertHybridUnregister(page, snapshot);
 
   await page.locator("#account-button").click();
   await page.locator('#account-menu a[href="#account"]').click();

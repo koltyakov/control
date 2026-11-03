@@ -110,6 +110,8 @@ type Peer struct {
 	startup             func([]byte)
 	nodeHealth          bool
 	clientSessions      bool
+	machineStatePush    atomic.Bool
+	machineStateWake    chan struct{}
 	networkSnapshot     func() (string, error)
 	wakeSnapshot        func() ([]model.WakeInterface, error)
 	lanDiscovery        bool
@@ -124,8 +126,8 @@ func New(cfg Config, handler func(string, net.Conn)) *Peer {
 	return &Peer{
 		cfg: cfg, handler: handler, log: slog.Default(), api: newWebRTCAPI(cfg.DirectTimeout, false), trickleAPI: newWebRTCAPI(cfg.DirectTimeout, true),
 		writes: make(chan *gatewayWrite, 64), priorityWrites: make(chan *gatewayWrite, 32),
-		reconnectWake: make(chan struct{}, 1),
-		lanSlots:      make(chan struct{}, 4), lanInbound: map[string]time.Time{},
+		reconnectWake: make(chan struct{}, 1), machineStateWake: make(chan struct{}, 1),
+		lanSlots: make(chan struct{}, 4), lanInbound: map[string]time.Time{},
 		links: map[string]*link{}, sessions: map[sessionKey]*peerSession{},
 		allSessions: map[string]*peerSession{}, pending: map[sessionKey]*sessionDial{},
 		incomingSetups: map[string]*incomingSetup{}, resolved: map[string]string{},
@@ -249,6 +251,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		Delegation       bool     `json:"delegation"`
 		LargePackets     bool     `json:"largePackets"`
 		NodeBytes        bool     `json:"nodeBytes"`
+		MachineStatePush bool     `json:"machineStatePush"`
 		LANDiscovery     bool     `json:"lanDiscovery"`
 		GatewayHeartbeat bool     `json:"gatewayHeartbeat"`
 		TrickleICE       bool     `json:"trickleICE"`
@@ -298,6 +301,10 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	p.cfg.Node.PeerChannels = scope.PeerChannels
 	p.cfg.Node.LargePackets = scope.LargePackets
 	p.cfg.Node.TrickleICE = scope.TrickleICE
+	// Registration signs exact bytes only with nodeBytes, and an older gateway
+	// could not verify a field it does not know about otherwise.
+	p.cfg.Node.MachineStatePush = scope.MachineStatePush && scope.NodeBytes && !p.cfg.Client
+	p.machineStatePush.Store(p.cfg.Node.MachineStatePush)
 	p.cfg.Node.WakeInterfaces = wakeInterfaces
 	p.cfg.Node.LANDiscovery = scope.LANDiscovery && scope.NodeBytes && !p.cfg.Client
 	p.lanDiscovery = p.cfg.Node.LANDiscovery
@@ -403,6 +410,9 @@ func (p *Peer) run(ws *websocket.Conn) {
 			p.ws = nil
 			p.gatewayWS.Store(nil)
 		}
+		// The gateway closes this connection when it retires the identity, and no
+		// hint can arrive while disconnected. Check now, then poll at the fast rate.
+		p.signalMachineState()
 		var broken []*packetConn
 		for _, l := range p.links {
 			if l.mode == "relay" {
@@ -509,6 +519,12 @@ func (p *Peer) receive(msg *protocol.Packet) {
 			p.lookups = map[string]lookupEntry{}
 			p.directoryGeneration++
 			p.mu.Unlock()
+		}
+		return
+	}
+	if msg.Kind == "machine.state" {
+		if msg.From == update.GatewaySender {
+			p.signalMachineState()
 		}
 		return
 	}

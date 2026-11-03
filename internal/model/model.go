@@ -41,6 +41,8 @@ type Node struct {
 	// session. Older nodes omit it.
 	RunAs           string `json:"runAs,omitempty"`
 	InstructionOnly bool   `json:"instructionOnly,omitempty"`
+	// MachineStatePush asks the gateway to hint at policy changes on this connection.
+	MachineStatePush bool `json:"machineStatePush,omitempty"`
 	// Hybrid pairing is assigned by the gateway from redeemed invitations.
 	HybridID   string `json:"hybridId,omitempty"`
 	HybridRole string `json:"hybridRole,omitempty"`

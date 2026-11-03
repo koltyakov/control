@@ -75,9 +75,16 @@ func (n *Node) applyMachineState(state model.MachineState) error {
 	return nil
 }
 
+// Policy polling is signed gateway HTTP from every node. Gateway hints make the
+// fast rate necessary only while disconnected or talking to an older gateway.
+const (
+	machineStatePoll       = 2 * time.Second
+	machineStatePushedPoll = 30 * time.Second
+)
+
 func (n *Node) runMachineState(ctx context.Context) {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 	for {
 		if err := n.syncMachineState(ctx); errors.Is(err, ErrUnregistered) {
 			n.cancel()
@@ -88,10 +95,16 @@ func (n *Node) runMachineState(ctx context.Context) {
 		} else if err != nil && ctx.Err() == nil {
 			slog.Debug("machine state refresh", "error", err)
 		}
+		interval := machineStatePoll
+		if n.Peer.MachineStatePushed() {
+			interval = machineStatePushedPoll
+		}
+		timer.Reset(interval)
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
+		case <-n.Peer.MachineStateWake():
 		}
 	}
 }

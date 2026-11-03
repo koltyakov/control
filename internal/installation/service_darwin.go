@@ -31,6 +31,14 @@ func xmlText(s string) string {
 	_ = xml.EscapeText(&b, []byte(s))
 	return b.String()
 }
+func checkUserStartup(ctx context.Context) error {
+	domain := fmt.Sprintf("gui/%d", os.Getuid())
+	if err := run(ctx, "launchctl", "print", domain); err != nil {
+		return fmt.Errorf("user startup needs this user's desktop login session; log in at the Mac first: %w", err)
+	}
+	return nil
+}
+func UserStartupWarning() string { return "" }
 func installService(ctx context.Context, binary, config string) error {
 	path, err := servicePath()
 	if err != nil {

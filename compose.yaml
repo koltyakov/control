@@ -65,6 +65,28 @@ services:
       CONTROL_NODE_NAME: consumer
     volumes: ["consumer-state:/state", "consumer-work:/work"]
 
+  # Boots real systemd for tests/compose/test-hybrid.sh. It stays out of the
+  # default suite because it needs a privileged container.
+  hybrid-host:
+    profiles: [hybrid]
+    image: control-test-hybrid-host
+    build:
+      context: .
+      dockerfile: tests/compose/Dockerfile
+      target: hybrid-host
+    privileged: true
+    cgroup: private
+    tmpfs: [/run, /run/lock]
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks: [pool]
+    healthcheck:
+      test: ["CMD", "systemctl", "is-active", "--quiet", "multi-user.target"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
   tests:
     build:
       context: .

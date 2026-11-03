@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/koltyakov/control/internal/store"
 )
@@ -39,6 +40,9 @@ func (a *Updater) prune(ctx context.Context) error {
 	// Read every record before deleting anything. A failed startup keeps the
 	// previous selection, even when runtime.json already points at the candidate.
 	confirmed := false
+	// Hash the running binary only when something would be deleted. Cleanup runs
+	// every minute, and an idle node usually has nothing to remove.
+	verifyCurrent := func() error { return nil }
 	for _, name := range []string{"runtime.json", "runtime-request.json", "runtime-previous.json"} {
 		var runtime struct {
 			Path    string `json:"path"`
@@ -56,9 +60,13 @@ func (a *Updater) prune(ctx context.Context) error {
 		if name == "runtime.json" {
 			confirmed = runtime.Version == a.options.Software.Version && Matches(a.options.Software, runtime.Asset)
 			if confirmed {
-				if err := Verify(runtime.Path, runtime.Asset); err != nil {
-					return fmt.Errorf("verify current runtime for node update cleanup: %w", err)
-				}
+				path, asset := runtime.Path, runtime.Asset
+				verifyCurrent = sync.OnceValue(func() error {
+					if err := Verify(path, asset); err != nil {
+						return fmt.Errorf("verify current runtime for node update cleanup: %w", err)
+					}
+					return nil
+				})
 			}
 		}
 		if name != "runtime-previous.json" || !confirmed {
@@ -75,7 +83,14 @@ func (a *Updater) prune(ctx context.Context) error {
 		return err
 	}
 	if confirmed {
-		if err := root.Remove("runtime-previous.json"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if _, err := root.Lstat("runtime-previous.json"); err == nil {
+			if err := verifyCurrent(); err != nil {
+				return err
+			}
+			if err := root.Remove("runtime-previous.json"); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 	}
@@ -108,6 +123,9 @@ func (a *Updater) prune(ctx context.Context) error {
 			}
 			if !ValidDigest(entry.Name()) || keep[entry.Name()] || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 				continue
+			}
+			if err := verifyCurrent(); err != nil {
+				return errors.Join(append(failures, err)...)
 			}
 			if err := storage.RemoveAll(entry.Name()); err != nil {
 				failures = append(failures, err)

@@ -558,7 +558,7 @@ func (g *Gateway) cleanupUpdates(ctx context.Context, id string) {
 	retained := []string{g.options.Software.SHA256}
 	now := time.Now()
 	for _, invitation := range g.installations {
-		if invitation.Revoked || invitation.RedeemedID != "" || !now.Before(invitation.ExpiresAt) {
+		if invitation.Revoked || (invitation.RedeemedID != "" && !invitation.pendingHybrid()) || !now.Before(invitation.ExpiresAt) {
 			continue
 		}
 		retained = append(retained, invitation.Asset.SHA256)

@@ -16,8 +16,9 @@ import (
 
 // The cache contains untrusted bytes, never executable runtime selections. A
 // single OS lock covers lookup, download, publication and pruning across users.
-// Keep the lock inode permanently, even when pruning all cached binaries.
-const machineCacheEntries = 4
+// Keep the lock inode permanently, even when pruning all cached binaries. Nodes
+// only ever fetch the selected version, so one older entry covers a rollback.
+const machineCacheEntries = 2
 
 func downloadCached(ctx context.Context, dir, path string, asset Asset, fetch func() error) error {
 	if err := ctx.Err(); err != nil {
@@ -237,8 +238,8 @@ func publishMachineCache(root *os.Root, name, path string, asset Asset) error {
 	return root.Rename(temp, name)
 }
 
-// Retain the requested binary plus the three newest others. Scan in bounded
-// batches and keep only three candidates in memory. Never follow symlinks or
+// Retain the requested binary plus the newest other. Scan in bounded batches
+// and keep only the retained candidates in memory. Never follow symlinks or
 // remove lock files, directories, or unrelated entries in this writable cache.
 func pruneMachineCache(ctx context.Context, root *os.Root, current string) {
 	dir, err := root.Open(".")

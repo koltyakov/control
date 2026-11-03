@@ -949,3 +949,25 @@ Deduplicate automatic and development-rollout executable downloads across node p
 The cache is untrusted transport storage, not a shared runtime or authority source. Open entries within an OS-rooted directory, reject symlinks and special files, and verify the bytes copied into private profile staging against the authenticated selected asset. Execute version validation only on that private copy. Never execute, hard-link, or load runtime selections from the shared cache; never put credentials there. A writable User cache entry cannot choose a System executable with another digest. Cache mutation, deletion, or hostile lock replacement can deny reuse, but must not bypass validation or redirect writes outside cache storage.
 
 Preserve D087's isolated User/System identities, runtime ownership, admission, supervisors, and restarts, and D097's exact GitHub preference with authenticated gateway fallback. No gateway coordination, new execution grant, or protocol field is needed. Both contexts must run cache-capable updater code, so the first upgrade from older binaries may still download separately. See [paths and operational limits](updates.md#machine-wide-download-reuse).
+
+## D110: Hybrid preflight, staging order, and rerun recovery
+
+The Hybrid installer used to install the root or LocalSystem companion first, so most User failures appeared only after a privileged service was running, and a User failure after redemption could not be rerun because its script returned HTTP 410. The installer now obtains the binary as the user and runs `enroll --preflight` before any privileged change. The System installer takes the binary from the staging folder through its existing checksum-verified local candidates. Gateways keep script, metadata, and binaries available, and retained, until an incomplete pair expires or completes. The same command is therefore safe to repeat until the deadline.
+
+`POST /install/{ticket}/check` shares its rules with redemption, so preflight cannot drift from what the gateway enforces. Supplied keys prove possession under a separate signing purpose, which stops a ticket holder probing other identities and stops a check proof redeeming. The check reduces late failures but cannot remove them: conditions can change between preflight and redemption, and D108's timeout still bounds what remains.
+
+Windows Hybrid stages binaries in the ACL-protected pair directory instead of `%TEMP%`, closing a hash-then-execute window against same-user limited processes. Ordinary Windows System and elevated User installations still stage in `%TEMP%`; extend this if their elevation is treated as the same boundary.
+
+Windows privileged path checks use native security APIs in place of one PowerShell process per path. They preserve the previous rules and fail closed on access entries they cannot parse. Retired companions delete their managed binaries, since D087's pair-specific paths are never reused, while keeping identity, state, and work files. Linux `--linger` is opt-in because it changes the account's login behavior beyond Control.
+
+## D111: Gateway-hinted machine state with a slower poll
+
+Every node polled signed `POST /v1/node/state` every two seconds, which a Hybrid host paid twice. The gateway now sends a stateless `machine.state` hint after each persisted change and on registration. Nodes negotiate this through `/v1/auth` and a signed registration field, then poll every 30 seconds while connected, and every two seconds while disconnected or against an older gateway.
+
+The hint carries no policy, so the signed query remains the only source of state and of acknowledgement, and machine admission semantics from D023 are unchanged. Losing a hint delays a change until the next poll rather than losing it. Retirement already closes the connection, and a drop now triggers an immediate query, so a retired node still learns its policy without waiting.
+
+## D112: Lower recurring cost per node context
+
+A Hybrid host runs two full nodes, which is the isolation boundary and stays. Their avoidable recurring work is reduced. Companions sample every 60 seconds by default, because the console shows their telemetry only while User is offline. Node cleanup hashes the running binary only when it would delete something, instead of every minute. D109's cache retention narrows to the requested binary and one other, since nodes fetch only the selected version and older entries help only a rollback. Updaters keep reporting status during long staging, including a wait for the other context's download.
+
+Windows GPU memory sampling still starts PowerShell per sample in each context, now less often for the companion. Native counters would remove it on every Windows node.

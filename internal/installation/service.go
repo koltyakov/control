@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -56,6 +57,41 @@ func CheckHybridSystem(ctx context.Context, binary, config, mode string) error {
 		return err
 	}
 	return checkHybridSystem(ctx, binary, config, mode)
+}
+
+// CheckUserStartup verifies the login-session service manager that User startup
+// depends on. Other modes have no such dependency or fall back to a process.
+func CheckUserStartup(ctx context.Context, mode string) error {
+	if mode != "user" {
+		return nil
+	}
+	return checkUserStartup(ctx)
+}
+
+// CheckLocalAPI reports a local API port held by something other than this
+// profile's own node. It allows a brief wait for a node that is still stopping.
+func CheckLocalAPI(ctx context.Context, cfg node.Config, id *identity.Identity) error {
+	address := strings.TrimPrefix(API(cfg), "http://")
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	for {
+		listener, err := net.Listen("tcp", address)
+		if err == nil {
+			return listener.Close()
+		}
+		if id != nil {
+			var description struct{ ID string }
+			c := client.Client{URL: API(cfg), Token: cfg.Token}
+			if c.Call(ctx, "", "node.describe", map[string]any{}, &description) == nil && description.ID == id.ID {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("local API address %s is in use by another process; stop it or install with a separate profile: %w", address, err)
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 }
 
 func Service(ctx context.Context, operation, binary, config, mode string) error {

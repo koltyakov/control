@@ -45,6 +45,48 @@ func TestHybridInstallers(t *testing.T) {
 	}
 }
 
+func TestHybridLingerIsOptIn(t *testing.T) {
+	for _, linger := range []bool{false, true} {
+		i := Invitation{ID: "primary", HybridID: "primary", HybridRole: "user", ServiceMode: "hybrid", Linger: linger, Asset: update.Asset{OS: "linux", Arch: "amd64", SHA256: strings.Repeat("a", 64)}}
+		script, err := Script(i, "https://gateway.example/install/ticket")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(script, "enable-linger") != linger {
+			t.Fatal("linger must follow the invitation", linger)
+		}
+		if linger && strings.Index(script, "--preflight") > strings.Index(script, "enable-linger") {
+			t.Fatal("linger ran before the User preflight")
+		}
+	}
+}
+
+func TestHybridPowerShellStagesInProtectedDirectory(t *testing.T) {
+	for _, i := range []Invitation{
+		{HybridID: "fixture", HybridRole: "user", ServiceMode: "hybrid"},
+		{HybridID: "fixture", HybridRole: "system", ServiceMode: "system"},
+	} {
+		i.Asset = update.Asset{OS: "windows", Arch: "amd64", SHA256: strings.Repeat("a", 64)}
+		script, err := Script(i, "https://gateway.example/install/ticket")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(script, "GetTempPath") || !strings.Contains(script, "$tmp = Join-Path $protectedHome") {
+			t.Fatal("elevated Hybrid code must not run from the user's temporary folder", i.HybridRole)
+		}
+		if strings.Index(script, "Set-Acl") > strings.Index(script, "$tmp = Join-Path $protectedHome") {
+			t.Fatal("protect the staging parent before creating the staging folder", i.HybridRole)
+		}
+	}
+	user, err := Script(Invitation{ServiceMode: "user", Asset: update.Asset{OS: "windows", Arch: "amd64", SHA256: strings.Repeat("a", 64)}}, "https://gateway.example/install/ticket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(user, "protectedHome") {
+		t.Fatal("ordinary User installation needs no protected directory")
+	}
+}
+
 func TestHybridAutomaticNames(t *testing.T) {
 	for _, role := range []string{"user", "system"} {
 		i := Invitation{AutoName: true, HybridRole: role}
@@ -67,13 +109,17 @@ func TestHybridBashReusesSystemBinary(t *testing.T) {
 		t.Skip("Bash fixture runs on Unix")
 	}
 	for _, platform := range []string{"linux", "darwin"} {
-		for _, scenario := range []string{"fresh", "installed", "pending", "different", "corrupt-download"} {
+		for _, scenario := range []string{"fresh", "installed", "pending", "different", "corrupt-download", "preflight-rejected"} {
 			t.Run(platform+"/"+scenario, func(t *testing.T) {
 				t.Parallel()
 				root := t.TempDir()
 				binary := `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$FIXTURE_CALLS"
+if [[ " $* " == *' --preflight '* ]]; then
+  if [ "$FIXTURE_SCENARIO" = preflight-rejected ]; then echo 'User startup unavailable' >&2; exit 1; fi
+  exit 0
+fi
 if [[ " $* " == *' enroll '* ]]; then
   mkdir -p "$CONTROL_HOME" "$CONTROL_INSTALL_DIR"
   if [ "$0" != "$CONTROL_INSTALL_DIR/control" ]; then cp "$0" "$CONTROL_INSTALL_DIR/control"; fi
@@ -104,7 +150,7 @@ fi
 				}
 				systemHome := filepath.Join(root, "profiles", "hybrid", "fixture")
 				systemBin := filepath.Join(root, "binaries", "fixture", "control")
-				if scenario != "fresh" {
+				if scenario != "fresh" && scenario != "preflight-rejected" {
 					for _, dir := range []string{systemHome, filepath.Dir(systemBin)} {
 						if err = os.MkdirAll(dir, 0700); err != nil {
 							t.Fatal(err)
@@ -145,33 +191,57 @@ export -f uname sysctl id sudo curl
 				calls, downloads := filepath.Join(root, "calls"), filepath.Join(root, "downloads")
 				cmd.Env = append(os.Environ(), "CONTROL_HOME="+filepath.Join(root, "user"), "CONTROL_INSTALL_DIR="+filepath.Join(root, "user-bin"), "FIXTURE_CALLS="+calls, "FIXTURE_DOWNLOADS="+downloads, "FIXTURE_ASSET="+asset, "FIXTURE_SYSTEM_SCRIPT="+systemScriptPath, "FIXTURE_SCENARIO="+scenario)
 				output, runErr := cmd.CombinedOutput()
-				if scenario == "corrupt-download" {
+				switch scenario {
+				case "corrupt-download":
 					if runErr == nil || !strings.Contains(string(output), "Binary checksum mismatch") {
 						t.Fatalf("corrupt fallback must fail verification: %v\n%s", runErr, output)
 					}
-				} else if runErr != nil {
-					t.Fatalf("installer: %v\n%s", runErr, output)
+				case "preflight-rejected":
+					if runErr == nil || !strings.Contains(string(output), "User startup unavailable") {
+						t.Fatalf("rejected preflight must stop the installer: %v\n%s", runErr, output)
+					}
+					if _, err := os.Stat(systemHome); !os.IsNotExist(err) {
+						t.Fatal("rejected preflight still installed the System companion", err)
+					}
+				default:
+					if runErr != nil {
+						t.Fatalf("installer: %v\n%s", runErr, output)
+					}
 				}
 				gotDownloads, err := os.ReadFile(downloads)
 				if err != nil && !os.IsNotExist(err) {
 					t.Fatal(err)
 				}
 				wantDownloads := 0
-				if scenario == "fresh" || scenario == "different" || scenario == "corrupt-download" {
+				if scenario == "fresh" || scenario == "different" || scenario == "corrupt-download" || scenario == "preflight-rejected" {
 					wantDownloads = 1
 				}
 				if got := strings.Count(string(gotDownloads), "/binary?"); got != wantDownloads {
 					t.Fatalf("got %d downloads, want %d: %s", got, wantDownloads, gotDownloads)
 				}
+				// A corrupt download must stop the installer before anything runs.
 				gotCalls, err := os.ReadFile(calls)
+				if scenario == "corrupt-download" {
+					if !os.IsNotExist(err) {
+						t.Fatalf("ran something before verifying the download: %s %v", gotCalls, err)
+					}
+					return
+				}
 				if err != nil {
 					t.Fatal(err)
 				}
 				userCall := "enroll --url " + link + " --service user"
-				if strings.Contains(string(gotCalls), userCall) != (scenario != "corrupt-download") {
+				if strings.Contains(string(gotCalls), userCall) != (scenario != "preflight-rejected") {
 					t.Fatalf("unexpected User enrollment: %s", gotCalls)
 				}
-				if scenario != "corrupt-download" {
+				preflight := strings.Index(string(gotCalls), "enroll --url "+link+" --preflight --service user")
+				if preflight < 0 {
+					t.Fatalf("installer skipped the User preflight: %s", gotCalls)
+				}
+				if system := strings.Index(string(gotCalls), "--hybrid-system"); system >= 0 && system < preflight {
+					t.Fatalf("System installed before the User preflight: %s", gotCalls)
+				}
+				if scenario != "preflight-rejected" {
 					gotBinary, err := os.ReadFile(filepath.Join(root, "user-bin", "control"))
 					if err != nil || string(gotBinary) != binary {
 						t.Fatalf("User binary does not match invitation: %v", err)

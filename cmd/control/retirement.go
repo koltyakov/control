@@ -25,6 +25,7 @@ func retiredUninstallCLI(ctx context.Context, args []string) error {
 		_, _ = fmt.Fprintln(log, "Control retirement uninstall failed:", err)
 	} else {
 		_, _ = fmt.Fprintln(log, "Control retirement uninstall completed; configuration and work files retained")
+		installation.RemoveRetiredHelper(args[0])
 	}
 	return err
 }

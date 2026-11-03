@@ -104,6 +104,8 @@ Managed-update restarts show `update` instead of `offline` for a one-minute disc
 
 Owner reports expire after 20 seconds without receipt and disappear on disconnect or gateway restart. An older node or gateway may provide only registration-time metrics. Update both to enable health reports. Fresh reports use JSON status `summary`; authorized peer observations use `ready`. Both display `idle` or `busy`. The first CPU sample is a baseline, so CPU becomes available after the next collection, normally within 15 seconds of startup.
 
+Hybrid System companions default to sampling every 60 seconds instead of 15, because the web console shows their telemetry only while the User context is offline. A node reports its interval in `intervalSeconds`, and an explicit refresh always samples immediately. Existing companions keep their saved setting.
+
 Polling is bounded and concurrent, with up to eight nodes at a time. Each node request has a six-second deadline within a ten-second aggregation deadline. A failing node does not discard snapshots from healthy peers. The dashboard reads periodic snapshots rather than consuming a continuous event stream.
 
 ## Resource sampling
