@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -70,6 +72,63 @@ func TestWindowsInstallCommandRunsInPowerShell(t *testing.T) {
 			output, err := cmd.Output()
 			if err != nil || strings.TrimSpace(string(output)) != "installer executed" {
 				t.Fatalf("launcher: %s\nresult: %v\nstdout:\n%s\nstderr:\n%s", command, err, output, stderr.String())
+			}
+		})
+	}
+}
+
+func TestHybridPowerShellReusesSystemBinary(t *testing.T) {
+	for _, scenario := range []string{"matching", "different", "corrupt-download"} {
+		t.Run(scenario, func(t *testing.T) {
+			root := t.TempDir()
+			binary := "pinned binary"
+			installed := binary
+			if scenario != "matching" {
+				installed = "older companion"
+			}
+			systemExe := filepath.Join(root, "system.exe")
+			if err := os.WriteFile(systemExe, []byte(installed), 0600); err != nil {
+				t.Fatal(err)
+			}
+			i := Invitation{ServiceMode: "hybrid", HybridRole: "user", HybridID: "fixture", Asset: update.Asset{OS: "windows", Arch: "amd64", SHA256: Hash(binary)}}
+			script, err := Script(i, "https://gateway.example/install/ticket")
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Exercise the generated copy/download/verification block with real
+			// files, without enrollment, elevation, ACL or service changes.
+			start, end := strings.Index(script, "  $exe = Join-Path $tmp"), strings.Index(script, "  & $exe enroll")
+			if start < 0 || end <= start {
+				t.Fatal("missing binary staging block")
+			}
+			verify := `$ErrorActionPreference = 'Stop'
+$tmp = ` + PowerShellQuote(root) + `
+$systemExe = ` + PowerShellQuote(systemExe) + `
+$arch = 'amd64'
+$checksum = ` + PowerShellQuote(Hash(binary)) + `
+$scenario = ` + PowerShellQuote(scenario) + `
+$script:downloads = 0
+function Invoke-WebRequest {
+  param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile)
+  if ($Uri -cne 'https://gateway.example/install/ticket/binary?arch=amd64') { throw 'Incorrect binary request' }
+  $script:downloads++
+  $content = if ($scenario -eq 'corrupt-download') { 'corrupt' } else { 'pinned binary' }
+  [IO.File]::WriteAllText($OutFile, $content)
+}
+$failure = $null
+try {
+` + script[start:end] + `
+} catch { $failure = $_.Exception.Message }
+if ($scenario -eq 'corrupt-download') {
+  if ($failure -ne 'Binary checksum mismatch') { throw 'Corrupt fallback was not rejected' }
+} elseif ($failure) { throw $failure }
+$expectedDownloads = if ($scenario -eq 'matching') { 0 } else { 1 }
+if ($script:downloads -ne $expectedDownloads) { throw 'Unexpected binary download count' }
+if ([IO.File]::ReadAllText($systemExe) -cne ` + PowerShellQuote(installed) + `) { throw 'System binary was modified' }
+`
+			cmd := exec.CommandContext(t.Context(), "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", verify)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("PowerShell staging: %v\n%s", err, output)
 			}
 		})
 	}

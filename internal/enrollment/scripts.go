@@ -83,7 +83,14 @@ case "$arch" in
 esac
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-curl -fsSL {{q .Binary}}"?arch=$arch" -o "$tmp/control"
+{{if eq .ServiceMode "hybrid"}}# Copy out of the protected installation; never share a writable runtime.
+sudo cat "$system_bin" > "$tmp/control"
+if command -v sha256sum >/dev/null; then actual="$(sha256sum "$tmp/control" | awk '{print $1}')"; else actual="$(shasum -a 256 "$tmp/control" | awk '{print $1}')"; fi
+if [ "$actual" != "$checksum" ]; then
+  curl -fsSL {{q .Binary}}"?arch=$arch" -o "$tmp/control"
+fi
+{{else}}curl -fsSL {{q .Binary}}"?arch=$arch" -o "$tmp/control"
+{{end}}
 if command -v sha256sum >/dev/null; then actual="$(sha256sum "$tmp/control" | awk '{print $1}')"; else actual="$(shasum -a 256 "$tmp/control" | awk '{print $1}')"; fi
 if [ "$actual" != "$checksum" ]; then echo 'Binary checksum mismatch' >&2; exit 1; fi
 chmod 700 "$tmp/control"
@@ -150,7 +157,13 @@ $tmp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
   $exe = Join-Path $tmp 'control.exe'
-  Invoke-WebRequest -UseBasicParsing -Uri ({{q .Binary}} + '?arch=' + $arch) -OutFile $exe
+{{if eq .ServiceMode "hybrid"}}  # Copy out of the protected installation; never share a writable runtime.
+  Copy-Item -LiteralPath $systemExe -Destination $exe
+  if ((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -ne $checksum) {
+    Invoke-WebRequest -UseBasicParsing -Uri ({{q .Binary}} + '?arch=' + $arch) -OutFile $exe
+  }
+{{else}}  Invoke-WebRequest -UseBasicParsing -Uri ({{q .Binary}} + '?arch=' + $arch) -OutFile $exe
+{{end}}
   if ((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -ne $checksum) { throw 'Binary checksum mismatch' }
   & $exe enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}}{{if eq .HybridRole "system"}} --hybrid-system{{end}} --service $serviceMode --firewall
   if ($LASTEXITCODE -ne 0) { throw 'Control enrollment failed' }
