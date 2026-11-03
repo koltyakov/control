@@ -117,7 +117,7 @@ func TestWindowsInstallCommandRunsInPowerShell(t *testing.T) {
 }
 
 func TestHybridPowerShellReusesSystemBinary(t *testing.T) {
-	for _, scenario := range []string{"matching", "different", "corrupt-download"} {
+	for _, scenario := range []string{"matching", "different", "corrupt-download", "missing-companion"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			binary := "pinned binary"
@@ -126,8 +126,10 @@ func TestHybridPowerShellReusesSystemBinary(t *testing.T) {
 				installed = "older companion"
 			}
 			systemExe := filepath.Join(root, "system.exe")
-			if err := os.WriteFile(systemExe, []byte(installed), 0600); err != nil {
-				t.Fatal(err)
+			if scenario != "missing-companion" {
+				if err := os.WriteFile(systemExe, []byte(installed), 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			i := Invitation{ServiceMode: "hybrid", HybridRole: "user", HybridID: "fixture", Asset: update.Asset{OS: "windows", Arch: "amd64", SHA256: Hash(binary)}}
 			script, err := Script(i, "https://gateway.example/install/ticket")
@@ -164,7 +166,7 @@ if ($scenario -eq 'corrupt-download') {
 } elseif ($failure) { throw $failure }
 $expectedDownloads = if ($scenario -eq 'matching') { 0 } else { 1 }
 if ($script:downloads -ne $expectedDownloads) { throw 'Unexpected binary download count' }
-if ([IO.File]::ReadAllText($systemExe) -cne ` + PowerShellQuote(installed) + `) { throw 'System binary was modified' }
+if ($scenario -ne 'missing-companion' -and [IO.File]::ReadAllText($systemExe) -cne ` + PowerShellQuote(installed) + `) { throw 'System binary was modified' }
 `
 			cmd := windowsPowerShellCommand(t, verify)
 			if output, err := cmd.CombinedOutput(); err != nil {

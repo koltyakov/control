@@ -170,8 +170,10 @@ try {
   $exe = Join-Path $tmp 'control.exe'
   $reused = $false
 {{if eq .ServiceMode "hybrid"}}  # Copy out of the protected installation; never share a writable runtime.
-  Copy-Item -LiteralPath $systemExe -Destination $exe
-  $reused = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -eq $checksum
+  try {
+    Copy-Item -LiteralPath $systemExe -Destination $exe
+    $reused = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -eq $checksum
+  } catch { $reused = $false }
 {{end}}  if (-not $reused) {
     $installDir = if ($env:CONTROL_INSTALL_DIR) { $env:CONTROL_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\control' }
     $asset = 'control_windows_' + $arch + '.exe'
