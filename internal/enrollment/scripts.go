@@ -83,14 +83,25 @@ case "$arch" in
 esac
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+try_local_binary() {
+  [ -f "$1" ] && cp "$1" "$tmp/control" 2>/dev/null || return 1
+  if command -v sha256sum >/dev/null; then actual="$(sha256sum "$tmp/control" | awk '{print $1}')"; else actual="$(shasum -a 256 "$tmp/control" | awk '{print $1}')"; fi
+  [ "$actual" = "$checksum" ]
+}
+reused=false
 {{if eq .ServiceMode "hybrid"}}# Copy out of the protected installation; never share a writable runtime.
-sudo cat "$system_bin" > "$tmp/control"
-if command -v sha256sum >/dev/null; then actual="$(sha256sum "$tmp/control" | awk '{print $1}')"; else actual="$(shasum -a 256 "$tmp/control" | awk '{print $1}')"; fi
-if [ "$actual" != "$checksum" ]; then
+if sudo cat "$system_bin" > "$tmp/control"; then
+  if command -v sha256sum >/dev/null; then actual="$(sha256sum "$tmp/control" | awk '{print $1}')"; else actual="$(shasum -a 256 "$tmp/control" | awk '{print $1}')"; fi
+  if [ "$actual" = "$checksum" ]; then reused=true; fi
+fi
+{{end}}if [ "$reused" = false ]; then
+  for candidate in "./control" "./control_${os}_${arch}" "./bin/control" "./bin/control_${os}_${arch}" "${CONTROL_INSTALL_DIR:-$HOME/.local/bin}/control" "$HOME/.local/bin/control" "/usr/local/bin/control" "$(command -v control || true)"; do
+    if try_local_binary "$candidate"; then reused=true; break; fi
+  done
+fi
+if [ "$reused" = false ]; then
   curl -fsSL {{q .Binary}}"?arch=$arch" -o "$tmp/control"
 fi
-{{else}}curl -fsSL {{q .Binary}}"?arch=$arch" -o "$tmp/control"
-{{end}}
 if command -v sha256sum >/dev/null; then actual="$(sha256sum "$tmp/control" | awk '{print $1}')"; else actual="$(shasum -a 256 "$tmp/control" | awk '{print $1}')"; fi
 if [ "$actual" != "$checksum" ]; then echo 'Binary checksum mismatch' >&2; exit 1; fi
 chmod 700 "$tmp/control"
@@ -157,13 +168,24 @@ $tmp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
   $exe = Join-Path $tmp 'control.exe'
+  $reused = $false
 {{if eq .ServiceMode "hybrid"}}  # Copy out of the protected installation; never share a writable runtime.
   Copy-Item -LiteralPath $systemExe -Destination $exe
-  if ((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -ne $checksum) {
-    Invoke-WebRequest -UseBasicParsing -Uri ({{q .Binary}} + '?arch=' + $arch) -OutFile $exe
+  $reused = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -eq $checksum
+{{end}}  if (-not $reused) {
+    $installDir = if ($env:CONTROL_INSTALL_DIR) { $env:CONTROL_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\control' }
+    $asset = 'control_windows_' + $arch + '.exe'
+    $candidates = @((Join-Path $PWD.Path 'control.exe'), (Join-Path $PWD.Path $asset), (Join-Path $PWD.Path 'bin\control.exe'), (Join-Path (Join-Path $PWD.Path 'bin') $asset), (Join-Path $installDir 'control.exe'), (Join-Path $env:LOCALAPPDATA 'Programs\control\control.exe'))
+    $candidates += @(Get-Command control.exe -CommandType Application -All -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
+    foreach ($candidate in $candidates) {
+      try {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        Copy-Item -LiteralPath $candidate -Destination $exe -Force
+        if ((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -eq $checksum) { $reused = $true; break }
+      } catch { continue }
+    }
   }
-{{else}}  Invoke-WebRequest -UseBasicParsing -Uri ({{q .Binary}} + '?arch=' + $arch) -OutFile $exe
-{{end}}
+  if (-not $reused) { Invoke-WebRequest -UseBasicParsing -Uri ({{q .Binary}} + '?arch=' + $arch) -OutFile $exe }
   if ((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -ne $checksum) { throw 'Binary checksum mismatch' }
   & $exe enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}}{{if eq .HybridRole "system"}} --hybrid-system{{end}} --service $serviceMode --firewall
   if ($LASTEXITCODE -ne 0) { throw 'Control enrollment failed' }

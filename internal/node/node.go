@@ -235,6 +235,14 @@ func (n *Node) Start(ctx context.Context) error {
 	}
 	n.Peer.SetSystemInfo(initial)
 	if err := n.Peer.Start(n.ctx); err != nil {
+		// Unregistration may revoke the credential after the initial policy read
+		// or while connection startup retries an outage. The signed policy read
+		// still works after revocation and must persist retirement for uninstall.
+		if n.ctx.Err() == nil {
+			if stateErr := n.syncMachineState(n.ctx); stateErr != nil {
+				err = errors.Join(err, stateErr)
+			}
+		}
 		n.cancel()
 		return err
 	}

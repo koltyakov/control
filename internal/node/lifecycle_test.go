@@ -8,15 +8,79 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/gateway"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/store"
 )
+
+func TestStartupReadsRetirementAfterConnectionRejection(t *testing.T) {
+	t.Parallel()
+	for _, retired := range []bool{false, true} {
+		t.Run(fmt.Sprint("retired=", retired), func(t *testing.T) {
+			t.Parallel()
+			var rejected atomic.Bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/node/state":
+					state := model.MachineState{}
+					if retired && rejected.Load() {
+						state = model.MachineState{Revision: 1, Disabled: true, Unregistered: true}
+					}
+					_ = json.NewEncoder(w).Encode(state)
+				case "/v1/auth":
+					// Retirement can revoke the credential after the initial policy
+					// read, including while startup waits through a gateway outage.
+					rejected.Store(true)
+					http.Error(w, "credential revoked", http.StatusUnauthorized)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			n, err := New(Config{Name: "startup-retirement", Gateway: server.URL, Token: testToken, DataDir: t.TempDir(), WorkDir: t.TempDir(), MetricsIntervalSeconds: -1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = n.Close() }()
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			err = n.Start(ctx)
+			if !retired {
+				if err == nil || !strings.Contains(err.Error(), "401") || n.Unregistered() {
+					t.Fatal("ordinary authentication rejection changed retirement state", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrUnregistered) || !n.Unregistered() {
+				t.Fatal("connection rejection hid retirement policy", err)
+			}
+			var state model.MachineState
+			if err := store.Read(filepath.Join(n.Config.DataDir, "machine-state.json"), &state); err != nil || !state.Unregistered {
+				t.Fatal("retirement was not persisted for uninstall", state, err)
+			}
+			if err := n.Close(); err != nil {
+				t.Fatal(err)
+			}
+			server.Close()
+			restarted, err := New(n.Config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = restarted.Close() }()
+			if err := restarted.Start(ctx); !errors.Is(err, ErrUnregistered) {
+				t.Fatal("persisted retirement required gateway access", err)
+			}
+		})
+	}
+}
 
 func TestMachineLifecycleBlocksSchedulingAndStopsNode(t *testing.T) {
 	t.Parallel()

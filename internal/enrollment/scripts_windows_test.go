@@ -154,6 +154,7 @@ function Invoke-WebRequest {
   $content = if ($scenario -eq 'corrupt-download') { 'corrupt' } else { 'pinned binary' }
   [IO.File]::WriteAllText($OutFile, $content)
 }
+
 $failure = $null
 try {
 ` + script[start:end] + `
@@ -170,5 +171,91 @@ if ([IO.File]::ReadAllText($systemExe) -cne ` + PowerShellQuote(installed) + `) 
 				t.Fatalf("PowerShell staging: %v\n%s", err, output)
 			}
 		})
+	}
+}
+
+func TestPowerShellInstallersReuseLocalBinary(t *testing.T) {
+	for _, installer := range []string{"user", "system", "hybrid-system"} {
+		for _, location := range []string{"cwd", "asset", "bin", "bin-asset", "install", "default-install", "path", "missing", "stale", "corrupt-download"} {
+			t.Run(installer+"/"+location, func(t *testing.T) {
+				t.Parallel()
+				root := t.TempDir()
+				cwd, installDir, localAppData, pathDir := filepath.Join(root, "working folder"), filepath.Join(root, "install"), filepath.Join(root, "local"), filepath.Join(root, "path")
+				for _, dir := range []string{cwd, installDir, localAppData, pathDir} {
+					if err := os.MkdirAll(dir, 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				binary, asset := "pinned binary", "control_windows_amd64.exe"
+				locations := map[string]string{
+					"cwd": filepath.Join(cwd, "control.exe"), "asset": filepath.Join(cwd, asset),
+					"bin": filepath.Join(cwd, "bin", "control.exe"), "bin-asset": filepath.Join(cwd, "bin", asset),
+					"install": filepath.Join(installDir, "control.exe"), "default-install": filepath.Join(localAppData, "Programs", "control", "control.exe"),
+					"path": filepath.Join(pathDir, "control.exe"), "stale": filepath.Join(cwd, "control.exe"),
+				}
+				candidate := locations[location]
+				if candidate != "" {
+					if err := os.MkdirAll(filepath.Dir(candidate), 0700); err != nil {
+						t.Fatal(err)
+					}
+					content := binary
+					if location == "stale" {
+						content = "older binary"
+					}
+					if err := os.WriteFile(candidate, []byte(content), 0600); err != nil {
+						t.Fatal(err)
+					}
+					if location == "bin" {
+						if err := os.WriteFile(filepath.Join(cwd, "control.exe"), []byte("stale"), 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				i := Invitation{ServiceMode: installer, Asset: update.Asset{OS: "windows", Arch: "amd64", SHA256: Hash(binary)}}
+				if installer == "hybrid-system" {
+					i.ServiceMode, i.HybridRole, i.HybridID = "system", "system", "fixture"
+				}
+				script, err := Script(i, "https://gateway.example/install/ticket")
+				if err != nil {
+					t.Fatal(err)
+				}
+				start, end := strings.Index(script, "  $exe = Join-Path $tmp"), strings.Index(script, "  & $exe ")
+				if start < 0 || end <= start {
+					t.Fatal("missing binary staging block")
+				}
+				// Run only staging, never enrollment, ACLs or services.
+				verify := `$ErrorActionPreference = 'Stop'
+$tmp = ` + PowerShellQuote(root) + `
+$env:CONTROL_INSTALL_DIR = ` + PowerShellQuote(installDir) + `
+$env:LOCALAPPDATA = ` + PowerShellQuote(localAppData) + `
+$env:Path = ` + PowerShellQuote(pathDir) + ` + ';' + $env:Path
+$arch = 'amd64'
+$asset = ` + PowerShellQuote(asset) + `
+$checksum = ` + PowerShellQuote(Hash(binary)) + `
+$scenario = ` + PowerShellQuote(location) + `
+$script:downloads = 0
+function Invoke-WebRequest {
+  param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile)
+  $script:downloads++
+  $content = if ($scenario -eq 'corrupt-download') { 'corrupt' } else { 'pinned binary' }
+  [IO.File]::WriteAllText($OutFile, $content)
+}
+$failure = $null
+try {
+` + script[start:end] + `
+} catch { $failure = $_.Exception.Message }
+if ($scenario -eq 'corrupt-download') {
+  if ($failure -ne 'Binary checksum mismatch') { throw "Corrupt fallback was not rejected: $failure" }
+} elseif ($failure) { throw $failure }
+$expectedDownloads = if ($scenario -in @('missing', 'stale', 'corrupt-download')) { 1 } else { 0 }
+if ($script:downloads -ne $expectedDownloads) { throw "Unexpected binary download count: $script:downloads" }
+`
+				cmd := windowsPowerShellCommand(t, verify)
+				cmd.Dir = cwd
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("PowerShell staging: %v\n%s", err, output)
+				}
+			})
+		}
 	}
 }
