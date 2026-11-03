@@ -4,6 +4,8 @@
 
 The gateway serves a password-protected management console at its public URL. `/` redirects to `/console`, which redirects signed-out visitors to `/login`. HTML, CSS, JavaScript, and icons are embedded in the Control binary. No frontend build, external CDN, separate web service, or Node.js runtime is needed to deploy it.
 
+`make build` and `make bundle` strip JavaScript comments, including JSDoc typing declarations, before embedding the console. The Go bundle builder uses esbuild's Go API and a temporary Go build overlay, leaving editable sources untouched. It removes comments and excess whitespace without bundling modules or mangling names. No generated asset is checked in, and no minifier runs in the deployed binary. A direct `go build ./cmd/control` remains a development build that embeds the original source. See [D117](decisions.md#d117-strip-console-comments-during-go-bundling).
+
 ## Provision browser access
 
 Browser passwords are separate from CLI account keys. Existing accounts have no browser access until a password is provisioned. There is no default password, public signup, or unauthenticated password-reset route.
@@ -117,7 +119,7 @@ npm --prefix tests/console ci
 make typecheck-console
 ```
 
-TypeScript 7.0.2 runs the local frontend type check, without coverage tooling or a frontend typing CI job. It is a development-only dependency. No JavaScript is generated, and deployment still needs only the Go binary. See the [frontend typing rules](../AGENTS.md#frontend-typing) before editing browser code. Browser fixtures and icon-generation utilities in `tests/console/` are test tooling, not shipped frontend code.
+TypeScript 7.0.2 runs the local frontend type check, without coverage tooling or a frontend typing CI job. It is a development-only dependency and emits no JavaScript. The Go bundle builder separately strips comments for embedding; deployment still needs only the Go binary. See the [frontend typing rules](../AGENTS.md#frontend-typing) before editing browser code. Browser fixtures and icon-generation utilities in `tests/console/` are test tooling, not shipped frontend code.
 
 Core Go tests cover password provisioning, transactional rollback, migration/restart persistence, login, logout, expiry, account disable, password resets, CSRF/origins, secure cookies, verifier limits, fleet isolation, and browser-to-bearer authority separation. They run in the normal native and Compose suites.
 

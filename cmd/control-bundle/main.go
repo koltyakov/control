@@ -66,9 +66,18 @@ func build() error {
 	if err := manifest.Validate(); err != nil {
 		return err
 	}
+	assets, err := os.MkdirTemp("", "control-bundle-assets-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(assets) }()
+	overlay, err := consoleOverlay(assets)
+	if err != nil {
+		return err
+	}
 	if *binary != "" {
 		a := manifest.Assets[0]
-		return buildBinary(*binary, a.OS, a.Arch, ldflags)
+		return buildBinary(*binary, a.OS, a.Arch, ldflags, overlay)
 	}
 	if err := os.MkdirAll(*dir, 0700); err != nil {
 		return err
@@ -78,7 +87,7 @@ func build() error {
 		a := &manifest.Assets[i]
 		path := filepath.Join(*dir, a.File)
 		fmt.Fprintln(os.Stderr, "building", a.OS+"/"+a.Arch)
-		if err := buildBinary(path, a.OS, a.Arch, ldflags); err != nil {
+		if err := buildBinary(path, a.OS, a.Arch, ldflags, overlay); err != nil {
 			return err
 		}
 		f, err := os.Open(path)
@@ -104,11 +113,11 @@ func build() error {
 	return os.WriteFile(filepath.Join(*dir, "control-manifest.json"), append(b, '\n'), 0600)
 }
 
-func buildBinary(path, osName, arch, ldflags string) error {
+func buildBinary(path, osName, arch, ldflags, overlay string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	cmd := exec.Command("go", "build", "-trimpath", "-ldflags", ldflags, "-o", path, "./cmd/control")
+	cmd := exec.Command("go", "build", "-overlay", overlay, "-trimpath", "-ldflags", ldflags, "-o", path, "./cmd/control")
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+osName, "GOARCH="+arch)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	return cmd.Run()
