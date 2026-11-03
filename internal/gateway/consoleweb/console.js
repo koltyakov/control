@@ -637,12 +637,12 @@ function machineState(node) {
 }
 function statusDetail(node) {
   if (node.contexts?.length > 1) node = hostStatusContext(node);
+  if (node.status === "update")
+    return ({ "waiting-idle": "Waiting for idle", "waiting-gateway": "Waiting for gateway", "downloading": "Downloading", "staged": "Staged", "reserved": "Restart reserved", "restarting": "Restarting" })[node.updateState] || "";
   if (!node.online)
     return age(node.lastSeen) === "Unknown"
       ? ""
       : "Seen " + age(node.lastSeen).split(" ")[0] + " ago";
-  if (node.status === "update")
-    return ({ "waiting-idle": "Waiting for idle", "waiting-gateway": "Waiting for gateway", "downloading": "Downloading", "staged": "Staged", "reserved": "Restart reserved", "restarting": "Restarting" })[node.updateState] || "";
   if (!["summary", "ready"].includes(node.status)) return "No health report";
   if (node.activeCount > 0) return workSummary(node);
   if (node.leased && known(node.leaseExpires))
@@ -651,12 +651,12 @@ function statusDetail(node) {
     ? "Active " + age(node.lastActive).split(" ")[0] + " ago"
     : "";
 }
-// Host status follows connected contexts, not the context selected for metrics
-// and actions. Prefer active work over idle reports and newer observations
-// when statuses match. This never changes routing.
+// Host status includes connected contexts and gateway-confirmed restart grace,
+// not just the context selected for metrics and actions. Prefer active work
+// over idle reports and newer observations when statuses match.
 function hostStatusContext(node) {
-  const online = node.contexts.filter((context) => context.online),
-    candidates = online.length ? online : node.contexts,
+  const active = node.contexts.filter((context) => context.online || machineState(context) === "Updating"),
+    candidates = active.length ? active : node.contexts,
     priority = ["Updating", "Busy", "Reserved", "Enabling", "Online", "Idle", "Disabling", "Disabled", "Offline"];
   return [...candidates].sort((a, b) =>
     priority.indexOf(machineState(a)) - priority.indexOf(machineState(b)) ||

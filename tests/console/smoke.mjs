@@ -609,6 +609,33 @@ async function assertHybridGrouping(page, snapshot) {
   assert.equal(await row.getAttribute("data-id"), user.id);
   assert.equal(await page.locator('.stat[data-filter="online"] .stat-value').textContent(), "2", "Online counts hosts, not execution profiles");
   const refresh = () => refreshPage(page);
+  for (const updating of [user, system]) {
+    const other = updating === user ? system : user;
+    other.online = true;
+    updating.status = "update";
+    updating.updateState = "restarting";
+    for (const online of [true, false, true]) {
+      updating.online = online;
+      await refresh();
+      assert.equal(await row.locator(".status-column .badge").textContent(), "Updating", "Restarting either context must not flash Idle during disconnect or reconnect");
+      assert.equal(await row.locator(".status-column small").textContent(), "Restarting");
+      assert.equal(await row.getAttribute("data-id"), user.id, "Update status must not change the selected action target");
+      assert.equal(await page.locator('.stat[data-filter="online"] .stat-value').textContent(), "2", "Restart grace must not alter host online counts");
+      await assertOfflineChip(updating === user ? "User" : "System", !online);
+    }
+    // The gateway ends grace on confirmation or expiry. Do not retain stale
+    // client-side Updating after normal availability returns.
+    updating.status = "offline";
+    updating.online = false;
+    await refresh();
+    assert.equal(await row.locator(".status-column .badge").textContent(), "Idle", "Expired restart grace must restore the online companion's status");
+    updating.status = "summary";
+    updating.online = true;
+    await refresh();
+    assert.equal(await row.locator(".status-column .badge").textContent(), "Idle", "Confirmed resumption must restore normal health immediately");
+    delete updating.updateState;
+  }
+  user.online = false;
   system.activeCount = 2;
   system.work = { exec: 2 };
   await refresh();
