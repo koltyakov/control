@@ -52,6 +52,8 @@ type Node struct {
 	GatewayWake bool `json:"gatewayWake,omitempty"`
 	// GatewayStartup accepts fixed startup-context management requests.
 	GatewayStartup bool `json:"gatewayStartup,omitempty"`
+	// SecretManagementKey is a process-local P-256 public key for encrypted writes.
+	SecretManagementKey []byte `json:"secretManagementKey,omitempty"`
 	// LargePackets advertises that this receiver accepts 64 KiB carrier packets.
 	LargePackets bool `json:"largePackets,omitempty"`
 	// ExecutionAuthority is assigned by the gateway, never by enrollment metadata.

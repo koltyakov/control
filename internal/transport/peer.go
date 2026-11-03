@@ -110,6 +110,8 @@ type Peer struct {
 	control             func(string, []byte)
 	wake                func([]byte)
 	startup             func([]byte)
+	secrets             func([]byte)
+	secretSlots         chan struct{}
 	nodeHealth          bool
 	clientSessions      bool
 	machineStatePush    atomic.Bool
@@ -130,7 +132,8 @@ func New(cfg Config, handler func(string, net.Conn)) *Peer {
 		writes: make(chan *gatewayWrite, 64), priorityWrites: make(chan *gatewayWrite, 32),
 		reconnectWake: make(chan struct{}, 1), machineStateWake: make(chan struct{}, 1),
 		lanSlots: make(chan struct{}, 4), lanInbound: map[string]time.Time{},
-		links: map[string]*link{}, sessions: map[sessionKey]*peerSession{},
+		secretSlots: make(chan struct{}, 1),
+		links:       map[string]*link{}, sessions: map[sessionKey]*peerSession{},
 		allSessions: map[string]*peerSession{}, pending: map[sessionKey]*sessionDial{},
 		incomingSetups: map[string]*incomingSetup{}, resolved: map[string]string{},
 		members: map[string]bool{}, memberSeen: map[string]time.Time{}, owners: map[string]string{}, channels: map[string]bool{},
@@ -169,6 +172,12 @@ func (p *Peer) SetWakeHandler(handler func([]byte)) { p.wake = handler }
 func (p *Peer) SetStartupHandler(handler func([]byte)) {
 	p.startup = handler
 	p.cfg.Node.GatewayStartup = handler != nil
+}
+
+// SetSecretsHandler installs a bounded, gateway-only management handler before Start.
+func (p *Peer) SetSecretsHandler(key []byte, handler func([]byte)) {
+	p.secrets = handler
+	p.cfg.Node.SecretManagementKey = key
 }
 func (p *Peer) SendControl(ctx context.Context, kind string, data []byte) error {
 	return p.send(ctx, &protocol.Packet{Kind: kind, Data: data})
@@ -356,6 +365,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 			hello.Node.System = &info
 		}
 		if !nodeBytes {
+			hello.Node.SecretManagementKey = nil
 			hello.Node.Software.GatewayProtocol = 0
 			hello.Node.Software.NodeGatewayMin, hello.Node.Software.NodeGatewayMax = 0, 0
 		}
@@ -511,6 +521,18 @@ func (p *Peer) send(ctx context.Context, msg *protocol.Packet) error {
 }
 
 func (p *Peer) receive(msg *protocol.Packet) {
+	if msg.Kind == "secrets.request" {
+		if msg.From == update.GatewaySender && p.secrets != nil && len(msg.Data) <= 12<<10 {
+			select {
+			case p.secretSlots <- struct{}{}:
+				if !p.worker(func() { defer func() { <-p.secretSlots }(); p.secrets(msg.Data) }) {
+					<-p.secretSlots
+				}
+			default:
+			}
+		}
+		return
+	}
 	if msg.Kind == "gateway.drain" || msg.Kind == "gateway.resume" {
 		p.receiveGatewayDrain(msg)
 		return

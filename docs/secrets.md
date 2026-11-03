@@ -2,7 +2,7 @@
 
 [README](../README.md) · [Protocol](protocol.md) · [GUI automation](rpa.md) · [Installation](installation.md)
 
-Secrets let an orchestrator request credential use without putting the credential value in prompts, tool arguments, or task specifications. The worker resolves a name immediately before GUI input or an HTTP request. Control has no secret-value read command, RPC method, MCP tool, or resource. Secret management is local to the worker; values are not synchronized through the gateway or copied between nodes.
+Secrets let an orchestrator request credential use without putting the credential value in prompts, tool arguments, or task specifications. The worker resolves a name immediately before GUI input or an HTTP request. Control has no secret-value read command, RPC method, MCP tool, or resource. Values stay in the worker's local store. Fleet owners can manage them locally, through encrypted CLI writes, or through the web console. The gateway relays ciphertext without storing values or synchronizing them between nodes.
 
 ## Enter credentials outside chat
 
@@ -27,6 +27,30 @@ New secrets receive identical creation and update timestamps. Every successful `
 Storage is `<dataDir>/secrets/values.json`, outside `workDir`. Mutations use a separate file lock and atomic replacement. Unix directories use `0700` and files `0600`; Windows relies on the profile directory's inherited ACLs. Storage is not encrypted and is not an OS keychain. Protect the worker account, filesystem, and backups. If `dataDir` is inside `workDir`, move the profile's state or workspace before adding secrets. Existing secret storage inside `workDir` prevents node startup and credential use, including paths resolved through directory symlinks.
 
 The reader accepts legacy name-to-string entries and records containing `value` with optional `createdAt` and `updatedAt`. Reads never rewrite storage. A successful mutation atomically writes records and their metadata together, retaining unknown dates on untouched legacy entries. Upgrade both the worker node and the local management CLI before mutating secrets with this format; older binaries cannot read the record format.
+
+## Manage a worker from the orchestrator
+
+Successful web-console creation and replacement return to the refreshed secrets list in the same side panel. Cancel in either editor clears the entry and returns to that list without saving. If the write succeeds but refreshing metadata fails, the panel offers a read-only list reload rather than another save.
+
+From your own orchestrator terminal, logged in with your fleet account key:
+
+```sh
+control secrets set app.password --node worker
+control secrets list --node worker --metadata
+control secrets delete app.password --node worker
+```
+
+Without `--node`, commands retain their local behavior. An explicit empty target fails, never falling back to local storage. Remote commands target the running worker profile, not an arbitrary remote path. Local `--config` selects the orchestrator's gateway configuration. The CLI checks access before reading a value, then uses the same hidden prompt or explicit `--stdin` contract as local set. Never supply values through `control exec`, task arguments, or AI tools.
+
+In the [web console](console.md), choose **Secrets** from an online machine's actions menu or the detail drawer's More actions menu. A right-side panel lists names and last-updated timestamps only, without creation dates or relative age. Plus, pencil and trash icons have accessible labels and tooltips for Add, Replace and Delete; deletion requires confirmation. Entry and confirmation remain in the panel. Values are never displayed or retrieved. Single-line editors use textarea-backed controls outside a form, without username/password field names, with autocomplete disabled and the value visually masked. Their height stays at 38 pixels, with no wrapping, resize handles or Enter-to-submit behavior. This avoids Safari's password classification of CSS-masked HTML inputs, including search inputs. Multiline values are rejected without silently changing them; enter those through the CLI. Browser or password-manager extensions can still apply their own heuristics; no web page can universally disable their suggestions. Browsers without safe text masking must use the CLI instead. Values are cleared before sending, including failed writes. Closing a panel or signing out removes its inputs. Values are not saved in browser storage.
+
+Remote management requires updated gateway, worker and CLI/browser versions, an online enabled worker, and `secrets.manage` permission in the worker's `@orchestrator` or wildcard allow rules. Default unrestricted account rules permit it; empty rules deny it. Common/installation keys, peer callers and delegated workers cannot manage secrets. This is fixed fleet management, not a provider, task capability, peer RPC or MCP tool. An explicit Hybrid System target manages only that context's store, without granting execution or switching privileges.
+
+Both orchestrator and worker require HTTPS to the gateway, with HTTP permitted only for direct loopback development. Browser entry also requires Web Crypto. The worker generates a P-256 key per process and advertises its public key in signed registration. CLI/browser encryption uses ephemeral P-256 ECDH, HKDF-SHA-256 and AES-256-GCM. Associated data binds worker identity, secret name, request ID and expiry. The gateway relays ciphertext and value-free metadata without decrypting values. Audit records contain machine, operation and outcome, without secret names, values or ciphertext.
+
+Envelopes expire after 30 seconds by default. Workers accept deadlines at most one minute ahead and retain up to 128 unexpired IDs without evicting replay protection. There is one request in flight per worker and at most 64 gateway-wide. Processing participates in worker maintenance admission. There is no offline queue or automatic retry. A lost response has an unknown outcome; inspect metadata before deciding whether to submit another operation. A worker restart changes its key, so stale encrypted writes fail. Check both machines' clocks if valid requests expire unexpectedly.
+
+Encryption keeps plaintext out of normal relay traffic, gateway persistence, tasks and logs. It does not make a compromised gateway trustworthy: the gateway authenticates management, supplies public-key discovery and serves browser JavaScript. Names and dates remain visible metadata. Worker storage is unencrypted, and applications and unrestricted worker processes can access credentials. See [the limits below](#what-this-protects).
 
 ## Fill application fields by reference
 

@@ -400,7 +400,7 @@ Setup, enrollment, and `service start` still wait only 30 seconds for readiness.
 
 GUI automation is separately opt-in through an `rpa` helper command. Windows requires interactive user startup, macOS requires Accessibility and Screen Recording permissions, and Linux coordinate input requires the user's X11 session. Setup does not install GUI dependencies or grant OS permissions. See [GUI automation installation and configuration](rpa.md#install-the-helper).
 
-For application passwords and HTTP tokens, enter [worker-local secrets](secrets.md) on the destination machine with `control secrets set NAME`. AI calls use only names. Storage must remain outside `workDir`; Windows uses the profile directory's inherited ACLs. These credentials are separate from the gateway login and are not synchronized across machines.
+For application passwords and HTTP tokens, enter [worker-local secrets](secrets.md) with `control secrets set NAME` on the worker, `control secrets set NAME --node WORKER` in your logged-in orchestrator terminal, or the web console's machine Secrets action. Remote entry encrypts values before relay and requires updated nodes, HTTPS or loopback development, and destination `secrets.manage` permission. AI calls use only names. Storage must remain outside `workDir`; Windows uses the profile directory's inherited ACLs. These credentials are separate from the gateway login and are not synchronized across machines.
 
 Windows saves the chosen `auto` or `user` mode in `<node-config>.startup.json`. `control service start|stop|uninstall` and re-enrollment reuse it unless `--mode`, `--service`, or `CONTROL_SERVICE_MODE` overrides it. Restore a missing node configuration before uninstalling user startup so the local API can stop the node gracefully.
 

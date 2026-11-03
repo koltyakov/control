@@ -25,6 +25,7 @@ import (
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/protocol"
+	"github.com/koltyakov/control/internal/secrets"
 	"github.com/koltyakov/control/internal/system"
 	"github.com/koltyakov/control/internal/update"
 	"github.com/koltyakov/control/internal/wol"
@@ -137,6 +138,7 @@ type Gateway struct {
 	updateStatus     map[string]update.Status
 	wakes            map[string]pendingWake
 	startupChanges   map[string]pendingStartup
+	secretRequests   map[string]pendingSecrets
 	updateCtx        context.Context
 	updateCancel     context.CancelFunc
 	updateWG         sync.WaitGroup
@@ -201,6 +203,7 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 	g.updateStatus = map[string]update.Status{}
 	g.wakes = map[string]pendingWake{}
 	g.startupChanges = map[string]pendingStartup{}
+	g.secretRequests = map[string]pendingSecrets{}
 	if err := g.openDatabase(dir); err != nil {
 		if g.db != nil {
 			_ = g.db.Close()
@@ -312,6 +315,7 @@ func (g *Gateway) Handler() http.Handler {
 	g.updateRoutes(mux)
 	g.installationRoutes(mux)
 	g.machineRoutes(mux)
+	g.secretRoutes(mux)
 	g.consoleRoutes(mux)
 	return g.maintenanceHandler(mux)
 }
@@ -428,6 +432,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		return
 	}
 	if !ed25519.Verify(n.PublicKey, hello.Message(challenge), hello.Signature) {
+		return
+	}
+	if len(n.SecretManagementKey) != 0 && (client || !secrets.ValidManagementKey(n.SecretManagementKey)) {
 		return
 	}
 	ownerID := n.ID
@@ -706,6 +713,12 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		}
 		if p.Kind == "startup.result" && p.To == "" {
 			if client || !g.receiveStartup(n, p.Data) {
+				return
+			}
+			continue
+		}
+		if p.Kind == "secrets.result" && p.To == "" {
+			if client || !g.receiveSecrets(n, c, p.Data) {
 				return
 			}
 			continue

@@ -189,6 +189,10 @@ func New(cfg Config) (*Node, error) {
 		Gateway: cfg.Gateway, Token: cfg.Token, Identity: id, RelayOnly: cfg.RelayOnly, ICEServers: cfg.ICEServers,
 		Node: model.Node{ID: id.ID, Name: cfg.Name, PublicKey: id.Public, OS: runtime.GOOS, Labels: cfg.Labels, Capabilities: n.Capabilities(), RunAs: processutil.RunAs(), InstructionOnly: cfg.InstructionOnly, GatewayWake: !cfg.InstructionOnly && accountMayCall(cfg.Allow, "network.wake")},
 	}, n.handle)
+	if err = n.configureSecrets(); err != nil {
+		_ = root.Close()
+		return nil, err
+	}
 	ready = true
 	return n, nil
 }

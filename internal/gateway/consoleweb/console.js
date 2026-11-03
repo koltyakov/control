@@ -36,6 +36,8 @@ const icons = {
   refresh:
     '<path d="M3 12a9 9 0 0 1 9-9c2.52 0 4.93 1 6.74 2.74L21 8M21 3v5h-5M21 12a9 9 0 0 1-9 9c-2.52 0-4.93-1-6.74-2.74L3 16M8 16H3v5"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  edit: '<path d="m16 3 5 5M4 20l4-1L21 6a2.1 2.1 0 0 0-3-3L5 16l-1 4Z"/>',
+  trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
   close: '<path d="m6 6 12 12M6 18 18 6"/>',
   arrow: '<path d="M4 12h16m-6-6 6 6-6 6"/>',
   copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>',
@@ -1150,6 +1152,8 @@ const auditActions = {
   "machine.unregister": ["Unregistered machine", "bad"],
   "machine.wake": ["Sent wake packet", ""],
   "machine.startup": ["Requested startup context", ""],
+  "machine.secrets.set": ["Set worker secret", ""],
+  "machine.secrets.delete": ["Deleted worker secret", ""],
   "account.create": ["Created account", "good"],
   "account.disable": ["Disabled account", "bad"],
   "account.password": ["Set browser password", ""],
@@ -1432,11 +1436,13 @@ function syncMachineMenu() {
   const item = (action, label, danger = false) =>
     `<button role="menuitem" tabindex="-1" class="menu-item${danger ? " destructive" : ""}" data-action="${action}" data-id="${esc(node.id)}">${label}</button>`;
   const startup = canChangeStartup(node) ? item("startup", "Startup context") : "",
+    secrets = node.online && !node.disabled ? item("worker-secrets", "Secrets") : "",
     separator = '<div role="separator" class="menu-separator"></div>';
   const html = machineMenuTarget.drawer
-    ? startup + (startup ? separator : "") + item("unregister", "Unregister", true)
+    ? secrets + startup + (secrets || startup ? separator : "") + item("unregister", "Unregister", true)
     : item("details", "View details") +
       item("rename", "Rename") +
+      secrets +
       startup +
       (!node.online && node.wakeVia ? item("wake", "Wake") : "") +
       item("toggle", node.disabled ? "Enable" : "Disable") +
@@ -1747,14 +1753,15 @@ function dialog(title, html, className = "") {
   enhanceSelects($("#dialog-body"));
   if (!$("#dialog").open) $("#dialog").showModal();
   const first = $(
-    "#dialog-body input, #dialog-body .select-trigger, #dialog-body textarea",
+    "#dialog-body input:not([readonly]):not([disabled]), #dialog-body .select-trigger, #dialog-body textarea:not([readonly]):not([disabled])",
   );
   (first || $("#dialog-title")).focus({ preventScroll: true });
 }
-function formDialog(title, html, handler, label = "Save", danger = false) {
+function formDialog(title, html, handler, label = "Save", danger = false, className = "") {
   dialog(
     title,
     `<form id="modal-form">${html}<p class="form-error" role="alert"></p><div class="form-actions"><button type="button" data-action="close" class="secondary">Cancel</button><button type="submit" class="${danger ? "danger" : "primary"}">${esc(label)}</button></div></form>`,
+    className,
   );
   $("#modal-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1786,6 +1793,138 @@ function formDialog(title, html, handler, label = "Save", danger = false) {
     }
   });
 }
+
+// Encrypt in the browser. Neither plaintext values nor private keys are sent to
+// the gateway, persisted in browser storage, or placed in HTML attributes.
+async function encryptWorkerSecret(node, name, value, publicKey) {
+  const encode = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))),
+    decode = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0)),
+    text = new TextEncoder(),
+    plain = text.encode(value);
+  if (!plain.length || plain.length > 4096 || value.includes("\0"))
+    throw new Error("The value must contain 1 to 4096 UTF-8 bytes without NUL.");
+  if (!crypto.subtle)
+    throw new Error("Encrypted secret entry requires HTTPS and Web Crypto support.");
+  try {
+    const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]),
+      recipient = await crypto.subtle.importKey("raw", decode(publicKey), { name: "ECDH", namedCurve: "P-256" }, false, []),
+      shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: recipient }, pair.privateKey, 256));
+    let material;
+    try {
+      material = await crypto.subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
+    } finally {
+      shared.fill(0);
+    }
+    const key = await crypto.subtle.deriveKey(
+        { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(), info: text.encode("control-secrets-v1\0" + node.id) },
+        material, { name: "AES-GCM", length: 256 }, false, ["encrypt"],
+      ),
+      id = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join(""),
+      expiresAt = Math.floor(Date.now() / 1000) + 30,
+      nonce = crypto.getRandomValues(new Uint8Array(12)),
+      additionalData = text.encode(["control-secrets-v1", node.id, name, id, expiresAt].join("\0")),
+      ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, additionalData }, key, plain);
+    return { id, expiresAt, key: encode(await crypto.subtle.exportKey("raw", pair.publicKey)), nonce: encode(nonce), ciphertext: encode(ciphertext) };
+  } finally {
+    plain.fill(0);
+  }
+}
+
+async function workerSecrets(node, source) {
+  const session = state.session;
+  const result = await api("fleet/nodes/" + encodeURIComponent(node.id) + "/secrets");
+  if (state.session !== session || (source && !source.isConnected)) return;
+  dialog(
+    "Secrets on " + node.name,
+    `<p>Values cannot be viewed. New and replacement values are encrypted to this worker before leaving your browser. Updated records the last local secret change, not application-side rotation.</p><div class="secrets-toolbar"><span class="muted">${result.secrets.length} ${result.secrets.length === 1 ? "secret" : "secrets"}</span><button class="icon-button" data-action="secret-set" data-id="${esc(node.id)}" aria-label="Add secret" title="Add secret">${icon("plus")}</button></div><div class="table-wrap" tabindex="0" role="region" aria-label="Secret metadata"><table class="secret-table"><thead><tr><th scope="col">Name</th><th scope="col">Updated</th><th scope="col">Actions</th></tr></thead><tbody>${result.secrets.map((entry) => `<tr><td class="mono">${esc(entry.name)}</td><td>${esc(date(entry.updatedAt))}</td><td><div class="secret-row-actions"><button class="icon-button" data-action="secret-set" data-id="${esc(node.id)}" data-name="${esc(entry.name)}" aria-label="Replace ${esc(entry.name)}" title="Replace secret">${icon("edit")}</button><button class="icon-button destructive" data-action="secret-delete" data-id="${esc(node.id)}" data-name="${esc(entry.name)}" aria-label="Delete ${esc(entry.name)}" title="Delete secret">${icon("trash")}</button></div></td></tr>`).join("") || '<tr><td colspan="3">No secrets defined.</td></tr>'}</tbody></table></div>`,
+    "machine-drawer secrets-drawer",
+  );
+}
+
+async function setWorkerSecret(node, name = "") {
+  // Check access and fetch the current process's key before asking for a value.
+  const session = state.session;
+  const result = await api("fleet/nodes/" + encodeURIComponent(node.id) + "/secrets");
+  if (state.session !== session) return;
+  if (!CSS.supports("-webkit-text-security", "disc"))
+    throw new Error("This browser cannot mask secret entry safely. Use control secrets set NAME --node WORKER in your terminal.");
+  dialog(
+    (name ? "Replace secret on " : "Add secret on ") + node.name,
+    `<div id="secret-editor" role="group" aria-label="Worker secret entry" data-1p-ignore data-lpignore="true" data-bwignore><p>The value is write-only and encrypted to this worker. A failed or interrupted request is never retried automatically. Replacing a name takes effect on its next use.</p><label for="entry-reference">Secret name</label><textarea id="entry-reference" data-entry="reference" rows="1" wrap="off" aria-multiline="false" required maxlength="128" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore${name ? " readonly" : ""}>${esc(name)}</textarea><label for="entry-content">Secret value</label><textarea id="entry-content" data-entry="content" rows="1" wrap="off" aria-multiline="false" class="masked-secret" required maxlength="4096" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-bwignore></textarea><p class="form-error" role="alert"></p><div class="form-actions"><button type="button" data-cancel-entry class="secondary">Cancel</button><button type="button" class="primary" data-save-entry>${name ? "Replace secret" : "Save secret"}</button></div></div>`,
+    "machine-drawer secrets-drawer",
+  );
+  // Safari treats CSS-masked HTML inputs, including search inputs, as password
+  // fields. These textarea-backed editors remain strictly one line high, without
+  // wrapping or resize handles. No login form or name attributes are present.
+  const editor = $("#secret-editor"),
+    reference = $('[data-entry="reference"]', editor),
+    content = $('[data-entry="content"]', editor),
+    save = $("[data-save-entry]", editor),
+    errorBox = $(".form-error", editor);
+  $("[data-cancel-entry]", editor).addEventListener("click", async () => {
+    reference.value = "";
+    content.value = "";
+    // Remove entry controls immediately so late encryption/write completions
+    // cannot submit or replace the view after cancellation.
+    dialog("Secrets on " + node.name, '<p id="secret-list-loading" role="status">Loading secrets…</p>', "machine-drawer secrets-drawer");
+    const loading = $("#secret-list-loading");
+    try {
+      await workerSecrets(node, loading);
+    } catch {
+      if (!loading.isConnected || state.session !== session) return;
+      dialog("Secrets on " + node.name,
+        `<p>The secrets list could not be refreshed.</p><div class="form-actions"><button type="button" class="secondary" data-action="worker-secrets" data-id="${esc(node.id)}">Reload secrets</button></div>`,
+        "machine-drawer secrets-drawer");
+    }
+  });
+  for (const field of [reference, content]) {
+    field.addEventListener("beforeinput", (event) => {
+      if (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph") event.preventDefault();
+    });
+    field.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.isComposing) event.preventDefault();
+    });
+  }
+  reference.addEventListener("input", () => reference.setCustomValidity(""));
+  content.addEventListener("input", () => content.setCustomValidity(""));
+  save.addEventListener("click", async () => {
+    if (save.disabled) return;
+    reference.setCustomValidity(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(reference.value)
+      ? "" : "Use 1 to 128 letters, digits, dots, underscores or hyphens, starting with a letter or digit.");
+    content.setCustomValidity(/[\r\n]/.test(content.value) ? "Use a single-line value here. For multiline credentials, use the CLI." : "");
+    if (!reference.reportValidity() || !content.reportValidity()) return;
+    const entryName = reference.value;
+    let value = content.value;
+    content.value = "";
+    save.disabled = true;
+    errorBox.textContent = "";
+    let saved = false;
+    try {
+      const envelope = await encryptWorkerSecret(node, entryName, value, result.key);
+      value = "";
+      if (!editor.isConnected || state.session !== session) return;
+      await api("fleet/nodes/" + encodeURIComponent(node.id) + "/secrets/" + encodeURIComponent(entryName), "PUT", envelope);
+      if (!editor.isConnected || state.session !== session) return;
+      toast("Secret saved on " + node.name + ". Its value cannot be retrieved.");
+      saved = true;
+      await workerSecrets(node, editor);
+      refresh();
+    } catch (error) {
+      if (!editor.isConnected || state.session !== session) return;
+      if (saved) {
+        // The write succeeded. Offer only a read retry, never a second write.
+        dialog("Secrets on " + node.name,
+          `<p>The secret was saved, but the list could not be refreshed. Reload the list to inspect its metadata.</p><div class="form-actions"><button type="button" class="secondary" data-action="worker-secrets" data-id="${esc(node.id)}">Reload secrets</button></div>`,
+          "machine-drawer secrets-drawer");
+      } else {
+        errorBox.textContent = error.message;
+      }
+    } finally {
+      value = "";
+      save.disabled = false;
+    }
+  });
+}
 function showSecret(title, value, description) {
   dialog(
     title,
@@ -1793,7 +1932,7 @@ function showSecret(title, value, description) {
   );
   $("#secret-value").textContent = value;
 }
-function confirmAction(title, message, handler, label = "Confirm") {
+function confirmAction(title, message, handler, label = "Confirm", className = "") {
   formDialog(
     title,
     `<p>${esc(message)}</p>`,
@@ -1803,6 +1942,7 @@ function confirmAction(title, message, handler, label = "Confirm") {
     },
     label,
     true,
+    className,
   );
 }
 function canChangeStartup(node) {
@@ -2152,6 +2292,19 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "startup" && node && canChangeStartup(node))
       changeStartup(node);
+    if (action === "worker-secrets" && node) await workerSecrets(node);
+    if (action === "secret-set" && node) await setWorkerSecret(node, name || "");
+    if (action === "secret-delete" && node)
+      confirmAction(
+        "Delete secret from " + node.name + "?",
+        "Delete " + name + ". Future operations using this reference will fail until it is defined again.",
+        async () => {
+          await api("fleet/nodes/" + encodeURIComponent(node.id) + "/secrets/" + encodeURIComponent(name), "DELETE");
+          toast("Secret deleted");
+        },
+        "Delete secret",
+        "machine-drawer secrets-drawer",
+      );
     if (action === "wake" && node) {
       button.disabled = true;
       try {

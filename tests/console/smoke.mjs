@@ -449,6 +449,188 @@ async function assertStartupCommands(page, snapshot) {
   await refresh();
 }
 
+async function assertWorkerSecrets(page) {
+  const assertPanel = async () => {
+    const panel = page.locator("dialog.secrets-drawer");
+    await panel.waitFor();
+    const box = await panel.boundingBox(), viewport = page.viewportSize();
+    assert.ok(Math.abs(box.x + box.width - viewport.width) < 1, "Secrets panel must sit against the right edge");
+    assert.ok(Math.abs(box.y) < 1 && Math.abs(box.height - viewport.height) < 1, "Secrets panel must fill the viewport height");
+  };
+  const assertMaskedEntry = async () => {
+    await assertPanel();
+    const input = page.getByLabel("Secret value", { exact: true });
+    assert.equal(await input.evaluate((element) => element.tagName), "TEXTAREA", "Avoid HTML inputs that Safari classifies as passwords when CSS-masked");
+    assert.equal(await input.getAttribute("rows"), "1");
+    assert.equal(await input.getAttribute("wrap"), "off");
+    assert.equal(await input.getAttribute("aria-multiline"), "false");
+    assert.equal(await input.getAttribute("autocomplete"), "off");
+    assert.equal(await input.evaluate((element) => getComputedStyle(element).getPropertyValue("-webkit-text-security")), "disc", "Non-password secret inputs must remain masked");
+    assert.equal(await page.locator("#secret-editor input, #secret-editor form").count(), 0);
+    assert.equal(await input.evaluate((element) => element.closest("form")), null, "Worker entry must not submit a website credential form");
+    assert.equal(await page.locator("#secret-editor [name]").count(), 0, "Avoid username/password-like field names");
+    assert.equal(await page.getByLabel("Secret name", { exact: true }).evaluate((element) => element.tagName), "TEXTAREA");
+    for (const field of [input, page.getByLabel("Secret name", { exact: true })]) {
+      assert.equal(await field.evaluate((element) => element.getBoundingClientRect().height), 38, "Secret editor must stay exactly one input line high");
+      assert.equal(await field.evaluate((element) => getComputedStyle(element).resize), "none", "Single-line editors must not have resize handles");
+    }
+    assert.equal(await page.getByRole("button", { name: /^(Save|Replace) secret$/ }).getAttribute("type"), "button");
+  };
+  const open = async () => {
+    await page.getByRole("button", { name: "Actions for browser-worker", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Secrets", exact: true }).click();
+    await page.getByRole("dialog", { name: "Secrets on browser-worker", exact: true }).waitFor();
+    await assertPanel();
+    assert.deepEqual(await page.locator(".secret-table th").allTextContents(), ["Name", "Updated", "Actions"]);
+    assert.ok(!(await page.locator(".secret-table").textContent()).includes(" ago"), "Only the update timestamp should be shown, not relative age");
+  };
+  const requests = [];
+  const observe = (request) => {
+    if (request.method() === "PUT" && request.url().includes("/secrets/")) requests.push(request.postData());
+  };
+  page.on("request", observe);
+  await open();
+  await page.getByRole("button", { name: "Add secret", exact: true }).click();
+  await page.getByLabel("Secret name", { exact: true }).fill("cancelled.password");
+  await page.getByLabel("Secret value", { exact: true }).fill("private-cancelled-create");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByText("No secrets defined.", { exact: true }).waitFor();
+  await assertPanel();
+  assert.equal(await page.locator("#secret-editor").count(), 0, "Create Cancel must clear inputs and return to the list");
+  assert.equal(requests.length, 0, "Create Cancel must not write");
+  await page.getByRole("button", { name: "Add secret", exact: true }).click();
+  await page.getByLabel("Secret name", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Secret name", { exact: true }).evaluate((element) => element === document.activeElement), true, "New secret entry should focus its name");
+  await page.getByLabel("Secret name", { exact: true }).fill("browser.password");
+  await assertMaskedEntry();
+  await page.getByLabel("Secret name", { exact: true }).fill("invalid/name");
+  await page.getByLabel("Secret value", { exact: true }).fill("private-browser-secret-世界");
+  await page.getByRole("button", { name: "Save secret", exact: true }).click();
+  assert.equal(requests.length, 0, "Invalid names must fail before encryption or a write");
+  assert.equal(await page.getByLabel("Secret name", { exact: true }).evaluate((element) => element.validity.valid), false);
+  await page.getByLabel("Secret name", { exact: true }).fill("browser.password");
+  await page.getByLabel("Secret value", { exact: true }).press("End");
+  await page.getByLabel("Secret value", { exact: true }).press("Enter");
+  assert.equal(await page.getByLabel("Secret value", { exact: true }).inputValue(), "private-browser-secret-世界", "Enter must not insert a newline or submit");
+  assert.equal(requests.length, 0);
+  await page.getByLabel("Secret value", { exact: true }).fill("private-browser-secret-世界\nsecond-line");
+  await page.getByRole("button", { name: "Save secret", exact: true }).click();
+  assert.equal(requests.length, 0, "Multiline pastes must be rejected, not silently changed or sent");
+  assert.equal(await page.getByLabel("Secret value", { exact: true }).evaluate((element) => element.validity.valid), false);
+  await page.getByLabel("Secret value", { exact: true }).fill("private-browser-secret-世界");
+  await page.getByRole("button", { name: "Save secret", exact: true }).click();
+  await page.locator("#secret-editor").waitFor({ state: "detached" });
+  await page.getByRole("dialog", { name: "Secrets on browser-worker", exact: true }).waitFor();
+  await assertPanel();
+  assert.equal(await page.locator(".secret-table tbody tr").count(), 1, "Creation must return to the refreshed list");
+  await page.getByRole("button", { name: "Replace browser.password", exact: true }).waitFor();
+  assert.equal(requests.length, 1);
+  assert.ok(!requests[0].includes("private-browser-secret"), "Browser must send ciphertext, not plaintext");
+  let record = JSON.parse(await readFile(path.join(dir, "node-state/secrets/values.json"), "utf8"))["browser.password"];
+  assert.equal(record.value, "private-browser-secret-世界", "Go must decrypt the browser's Web Crypto envelope");
+  const created = record.createdAt;
+  assert.equal(record.createdAt, record.updatedAt);
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await open();
+  assert.ok(!(await page.locator("#dialog-body").textContent()).includes("private-browser-secret"));
+  const replace = page.getByRole("button", { name: "Replace browser.password", exact: true });
+  assert.equal(await replace.locator("svg").count(), 1);
+  assert.equal(await replace.textContent(), "", "Row actions must be icons, not text buttons");
+  assert.equal(await page.getByRole("button", { name: "Add secret", exact: true }).textContent(), "", "Add action must use an accessible plus icon");
+  await replace.click();
+  await page.getByLabel("Secret value", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Secret value", { exact: true }).evaluate((element) => element === document.activeElement), true, "Editing must focus the value rather than the read-only name");
+  assert.equal(await page.getByLabel("Secret value", { exact: true }).inputValue(), "");
+  await assertMaskedEntry();
+  await page.getByLabel("Secret value", { exact: true }).fill("private-browser-replacement");
+  await page.getByRole("button", { name: "Replace secret", exact: true }).click();
+  await page.locator("#secret-editor").waitFor({ state: "detached" });
+  await page.getByRole("dialog", { name: "Secrets on browser-worker", exact: true }).waitFor();
+  await assertPanel();
+  assert.equal(await page.locator(".secret-table tbody tr").count(), 1, "Editing must return to the refreshed list without duplicating entries");
+  record = JSON.parse(await readFile(path.join(dir, "node-state/secrets/values.json"), "utf8"))["browser.password"];
+  assert.equal(record.value, "private-browser-replacement");
+  assert.equal(record.createdAt, created);
+  assert.notEqual(record.updatedAt, created);
+  const updated = await page.evaluate((value) => date(value), record.updatedAt);
+  assert.equal(await page.locator(".secret-table tbody td").nth(1).textContent(), updated, "The returned list must show the new update timestamp");
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  const metadataURL = "**/console/api/fleet/nodes/*/secrets";
+  const longName = "vpn." + "x".repeat(124);
+  const metadataRoute = async (route) => {
+    const response = await route.fetch(), listing = await response.json();
+    listing.secrets.push({ name: longName, createdAt: "2020-01-01T12:34:56Z", updatedAt: "2026-11-03T12:34:56Z" });
+    await route.fulfill({ response, json: listing });
+  };
+  await page.route(metadataURL, metadataRoute);
+  await open();
+  assert.equal(await page.getByRole("button", { name: "Delete " + longName, exact: true }).locator("svg").count(), 1);
+  for (const width of [320, 390, 768, 1440]) {
+    await page.setViewportSize({ width, height: 844 });
+    await assertPanel();
+    assert.ok(await page.evaluate(() => {
+      const panel = document.querySelector("dialog.secrets-drawer"), table = panel.querySelector(".table-wrap");
+      return document.documentElement.scrollWidth <= innerWidth && panel.scrollWidth <= panel.clientWidth && table.scrollWidth <= table.clientWidth;
+    }), "Secret metadata must fit without horizontal scrolling, including long names and dates");
+  }
+  await page.unroute(metadataURL, metadataRoute);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.getByRole("button", { name: "Replace browser.password", exact: true }).click();
+  await page.getByLabel("Secret value", { exact: true }).fill("private-cancelled-value");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.equal(requests.length, 2, "Cancel must not write a secret");
+  assert.equal(await page.locator("#secret-editor").count(), 0);
+  await page.getByRole("button", { name: "Replace browser.password", exact: true }).waitFor();
+  await assertPanel();
+  record = JSON.parse(await readFile(path.join(dir, "node-state/secrets/values.json"), "utf8"))["browser.password"];
+  assert.equal(record.value, "private-browser-replacement", "Edit Cancel must leave the stored value unchanged");
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await open();
+  const remove = page.getByRole("button", { name: "Delete browser.password", exact: true });
+  assert.equal(await remove.locator("svg").count(), 1);
+  assert.equal(await remove.textContent(), "");
+  await remove.click();
+  await page.getByRole("button", { name: "Delete secret", exact: true }).waitFor();
+  await assertPanel();
+  await page.getByRole("button", { name: "Delete secret", exact: true }).click();
+  await page.locator("#modal-form").waitFor({ state: "detached" });
+  await open();
+  await page.getByText("No secrets defined.", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Add secret", exact: true }).click();
+  await page.getByLabel("Secret name", { exact: true }).fill("uncertain.password");
+  await page.getByLabel("Secret value", { exact: true }).fill("private-uncertain-value");
+  const abortWrite = (route) => route.request().method() === "PUT" ? route.abort() : route.continue();
+  await page.route("**/console/api/fleet/nodes/*/secrets/*", abortWrite);
+  await page.getByRole("button", { name: "Save secret", exact: true }).click();
+  await page.locator(".form-error").filter({ hasText: "response was lost" }).waitFor();
+  assert.equal(requests.length, 3, "An uncertain write must not be retried");
+  assert.equal(await page.getByLabel("Secret value", { exact: true }).inputValue(), "", "Failed submissions must clear the value field");
+  assert.ok(!(await page.evaluate(() => JSON.stringify(localStorage))).includes("private-"));
+  await page.unroute("**/console/api/fleet/nodes/*/secrets/*", abortWrite);
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByText("No secrets defined.", { exact: true }).waitFor();
+  await assertPanel();
+  assert.equal(requests.length, 3, "Cancel after an uncertain write must not replay it");
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await open();
+  await page.getByRole("button", { name: "Add secret", exact: true }).click();
+  await page.getByLabel("Secret name", { exact: true }).fill("refresh.password");
+  await page.getByLabel("Secret value", { exact: true }).fill("private-refresh-value");
+  const failList = (route) => route.abort();
+  await page.route(metadataURL, failList);
+  await page.getByRole("button", { name: "Save secret", exact: true }).click();
+  await page.getByText("The secret was saved, but the list could not be refreshed. Reload the list to inspect its metadata.", { exact: true }).waitFor();
+  await assertPanel();
+  assert.equal(await page.locator("#secret-editor").count(), 0, "A failed list refresh must not offer to repeat the successful write");
+  assert.equal(requests.length, 4);
+  await page.unroute(metadataURL, failList);
+  await page.getByRole("button", { name: "Reload secrets", exact: true }).click();
+  await page.getByRole("button", { name: "Replace refresh.password", exact: true }).waitFor();
+  assert.equal(requests.length, 4, "Reload must only read metadata, never repeat a successful write");
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  page.off("request", observe);
+}
+
 // Removing one context of a grouped host must name the one left running.
 async function assertHybridUnregister(page, snapshot) {
   const baseNode = { ...snapshot.nodes[0], status: "summary", activeCount: 0, leased: false, disabled: false, controlPending: false, online: true },
@@ -504,6 +686,9 @@ async function assertHybridGrouping(page, snapshot) {
   await page.waitForFunction(() => !state.busy);
   await page.evaluate(() => refresh(true));
   assert.equal(await page.locator("#nav-count").textContent(), "2", "A Hybrid companion must not add a machine to the counter");
+  // Hash navigation can finish between the snapshot and table render. Wait for
+  // the expected rows rather than reading a transient previous-page table.
+  await page.waitForFunction(() => document.querySelectorAll(".machine-table tbody tr").length === 2);
   assert.equal(await page.locator(".machine-table tbody tr").count(), 2);
   assert.equal(await page.getByRole("button", { name: "paired-host-system", exact: true }).count(), 0);
   const row = page.locator(".machine-table tbody tr").filter({ has: page.getByRole("button", { name: "paired-host", exact: true }) });
@@ -816,9 +1001,9 @@ try {
       gateway: base,
       token: key.token,
       dataDir: "node-state",
-      workDir: ".",
+      workDir: "node-work",
       listen: "127.0.0.1:" + nodePort,
-      allow: {},
+      allow: { "@orchestrator": ["secrets.manage"] },
     }),
   );
   start(["node", "--config", config]);
@@ -861,6 +1046,7 @@ try {
   await assertResourceIcons(page);
   await pageLink(page, "machines");
   await assertResourceIcons(page);
+  await assertWorkerSecrets(page);
   await page.locator("#machine-search").fill("not-a-real-machine");
   await page.getByText("No matching machines", { exact: true }).waitFor();
   await page.locator("#machine-search").fill("browser-worker");
@@ -913,6 +1099,7 @@ try {
   assert.deepEqual(await machineMenu.getByRole("menuitem").allTextContents(), [
     "View details",
     "Rename",
+    "Secrets",
     ...(registered.runAs === "user" ? ["Startup context"] : []),
     "Disable",
     "Unregister",

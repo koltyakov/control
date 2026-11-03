@@ -50,6 +50,8 @@ Users issue, list, rename, and revoke their own keys with `control keys create|l
 
 Only account-authenticated client sessions initiate execution authority. Enrolling a node with an account key does not grant its node identity that authority. Keep account keys off execution workers, since someone who steals one can authenticate a new orchestrator client. Worker installation/common keys do not independently execute peer commands, including through the local API or a new common-key client session.
 
+Fleet account owners can manage worker secrets through encrypted CLI/console routes, subject to destination `secrets.manage` permission. Common keys cannot list metadata, set or delete through those routes. This is fixed fleet management, not a worker execution grant or value-read permission. See [remote secrets](secrets.md#manage-a-worker-from-the-orchestrator).
+
 The gateway operator remains trusted. The operator owns the database and release-distribution authority and can inspect gateway metadata. Fleet isolation protects users from other users; it does not turn the gateway into an untrusted service or sandbox providers running on a machine.
 
 ## Enforcement
