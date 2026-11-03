@@ -1,14 +1,149 @@
+// @ts-check
 "use strict";
-const $ = (selector, root = document) => root.querySelector(selector);
+// All shipped JavaScript is checked by tests/console/tsconfig.json.
+/**
+ * API projections follow internal/model, internal/gateway and internal/update.
+ * Optional readings stay unknown rather than becoming zero in the UI.
+ * @typedef {{username: string, role: string, userId: string, csrf: string}} ConsoleSession
+ * @typedef {{version: string, arch: string, os: string}} Software
+ * @typedef {{path: string, totalBytes: number, usedBytes: number, freeBytes: number, error?: string}} DiskUsage
+ * @typedef {{name: string, kind?: string, vendor?: string, memoryTotalBytes?: number, memoryUsedBytes?: number, usagePercent?: number}} GPUInfo
+ * @typedef {object} SystemInfo
+ * @property {string} os
+ * @property {string} arch
+ * @property {string} [platform]
+ * @property {string} [platformVersion]
+ * @property {string} [cpuModel]
+ * @property {number} logicalCPUs
+ * @property {number} [cpuUsagePercent]
+ * @property {number} memoryUsedBytes
+ * @property {number} memoryTotalBytes
+ * @property {DiskUsage[]} disks
+ * @property {GPUInfo[]} [gpus]
+ * @property {string} sampledAt
+ * @typedef {object} Machine
+ * @property {string} id
+ * @property {string} name
+ * @property {string} os
+ * @property {boolean} online
+ * @property {string} lastSeen
+ * @property {string} status
+ * @property {Software} [software]
+ * @property {SystemInfo} [system]
+ * @property {Record<string, string>} [labels]
+ * @property {boolean} [disabled]
+ * @property {boolean} [controlPending]
+ * @property {string} [updateState]
+ * @property {number} activeCount
+ * @property {boolean} [leased]
+ * @property {string} [leaseExpires]
+ * @property {string} [lastActive]
+ * @property {{tasks: number, exec: number, transfers: number, other: number}} [work]
+ * @property {{forward: number, reverse: number}} [tunnels]
+ * @property {{direct: number, turn: number, relay: number, unknown: number}} [connectionRoutes]
+ * @property {string} [runAs]
+ * @property {string} [hybridId]
+ * @property {string} [hybridRole]
+ * @property {string} [wakeVia]
+ * @property {Machine[]} [contexts] Presentation-only grouping, never sent to the API.
+ * @property {string} [targetName]
+ * @typedef {Machine & {contexts: Machine[]}} MachineGroup
+ * @typedef {{observedAt: string, nodes: Machine[], gateway?: {url: string, startedAt: string, software: Software, system?: SystemInfo}}} FleetSnapshot
+ * @typedef {{id: string, name: string, autoName?: boolean, expiresAt: string, revoked?: boolean, redeemedId?: string, serviceMode?: string, hybridId?: string, hybridRole?: string, asset?: {os: string}}} Invitation
+ * @typedef {Invitation & {command: string}} InstallationLink
+ * @typedef {{id: string, name: string, role: string, createdAt: string, revoked?: boolean}} FleetKey
+ * @typedef {{id: string, name: string, createdAt: string, disabled?: boolean}} FleetUser
+ * @typedef {{id: number, at: string, userId: string, fleet?: string, actor: string, via: string, keyId?: string, action: string, target?: string, targetId?: string, detail?: string, sourceIp?: string}} AuditEvent
+ * @typedef {{events: AuditEvent[], next?: number}} AuditPage
+ * @typedef {{state?: string, software?: Software, paused?: boolean, error?: string}} UpdateStatus
+ * @typedef {{deployment?: {id: string, manifest: {version: string}, phase: string, source: string, updatedAt: string, error?: string, gatewayState?: string, deferred?: string[]}, gatewayUpdate?: {state: string, relayCarriers?: number}, nodes: Record<string, UpdateStatus>, nodeProgress?: Record<string, string>}} UpdateResult
+ * @typedef {{status: string, reason?: string}} StartupResult
+ * @typedef {{key: string, secrets: {name: string, updatedAt: string}[]}} SecretList
+ * @typedef {{id: string, expiresAt: number, key: string, nonce: string, ciphertext: string}} SecretEnvelope
+ * @typedef {{removed: number, hidden?: number}} ClearResult
+ * @typedef {{token: string}} IssuedKey
+ * @typedef {{name: string, autoName?: boolean, os: string, serviceMode: string, ttlSeconds: number, gateway: string, force: boolean}} InstallationRequest
+ * @typedef {{login: {username: string, password: string}, logout: never, 'fleet/installations': InstallationRequest, 'fleet/keys': {name: string}, 'admin/users': {name: string}, 'admin/updates/check': never} & Record<`fleet/nodes/${string}/startup`, {mode: string}> & Record<`fleet/nodes/${string}/wake`, never>} PostBody
+ * @typedef {{'console/password': {username?: string, currentPassword?: string, password: string}} & Record<`fleet/nodes/${string}/secrets/${string}`, SecretEnvelope>} PutBody
+ * @typedef {Record<`fleet/nodes/${string}`, {name?: string, force?: boolean, disabled?: boolean}> & Record<`fleet/keys/${string}`, {name: string}>} PatchBody
+ * @typedef {{session: ConsoleSession, status: FleetSnapshot, 'fleet/installations': Invitation[], 'fleet/keys': FleetKey[], 'admin/users': FleetUser[], 'admin/updates': UpdateResult} & Record<`audit?${string}`, AuditPage> & Record<`fleet/nodes/${string}/secrets`, SecretList>} GetAPI
+ * @typedef {{login: ConsoleSession, logout: null, 'fleet/installations': InstallationLink, 'fleet/keys': IssuedKey, 'admin/users': IssuedKey, 'admin/updates/check': unknown} & Record<`fleet/nodes/${string}/startup`, StartupResult> & Record<`fleet/nodes/${string}/wake`, {source: string}>} PostAPI
+ * @typedef {{'fleet/installations': ClearResult} & Record<`audit${string}`, ClearResult> & Record<`fleet/nodes/${string}` | `fleet/keys/${string}` | `fleet/installations/${string}` | `admin/users/${string}`, unknown>} DeleteAPI
+ * @typedef {{page: 'invitations', data: Invitation[]} | {page: 'keys', data: FleetKey[]} | {page: 'users', data: FleetUser[]} | {page: 'updates', data: UpdateResult} | {page: 'activity', data: AuditPage}} Auxiliary
+ * @typedef {object} ConsoleState
+ * @property {ConsoleSession | null} session
+ * @property {FleetSnapshot | null} snapshot
+ * @property {string} page
+ * @property {string} auditCategory
+ * @property {string} search
+ * @property {string} filter
+ * @property {string} sort
+ * @property {boolean} descending
+ * @property {boolean} busy
+ * @property {Auxiliary | null} auxiliary
+ * @property {InstallationLink | null} invitation
+ * @property {{id: string, startedAt: number} | null} startupChange
+ * @property {Map<string, string>} contexts
+ * @property {boolean} stale
+ * @property {string | null} updatedAt
+ * @typedef {[number, number]} Point
+ * @typedef {{a: number, b: number, length: number}} MeshEdge
+ * @typedef {Record<string, string>} MeshTiming
+ * @typedef {[SVGElement, MeshTiming]} AnimatedPeer
+ * @typedef {HTMLSelectElement & {syncListbox?: () => void}} EnhancedSelect
+ * @typedef {{'#dialog': HTMLDialogElement, '#login-form': HTMLFormElement, '#modal-form': HTMLFormElement, '#machine-search': HTMLInputElement, '#entry-reference': HTMLTextAreaElement, '#entry-content': HTMLTextAreaElement}} ConsoleElements
+ */
+/**
+ * @template {string} S
+ * @typedef {S extends keyof ConsoleElements ? ConsoleElements[S] : S extends `input[${string}` | `${string} input[${string}` ? HTMLInputElement : S extends `button[${string}` ? HTMLButtonElement : S extends `${string} select[${string}` ? HTMLSelectElement : S extends keyof HTMLElementTagNameMap ? HTMLElementTagNameMap[S] : HTMLElement} SelectedElement
+ */
+
+/**
+ * Required DOM lookup. Use find() for elements that may be absent.
+ * @template {string} S
+ * @param {S} selector
+ * @param {ParentNode} [root]
+ * @returns {SelectedElement<S>}
+ */
+function $(selector, root = document) {
+  const element = find(selector, root);
+  if (!element) throw new Error("Missing console element: " + selector);
+  return element;
+}
+/**
+ * @template {string} S
+ * @param {S} selector
+ * @param {ParentNode} [root]
+ * @returns {SelectedElement<S> | null}
+ */
+function find(selector, root = document) {
+  return /** @type {SelectedElement<S> | null} */ (root.querySelector(selector));
+}
+/** @param {unknown} error @returns {string} */
+function errorMessage(error) {
+  return error instanceof Error ? error.message : "Unexpected console error.";
+}
+/** @param {HTMLFormElement} form @returns {Record<string, string>} */
+function formFields(form) {
+  /** @type {Record<string, string>} */
+  const fields = {};
+  for (const [name, value] of new FormData(form)) {
+    if (typeof value !== "string") throw new Error("File fields are not supported.");
+    fields[name] = value;
+  }
+  return fields;
+}
+/** @param {unknown} value @returns {string} */
 const esc = (value) =>
   String(value ?? "").replace(
     /[&<>"']/g,
     (c) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+      (/** @type {Record<string, string>} */ ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }))[
         c
       ],
   );
 // Static paths only. Fleet-provided values never select SVG markup.
+/** @type {Record<string, string>} */
 const icons = {
   machine:
     '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/>',
@@ -53,12 +188,14 @@ const icons = {
   logout:
     '<path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l5-5-5-5m5 5H3"/>',
 };
+/** @param {string | undefined} name @returns {string} */
 function icon(name) {
-  return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.machine}</svg>`;
+  return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name || "machine"] || icons.machine}</svg>`;
 }
-document.querySelectorAll("[data-icon]").forEach((element) => {
+/** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll("[data-icon]")).forEach((element) => {
   element.innerHTML = icon(element.dataset.icon);
 });
+/** @type {ConsoleState} */
 const state = {
   session: null,
   snapshot: null,
@@ -76,6 +213,7 @@ const state = {
   stale: false,
   updatedAt: null,
 };
+/** @type {Record<string, [string, string]>} */
 const pages = {
   overview: ["Overview", ""],
   machines: ["Machines", "Resources and access for your registered machines."],
@@ -96,6 +234,7 @@ try {
 } catch {
   /* Storage is optional. */
 }
+/** @returns {void} */
 function applyTheme() {
   document.documentElement.dataset.theme =
     themeChoice === "system"
@@ -103,10 +242,10 @@ function applyTheme() {
         ? "light"
         : "dark"
       : themeChoice;
-  document.querySelectorAll("[data-theme-choice]").forEach((button) => {
+  /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll("[data-theme-choice]")).forEach((button) => {
     button.setAttribute(
       "aria-pressed",
-      button.dataset.themeChoice === themeChoice,
+      String(button.dataset.themeChoice === themeChoice),
     );
   });
 }
@@ -130,28 +269,30 @@ document.addEventListener("pointerdown", () => {
 $("#account-menu").addEventListener("beforetoggle", (event) => {
   if (event.newState !== "open") return;
   const box = $("#account-button").getBoundingClientRect();
-  event.currentTarget.style.top = box.bottom + 6 + "px";
-  event.currentTarget.style.right =
+  $("#account-menu").style.top = box.bottom + 6 + "px";
+  $("#account-menu").style.right =
     document.documentElement.clientWidth - box.right + "px";
 });
 
 $("#nav-more-menu").addEventListener("beforetoggle", (event) => {
   if (event.newState !== "open") return;
   const box = $("#nav-more").getBoundingClientRect();
-  event.currentTarget.style.top = box.bottom + 6 + "px";
-  event.currentTarget.style.left = Math.max(12, box.left - 8) + "px";
+  $("#nav-more-menu").style.top = box.bottom + 6 + "px";
+  $("#nav-more-menu").style.left = Math.max(12, box.left - 8) + "px";
 });
 // Links that do not fit move, from the end, into the "More" menu.
+/** @returns {void} */
 function fitNav() {
   const nav = $("nav"),
     more = $("#nav-more"),
     operator = $("#operator-nav");
-  const links = [...nav.querySelectorAll("a[data-page]")].filter(
+  const links = [.../** @type {NodeListOf<HTMLAnchorElement>} */ (nav.querySelectorAll("a[data-page]"))].filter(
     (a) => !operator.hidden || !operator.contains(a),
   );
   links.forEach((a) => a.classList.remove("nav-hidden"));
   operator.classList.remove("nav-hidden");
   more.hidden = true;
+  /** @type {HTMLAnchorElement[]} */
   const overflowed = [];
   if (nav.scrollWidth > nav.clientWidth) {
     more.hidden = false;
@@ -186,10 +327,56 @@ function fitNav() {
 }
 new ResizeObserver(fitNav).observe($(".topbar"));
 
+/**
+ * @template {keyof GetAPI} P
+ * @overload
+ * @param {P} path
+ * @returns {Promise<GetAPI[P]>}
+ */
+/**
+ * @template {keyof PostAPI} PP
+ * @overload
+ * @param {PP} path
+ * @param {'POST'} method
+ * @param {PostBody[PP]} [body]
+ * @returns {Promise<PostAPI[PP]>}
+ */
+/**
+ * @template {keyof DeleteAPI} DP
+ * @overload
+ * @param {DP} path
+ * @param {'DELETE'} method
+ * @returns {Promise<DeleteAPI[DP]>}
+ */
+/**
+ * @template {keyof PutBody} UP
+ * @overload
+ * @param {UP} path
+ * @param {'PUT'} method
+ * @param {PutBody[UP]} body
+ * @returns {Promise<unknown>}
+ */
+/**
+ * @template {keyof PatchBody} MP
+ * @overload
+ * @param {MP} path
+ * @param {'PATCH'} method
+ * @param {PatchBody[MP]} body
+ * @returns {Promise<unknown>}
+ */
+/**
+ * JSON is trusted only at this typed, authenticated API boundary.
+ * @param {string} path
+ * @param {string} [method]
+ * @param {unknown} [body]
+ * @returns {Promise<unknown>}
+ */
 async function api(path, method = "GET", body) {
+  /** @type {Record<string, string>} */
   const headers = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (method !== "GET") headers["X-CSRF-Token"] = state.session?.csrf || "";
+  /** @type {Response} */
   let response;
   try {
     response = await fetch("/console/api/" + path, {
@@ -213,14 +400,15 @@ async function api(path, method = "GET", body) {
     const message = (await response.text()).slice(0, 4096).trim();
     if (response.status === 401 && path !== "login" && state.session)
       showLogin();
-    const error = new Error(message || "Request failed.");
+    const error = /** @type {Error & {status?: number}} */ (new Error(message || "Request failed."));
     error.status = response.status;
     throw error;
   }
   if (response.status === 204) return null;
-  return response.json();
+  return /** @type {Promise<unknown>} */ (response.json());
 }
 
+/** @returns {void} */
 function showLogin() {
   closeMachineMenu();
   state.session = null;
@@ -239,10 +427,11 @@ function showLogin() {
   $("#login").hidden = false;
   drawMesh();
   history.replaceState(null, "", "/login");
-  $("#login-form input[name=password]").value = "";
+  $("input[name=password]", $("#login-form")).value = "";
   $("#login-form input[name=username]").focus();
 }
 
+/** @param {ConsoleSession} session @returns {void} */
 function showApp(session) {
   state.session = session;
   $("#login").hidden = true;
@@ -263,9 +452,9 @@ function showApp(session) {
 
 $("#login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const form = event.currentTarget,
+  const form = $("#login-form"),
     button = $("button[type=submit]", form);
-  const fields = new FormData(form);
+  const fields = formFields(form);
   button.disabled = true;
   form.setAttribute("aria-busy", "true");
   $(".login-submit", form).textContent = "Signing in…";
@@ -273,13 +462,13 @@ $("#login-form").addEventListener("submit", async (event) => {
   $("#login-error").textContent = "";
   try {
     const session = await api("login", "POST", {
-      username: fields.get("username"),
-      password: fields.get("password"),
+      username: fields.username,
+      password: fields.password,
     });
     form.reset();
     showApp(session);
   } catch (error) {
-    $("#login-error").textContent = error.message;
+    $("#login-error").textContent = errorMessage(error);
     form.classList.add("rejected");
   } finally {
     button.disabled = false;
@@ -289,7 +478,7 @@ $("#login-form").addEventListener("submit", async (event) => {
 });
 $("#login-form").addEventListener("animationend", (event) => {
   if (event.animationName === "shake")
-    event.currentTarget.classList.remove("rejected");
+    $("#login-form").classList.remove("rejected");
 });
 
 // The sign-in backdrop is a new random peer mesh on every view. A few hubs are
@@ -301,18 +490,21 @@ $("#login-form").addEventListener("animationend", (event) => {
 const svgNS = "http://www.w3.org/2000/svg";
 const meshFlows = 8;
 
+/** @param {string} name @param {Record<string, string | number>} attributes @returns {SVGElement} */
 function svgElement(name, attributes) {
   const element = document.createElementNS(svgNS, name);
   for (const [key, value] of Object.entries(attributes))
-    element.setAttribute(key, value);
+    element.setAttribute(key, String(value));
   return element;
 }
 
 // Dart throwing around active samples (Bridson) with a spacing that varies
 // by position. Meshes stay under a few hundred nodes, so a direct scan is fast.
+/** @param {number} width @param {number} height @param {(point: Point) => number} spacing @param {Point[]} seeds @returns {Point[]} */
 function poissonDisk(width, height, spacing, seeds) {
   const points = [...seeds],
     active = [...seeds];
+  /** @param {Point} point @returns {boolean} */
   const fits = (point) =>
     points.every(
       (other) =>
@@ -327,10 +519,10 @@ function poissonDisk(width, height, spacing, seeds) {
     for (let attempt = 0; attempt < 30 && !placed; attempt++) {
       const angle = Math.random() * 2 * Math.PI,
         distance = radius * (1 + Math.random()),
-        point = [
+        point = /** @type {Point} */ ([
           x + distance * Math.cos(angle),
           y + distance * Math.sin(angle),
-        ];
+        ]);
       if (
         point[0] >= 0 &&
         point[0] < width &&
@@ -349,9 +541,12 @@ function poissonDisk(width, height, spacing, seeds) {
 }
 
 // An edge survives when no third node is closer to both of its endpoints.
+/** @param {Point[]} points @returns {MeshEdge[]} */
 function neighborhoodGraph(points) {
+  /** @param {number} a @param {number} b @returns {number} */
   const distance = (a, b) =>
     Math.hypot(points[a][0] - points[b][0], points[a][1] - points[b][1]);
+  /** @type {MeshEdge[]} */
   const edges = [];
   for (let a = 0; a < points.length; a++)
     for (let b = a + 1; b < points.length; b++) {
@@ -369,6 +564,7 @@ function neighborhoodGraph(points) {
   return edges;
 }
 
+/** @returns {void} */
 function drawMesh() {
   const [base, motion] = document.querySelectorAll(".login-backdrop");
   // Layout offsets ignore the entrance transforms still running on the layers
@@ -385,17 +581,19 @@ function drawMesh() {
     top = main.offsetTop + card.offsetTop + 16 - 24,
     right = left + card.offsetWidth + 48,
     bottom = top + card.offsetHeight + 48;
+  /** @param {Point} point @returns {boolean} */
   const underCard = ([x, y]) => x > left && x < right && y > top && y < bottom;
 
   const diagonal = Math.hypot(width, height),
     sigma = diagonal * 0.11,
     separation = Math.min(width, height) * 0.38;
+  /** @type {Point[]} */
   const hubs = [];
   for (let attempt = 0; attempt < 400 && hubs.length < 4; attempt++) {
-    const hub = [
+    const hub = /** @type {Point} */ ([
       width * (0.06 + Math.random() * 0.88),
       height * (0.08 + Math.random() * 0.84),
-    ];
+    ]);
     if (
       !underCard(hub) &&
       hubs.every(
@@ -405,6 +603,7 @@ function drawMesh() {
     )
       hubs.push(hub);
   }
+  /** @param {Point} point @returns {number} */
   const influence = ([x, y]) =>
     Math.max(
       0,
@@ -414,7 +613,7 @@ function drawMesh() {
     );
   const near = diagonal * 0.032,
     far = diagonal * 0.13,
-    spacing = (point) => far - (far - near) * influence(point);
+    spacing = /** @param {Point} point */ (point) => far - (far - near) * influence(point);
   // Nodes may sit just outside the layer so links run off every edge.
   const margin = far,
     points = poissonDisk(
@@ -422,11 +621,12 @@ function drawMesh() {
       height + margin * 2,
       ([x, y]) => spacing([x - margin, y - margin]),
       hubs.map(([x, y]) => [x + margin, y + margin]),
-    ).map(([x, y]) => [x - margin, y - margin]);
+    ).map(([x, y]) => /** @type {Point} */ ([x - margin, y - margin]));
   const weight = points.map(influence),
     edges = neighborhoodGraph(points);
 
   // Packets prefer busy links near hubs; no two share an endpoint.
+  /** @param {Point} point @returns {boolean} */
   const visible = ([x, y]) =>
     x > 24 && x < width - 24 && y > 24 && y < height - 24 && !underCard([x, y]);
   const candidates = edges
@@ -448,8 +648,10 @@ function drawMesh() {
     }))
     .sort((x, y) => y.key - x.key)
     .map(({ edge }) => edge);
-  const flows = new Set(),
-    used = new Set();
+  /** @type {Set<MeshEdge>} */
+  const flows = new Set();
+  /** @type {Set<number>} */
+  const used = new Set();
   for (const edge of candidates) {
     if (flows.size === meshFlows) break;
     if (used.has(edge.a) || used.has(edge.b)) continue;
@@ -459,8 +661,10 @@ function drawMesh() {
   }
 
   // Soft color pools and dot fields mark each hub's neighborhood.
-  const pools = [],
-    fields = [];
+  /** @type {SVGElement[]} */
+  const pools = [];
+  /** @type {SVGElement[]} */
+  const fields = [];
   hubs.forEach(([x, y], index) => {
     const position = { cx: x.toFixed(1), cy: y.toFixed(1) };
     pools.push(
@@ -479,11 +683,16 @@ function drawMesh() {
     );
   });
 
-  const links = [],
-    nodes = [],
-    packets = [],
-    peers = [],
-    targets = new Map();
+  /** @type {SVGElement[]} */
+  const links = [];
+  /** @type {SVGElement[]} */
+  const nodes = [];
+  /** @type {AnimatedPeer[]} */
+  const packets = [];
+  /** @type {AnimatedPeer[]} */
+  const peers = [];
+  /** @type {Map<number, MeshTiming[]>} */
+  const targets = new Map();
   let order = 0;
   for (const edge of edges) {
     const from = points[edge.a],
@@ -518,7 +727,7 @@ function drawMesh() {
     });
     packets.push([packet, timing]);
     if (!targets.has(target)) targets.set(target, []);
-    targets.get(target).push(timing);
+    targets.get(target)?.push(timing);
   }
   points.forEach(([x, y], index) => {
     const position = { cx: x.toFixed(1), cy: y.toFixed(1) };
@@ -580,12 +789,13 @@ $("#login").addEventListener("pointermove", (event) => {
     parallaxFrame = 0;
     const x = ((event.clientX / innerWidth) * 2 - 1) * -12,
       y = ((event.clientY / innerHeight) * 2 - 1) * -12;
-    document.querySelectorAll(".login-backdrop").forEach((layer) => {
+    /** @type {NodeListOf<SVGElement>} */ (document.querySelectorAll(".login-backdrop")).forEach((layer) => {
       layer.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
     });
   });
 });
 
+/** @param {unknown} value @returns {string} */
 function bytes(value) {
   if (value == null || !Number.isFinite(Number(value))) return "Unknown";
   let n = Number(value),
@@ -597,9 +807,11 @@ function bytes(value) {
   }
   return (i ? n.toFixed(n < 10 ? 1 : 0) : n) + " " + units[i];
 }
+/** @param {number | null | undefined} used @param {number | null | undefined} total @returns {number | null} */
 function percent(used, total) {
-  return total > 0 ? Math.min(100, Math.max(0, (used / total) * 100)) : null;
+  return used != null && total != null && total > 0 ? Math.min(100, Math.max(0, (used / total) * 100)) : null;
 }
+/** @param {string | null | undefined} value @returns {string} */
 function age(value) {
   if (!value || String(value).startsWith("0001")) return "Unknown";
   const seconds = Math.max(0, (Date.now() - new Date(value).getTime()) / 1000);
@@ -615,20 +827,23 @@ function age(value) {
     );
   return Math.floor(seconds / 86400) + "d";
 }
+/** @param {string | null | undefined} value @returns {string} */
 function date(value) {
   return !value || String(value).startsWith("0001")
     ? "Unknown"
     : new Date(value).toLocaleString();
 }
+/** @param {string | undefined} os @returns {string} */
 function osName(os) {
   return (
-    { darwin: "macOS", windows: "Windows", linux: "Linux" }[os] ||
+    (/** @type {Record<string, string>} */ ({ darwin: "macOS", windows: "Windows", linux: "Linux" }))[os || ""] ||
     os ||
     "Unknown OS"
   );
 }
+/** @param {Machine} node @returns {string} */
 function machineState(node) {
-  if (node.contexts?.length > 1) node = hostStatusContext(node);
+  if (node.contexts && node.contexts.length > 1) node = hostStatusContext(node);
   if (node.controlPending) return node.disabled ? "Disabling" : "Enabling";
   if (node.disabled) return "Disabled";
   if (node.status === "update") return "Updating";
@@ -637,10 +852,11 @@ function machineState(node) {
   if (node.leased) return "Reserved";
   return node.activeCount > 0 ? "Busy" : "Idle";
 }
+/** @param {Machine} node @returns {string} */
 function statusDetail(node) {
-  if (node.contexts?.length > 1) node = hostStatusContext(node);
+  if (node.contexts && node.contexts.length > 1) node = hostStatusContext(node);
   if (node.status === "update")
-    return ({ "waiting-idle": "Waiting for idle", "waiting-gateway": "Waiting for gateway", "downloading": "Downloading", "staged": "Staged", "reserved": "Restart reserved", "restarting": "Restarting" })[node.updateState] || "";
+    return (/** @type {Record<string, string>} */ ({ "waiting-idle": "Waiting for idle", "waiting-gateway": "Waiting for gateway", "downloading": "Downloading", "staged": "Staged", "reserved": "Restart reserved", "restarting": "Restarting" }))[node.updateState || ""] || "";
   if (!node.online)
     return age(node.lastSeen) === "Unknown"
       ? ""
@@ -656,19 +872,23 @@ function statusDetail(node) {
 // Host status includes connected contexts and gateway-confirmed restart grace,
 // not just the context selected for metrics and actions. Prefer active work
 // over idle reports and newer observations when statuses match.
+/** @param {Machine} node @returns {Machine} */
 function hostStatusContext(node) {
-  const active = node.contexts.filter((context) => context.online || machineState(context) === "Updating"),
-    candidates = active.length ? active : node.contexts,
+  const contexts = node.contexts || [node];
+  const active = contexts.filter((context) => context.online || machineState(context) === "Updating"),
+    candidates = active.length ? active : contexts,
     priority = ["Updating", "Busy", "Reserved", "Enabling", "Online", "Idle", "Disabling", "Disabled", "Offline"];
   return [...candidates].sort((a, b) =>
     priority.indexOf(machineState(a)) - priority.indexOf(machineState(b)) ||
     (Date.parse(b.lastSeen) || 0) - (Date.parse(a.lastSeen) || 0),
   )[0];
 }
+/** @param {string | null | undefined} value @returns {value is string} */
 function known(value) {
   return !!value && !String(value).startsWith("0001");
 }
 // Older nodes report only a total, so fall back to it without a breakdown.
+/** @param {Machine} node @returns {string} */
 function workSummary(node) {
   const w = node.work;
   if (!w) return node.activeCount + " active";
@@ -680,13 +900,16 @@ function workSummary(node) {
   ].filter(Boolean);
   return parts.join(" · ") || (tunnelCount(node) ? "Tunnels only" : "");
 }
+/** @param {Machine} node @returns {number} */
 function tunnelCount(node) {
   return (node.tunnels?.forward || 0) + (node.tunnels?.reverse || 0);
 }
+/** @param {Machine} node @returns {number | null} */
 function peerCount(node) {
   const r = node.connectionRoutes;
   return r ? r.direct + r.turn + r.relay + r.unknown : null;
 }
+/** @param {Machine} node @returns {string} */
 function routeText(node) {
   const r = node.connectionRoutes;
   return r
@@ -700,9 +923,10 @@ function routeText(node) {
         .join(" · ")
     : "";
 }
+/** @param {Machine} node @returns {string} */
 function tunnelText(node) {
   const t = node.tunnels;
-  if (!tunnelCount(node)) return "";
+  if (!t || !tunnelCount(node)) return "";
   return (
     [t.forward && t.forward + " forward", t.reverse && t.reverse + " reverse"]
       .filter(Boolean)
@@ -711,15 +935,18 @@ function tunnelText(node) {
 }
 // Three fixed counters keep every row's shape stable as connections come and
 // go: direct peers, relayed peers (TURN or gateway relay), and tunnels.
+/** @param {Machine} node @returns {string} */
 function connectionCell(node) {
   const r = node.online ? node.connectionRoutes : null,
     t = node.online ? node.tunnels : null;
+  /** @param {string} iconName @param {string} label @param {number | null} value @param {string} title @returns {string} */
   const counter = (iconName, label, value, title) =>
     `<span class="counter${value ? "" : " zero"}" title="${esc(title)}">${icon(iconName)}<span class="sr-only">${label} </span>${value ?? "–"}</span>`;
   return `<div class="counters">${counter("direct", "Direct peers", r ? r.direct + r.unknown : null, r ? `Direct peers: ${r.direct}` + (r.unknown ? `, unknown route: ${r.unknown}` : "") : "Direct peers: not reported")}${counter("relay", "Relayed peers", r ? r.turn + r.relay : null, r ? `Relayed peers: ${r.turn} TURN, ${r.relay} gateway relay` : "Relayed peers: not reported")}${counter("tunnel", "Tunnels", t ? t.forward + t.reverse : null, t ? `Tunnels: ${t.forward} forward, ${t.reverse} reverse` : "Tunnels: not reported")}</div>`;
 }
+/** @param {Machine} node @returns {string} */
 function platformText(node) {
-  const sys = node.system || {},
+  const sys = node.system || /** @type {Partial<SystemInfo>} */ ({}),
     version = sys.platformVersion || "",
     distro = sys.platform && sys.platform !== node.os ? sys.platform : "";
   return [
@@ -730,23 +957,28 @@ function platformText(node) {
     .filter(Boolean)
     .join(" · ");
 }
+/** @param {Partial<SystemInfo> | null | undefined} sys @returns {DiskUsage | undefined} */
 function diskUsage(sys) {
   return sys?.disks?.find((disk) => disk.totalBytes > 0);
 }
 // Older nodes do not report their execution context, so they get no tag.
+/** @type {Record<string, [string, string]>} */
 const runAsLabels = {
   system: ["System", "System service, starts at boot"],
   user: ["User", "User session, runs while signed in"],
 };
+/** @param {Machine} node @returns {string} */
 function runAsTag(node) {
-  const label = runAsLabels[node.runAs];
+  const label = runAsLabels[node.runAs || ""];
   return label
     ? `<span class="context-tag" title="${label[1]}">${label[0]}</span>`
     : "";
 }
+/** @param {number} count @param {string} noun @returns {string} */
 function plural(count, noun) {
   return count + " " + noun + (count === 1 ? "" : "s");
 }
+/** @param {string} label @returns {string} */
 function badge(label) {
   const kind = [
     "Idle",
@@ -771,22 +1003,27 @@ function badge(label) {
         : "";
   return `<span class="badge ${kind}"><span class="status-dot"></span>${esc(label)}</span>`;
 }
+/** @param {number | null | undefined} value @param {string} label @returns {string} */
 function meter(value, label) {
   if (value == null || !Number.isFinite(value))
     return '<span class="unknown">—<span class="sr-only">Unknown</span></span>';
   return `<div class="resource"><meter min="0" max="100" low="85" high="95" optimum="0" value="${Math.min(100, Math.max(0, value))}" aria-label="${esc(label)}"></meter><span>${Math.round(value)}%</span></div>`;
 }
+/** @param {string} title @param {string} description @param {string} [action] @returns {string} */
 function empty(title, description, action = "") {
   return `<div class="empty"><strong>${esc(title)}</strong><p>${esc(description)}</p>${action}</div>`;
 }
+/** @param {string} title @param {string} body @param {string} [side] @returns {string} */
 function panel(title, body, side = "") {
   return `<section class="panel"><div class="panel-heading"><h2>${title}</h2>${side}</div>${body}</section>`;
 }
+/** @param {string[]} headers @param {string[]} rows @returns {string} */
 function table(headers, rows) {
   return `<div class="table-wrap" role="region" aria-label="Records" tabindex="0"><table><thead><tr>${headers
     .map((h) => `<th scope="col">${esc(h)}</th>`)
     .join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
 }
+/** @type {[string, string, string?][]} */
 const machineColumns = [
   ["Machine", "name"],
   ["Status", "status"],
@@ -796,6 +1033,7 @@ const machineColumns = [
   ["Memory", "memory", "memory"],
   ["Disk", "disk", "disk"],
 ];
+/** @param {string[]} rows @param {boolean} showGPUs @returns {string} */
 function machineTable(rows, showGPUs) {
   const head = machineColumns
     .filter(([, key]) => key !== "gpu" || showGPUs)
@@ -809,18 +1047,22 @@ function machineTable(rows, showGPUs) {
 
 // An offline User selection can still show its online System companion's
 // telemetry. Keep the selected identity for details, actions, and routing.
+/** @param {Machine} node @returns {Machine} */
 function machineMetricsContext(node) {
   if (!node.online && node.hybridRole === "user")
     return node.contexts?.find((context) => context.hybridRole === "system" && context.online) || node;
   return node;
 }
+/** @param {GPUInfo[] | undefined} gpus @returns {GPUInfo[]} */
 function visibleGPUs(gpus) {
-  return (gpus || []).filter((gpu) => ["discrete", "npu"].includes(gpu.kind));
+  return (gpus || []).filter((gpu) => ["discrete", "npu"].includes(gpu.kind || ""));
 }
+/** @param {GPUInfo[] | undefined} gpus @returns {number | null} */
 function gpuMemoryUsage(gpus) {
-  const values = visibleGPUs(gpus).map((gpu) => gpu.memoryUsedBytes == null ? null : percent(gpu.memoryUsedBytes, gpu.memoryTotalBytes)).filter((value) => value != null && Number.isFinite(value));
+  const values = visibleGPUs(gpus).map((gpu) => gpu.memoryUsedBytes == null ? null : percent(gpu.memoryUsedBytes, gpu.memoryTotalBytes)).filter(/** @returns {value is number} */ (value) => value != null && Number.isFinite(value));
   return values.length ? Math.max(...values) : null;
 }
+/** @param {GPUInfo[] | undefined} gpus @param {boolean} online @param {boolean} [metadata] @returns {string} */
 function gpuResources(gpus, online, metadata = false) {
   gpus = visibleGPUs(gpus);
   if (!gpus.length) return meter(null, "GPU/NPU memory usage");
@@ -834,7 +1076,9 @@ function gpuResources(gpus, online, metadata = false) {
     return metadata ? `<dt>${kind} memory usage</dt><dd>${resource}</dd>` : resource;
   }).join("");
 }
+/** @template {Machine} T @param {T[]} nodes @returns {T[]} */
 function sortedMachines(nodes) {
+  /** @param {Machine} n @returns {string | number | null | undefined} */
   const value = (n) => {
     const metrics = machineMetricsContext(n);
     switch (state.sort) {
@@ -867,48 +1111,53 @@ function sortedMachines(nodes) {
       av == null
         ? 0
         : typeof av === "string"
-          ? av.localeCompare(bv, undefined, { sensitivity: "base" })
-          : av - bv;
+          ? av.localeCompare(String(bv), undefined, { sensitivity: "base" })
+          : av - Number(bv);
     return (state.descending ? -order : order) || a.name.localeCompare(b.name);
   });
 }
 
+/** @param {Machine[]} nodes @param {boolean} showGPUs @returns {string[]} */
 function machineRows(nodes, showGPUs) {
   return nodes.map((n) => {
     const metrics = machineMetricsContext(n),
-      sys = metrics.online ? metrics.system : null,
+      sys = (metrics.online ? metrics.system : null) || /** @type {Partial<SystemInfo>} */ ({}),
       memory = percent(sys?.memoryUsedBytes, sys?.memoryTotalBytes),
-      disk = diskUsage(sys),
+      disk = diskUsage(sys) || {usedBytes: 0, totalBytes: 0},
       diskPercent = percent(disk?.usedBytes, disk?.totalBytes),
       gpuColumn = showGPUs ? `<td class="resource-column gpu-column" data-label="GPU/NPU">${gpuResources(metrics.system?.gpus, metrics.online)}</td>` : "",
       detail = statusDetail(n);
     const platformIcon =
-      { darwin: "laptop", windows: "windows", linux: "gateway" }[n.os] ||
+      (/** @type {Record<string, string>} */ ({ darwin: "laptop", windows: "windows", linux: "gateway" }))[n.os] ||
       "machine";
     return `<tr data-id="${esc(n.id)}"><td class="name-column"><div class="machine-cell"><span class="os-icon">${icon(platformIcon)}</span><div class="machine-text"><div class="machine-title"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.targetName || n.name)}">${esc(n.name)}</button>${contextChips(n)}</div><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version"> · ${esc(n.software?.version || "Unknown version")}</span></small></div><button class="icon-button machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="Actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(metrics)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${metrics.system?.logicalCPUs ? `<small>${plural(metrics.system.logicalCPUs, "core")}</small>` : ""}</td>${gpuColumn}<td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
   });
 }
+/** @param {Machine[]} nodes @returns {MachineGroup[]} */
 function groupedMachines(nodes) {
+  /** @type {Map<string, Machine[]>} */
   const groups = new Map();
   for (const node of nodes) {
-    const paired = node.hybridId && ["user", "system"].includes(node.hybridRole),
+    const paired = node.hybridId && ["user", "system"].includes(node.hybridRole || ""),
       key = paired ? "hybrid:" + node.hybridId : "node:" + node.id;
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(node);
+    groups.get(key)?.push(node);
   }
   return [...groups.values()].map((contexts) => {
     const user = contexts.find((n) => n.hybridRole === "user"),
-      selected = contexts.find((n) => n.id === state.contexts.get(n.hybridId)) || user || contexts[0];
+      selected = contexts.find((n) => n.id === state.contexts.get(n.hybridId || "")) || user || contexts[0];
     return { ...selected, targetName: selected.name, name: user?.name || contexts[0].name, contexts };
   });
 }
+/** @param {Machine} node @returns {string} */
 function contextChips(node) {
   if (!node.hybridId) return runAsTag(node);
-  return [...node.contexts]
+  return [...(node.contexts || [node])]
     .sort((a, b) => (a.hybridRole === "user" ? -1 : 1) - (b.hybridRole === "user" ? -1 : 1))
     .map((context) => `<button class="context-tag context-choice${context.online ? "" : " offline"}" data-action="context" data-id="${esc(context.id)}" aria-pressed="${node.id === context.id}" aria-description="${context.online ? "Online" : "Offline"}" title="${esc(context.name)} · ${context.online ? "Online" : "Offline"}${context.hybridRole === "system" ? " · For operations requiring elevation" : " · Default execution context"}"><span>${context.hybridRole === "user" ? "User" : "System"}</span></button>`)
     .join("");
 }
+/** @param {Machine} n @returns {boolean} */
 function machineMatches(n) {
   const text = [
     n.name,
@@ -933,8 +1182,9 @@ const stateFilters = [
   ["offline", "Offline"],
   ["disabled", "Disabled"],
 ];
+/** @param {Machine} n @param {string} filter @returns {boolean} */
 function inState(n, filter) {
-  if (n.contexts?.length > 1)
+  if (n.contexts && n.contexts.length > 1)
     return filter === "offline"
       ? n.contexts.every((context) => inState(context, filter))
       : n.contexts.some((context) => inState(context, filter));
@@ -953,6 +1203,7 @@ function inState(n, filter) {
       return true;
   }
 }
+/** @param {Machine[]} nodes @returns {string} */
 function stateFilter(nodes) {
   return `<div class="state-filter" role="group" aria-label="Filter machines by state">${stateFilters
     .map(([key, label]) => {
@@ -961,6 +1212,7 @@ function stateFilter(nodes) {
     })
     .join("")}</div>`;
 }
+/** @param {boolean} overview @returns {string} */
 function machinePanel(overview) {
   const all = groupedMachines(state.snapshot?.nodes || []);
   const nodes = overview
@@ -994,23 +1246,26 @@ function machinePanel(overview) {
       : `${nodes.length} of ${all.length}`;
   return `<section class="panel"><div class="table-tools"><label class="search">${icon("search")}<input id="machine-search" type="search" aria-label="Search machines" placeholder="Search names, platforms, or labels" value="${esc(state.search)}"></label>${stateFilter(all)}<span class="result-count">${count}</span></div>${body}</section>`;
 }
+/** @returns {string} */
 function gatewayPanel() {
-  const g = state.snapshot?.gateway || {},
-    sys = g.system || {},
+  const g = state.snapshot?.gateway || /** @type {Partial<NonNullable<FleetSnapshot['gateway']>>} */ ({}),
+    sys = g?.system || /** @type {Partial<SystemInfo>} */ ({}),
     disk = sys.disks?.[0],
     sampled = age(sys.sampledAt),
-    uptime = age(g.startedAt);
+    uptime = age(g?.startedAt);
   const sampleStale =
-    sampled !== "Unknown" && Date.now() - Date.parse(sys.sampledAt) > 60000;
+    sampled !== "Unknown" && Date.now() - Date.parse(sys.sampledAt || "") > 60000;
   const facts = [
-    g.software?.version && "Version " + esc(g.software.version),
+    g?.software?.version && "Version " + esc(g.software.version),
     uptime !== "Unknown" && "Up " + esc(uptime),
     sampleStale && `<span class="warn-text">Sampled ${esc(sampled)} ago</span>`,
   ].filter(Boolean);
+  /** @param {string} name @param {string} resourceIcon @param {number | null | undefined} value @param {string} text @returns {string} */
   const metric = (name, resourceIcon, value, text) =>
     `<div class="gateway-metric"><div class="metric-heading"><span class="resource-label">${icon(resourceIcon)}${esc(name)}</span><strong>${esc(text)}</strong></div>${value == null ? '<div class="metric-empty" aria-hidden="true"></div>' : meter(value, name)}</div>`;
   return `<section class="gateway-card" aria-label="Gateway health"><div class="gateway-identity"><span class="gateway-icon">${icon("gateway")}</span><div><span class="gateway-label">Gateway</span><strong>${esc(g.url || location.host)}</strong>${facts.length ? `<small>${facts.join(" · ")}</small>` : ""}</div></div><div class="gateway-metrics" title="${sampled === "Unknown" ? "Sample time unknown" : "Sampled " + esc(sampled) + " ago"}">${metric("CPU", "cpu", sys.cpuUsagePercent, sys.cpuUsagePercent == null ? "Unknown" : Math.round(sys.cpuUsagePercent) + "%")}${metric("Memory", "memory", percent(sys.memoryUsedBytes, sys.memoryTotalBytes), sys.memoryTotalBytes ? bytes(sys.memoryUsedBytes) + " of " + bytes(sys.memoryTotalBytes) : "Unknown")}${metric("State disk", "disk", percent(disk?.usedBytes, disk?.totalBytes), disk?.totalBytes ? bytes(disk.usedBytes) + " of " + bytes(disk.totalBytes) : "Unknown")}</div></section>`;
 }
+/** @returns {string} */
 function renderOverview() {
   const raw = state.snapshot?.nodes || [],
     nodes = groupedMachines(raw),
@@ -1020,12 +1275,14 @@ function renderOverview() {
       (n) => n.online && ["summary", "ready"].includes(n.status),
     );
   const work = reported.reduce((sum, n) => sum + n.activeCount, 0);
+  /** @param {string} label @param {number} value @param {string} filter @param {string} tone @returns {string} */
   const stat = (label, value, filter, tone) =>
     `<a class="stat ${tone}" href="#machines" data-action="filter-machines" data-filter="${filter}"><span class="stat-label">${tone ? '<span class="status-dot"></span>' : ""}${label}</span><span class="stat-value">${value}</span></a>`;
   return `${gatewayPanel()}<div class="fleet-summary">${stat("Online", online, "online", online ? "good" : "")}${stat("Offline", offline, "offline", offline ? "bad" : "")}${stat("Active work", work, "busy", work ? "warn" : "")}</div>${machinePanel(true)}`;
 }
 // Everything but pending invitations: the gateway deletes revoked and expired
 // ones and hides redeemed ones, which keep their machine's credential.
+/** @param {Invitation[]} items @returns {Invitation[]} */
 function clearable(items) {
   return items.filter(
     (i) =>
@@ -1033,6 +1290,7 @@ function clearable(items) {
   );
 }
 // A redeemed invitation is managed through its machine, not revoked here.
+/** @param {Invitation} i @param {string} status @returns {string} */
 function inviteAction(i, status) {
   if (status === "Redeemed")
     return state.snapshot?.nodes.some((n) => n.id === i.redeemedId)
@@ -1042,9 +1300,12 @@ function inviteAction(i, status) {
     ? `<button class="secondary compact" data-action="revoke-invite" data-id="${esc(i.id)}">Revoke</button>`
     : "";
 }
+/** @param {Invitation[]} items @returns {string} */
 function renderInvitations(items) {
-  const startup = { user: "User", system: "System", hybrid: "Hybrid" };
-  const rows = items.map((i) => {
+  /** @type {Record<string, string>} */
+  const startup = { user: "User", system: "System", hybrid: "Hybrid", "": "" };
+  const rows = items.map((item) => {
+    const i = {...item, serviceMode: item.serviceMode || ""};
     const status = i.revoked
       ? "Revoked"
       : i.redeemedId
@@ -1068,6 +1329,7 @@ function renderInvitations(items) {
       : "",
   );
 }
+/** @param {FleetKey[]} items @returns {string} */
 function renderKeys(items) {
   const keys = items.filter((k) => k.role === "common");
   return (
@@ -1090,6 +1352,7 @@ function renderKeys(items) {
     '<p class="notice">Common keys allow enrollment and discovery, not independent task execution. Account keys are not listed here. Keep keys out of worker-accessible files.</p>'
   );
 }
+/** @param {FleetUser[]} items @returns {string} */
 function renderUsers(items) {
   return panel(
     "Private fleet accounts",
@@ -1103,6 +1366,7 @@ function renderUsers(items) {
     `<button class="secondary compact" data-action="create-user">${icon("plus")}Create account</button>`,
   );
 }
+/** @param {UpdateResult} result @returns {string} */
 function renderUpdates(result) {
   const d = result.deployment;
   const body = d
@@ -1134,6 +1398,7 @@ function renderUpdates(result) {
       : "")
   );
 }
+/** @type {Record<string, [string, string]>} */
 const auditActions = {
   "session.signin": ["Signed in", "good"],
   "session.signin_failed": ["Sign-in failed", "bad"],
@@ -1160,15 +1425,17 @@ const auditActions = {
   "update.publish": ["Published update", "warn"],
   "update.check": ["Checked for release", ""],
 };
+/** @param {number} [before] @returns {`audit?${string}`} */
 function auditPath(before = 0) {
   const query = new URLSearchParams({ limit: "100" });
   if (state.auditCategory) query.set("category", state.auditCategory);
-  if (before) query.set("before", before);
-  return "audit?" + query;
+  if (before) query.set("before", String(before));
+  return `audit?${query}`;
 }
 // Polling adds newer events above the pages already loaded.
+/** @param {AuditPage} data @returns {AuditPage} */
 function mergeAudit(data) {
-  const current = state.auxiliary;
+  const current = state.auxiliary?.page === "activity" ? state.auxiliary.data : null;
   if (!current?.events?.length) return data;
   const newest = current.events[0].id;
   return {
@@ -1176,6 +1443,7 @@ function mergeAudit(data) {
     next: current.next,
   };
 }
+/** @param {string} value @returns {string} */
 function stamp(value) {
   return new Date(value).toLocaleString([], {
     month: "short",
@@ -1185,9 +1453,10 @@ function stamp(value) {
     second: "2-digit",
   });
 }
+/** @returns {string} */
 function renderActivity() {
-  const operator = state.session.role === "superuser",
-    data = state.auxiliary,
+  const operator = state.session?.role === "superuser",
+    data = state.auxiliary?.page === "activity" ? state.auxiliary.data : null,
     categories = [
       ["", "All activity"],
       ["session", "Sign-ins"],
@@ -1221,17 +1490,21 @@ function renderActivity() {
         );
   return `<section class="panel"><div class="table-tools"><select id="audit-category" class="filter" aria-label="Filter activity">${categories.map(([value, text]) => `<option value="${value}" ${value === state.auditCategory ? "selected" : ""}>${text}</option>`).join("")}</select><span class="result-count">${data ? plural(data.events.length, "event") + (data.next ? " loaded" : "") : ""}</span><span class="audit-actions">${data?.events.length ? '<button class="secondary compact" data-action="clear-audit">Clear log</button>' : ""}</span></div>${body}<div class="audit-footer">${data?.next ? '<button class="secondary compact" data-action="audit-more">Load older</button>' : ""}</div></section>`;
 }
+/** @returns {string} */
 function renderAccount() {
+  if (!state.session) return "";
   return `<section class="panel content-card"><h2>Browser password</h2><p>Signed in as ${esc(state.session.username)}. Changing your password signs out every browser session for this login. CLI keys stay unchanged.</p><form id="account-form"><label>Current password<input name="currentPassword" type="password" autocomplete="current-password" required maxlength="1024"></label><label>New password<input name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="1024"></label><label>Confirm new password<input name="confirm" type="password" autocomplete="new-password" required minlength="12" maxlength="1024"></label><p class="field-help">Use at least 12 characters. Spaces and password managers are supported.</p><p class="form-error" role="alert"></p><button class="primary" type="submit">Change password</button></form></section>`;
 }
 
+/** @returns {void} */
 function render() {
   if (!state.session) return;
   const content = $("#page-content");
   const active = document.activeElement;
   let focusSelector = "";
+  /** @type {[number | null, number | null] | undefined} */
   let selection;
-  if (content.contains(active)) {
+  if (active instanceof HTMLElement && content.contains(active)) {
     if (active.id) focusSelector = "#" + CSS.escape(active.id);
     else if (active.dataset.action) {
       focusSelector = `[data-action="${CSS.escape(active.dataset.action)}"]`;
@@ -1242,8 +1515,8 @@ function render() {
       if (active.dataset.filter)
         focusSelector += `[data-filter="${CSS.escape(active.dataset.filter)}"]`;
     } else if (active.getAttribute("href"))
-      focusSelector = `a[href="${CSS.escape(active.getAttribute("href"))}"]`;
-    if (active.id === "machine-search")
+      focusSelector = `a[href="${CSS.escape(active.getAttribute("href") || "")}"]`;
+    if (active instanceof HTMLInputElement && active.id === "machine-search")
       selection = [active.selectionStart, active.selectionEnd];
   }
   if (state.page === "overview")
@@ -1251,7 +1524,7 @@ function render() {
       ? renderOverview()
       : empty("Loading your fleet", "Waiting for the gateway snapshot.");
   if (state.page === "machines") {
-    if (!$("#machine-search", content)) content.innerHTML = machinePanel(false);
+    if (!find("#machine-search", content)) content.innerHTML = machinePanel(false);
     else {
       // Keep native inputs alive during both typing and background polling.
       // Replacing an input can lose keystrokes, selection, or an open dropdown.
@@ -1267,7 +1540,7 @@ function render() {
     }
   }
   if (state.page === "activity") {
-    if (!$("#audit-category", content)) content.innerHTML = renderActivity();
+    if (!find("#audit-category", content)) content.innerHTML = renderActivity();
     else {
       // Keep the filter control alive across polling, as on the Machines page.
       const template = document.createElement("template");
@@ -1284,26 +1557,26 @@ function render() {
   }
   if (state.page === "account") content.innerHTML = renderAccount();
   if (["invitations", "keys", "users", "updates"].includes(state.page)) {
-    const renderer = {
-      invitations: renderInvitations,
-      keys: renderKeys,
-      users: renderUsers,
-      updates: renderUpdates,
-    }[state.page];
-    content.innerHTML =
-      state.auxiliary == null
-        ? empty("Loading", "Fetching current records from the gateway.")
-        : renderer(state.auxiliary);
+    const auxiliary = state.auxiliary;
+    if (!auxiliary || auxiliary.page !== state.page)
+      content.innerHTML = empty("Loading", "Fetching current records from the gateway.");
+    else switch (auxiliary.page) {
+      case "invitations": content.innerHTML = renderInvitations(auxiliary.data); break;
+      case "keys": content.innerHTML = renderKeys(auxiliary.data); break;
+      case "users": content.innerHTML = renderUsers(auxiliary.data); break;
+      case "updates": content.innerHTML = renderUpdates(auxiliary.data); break;
+    }
   }
   enhanceSelects(content);
   content.setAttribute("aria-busy", "false");
-  const replacement = focusSelector && $(focusSelector, content);
+  const replacement = focusSelector && find(focusSelector, content);
   if (replacement) {
     replacement.focus({ preventScroll: true });
-    if (selection) replacement.setSelectionRange(...selection);
+    if (selection && replacement instanceof HTMLInputElement) replacement.setSelectionRange(...selection);
   }
   syncMachineMenu();
 }
+/** @param {string} value @returns {string} */
 function clock(value) {
   return new Date(value).toLocaleTimeString([], {
     hour: "2-digit",
@@ -1311,6 +1584,7 @@ function clock(value) {
     second: "2-digit",
   });
 }
+/** @param {string} message @returns {void} */
 function banner(message) {
   state.stale = !!message;
   $("#stale-banner").hidden = !message;
@@ -1319,6 +1593,7 @@ function banner(message) {
       ? message + " Last update " + clock(state.updatedAt) + "."
       : message;
 }
+/** @param {boolean} [manual] @returns {Promise<void>} */
 async function refresh(manual = false) {
   if (!state.session || state.busy || (document.hidden && !manual)) return;
   state.busy = true;
@@ -1331,23 +1606,23 @@ async function refresh(manual = false) {
     if (session !== state.session) return;
     state.snapshot = snapshot;
     state.updatedAt = snapshot.observedAt;
-    $("#nav-count").textContent = groupedMachines(snapshot.nodes).length;
-    const route = {
-      invitations: "fleet/installations",
-      keys: "fleet/keys",
-      users: "admin/users",
-      updates: "admin/updates",
-      activity: auditPath(),
-    }[page];
-    if (route) {
-      const data = await api(route);
-      if (session !== state.session) return;
-      if (page === state.page)
-        state.auxiliary = page === "activity" ? mergeAudit(data) : data;
+    $("#nav-count").textContent = String(groupedMachines(snapshot.nodes).length);
+    /** @type {Auxiliary | null} */
+    let auxiliary = null;
+    switch (page) {
+      case "invitations": auxiliary = {page, data: await api("fleet/installations")}; break;
+      case "keys": auxiliary = {page, data: await api("fleet/keys")}; break;
+      case "users": auxiliary = {page, data: await api("admin/users")}; break;
+      case "updates": auxiliary = {page, data: await api("admin/updates")}; break;
+      case "activity": auxiliary = {page, data: await api(auditPath())}; break;
     }
+    if (session !== state.session) return;
+    if (auxiliary && page === state.page)
+      state.auxiliary = auxiliary.page === "activity"
+        ? {page: "activity", data: mergeAudit(auxiliary.data)} : auxiliary;
     if (state.invitation && $("#dialog").open) await updateInvitation();
     if (state.startupChange && $("#dialog").open) {
-      const node = snapshot.nodes.find((n) => n.id === state.startupChange.id);
+      const node = snapshot.nodes.find((n) => n.id === state.startupChange?.id);
       $("#startup-progress").textContent =
         node?.online && node.runAs === "system"
           ? node.name + " is online in System context. You can close this dialog."
@@ -1359,7 +1634,7 @@ async function refresh(manual = false) {
     // Resource refreshes preserve focus. Never replace an in-progress password form.
     if (page === state.page && state.page !== "account") render();
   } catch (error) {
-    if (state.session) banner(error.message);
+    if (state.session) banner(errorMessage(error));
   } finally {
     state.busy = false;
     // Keep fast manual refreshes visible as one short turn of the icon.
@@ -1370,6 +1645,7 @@ async function refresh(manual = false) {
     }
   }
 }
+/** @returns {void} */
 function navigate() {
   if (!state.session) return;
   closeMachineMenu();
@@ -1392,7 +1668,7 @@ function navigate() {
     "invitations",
   ].includes(page);
   document.title = "Control · " + info[0];
-  document.querySelectorAll("[data-page]").forEach((a) => {
+  /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll("[data-page]")).forEach((a) => {
     a.classList.toggle("active", a.dataset.page === page);
     if (a.dataset.page === page) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
@@ -1409,15 +1685,18 @@ window.addEventListener("hashchange", navigate);
 
 // One popover keeps focus through table polling and moves into a modal drawer
 // when opened there, so the modal does not make its actions inert.
+/** @type {{id: string, action: string, drawer: boolean} | null} */
 let machineMenuTarget = null;
+/** @returns {HTMLElement | null} */
 function machineMenuSource() {
   return (
     machineMenuTarget &&
-    $(
+    find(
       `${machineMenuTarget.drawer ? ".drawer-actions" : ".machine-table"} [data-action="${machineMenuTarget.action}"][data-id="${CSS.escape(machineMenuTarget.id)}"]`,
     )
   );
 }
+/** @param {boolean} [restoreFocus] @returns {void} */
 function closeMachineMenu(restoreFocus = false) {
   const menu = $("#machine-menu");
   if (!menu.matches(":popover-open")) return;
@@ -1425,20 +1704,23 @@ function closeMachineMenu(restoreFocus = false) {
   menu.hidePopover();
   if (restoreFocus) source?.focus({ preventScroll: true });
 }
+/** @returns {void} */
 function syncMachineMenu() {
   const menu = $("#machine-menu");
   if (!menu.matches(":popover-open")) return;
-  const node = state.snapshot?.nodes.find((n) => n.id === machineMenuTarget.id);
-  if (!node || !machineMenuSource()) {
+  const target = machineMenuTarget;
+  const node = state.snapshot?.nodes.find((n) => n.id === target?.id);
+  if (!node || !target || !machineMenuSource()) {
     closeMachineMenu();
     return;
   }
+  /** @param {string} action @param {string} label @param {boolean} [danger] @returns {string} */
   const item = (action, label, danger = false) =>
     `<button role="menuitem" tabindex="-1" class="menu-item${danger ? " destructive" : ""}" data-action="${action}" data-id="${esc(node.id)}">${label}</button>`;
   const startup = canChangeStartup(node) ? item("startup", "Startup context") : "",
     secrets = node.online && !node.disabled ? item("worker-secrets", "Secrets") : "",
     separator = '<div role="separator" class="menu-separator"></div>';
-  const html = machineMenuTarget.drawer
+  const html = target.drawer
     ? secrets + startup + (secrets || startup ? separator : "") + item("unregister", "Unregister", true)
     : item("details", "View details") +
       item("rename", "Rename") +
@@ -1450,27 +1732,28 @@ function syncMachineMenu() {
       item("unregister", "Unregister", true);
   if (menu.innerHTML !== html) {
     const focused = menu.contains(document.activeElement),
-      action = document.activeElement.dataset.action;
+      action = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.action : "";
     menu.innerHTML = html;
     if (focused)
       (
-        $(`[data-action="${action}"]`, menu) || $("[role=menuitem]", menu)
+        find(`[data-action="${action}"]`, menu) || $("[role=menuitem]", menu)
       ).focus();
   }
   menu.setAttribute("aria-label", "Actions for " + node.name);
-  const trigger = $(
-    `${machineMenuTarget.drawer ? ".drawer-actions" : ".machine-table"} .machine-menu-button[data-id="${CSS.escape(node.id)}"]`,
+  const trigger = find(
+    `${target.drawer ? ".drawer-actions" : ".machine-table"} .machine-menu-button[data-id="${CSS.escape(node.id)}"]`,
   );
   trigger?.setAttribute("aria-expanded", "true");
 }
+/** @param {HTMLElement} source @param {{x: number, y: number}} [point] @returns {void} */
 function openMachineMenu(source, point) {
   closeMachineMenu();
   document
     .querySelectorAll("[popover]:popover-open")
-    .forEach((popover) => popover.hidePopover());
+    .forEach((popover) => { if (popover instanceof HTMLElement) popover.hidePopover(); });
   machineMenuTarget = {
-    id: source.dataset.id,
-    action: source.dataset.action,
+    id: source.dataset.id || "",
+    action: source.dataset.action || "",
     drawer: !!source.closest(".drawer-actions"),
   };
   const menu = $("#machine-menu"),
@@ -1505,7 +1788,7 @@ document.addEventListener(
     if (
       event.button !== 0 ||
       event.ctrlKey ||
-      event.target.closest("#machine-menu, .machine-menu-button")
+      (event.target instanceof Element && event.target.closest("#machine-menu, .machine-menu-button"))
     )
       return;
     closeMachineMenu();
@@ -1516,14 +1799,14 @@ $("#machine-menu").addEventListener("pointermove", () => {
   delete document.documentElement.dataset.keyboard;
 });
 $("#machine-menu").addEventListener("keydown", (event) => {
-  const items = [...event.currentTarget.querySelectorAll("[role=menuitem]")],
-    index = items.indexOf(document.activeElement),
-    moves = {
+  const items = [.../** @type {NodeListOf<HTMLElement>} */ ($("#machine-menu").querySelectorAll("[role=menuitem]"))],
+    index = document.activeElement instanceof HTMLElement ? items.indexOf(document.activeElement) : -1,
+    moves = /** @type {Record<string, number>} */ ({
       ArrowDown: (index + 1) % items.length,
       ArrowUp: (index + items.length - 1) % items.length,
       Home: 0,
       End: items.length - 1,
-    };
+    });
   if (event.key in moves) {
     event.preventDefault();
     items[moves[event.key]].focus();
@@ -1533,6 +1816,7 @@ $("#machine-menu").addEventListener("keydown", (event) => {
   }
 });
 document.addEventListener("contextmenu", (event) => {
+  if (!(event.target instanceof Element)) return;
   const row = event.target.closest(".machine-table tbody tr");
   if (!row || event.shiftKey) return;
   event.preventDefault();
@@ -1542,8 +1826,9 @@ document.addEventListener("contextmenu", (event) => {
   });
 });
 document.addEventListener("keydown", (event) => {
+  if (!(event.target instanceof Element)) return;
   const source = event.target.closest(".machine-name, .machine-menu-button");
-  if (!source) return;
+  if (!(source instanceof HTMLElement)) return;
   if (
     event.key === "ContextMenu" ||
     (event.shiftKey && event.key === "F10") ||
@@ -1559,13 +1844,13 @@ document.addEventListener("keydown", (event) => {
 document.addEventListener(
   "scroll",
   (event) => {
-    if (!$("#machine-menu").contains(event.target)) closeMachineMenu();
+    if (!(event.target instanceof Node) || !$("#machine-menu").contains(event.target)) closeMachineMenu();
   },
   true,
 );
 window.addEventListener("resize", () => closeMachineMenu());
 document.addEventListener("input", (event) => {
-  if (event.target.id !== "machine-search") return;
+  if (!(event.target instanceof HTMLInputElement) || event.target.id !== "machine-search") return;
   state.search = event.target.value;
   const start = event.target.selectionStart;
   render();
@@ -1573,7 +1858,7 @@ document.addEventListener("input", (event) => {
   $("#machine-search").setSelectionRange(start, start);
 });
 document.addEventListener("change", (event) => {
-  if (event.target.id === "audit-category") {
+  if (event.target instanceof HTMLSelectElement && event.target.id === "audit-category") {
     state.auditCategory = event.target.value;
     state.auxiliary = null;
     render();
@@ -1585,8 +1870,9 @@ document.addEventListener("change", (event) => {
 // Styled listbox over a hidden native select. The select stays the source of
 // truth for form data and filters; the button and popover only present it.
 let selectCount = 0;
+/** @param {ParentNode} root @returns {void} */
 function enhanceSelects(root) {
-  root.querySelectorAll("select").forEach((select) => {
+  /** @type {NodeListOf<EnhancedSelect>} */ (root.querySelectorAll("select")).forEach((select) => {
     if (select.syncListbox) {
       select.syncListbox();
       return;
@@ -1595,7 +1881,7 @@ function enhanceSelects(root) {
       options = [...select.options],
       name =
         select.getAttribute("aria-label") ||
-        select.closest("label")?.firstChild?.textContent.trim() ||
+        select.closest("label")?.firstChild?.textContent?.trim() ||
         "";
     const trigger = document.createElement("button");
     trigger.type = "button";
@@ -1626,6 +1912,7 @@ function enhanceSelects(root) {
     let active = 0,
       closedAt = 0;
     const items = [...list.children];
+    /** @param {number} index @returns {void} */
     const highlight = (index) => {
       active = Math.max(0, Math.min(items.length - 1, index));
       items.forEach((item, i) => item.classList.toggle("active", i === active));
@@ -1634,21 +1921,22 @@ function enhanceSelects(root) {
     };
     select.syncListbox = () => {
       const current = select.selectedIndex;
-      trigger.firstChild.textContent = options[current]?.textContent || "";
+      $(".select-value", trigger).textContent = options[current]?.textContent || "";
       trigger.setAttribute(
         "aria-label",
         name + ": " + (options[current]?.textContent || ""),
       );
       items.forEach((item, i) =>
-        item.setAttribute("aria-selected", i === current),
+        item.setAttribute("aria-selected", String(i === current)),
       );
     };
+    /** @param {number} index @returns {void} */
     const choose = (index) => {
       if (select.selectedIndex !== index) {
         select.selectedIndex = index;
         select.dispatchEvent(new Event("change", { bubbles: true }));
       }
-      select.syncListbox();
+      select.syncListbox?.();
       list.hidePopover();
       trigger.focus();
     };
@@ -1680,7 +1968,7 @@ function enhanceSelects(root) {
         "px";
     };
     list.addEventListener("beforetoggle", (event) => {
-      trigger.setAttribute("aria-expanded", event.newState === "open");
+      trigger.setAttribute("aria-expanded", String(event.newState === "open"));
       if (event.newState === "closed") closedAt = performance.now();
     });
     list.addEventListener("toggle", (event) => {
@@ -1689,21 +1977,23 @@ function enhanceSelects(root) {
       list.focus({ preventScroll: true });
     });
     list.addEventListener("click", (event) => {
+      if (!(event.target instanceof Element)) return;
       const item = event.target.closest("[role=option]");
       if (item) choose(items.indexOf(item));
     });
     list.addEventListener("pointermove", (event) => {
+      if (!(event.target instanceof Element)) return;
       const item = event.target.closest("[role=option]");
       if (item && items.indexOf(item) !== active)
         highlight(items.indexOf(item));
     });
     list.addEventListener("keydown", (event) => {
-      const moves = {
+      const moves = /** @type {Record<string, number>} */ ({
         ArrowDown: active + 1,
         ArrowUp: active - 1,
         Home: 0,
         End: items.length - 1,
-      };
+      });
       if (event.key in moves) highlight(moves[event.key]);
       else if (event.key === "Enter" || event.key === " ") choose(active);
       else if (event.key === "Tab") list.hidePopover();
@@ -1712,10 +2002,10 @@ function enhanceSelects(root) {
         const letter = event.key.toLowerCase(),
           next = items.findIndex(
             (item, i) =>
-              i > active && item.textContent.toLowerCase().startsWith(letter),
+              i > active && (item.textContent || "").toLowerCase().startsWith(letter),
           );
         const first = items.findIndex((item) =>
-          item.textContent.toLowerCase().startsWith(letter),
+          (item.textContent || "").toLowerCase().startsWith(letter),
         );
         if (next >= 0 || first >= 0) highlight(next >= 0 ? next : first);
       } else return;
@@ -1725,7 +2015,9 @@ function enhanceSelects(root) {
   });
 }
 
+/** @type {ReturnType<typeof setTimeout> | undefined} */
 let toastTimer;
+/** @param {string} message @returns {void} */
 function toast(message) {
   clearTimeout(toastTimer);
   $("#toast").textContent = message;
@@ -1734,6 +2026,7 @@ function toast(message) {
     $("#toast").hidden = true;
   }, 5000);
 }
+/** @returns {void} */
 function closeDialog() {
   closeMachineMenu();
   state.invitation = null;
@@ -1745,6 +2038,7 @@ $("#dialog").addEventListener("cancel", (event) => {
   event.preventDefault();
   closeDialog();
 });
+/** @param {string} title @param {string} html @param {string} [className] @returns {void} */
 function dialog(title, html, className = "") {
   closeMachineMenu();
   $("#dialog").className = className;
@@ -1752,11 +2046,12 @@ function dialog(title, html, className = "") {
   $("#dialog-body").innerHTML = html;
   enhanceSelects($("#dialog-body"));
   if (!$("#dialog").open) $("#dialog").showModal();
-  const first = $(
+  const first = find(
     "#dialog-body input:not([readonly]):not([disabled]), #dialog-body .select-trigger, #dialog-body textarea:not([readonly]):not([disabled])",
   );
   (first || $("#dialog-title")).focus({ preventScroll: true });
 }
+/** @param {string} title @param {string} html @param {(fields: Record<string, string>) => Promise<boolean | void>} handler @param {string} [label] @param {boolean} [danger] @param {string} [className] @returns {void} */
 function formDialog(title, html, handler, label = "Save", danger = false, className = "") {
   dialog(
     title,
@@ -1765,10 +2060,10 @@ function formDialog(title, html, handler, label = "Save", danger = false, classN
   );
   $("#modal-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const form = event.currentTarget,
+    const form = $("#modal-form"),
       button = $("button[type=submit]", form),
       errorBox = $(".form-error", form);
-    const fields = Object.fromEntries(new FormData(form));
+    const fields = formFields(form);
     button.disabled = true;
     errorBox.textContent = "";
     try {
@@ -1776,11 +2071,11 @@ function formDialog(title, html, handler, label = "Save", danger = false, classN
       if (keep !== false) closeDialog();
       refresh();
     } catch (error) {
-      errorBox.textContent = error.message;
+      errorBox.textContent = errorMessage(error);
       if (
-        error.status === 409 &&
+        error instanceof Error && "status" in error && error.status === 409 &&
         error.message === "name has an existing invitation" &&
-        !$("#force-confirm", form)
+        !find("#force-confirm", form)
       ) {
         const confirmation = document.createElement("label");
         confirmation.className = "force-confirm";
@@ -1796,9 +2091,10 @@ function formDialog(title, html, handler, label = "Save", danger = false, classN
 
 // Encrypt in the browser. Neither plaintext values nor private keys are sent to
 // the gateway, persisted in browser storage, or placed in HTML attributes.
+/** @param {Machine} node @param {string} name @param {string} value @param {string} publicKey @returns {Promise<SecretEnvelope>} */
 async function encryptWorkerSecret(node, name, value, publicKey) {
-  const encode = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))),
-    decode = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0)),
+  const encode = /** @param {ArrayBuffer | Uint8Array<ArrayBuffer>} bytes */ (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))),
+    decode = /** @param {string} text */ (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0)),
     text = new TextEncoder(),
     plain = text.encode(value);
   if (!plain.length || plain.length > 4096 || value.includes("\0"))
@@ -1809,6 +2105,7 @@ async function encryptWorkerSecret(node, name, value, publicKey) {
     const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]),
       recipient = await crypto.subtle.importKey("raw", decode(publicKey), { name: "ECDH", namedCurve: "P-256" }, false, []),
       shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: recipient }, pair.privateKey, 256));
+    /** @type {CryptoKey} */
     let material;
     try {
       material = await crypto.subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
@@ -1830,9 +2127,10 @@ async function encryptWorkerSecret(node, name, value, publicKey) {
   }
 }
 
+/** @param {Machine} node @param {Element} [source] @returns {Promise<void>} */
 async function workerSecrets(node, source) {
   const session = state.session;
-  const result = await api("fleet/nodes/" + encodeURIComponent(node.id) + "/secrets");
+  const result = await api(`fleet/nodes/${encodeURIComponent(node.id)}/secrets`);
   if (state.session !== session || (source && !source.isConnected)) return;
   dialog(
     "Secrets on " + node.name,
@@ -1841,10 +2139,11 @@ async function workerSecrets(node, source) {
   );
 }
 
+/** @param {Machine} node @param {string} [name] @returns {Promise<void>} */
 async function setWorkerSecret(node, name = "") {
   // Check access and fetch the current process's key before asking for a value.
   const session = state.session;
-  const result = await api("fleet/nodes/" + encodeURIComponent(node.id) + "/secrets");
+  const result = await api(`fleet/nodes/${encodeURIComponent(node.id)}/secrets`);
   if (state.session !== session) return;
   if (!CSS.supports("-webkit-text-security", "disc"))
     throw new Error("This browser cannot mask secret entry safely. Use control secrets set NAME --node WORKER in your terminal.");
@@ -1857,9 +2156,9 @@ async function setWorkerSecret(node, name = "") {
   // fields. These textarea-backed editors remain strictly one line high, without
   // wrapping or resize handles. No login form or name attributes are present.
   const editor = $("#secret-editor"),
-    reference = $('[data-entry="reference"]', editor),
-    content = $('[data-entry="content"]', editor),
-    save = $("[data-save-entry]", editor),
+    reference = $("#entry-reference", editor),
+    content = $("#entry-content", editor),
+    save = $("button[data-save-entry]", editor),
     errorBox = $(".form-error", editor);
   $("[data-cancel-entry]", editor).addEventListener("click", async () => {
     reference.value = "";
@@ -1903,7 +2202,7 @@ async function setWorkerSecret(node, name = "") {
       const envelope = await encryptWorkerSecret(node, entryName, value, result.key);
       value = "";
       if (!editor.isConnected || state.session !== session) return;
-      await api("fleet/nodes/" + encodeURIComponent(node.id) + "/secrets/" + encodeURIComponent(entryName), "PUT", envelope);
+      await api(`fleet/nodes/${encodeURIComponent(node.id)}/secrets/${encodeURIComponent(entryName)}`, "PUT", envelope);
       if (!editor.isConnected || state.session !== session) return;
       toast("Secret saved on " + node.name + ". Its value cannot be retrieved.");
       saved = true;
@@ -1917,7 +2216,7 @@ async function setWorkerSecret(node, name = "") {
           `<p>The secret was saved, but the list could not be refreshed. Reload the list to inspect its metadata.</p><div class="form-actions"><button type="button" class="secondary" data-action="worker-secrets" data-id="${esc(node.id)}">Reload secrets</button></div>`,
           "machine-drawer secrets-drawer");
       } else {
-        errorBox.textContent = error.message;
+        errorBox.textContent = errorMessage(error);
       }
     } finally {
       value = "";
@@ -1925,6 +2224,7 @@ async function setWorkerSecret(node, name = "") {
     }
   });
 }
+/** @param {string} title @param {string} value @param {string} description @returns {void} */
 function showSecret(title, value, description) {
   dialog(
     title,
@@ -1932,6 +2232,7 @@ function showSecret(title, value, description) {
   );
   $("#secret-value").textContent = value;
 }
+/** @param {string} title @param {string} message @param {() => Promise<unknown>} handler @param {string} [label] @param {string} [className] @returns {void} */
 function confirmAction(title, message, handler, label = "Confirm", className = "") {
   formDialog(
     title,
@@ -1945,18 +2246,22 @@ function confirmAction(title, message, handler, label = "Confirm", className = "
     className,
   );
 }
+/** @param {Machine} node @returns {boolean} */
 function canChangeStartup(node) {
   return (
     node.runAs === "user" && ["linux", "darwin", "windows"].includes(node.os)
   );
 }
+/** @param {string} value @param {boolean} windows @returns {string} */
 function commandQuote(value, windows) {
   return "'" + value.replaceAll("'", windows ? "''" : "'\\''") + "'";
 }
+/** @param {Machine} node @returns {void} */
 function changeStartup(node) {
   state.invitation = null;
   state.startupChange = null;
   const windows = node.os === "windows";
+  /** @type {Map<string, StartupResult>} */
   const attempts = new Map();
   formDialog(
     "Change startup context for " + node.name,
@@ -1976,19 +2281,20 @@ function changeStartup(node) {
       const name = mode === "hybrid" ? node.name : windows ? node.name : fields.systemName.trim();
       if (mode === "hybrid" && name.length > 56)
         throw new Error("Hybrid names allow at most 56 characters. Rename this machine first.");
-      if (mode === "system" && !windows && (!name || state.snapshot.nodes.some((n) => n.name === name)))
+      if (mode === "system" && !windows && (!name || state.snapshot?.nodes.some((n) => n.name === name)))
         throw new Error("Choose an unused System routing name. Unix System installation cannot reuse the User identity.");
-      if (mode === "hybrid" && state.snapshot.nodes.some((n) => n.name === name + "-system"))
+      if (mode === "hybrid" && state.snapshot?.nodes.some((n) => n.name === name + "-system"))
         throw new Error("The System companion name is already registered. Manage that context separately.");
       if (!attempts.has(mode)) {
         try {
-          attempts.set(mode, await api("fleet/nodes/" + encodeURIComponent(node.id) + "/startup", "POST", { mode }));
+          attempts.set(mode, await api(`fleet/nodes/${encodeURIComponent(node.id)}/startup`, "POST", { mode }));
         } catch (error) {
-          if ([401, 403].includes(error.status)) throw error;
-          attempts.set(mode, { status: "unknown", reason: error.message });
+          if (error instanceof Error && "status" in error && (error.status === 401 || error.status === 403)) throw error;
+          attempts.set(mode, { status: "unknown", reason: errorMessage(error) });
         }
       }
       const attempt = attempts.get(mode);
+      if (!attempt) throw new Error("Startup request has no recorded outcome.");
       const outcome = attempt.status === "accepted"
         ? "The machine accepted the change. Wait for System context to reconnect. The displayed command is for local recovery only; do not run it while the change is in progress. "
         : (attempt.reason || "The node could not apply the change remotely.") + " No automatic retry was made. ";
@@ -2049,6 +2355,7 @@ function changeStartup(node) {
   $('#modal-form select[name="serviceMode"]').addEventListener("change", sync);
   sync();
 }
+/** @param {InstallationLink} link @param {string} [command] @param {string} [description] @returns {void} */
 function showInstallationCommand(
   link,
   command = link.command,
@@ -2063,6 +2370,7 @@ function showInstallationCommand(
   note.textContent = "Waiting for installation · Expires " + date(link.expiresAt);
   $("#dialog-body").append(note);
 }
+/** @returns {void} */
 function addMachine() {
   state.invitation = null;
   formDialog(
@@ -2086,19 +2394,21 @@ function addMachine() {
     "Create installation command",
   );
 }
+/** @returns {Promise<void>} */
 async function updateInvitation() {
   const link = state.invitation;
+  if (!link) return;
   const records = await api("fleet/installations");
   if (state.invitation !== link) return;
   const record = records.find((i) => i.id === link.id),
-    note = $("#enrollment-progress");
+    note = find("#enrollment-progress");
   if (!record || !note) return;
   if (record.revoked)
     note.textContent = "Invitation revoked. This command is no longer valid.";
   else if (record.redeemedId) {
     // This status fetch starts after observing redemption, not before it.
     const current = await api("status");
-    if (state.invitation !== link || !$("#enrollment-progress")) return;
+    if (state.invitation !== link || !find("#enrollment-progress")) return;
     const node = current.nodes.find(
       (n) => n.id === record.redeemedId && n.online,
     );
@@ -2123,6 +2433,7 @@ async function updateInvitation() {
       "Invitation expired. Close this dialog and create a new command.";
 }
 // Owner health only: counts and times, never operation names or peers.
+/** @param {Machine} n @returns {string} */
 function activitySection(n) {
   if (!n.online || !["summary", "ready"].includes(n.status)) return "";
   const peers = peerCount(n),
@@ -2138,14 +2449,15 @@ function activitySection(n) {
         peers ? plural(peers, "peer") + " · " + routeText(n) : "No peers",
       ],
       tunnelCount(n) > 0 && ["Tunnels", tunnelText(n)],
-    ].filter(Boolean);
+    ].filter((row) => Array.isArray(row));
   return `<section class="drawer-section"><h3>Activity</h3><dl class="metadata">${rows.map(([label, value]) => `<dt>${label}</dt><dd>${esc(value)}</dd>`).join("")}</dl></section>`;
 }
+/** @param {string | undefined} id @returns {void} */
 function machineDetails(id) {
   const n = state.snapshot?.nodes.find((node) => node.id === id);
   if (!n) return;
-  const sys = n.system || {},
-    live = n.online ? sys : {},
+  const sys = n.system || /** @type {Partial<SystemInfo>} */ ({}),
+    live = n.online ? sys : /** @type {Partial<SystemInfo>} */ ({}),
     memory = percent(live.memoryUsedBytes, live.memoryTotalBytes),
     detail = statusDetail(n),
     labels = Object.entries(n.labels || {});
@@ -2164,10 +2476,10 @@ function machineDetails(id) {
   );
 }
 document.addEventListener("submit", async (event) => {
-  if (event.target.id !== "account-form") return;
+  if (!(event.target instanceof HTMLFormElement) || event.target.id !== "account-form") return;
   event.preventDefault();
   const form = event.target,
-    fields = Object.fromEntries(new FormData(form)),
+    fields = formFields(form),
     button = $("button[type=submit]", form),
     errorBox = $(".form-error", form);
   errorBox.textContent = "";
@@ -2184,22 +2496,26 @@ document.addEventListener("submit", async (event) => {
     showLogin();
     toast("Password changed. Sign in with your new password.");
   } catch (error) {
-    errorBox.textContent = error.message;
+    errorBox.textContent = errorMessage(error);
   } finally {
     button.disabled = false;
   }
 });
 document.addEventListener("click", async (event) => {
-  const button = event.target.closest("[data-action]");
+  if (!(event.target instanceof Element)) return;
+  const target = event.target;
+  const button = target.closest("[data-action]");
+  if (button && !(button instanceof HTMLElement)) return;
   // The whole row opens details; its name button remains the keyboard target.
-  const row = !button && event.target.closest(".machine-table tbody tr");
+  const row = !button && /** @type {HTMLElement | null} */ (target.closest(".machine-table tbody tr"));
   if (row) machineDetails(row.dataset.id);
-  const menuLink = event.target.closest("[popover] a");
-  if (menuLink) menuLink.closest("[popover]").hidePopover();
+  const menuLink = target.closest("[popover] a");
+  const popover = menuLink?.closest("[popover]");
+  if (popover instanceof HTMLElement) popover.hidePopover();
   if (!button) return;
   const action = button.dataset.action,
-    id = button.dataset.id,
-    name = button.dataset.name;
+    id = button.dataset.id || "",
+    name = button.dataset.name || "";
   const node = state.snapshot?.nodes.find((n) => n.id === id);
   try {
     if (action === "machine-menu") {
@@ -2230,16 +2546,16 @@ document.addEventListener("click", async (event) => {
       state.descending =
         state.sort === button.dataset.sort
           ? !state.descending
-          : !["name", "status"].includes(button.dataset.sort);
-      state.sort = button.dataset.sort;
+          : !["name", "status"].includes(button.dataset.sort || "");
+      state.sort = button.dataset.sort || "name";
       render();
     }
     if (action === "filter-machines") {
       state.search = "";
-      state.filter = button.dataset.filter;
+      state.filter = button.dataset.filter || "all";
     }
     if (action === "filter-state") {
-      state.filter = button.dataset.filter;
+      state.filter = button.dataset.filter || "all";
       render();
     }
     if (action === "clear-filters") {
@@ -2250,13 +2566,13 @@ document.addEventListener("click", async (event) => {
       $("#machine-search").focus();
     }
     if (action === "refresh") await refresh(true);
-    if (action === "audit-more" && state.auxiliary?.next) {
+    if (action === "audit-more" && button instanceof HTMLButtonElement && state.auxiliary?.page === "activity" && state.auxiliary.data.next) {
       button.disabled = true;
-      const older = await api(auditPath(state.auxiliary.next));
-      if (state.page === "activity" && state.auxiliary) {
+      const older = await api(auditPath(state.auxiliary.data.next));
+      if (state.page === "activity" && state.auxiliary?.page === "activity") {
         state.auxiliary = {
-          events: [...state.auxiliary.events, ...older.events],
-          next: older.next,
+          page: "activity",
+          data: {events: [...state.auxiliary.data.events, ...older.events], next: older.next},
         };
         render();
       }
@@ -2277,7 +2593,7 @@ document.addEventListener("click", async (event) => {
     if (action === "copy") {
       try {
         await navigator.clipboard.writeText(
-          $(button.dataset.copy || "#secret-value").textContent,
+          $(button.dataset.copy || "#secret-value").textContent || "",
         );
         toast("Copied to clipboard");
       } catch {
@@ -2288,7 +2604,7 @@ document.addEventListener("click", async (event) => {
     if (action === "context" && node?.hybridId) {
       state.contexts.set(node.hybridId, node.id);
       render();
-      $(`.context-choice[data-id="${CSS.escape(node.id)}"]`)?.focus({ preventScroll: true });
+      find(`.context-choice[data-id="${CSS.escape(node.id)}"]`)?.focus({ preventScroll: true });
     }
     if (action === "startup" && node && canChangeStartup(node))
       changeStartup(node);
@@ -2299,17 +2615,17 @@ document.addEventListener("click", async (event) => {
         "Delete secret from " + node.name + "?",
         "Delete " + name + ". Future operations using this reference will fail until it is defined again.",
         async () => {
-          await api("fleet/nodes/" + encodeURIComponent(node.id) + "/secrets/" + encodeURIComponent(name), "DELETE");
+          await api(`fleet/nodes/${encodeURIComponent(node.id)}/secrets/${encodeURIComponent(name)}`, "DELETE");
           toast("Secret deleted");
         },
         "Delete secret",
         "machine-drawer secrets-drawer",
       );
-    if (action === "wake" && node) {
+    if (action === "wake" && node && button instanceof HTMLButtonElement) {
       button.disabled = true;
       try {
         const result = await api(
-          "fleet/nodes/" + encodeURIComponent(id) + "/wake",
+          `fleet/nodes/${encodeURIComponent(id)}/wake`,
           "POST",
         );
         toast(
@@ -2324,7 +2640,7 @@ document.addEventListener("click", async (event) => {
         "Rename " + node.name,
         `<p>This changes its routing name without restarting the node. Project-local scenario files on CLI hosts are not updated.</p><label>New name<input name="name" value="${esc(node.name)}" required maxlength="63" pattern="[a-zA-Z0-9]([a-zA-Z0-9._]|-){0,62}"></label>`,
         async (fields) => {
-          await api("fleet/nodes/" + encodeURIComponent(id), "PATCH", {
+          await api(`fleet/nodes/${encodeURIComponent(id)}`, "PATCH", {
             name: fields.name,
             force: fields.force === "on",
           });
@@ -2338,7 +2654,7 @@ document.addEventListener("click", async (event) => {
           ? "Allow new work after the node acknowledges this change."
           : "Block new work. Already accepted tasks can finish.",
         () =>
-          api("fleet/nodes/" + encodeURIComponent(id), "PATCH", {
+          api(`fleet/nodes/${encodeURIComponent(id)}`, "PATCH", {
             disabled: !node.disabled,
           }),
         node.disabled ? "Enable machine" : "Disable machine",
@@ -2357,17 +2673,17 @@ document.addEventListener("click", async (event) => {
           if (fields.confirmation !== node.name)
             throw new Error("The machine name does not match.");
           await api(
-            "fleet/nodes/" + encodeURIComponent(id) + "?stop=true",
+            `fleet/nodes/${encodeURIComponent(id)}?stop=true`,
             "DELETE",
           );
           if (companion && fields.companion) {
             try {
               await api(
-                "fleet/nodes/" + encodeURIComponent(companion.id) + "?stop=true",
+                `fleet/nodes/${encodeURIComponent(companion.id)}?stop=true`,
                 "DELETE",
               );
             } catch (error) {
-              throw new Error(`${node.name} was unregistered, but ${companion.name} was not: ${error.message}`);
+              throw new Error(`${node.name} was unregistered, but ${companion.name} was not: ${errorMessage(error)}`);
             }
           }
           toast(companion && fields.companion ? "Both contexts unregistered" : "Machine unregistered");
@@ -2377,20 +2693,19 @@ document.addEventListener("click", async (event) => {
       );
     }
     if (action === "clear-audit") {
-      const operator = state.session.role === "superuser";
+      const operator = state.session?.role === "superuser";
       formDialog(
         "Clear activity log",
         `<p>Remove events from ${operator ? "every fleet" : "this fleet"}. A record of the clearing stays in each fleet it affects.</p><label>Remove<select name="keep"><option value="">All events</option><option value="7">Events older than 7 days</option><option value="30">Events older than 30 days</option></select></label>`,
         async (fields) => {
           const days = Number(fields.keep);
           const result = await api(
-            "audit" +
-              (days
+            `audit${days
                 ? "?before=" +
                   encodeURIComponent(
                     new Date(Date.now() - days * 86400000).toISOString(),
                   )
-                : ""),
+                : ""}`,
             "DELETE",
           );
           state.auxiliary = null;
@@ -2401,7 +2716,7 @@ document.addEventListener("click", async (event) => {
       );
     }
     if (action === "clear-invites") {
-      const count = clearable(state.auxiliary || []).length;
+      const count = clearable(state.auxiliary?.page === "invitations" ? state.auxiliary.data : []).length;
       formDialog(
         "Clear invitation history",
         `<p>Clear ${esc(plural(count, "invitation"))} from this list. Revoked and expired invitations are deleted. Redeemed ones are hidden, and their machines keep working; manage them from Machines. Pending invitations stay.</p>`,
@@ -2420,7 +2735,7 @@ document.addEventListener("click", async (event) => {
       confirmAction(
         "Revoke invitation",
         "This also revokes an already redeemed installation credential and disconnects its gateway session. Existing direct sessions and accepted work may continue.",
-        () => api("fleet/installations/" + encodeURIComponent(id), "DELETE"),
+        () => api(`fleet/installations/${encodeURIComponent(id)}`, "DELETE"),
         "Revoke invitation",
       );
     if (action === "create-key")
@@ -2443,7 +2758,7 @@ document.addEventListener("click", async (event) => {
         "Rename key",
         `<p>The name only labels this key. Its secret and access are unchanged.</p><label>Name<input name="name" value="${esc(name)}" required maxlength="128"></label>`,
         async (fields) => {
-          await api("fleet/keys/" + encodeURIComponent(id), "PATCH", {
+          await api(`fleet/keys/${encodeURIComponent(id)}`, "PATCH", {
             name: fields.name,
           });
           toast("Key renamed");
@@ -2454,7 +2769,7 @@ document.addEventListener("click", async (event) => {
       confirmAction(
         "Revoke fleet key",
         "New authentication with this key will fail and its gateway sessions will disconnect. Existing direct sessions and accepted work are not cancelled.",
-        () => api("fleet/keys/" + encodeURIComponent(id), "DELETE"),
+        () => api(`fleet/keys/${encodeURIComponent(id)}`, "DELETE"),
         "Revoke key",
       );
     if (action === "create-user")
@@ -2478,7 +2793,7 @@ document.addEventListener("click", async (event) => {
       confirmAction(
         "Disable " + name,
         "Disable this account, invalidate browser access, and disconnect its gateway sessions. Accepted work and established direct sessions may continue.",
-        () => api("admin/users/" + encodeURIComponent(id), "DELETE"),
+        () => api(`admin/users/${encodeURIComponent(id)}`, "DELETE"),
         "Disable account",
       );
     if (action === "reset-password")
@@ -2504,7 +2819,7 @@ document.addEventListener("click", async (event) => {
         "Check and apply release",
       );
   } catch (error) {
-    toast(error.message);
+    toast(errorMessage(error));
   }
 });
 setInterval(() => {

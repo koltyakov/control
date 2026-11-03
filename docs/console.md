@@ -108,6 +108,17 @@ Clear log removes all events, or only those older than 7 or 30 days, after confi
 
 ## Verification
 
+All shipped browser JavaScript uses JSDoc declarations and strict TypeScript `checkJs`. The local check includes every JavaScript file under `internal/gateway/consoleweb/`. Types cover API payloads, state, DOM controls/events, rendering, geometry, and encryption. Optional readings remain distinct from zero. The JSON API implementation returns `unknown` internally; typed route overloads describe the gateway's responses to callers. Required DOM lookups fail with the selector in their error; optional lookups use `find()`.
+
+Run the mandatory frontend type checks with Node.js 22+:
+
+```sh
+npm --prefix tests/console ci
+make typecheck-console
+```
+
+TypeScript 7.0.2 runs the local frontend type check, without coverage tooling or a frontend typing CI job. It is a development-only dependency. No JavaScript is generated, and deployment still needs only the Go binary. See the [frontend typing rules](../AGENTS.md#frontend-typing) before editing browser code. Browser fixtures and icon-generation utilities in `tests/console/` are test tooling, not shipped frontend code.
+
 Core Go tests cover password provisioning, transactional rollback, migration/restart persistence, login, logout, expiry, account disable, password resets, CSRF/origins, secure cookies, verifier limits, fleet isolation, and browser-to-bearer authority separation. They run in the normal native and Compose suites.
 
 Optional browser smoke verification requires Node.js 22+ and an isolated Chromium instance:

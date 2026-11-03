@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help tidy deps deps-update deps-check go-update fmt fmt-check lint lint-hint lint-hint-all vet test test-race check cov test-coverage test-cov-check bench build build-all bundle install uninstall release-local release-check ci ci-compose vuln clean proto test-compose test-compose-webrtc test-compose-relay test-compose-hybrid update update-status
+.PHONY: help tidy deps deps-update deps-check go-update fmt fmt-check lint lint-hint lint-hint-all typecheck-console vet test test-race check cov test-coverage test-cov-check bench build build-all bundle install uninstall release-local release-check ci ci-compose vuln clean proto test-compose test-compose-webrtc test-compose-relay test-compose-hybrid update update-status
 
 GO ?= go
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -16,6 +16,7 @@ EXE := $(if $(filter windows,$(shell $(GO) env GOOS)),.exe,)
 
 help:
 	@echo "Targets:"
+	@echo "  make typecheck-console   - Local TypeScript 7 JSDoc check (npm ci in tests/console first)"
 	@echo "  make deps / tidy         - Download dependencies / tidy go.mod"
 	@echo "  make deps-update         - Update dependencies to latest minor/patch versions"
 	@echo "  make deps-check          - List available dependency updates"
@@ -67,6 +68,9 @@ fmt-check:
 
 lint:
 	$(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --timeout=5m
+
+typecheck-console:
+	npm --prefix tests/console run typecheck
 
 lint-hint:
 	@command -v gopls >/dev/null 2>&1 || { echo "Install gopls: go install golang.org/x/tools/gopls@latest"; exit 1; }

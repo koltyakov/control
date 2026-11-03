@@ -71,6 +71,13 @@ Runbook suitability belongs in agent-friendly `requires` metadata, not OS/app/ha
 - Keep resource sampling separate from dashboard polling. Preserve cached sample times and explicit refresh behavior. Node-wide observation must not bypass owner-scoped task control or expose execution arguments and credentials.
 - Keep update publication superuser-only. Common keys must not expose administrative CLI help. Preserve idle reservations across service restarts and account for accepted tasks, outgoing work, transfers, tunnels, and leases before updating.
 
+## Frontend typing
+
+- Maintain 100% JSDoc-based type coverage for all shipped frontend JavaScript in `internal/gateway/consoleweb/`. This applies to every frontend addition and edit, not just typing-focused changes. Keep deployment build-free; do not introduce a transpilation requirement.
+- Declare function parameters and return values, API requests/responses, state, DOM controls/events, and collections with accurate JSDoc types. Contextual inference is fine for callbacks and obvious local values. Keep API projections aligned with the Go handlers and models, including optional fields and unavailable readings.
+- Keep strict `checkJs` in `tests/console/tsconfig.json` and use TypeScript 7 for the local check. Include new browser scripts. Do not use `any`, untyped `Object`/`Function`, TypeScript suppressions, unchecked blanket casts, or exclusions to make checks pass. Use `unknown` only at genuine external boundaries and narrow it before use. Do not add type-coverage tooling or a frontend typing CI job.
+- After frontend edits, run `npm --prefix tests/console ci` when dependencies need installing, then `make typecheck-console`. Run the [browser smoke suite](docs/console.md#verification) when changing UI behavior, DOM queries, events, navigation, forms, or browser APIs. Report the results alongside the required Go checks below.
+
 ## Verification
 
 Tests are not required for every change. Run relevant tests when requested or when the change warrants them. Use Docker Compose when running integration tests:
