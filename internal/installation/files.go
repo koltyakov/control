@@ -3,6 +3,7 @@ package installation
 import (
 	"bytes"
 	"context"
+	gobuildinfo "debug/buildinfo"
 	"errors"
 	"os"
 	"path/filepath"
@@ -31,6 +32,9 @@ func InstallSystemSelf(ctx context.Context) (string, error) {
 }
 
 func installSelf(ctx context.Context, userPath bool) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	dest, err := BinPath()
 	if err != nil {
 		return "", err
@@ -57,12 +61,14 @@ func installSelf(ctx context.Context, userPath bool) (string, error) {
 		if !old.Mode().IsRegular() {
 			return "", errors.New("installation destination is not a regular file")
 		}
-		prior, err := update.InspectExecutable(ctx, dest)
-		if err != nil {
-			return "", errors.New("existing executable is not a Control installation: " + dest)
-		}
-		if prior.SHA256 == info.SHA256 {
+		// Never execute an existing installation to identify it. In particular,
+		// an elevated installer must treat a per-user executable as untrusted.
+		if update.Verify(dest, update.Asset{Size: old.Size(), SHA256: info.SHA256}) == nil {
 			return finish()
+		}
+		prior, err := gobuildinfo.ReadFile(dest)
+		if err != nil || prior.Path != "github.com/koltyakov/control/cmd/control" {
+			return "", errors.New("existing executable is not a Control installation: " + dest)
 		}
 	} else if !os.IsNotExist(err) {
 		return "", err

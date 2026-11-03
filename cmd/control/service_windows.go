@@ -15,6 +15,15 @@ import (
 )
 
 func runPlatformService(ctx context.Context, args []string) (bool, error) {
+	if len(args) > 0 && args[0] == "__hybrid-user" {
+		return true, hybridUserCLI(ctx, args[1:])
+	}
+	if len(args) > 0 && args[0] == "__hybrid-system-check" {
+		if len(args) != 3 {
+			return true, errors.New("hybrid System path check requires executable and configuration paths")
+		}
+		return true, installation.CheckHybridSystem(ctx, args[1], args[2], "auto")
+	}
 	if len(args) == 0 || (args[0] != "__service" && args[0] != "__user" && args[0] != "__user-launch") {
 		return false, nil
 	}

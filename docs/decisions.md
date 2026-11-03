@@ -952,6 +952,8 @@ Preserve D087's isolated User/System identities, runtime ownership, admission, s
 
 ## D110: Hybrid preflight, staging order, and rerun recovery
 
+Windows User-phase elevation is superseded by [D113](#d113-limited-token-windows-hybrid-user-installation). Its preflight, pinned staging, and bounded recovery contracts remain unchanged.
+
 The Hybrid installer used to install the root or LocalSystem companion first, so most User failures appeared only after a privileged service was running, and a User failure after redemption could not be rerun because its script returned HTTP 410. The installer now obtains the binary as the user and runs `enroll --preflight` before any privileged change. The System installer takes the binary from the staging folder through its existing checksum-verified local candidates. Gateways keep script, metadata, and binaries available, and retained, until an incomplete pair expires or completes. The same command is therefore safe to repeat until the deadline.
 
 `POST /install/{ticket}/check` shares its rules with redemption, so preflight cannot drift from what the gateway enforces. Supplied keys prove possession under a separate signing purpose, which stops a ticket holder probing other identities and stops a check proof redeeming. The check reduces late failures but cannot remove them: conditions can change between preflight and redemption, and D108's timeout still bounds what remains.
@@ -971,3 +973,11 @@ The hint carries no policy, so the signed query remains the only source of state
 A Hybrid host runs two full nodes, which is the isolation boundary and stays. Their avoidable recurring work is reduced. Companions sample every 60 seconds by default, because the console shows their telemetry only while User is offline. Node cleanup hashes the running binary only when it would delete something, instead of every minute. D109's cache retention narrows to the requested binary and one other, since nodes fetch only the selected version and older entries help only a rollback. Updaters keep reporting status during long staging, including a wait for the other context's download.
 
 Windows GPU memory sampling still starts PowerShell per sample in each context, now less often for the companion. Native counters would remove it on every Windows node.
+
+## D113: Limited-token Windows Hybrid User installation
+
+Keep Windows Hybrid's elevated companion installation, but run User preflight and enrollment in a separate process with the installing account's linked limited token. Validate that token's user and elevation, and select it explicitly at process creation. Fail closed on missing tokens or launch errors, including UAC-disabled accounts; never inherit the elevated token or choose another logged-on account. Dispatch the fixed helper before ordinary User profile/log initialization and recheck non-elevation in its limited child. An active ordinary System service needs a separate local uninstall before limited User installation.
+
+Run the child from checksum-verified protected staging, granting its user read/execute only. Do not inherit that grant into System credentials, and copy candidate bytes without importing source ACLs. Check existing companion path ownership and ACLs before recovery executes its launcher. The protected elevated parent configures User firewall rules after enrollment rather than launching the writable User CLI through UAC. A post-registration firewall failure needs explicit firewall repair, not enrollment replay.
+
+Replace install-self's executable version probe with read-only checksum and Go build-metadata inspection. An unrelated destination remains untouched, and matching bytes can be reused without launching them. This closes the elevated execution of an existing per-user installation while retaining isolated profiles, exact grants, identity ownership, single-use completion, and no automatic replay. This supersedes only D110's Windows User-phase privilege handling. See [Windows Hybrid installation](installation.md#hybrid-user-and-system-contexts).

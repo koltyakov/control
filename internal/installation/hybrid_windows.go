@@ -4,12 +4,122 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"unsafe"
 
+	"github.com/koltyakov/control/internal/node"
+	"github.com/koltyakov/control/internal/processutil"
 	"golang.org/x/sys/windows"
 )
+
+// CheckHybridUser prevents direct or older installers from running the User
+// phase with the administrator token used to install its System companion.
+func CheckHybridUser() error {
+	elevated, err := hybridTokenElevated(windows.GetCurrentProcessToken())
+	if err != nil {
+		return err
+	}
+	if elevated {
+		return errors.New("hybrid User enrollment requires the installing user's limited token; use a current generated Hybrid installer")
+	}
+	return CheckServiceMode("user")
+}
+
+func hybridUserToken() (windows.Token, error) {
+	current := windows.GetCurrentProcessToken()
+	elevated, err := hybridTokenElevated(current)
+	if err != nil {
+		return 0, err
+	}
+	if !elevated {
+		return 0, errors.New("the Hybrid installer requires Administrator PowerShell under the intended user")
+	}
+	limited, err := current.GetLinkedToken()
+	if err != nil {
+		return 0, fmt.Errorf("obtain the installing user's linked limited token: %w", err)
+	}
+	user, userErr := current.GetTokenUser()
+	linkedUser, linkedErr := limited.GetTokenUser()
+	linkedElevated, elevationErr := hybridTokenElevated(limited)
+	if userErr != nil || linkedErr != nil || elevationErr != nil || linkedElevated || user.User.Sid.String() != linkedUser.User.Sid.String() {
+		_ = limited.Close()
+		return 0, errors.New("hybrid User startup requires a non-elevated linked token for the same user; no elevated fallback is permitted")
+	}
+	return limited, nil
+}
+
+// IsElevated treats a failed query as false. This boundary must fail closed.
+func hybridTokenElevated(token windows.Token) (bool, error) {
+	var value, size uint32
+	err := windows.GetTokenInformation(token, windows.TokenElevation, (*byte)(unsafe.Pointer(&value)), uint32(unsafe.Sizeof(value)), &size)
+	if err != nil {
+		return false, fmt.Errorf("read Hybrid installer token elevation: %w", err)
+	}
+	if size != uint32(unsafe.Sizeof(value)) {
+		return false, errors.New("invalid Hybrid installer token elevation response")
+	}
+	return value != 0, nil
+}
+
+// RunHybridUser starts only the fixed enrollment helper, using the verified,
+// read-only staging executable and a same-user limited token. It never runs a
+// per-user installed executable with its own elevated token.
+func RunHybridUser(ctx context.Context, config, link string, preflight, autoName bool) error {
+	binary, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if err = CheckHybridSystem(ctx, binary, binary, "auto"); err != nil {
+		return err
+	}
+	token, err := hybridUserToken()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = token.Close() }()
+	args := []string{"__hybrid-user", "--limited", "--config", config, "--url", link}
+	if preflight {
+		args = append(args, "--preflight")
+	}
+	if autoName {
+		args = append(args, "--auto-name")
+	}
+	cmd := hybridUserCommand(ctx, binary, args, token)
+	if err = cmd.Run(); err != nil {
+		return fmt.Errorf("limited-token Hybrid User enrollment: %w", err)
+	}
+	if preflight {
+		return nil
+	}
+	// The limited phase must not request UAC by executing its writable installed
+	// CLI. Configure its firewall rules here, from the protected installer.
+	cfg, err := node.LoadConfig(config)
+	if err != nil {
+		return err
+	}
+	installed, err := BinPath()
+	if err != nil {
+		return err
+	}
+	if err = configureElevatedFirewall(ctx, installed, config, cfg); err != nil {
+		return fmt.Errorf("user enrollment finished, but its firewall rules could not be configured from the protected installer: %w", err)
+	}
+	return nil
+}
+
+func hybridUserCommand(ctx context.Context, binary string, args []string, token windows.Token) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, binary, args...)
+	processutil.HideWindow(cmd)
+	cmd.SysProcAttr.Token = syscall.Token(token)
+	cmd.Env = cleanEnvironment()
+	cmd.Dir = filepath.Dir(binary)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd
+}
 
 // SYSTEM, Administrators, and TrustedInstaller may own or write these paths.
 var trustedHybridSIDs = map[string]bool{

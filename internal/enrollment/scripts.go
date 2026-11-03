@@ -139,6 +139,9 @@ $serviceMode = 'user'
     $rule = New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($sid)), 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
     $acl.AddAccessRule($rule)
   }
+  # Permit traversal, not inheritance: User must never read System credentials.
+  $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+  $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($userSid, 'ReadAndExecute', 'Allow')))
   Set-Acl -LiteralPath $directory -AclObject $acl
 }
 {{end}}{{if eq .HybridRole "system"}}$env:CONTROL_HOME = $protectedHome
@@ -155,13 +158,27 @@ $checksum = switch ($arch) {
 {{if or (eq .ServiceMode "hybrid") (eq .HybridRole "system")}}$tmp = Join-Path $protectedHome ([IO.Path]::GetRandomFileName())
 {{else}}$tmp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 {{end}}New-Item -ItemType Directory -Path $tmp | Out-Null
+{{if eq .ServiceMode "hybrid"}}# The limited child may execute verified staging bytes, but cannot change them.
+$stageAcl = Get-Acl -LiteralPath $tmp
+$stageAcl.SetOwner((New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')))
+$stageAcl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($userSid, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+Set-Acl -LiteralPath $tmp -AclObject $stageAcl
+{{end}}
 try {
   $exe = Join-Path $tmp 'control.exe'
   $reused = $false
+  function Copy-ControlBinary([string]$Source, [string]$Destination) {
+    # Copy bytes only. Copy-Item may also copy a user-writable source DACL.
+    $reader = [IO.File]::OpenRead($Source)
+    try {
+      $writer = [IO.File]::Create($Destination)
+      try { $reader.CopyTo($writer) } finally { $writer.Dispose() }
+    } finally { $reader.Dispose() }
+  }
 {{if eq .ServiceMode "hybrid"}}  # Copy out of the protected installation; never share a writable runtime.
   if ($systemInstalled) {
     try {
-      Copy-Item -LiteralPath $systemExe -Destination $exe
+      Copy-ControlBinary $systemExe $exe
       $reused = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -eq $checksum
     } catch { $reused = $false }
   }
@@ -173,19 +190,22 @@ try {
     foreach ($candidate in $candidates) {
       try {
         if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
-        Copy-Item -LiteralPath $candidate -Destination $exe -Force
+        Copy-ControlBinary $candidate $exe
         if ((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -eq $checksum) { $reused = $true; break }
       } catch { continue }
     }
   }
   if (-not $reused) { Invoke-WebRequest -UseBasicParsing -Uri ({{q .Binary}} + '?arch=' + $arch) -OutFile $exe }
   if ((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -ne $checksum) { throw 'Binary checksum mismatch' }
-{{if eq .ServiceMode "hybrid"}}  # Find User problems before any privileged change or consumed ticket.
-  & $exe enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}} --preflight --service $serviceMode
+{{if eq .ServiceMode "hybrid"}}  # Run User preflight with the same user's limited token, never Administrator.
+  & $exe __hybrid-user --url {{q .Link}}{{if .AutoName}} --auto-name{{end}} --preflight
   if ($LASTEXITCODE -ne 0) { throw 'Hybrid preflight failed; nothing was installed' }
   $savedHome, $savedConfig, $savedInstallDir = $env:CONTROL_HOME, $env:CONTROL_CONFIG, $env:CONTROL_INSTALL_DIR
   try {
     if ($systemInstalled) {
+      # Check every existing privileged path before executing the installed copy.
+      & $exe __hybrid-system-check $systemExe $systemConfig
+      if ($LASTEXITCODE -ne 0) { throw 'Hybrid System recovery rejected unsafe installed paths' }
       if (Test-Path -LiteralPath (Join-Path $protectedHome 'pending-enrollment.json')) {
         $env:CONTROL_HOME = $protectedHome
         $env:CONTROL_INSTALL_DIR = Join-Path $protectedHome 'bin'
@@ -205,7 +225,10 @@ try {
   } finally {
     $env:CONTROL_HOME, $env:CONTROL_CONFIG, $env:CONTROL_INSTALL_DIR = $savedHome, $savedConfig, $savedInstallDir
   }
-{{end}}  & $exe enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}}{{if eq .HybridRole "system"}} --hybrid-system{{end}} --service $serviceMode --firewall
+  # The protected parent configures User firewall rules without elevating its CLI.
+  & $exe __hybrid-user --url {{q .Link}}{{if .AutoName}} --auto-name{{end}}
+{{else}}  & $exe enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}}{{if eq .HybridRole "system"}} --hybrid-system{{end}} --service $serviceMode --firewall
+{{end}}
   if ($LASTEXITCODE -ne 0) { throw 'Control enrollment failed' }
 } finally {
   Remove-Item -LiteralPath $tmp -Recurse -Force

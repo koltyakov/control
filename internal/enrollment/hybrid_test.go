@@ -87,6 +87,39 @@ func TestHybridPowerShellStagesInProtectedDirectory(t *testing.T) {
 	}
 }
 
+func TestHybridPowerShellSeparatesUserPrivileges(t *testing.T) {
+	i := Invitation{HybridID: "fixture", HybridRole: "user", ServiceMode: "hybrid", AutoName: true, Asset: update.Asset{OS: "windows", Arch: "amd64", SHA256: strings.Repeat("a", 64)}}
+	script, err := Script(i, "https://gateway.example/install/ticket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	preflight := strings.Index(script, "& $exe __hybrid-user --url 'https://gateway.example/install/ticket' --auto-name --preflight")
+	check := strings.Index(script, "& $exe __hybrid-system-check $systemExe $systemConfig")
+	recovery := strings.Index(script, "& $systemExe --config $systemConfig enroll")
+	user := strings.LastIndex(script, "& $exe __hybrid-user --url 'https://gateway.example/install/ticket' --auto-name")
+	if preflight < 0 || check <= preflight || recovery <= check || user <= recovery {
+		t.Fatal("Hybrid phases are not limited preflight, checked System recovery, limited User enrollment", script)
+	}
+	if strings.Contains(script, "& $exe enroll") || strings.Count(script, "& $exe __hybrid-user") != 2 {
+		t.Fatal("the elevated script must never directly enroll the User profile", script)
+	}
+	if strings.Contains(script, "Copy-Item -LiteralPath") || !strings.Contains(script, "$reader.CopyTo($writer)") {
+		t.Fatal("staging must copy bytes without inheriting an untrusted source DACL")
+	}
+	for _, want := range []string{
+		"FileSystemAccessRule($userSid, 'ReadAndExecute', 'Allow')",
+		"FileSystemAccessRule($userSid, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')",
+		"$stageAcl.SetOwner",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("limited child needs read-only access to protected staging: missing %s", want)
+		}
+	}
+	if strings.Contains(script, "FileSystemAccessRule($userSid, 'FullControl'") || strings.Contains(script, "FileSystemAccessRule($userSid, 'Modify'") {
+		t.Fatal("limited user can change privileged staging")
+	}
+}
+
 func TestHybridAutomaticNames(t *testing.T) {
 	for _, role := range []string{"user", "system"} {
 		i := Invitation{AutoName: true, HybridRole: role}

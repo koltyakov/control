@@ -34,6 +34,13 @@ func (n *Node) loadMachineState() error {
 }
 
 func (n *Node) syncMachineState(ctx context.Context) error {
+	// This signed read covers hints already received, including registration's
+	// hint before the mandatory post-connect check. Keep hints arriving during
+	// the request queued: its response may predate their policy change.
+	select {
+	case <-n.Peer.MachineStateWake():
+	default:
+	}
 	current := n.currentMachineState()
 	if current.Unregistered {
 		return ErrUnregistered
@@ -83,9 +90,17 @@ const (
 )
 
 func (n *Node) runMachineState(ctx context.Context) {
-	timer := time.NewTimer(0)
+	// Start already checked policy after connecting. Wait for a fresh hint or
+	// the fallback deadline instead of immediately repeating that request.
+	timer := time.NewTimer(n.machineStateInterval())
 	defer timer.Stop()
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		case <-n.Peer.MachineStateWake():
+		}
 		if err := n.syncMachineState(ctx); errors.Is(err, ErrUnregistered) {
 			n.cancel()
 			if n.shutdown != nil {
@@ -95,18 +110,15 @@ func (n *Node) runMachineState(ctx context.Context) {
 		} else if err != nil && ctx.Err() == nil {
 			slog.Debug("machine state refresh", "error", err)
 		}
-		interval := machineStatePoll
-		if n.Peer.MachineStatePushed() {
-			interval = machineStatePushedPoll
-		}
-		timer.Reset(interval)
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-		case <-n.Peer.MachineStateWake():
-		}
+		timer.Reset(n.machineStateInterval())
 	}
+}
+
+func (n *Node) machineStateInterval() time.Duration {
+	if n.Peer.MachineStatePushed() {
+		return machineStatePushedPoll
+	}
+	return machineStatePoll
 }
 
 func (n *Node) currentMachineState() model.MachineState {

@@ -11,6 +11,8 @@ import (
 	"syscall"
 )
 
+func CheckHybridUser() error { return nil }
+
 func checkHybridSystem(_ context.Context, binary, config, mode string) error {
 	if os.Geteuid() != 0 || mode != "system" {
 		return errors.New("hybrid system startup requires root and system mode")

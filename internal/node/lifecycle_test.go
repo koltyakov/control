@@ -21,6 +21,145 @@ import (
 	"github.com/koltyakov/control/internal/store"
 )
 
+func TestMachineStateCoalescesHintsWithoutLosingConcurrentChanges(t *testing.T) {
+	t.Parallel()
+	const adminKey = "machine-state-hint-superuser-123456789"
+	g, err := gateway.New(t.TempDir(), testToken, gateway.Options{SuperuserKey: adminKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = g.Close() }()
+	handler := g.Handler()
+	var reads atomic.Int32
+	var blockNext atomic.Bool
+	reading, release := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/node/state" {
+			reads.Add(1)
+			if blockNext.CompareAndSwap(true, false) {
+				// Capture an old response before a second policy change commits.
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, r)
+				close(reading)
+				select {
+				case <-release:
+				case <-r.Context().Done():
+					return
+				}
+				w.WriteHeader(recorder.Code)
+				_, _ = w.Write(recorder.Body.Bytes())
+				return
+			}
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	n, err := New(Config{Name: "hint-worker", Gateway: server.URL, Token: testToken, DataDir: t.TempDir(), WorkDir: t.TempDir(), MetricsIntervalSeconds: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = n.Close() }()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	n.ctx, n.cancel = context.WithCancel(ctx)
+	if err := n.Peer.Start(n.ctx); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, ctx, func() bool { return len(n.Peer.MachineStateWake()) == 1 })
+	if err := n.syncMachineState(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(n.Peer.MachineStateWake()) != 0 {
+		t.Fatal("signed read retained an already-covered registration hint")
+	}
+	n.wg.Add(1)
+	go func() { defer n.wg.Done(); n.runMachineState(n.ctx) }()
+	// A post-connect read must not be repeated when the background loop starts.
+	time.Sleep(100 * time.Millisecond)
+	if got := reads.Load(); got != 1 {
+		t.Fatalf("startup repeated the policy read: got %d requests, want 1", got)
+	}
+	setDisabled := func(disabled bool) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, server.URL+"/v1/fleet/nodes/"+n.Identity.ID, bytes.NewReader(model.JSON(map[string]bool{"disabled": disabled})))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+adminKey)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatal("policy change failed", resp.StatusCode)
+		}
+	}
+	blockNext.Store(true)
+	setDisabled(true)
+	select {
+	case <-reading:
+	case <-ctx.Done():
+		t.Fatal("policy hint did not trigger a read", ctx.Err())
+	}
+	setDisabled(false)
+	eventually(t, ctx, func() bool { return len(n.Peer.MachineStateWake()) == 1 })
+	close(release)
+	eventually(t, ctx, func() bool {
+		state := n.currentMachineState()
+		return state.Revision == 2 && !state.Disabled
+	})
+}
+
+func TestMachineStateStartupAndLegacyFallbackReadCounts(t *testing.T) {
+	t.Parallel()
+	g, err := gateway.New(t.TempDir(), testToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = g.Close() }()
+	handler := g.Handler()
+	var reads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/node/state":
+			reads.Add(1)
+		case "/v1/auth":
+			// Emulate a gateway without pushed policy hints.
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, r)
+			var auth map[string]any
+			if err := json.Unmarshal(recorder.Body.Bytes(), &auth); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			delete(auth, "machineStatePush")
+			_ = json.NewEncoder(w).Encode(auth)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	n, err := New(Config{Name: "legacy-policy", Gateway: server.URL, Token: testToken, DataDir: t.TempDir(), WorkDir: t.TempDir(), MetricsIntervalSeconds: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = n.Close() }()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if err := n.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := reads.Load(); got != 2 {
+		t.Fatalf("startup made %d policy reads, want pre-connect and post-connect only", got)
+	}
+	if n.Peer.MachineStatePushed() {
+		t.Fatal("legacy gateway negotiated policy hints")
+	}
+	eventually(t, ctx, func() bool { return reads.Load() == 3 })
+}
+
 func TestStartupReadsRetirementAfterConnectionRejection(t *testing.T) {
 	t.Parallel()
 	for _, retired := range []bool{false, true} {

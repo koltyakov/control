@@ -151,7 +151,7 @@ func TestHybridPowerShellReusesSystemBinary(t *testing.T) {
 			}
 			// Exercise the generated copy/download/verification block with real
 			// files, without enrollment, elevation, ACL or service changes.
-			start, end := strings.Index(script, "  $exe = Join-Path $tmp"), strings.Index(script, "  & $exe enroll")
+			start, end := strings.Index(script, "  $exe = Join-Path $tmp"), strings.Index(script, "  & $exe __hybrid-user")
 			if start < 0 || end <= start {
 				t.Fatal("missing binary staging block")
 			}

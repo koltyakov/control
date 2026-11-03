@@ -11,15 +11,14 @@ import (
 )
 
 func configureFirewall(ctx context.Context, binary, config string, cfg node.Config) error {
-	port, err := gatewayPort(cfg.Gateway)
-	if err != nil {
+	if windows.GetCurrentProcessToken().IsElevated() {
+		return configureElevatedFirewall(ctx, binary, config, cfg)
+	}
+	if _, err := gatewayPort(cfg.Gateway); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	if windows.GetCurrentProcessToken().IsElevated() {
-		return userPowerShell(ctx, windowsFirewallScript(binary, config, WindowsRuntimePath(cfg.DataDir), port))
-	}
 	// Elevate only this operation, not enrollment or the user-login node. Pass
 	// absolute paths so selecting a different admin account cannot select its
 	// profile or Windows' unrelated System32\control.exe.
@@ -30,4 +29,16 @@ if ($p.ExitCode -ne 0) { throw ('Control firewall setup failed with exit code ' 
 		return fmt.Errorf("configure Windows firewall; approve the UAC prompt or run the installed CLI's service firewall command in Administrator PowerShell: %w", err)
 	}
 	return nil
+}
+
+// This fixed operation never launches the installed CLI or requests UAC. Hybrid
+// calls it only from its protected parent, without an executable fallback.
+func configureElevatedFirewall(ctx context.Context, binary, config string, cfg node.Config) error {
+	port, err := gatewayPort(cfg.Gateway)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	return userPowerShell(ctx, windowsFirewallScript(binary, config, WindowsRuntimePath(cfg.DataDir), port))
 }

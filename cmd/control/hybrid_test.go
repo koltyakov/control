@@ -15,6 +15,7 @@ import (
 
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/enrollment"
+	"github.com/koltyakov/control/internal/installation"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/update"
 )
@@ -60,6 +61,9 @@ func TestHybridSystemConfigPreservesProfile(t *testing.T) {
 
 // Preflight must stop on a problem without consuming anything or writing state.
 func TestEnrollPreflight(t *testing.T) {
+	if err := installation.CheckHybridUser(); err != nil {
+		t.Skip("Hybrid User preflight must run with a limited token:", err)
+	}
 	software := buildinfo.Current()
 	for _, scenario := range []string{"accepted", "name-conflict", "old-gateway", "expired", "wrong-binary", "port-busy", "other-machine"} {
 		t.Run(scenario, func(t *testing.T) {

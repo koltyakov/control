@@ -31,6 +31,9 @@ func prepareEnrollment(ctx context.Context, config, link string, requireAutoName
 		return pendingEnrollment{}, err
 	}
 	if err == nil && strings.TrimRight(previous.URL, "/") == link {
+		if err = checkHybridUserInvitation(previous.Invitation); err != nil {
+			return pendingEnrollment{}, err
+		}
 		if requireAutoName && !previous.Invitation.AutoName {
 			return pendingEnrollment{}, errors.New("pending enrollment does not use automatic naming")
 		}
@@ -56,6 +59,9 @@ func inspectInvitation(ctx context.Context, config, link string, requireAutoName
 	c := client.Admin{URL: link}
 	err := c.JSON(ctx, "GET", "/info?arch="+runtime.GOARCH, nil, &pending.Invitation)
 	if err != nil {
+		return pending, err
+	}
+	if err = checkHybridUserInvitation(pending.Invitation); err != nil {
 		return pending, err
 	}
 	if requireAutoName && !pending.Invitation.AutoName {
@@ -120,6 +126,9 @@ func preflightEnrollment(ctx context.Context, config, link, mode string, require
 	} else if requireAutoName && !previous.Invitation.AutoName {
 		return errors.New("pending enrollment does not use automatic naming")
 	}
+	if err = checkHybridUserInvitation(pending.Invitation); err != nil {
+		return err
+	}
 	if err = installation.CheckUserStartup(ctx, mode); err != nil {
 		return err
 	}
@@ -138,6 +147,13 @@ func preflightEnrollment(ctx context.Context, config, link, mode string, require
 		return err
 	}
 	return checkRedemption(ctx, link, pending, id)
+}
+
+func checkHybridUserInvitation(invitation enrollment.Invitation) error {
+	if invitation.HybridRole == "user" {
+		return installation.CheckHybridUser()
+	}
+	return nil
 }
 
 // A retired identity is replaced during real enrollment, so it counts as new.
