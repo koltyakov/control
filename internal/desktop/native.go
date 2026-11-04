@@ -12,8 +12,9 @@ import (
 	"github.com/ebitengine/purego"
 )
 
-// ABI 6 AdAction, passed by pointer only. Explicit padding pins its 64-bit
+// ABI 6/7 AdAction, passed by pointer only. Explicit padding pins its 64-bit
 // layout on all six release targets; no structs cross the ABI by value.
+// Binding reference: agent-desktop v1.1.0 crates/ffi/include/agent_desktop.h.
 type nativeAction struct {
 	Kind          int32
 	_             uint32
@@ -27,6 +28,7 @@ type nativeAction struct {
 }
 
 type nativeAPI struct {
+	abiVersion func() uint32
 	init       func(uint32) int32
 	actionSize func() uintptr
 	create     func() uintptr
@@ -43,7 +45,7 @@ func bindNative(symbol func(string) (uintptr, error)) (nativeAPI, error) {
 		name string
 		fn   any
 	}{
-		{"ad_init", &api.init}, {"ad_action_size", &api.actionSize},
+		{"ad_abi_version", &api.abiVersion}, {"ad_init", &api.init}, {"ad_action_size", &api.actionSize},
 		{"ad_adapter_create", &api.create}, {"ad_adapter_destroy", &api.destroy},
 		{"ad_free_string", &api.freeString}, {"ad_status", &api.status},
 		{"ad_snapshot", &api.snapshot}, {"ad_execute_by_ref_timeout", &api.execute},
@@ -86,7 +88,10 @@ func callNative(r Request, home, library string) ([]byte, error) {
 }
 
 func invokeNative(api nativeAPI, r Request) ([]byte, error) {
-	if api.init(6) != 0 || api.actionSize() != unsafe.Sizeof(nativeAction{}) {
+	major := api.abiVersion()
+	// ABI 7 changes low-level exact-identity APIs that this adapter never calls.
+	// Our status, snapshot, and qualified-ref action contracts match ABI 6.
+	if (major != 6 && major != 7) || api.init(major) != 0 || api.actionSize() != unsafe.Sizeof(nativeAction{}) {
 		return nil, errors.New("native desktop ABI mismatch")
 	}
 	adapter := api.create() // No session, trace callback, clipboard, or CLI.

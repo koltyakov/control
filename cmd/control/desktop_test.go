@@ -48,7 +48,7 @@ func TestDesktopCLIHelperMode(t *testing.T) {
 func TestDesktopCLIRealLibraryStatus(t *testing.T) {
 	library := os.Getenv("CONTROL_TEST_DESKTOP_LIBRARY")
 	if library == "" {
-		t.Skip("set CONTROL_TEST_DESKTOP_LIBRARY to an ABI 6 native library")
+		t.Skip("set CONTROL_TEST_DESKTOP_LIBRARY to an ABI 6 or 7 native library")
 	}
 	executable, err := os.Executable()
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"runtime"
+	"strconv"
 	"testing"
 	"unsafe"
 
@@ -15,7 +16,7 @@ import (
 func TestDesktopNativeActionLayout(t *testing.T) {
 	var a nativeAction
 	if unsafe.Sizeof(a) != 96 || unsafe.Alignof(a) != 8 {
-		t.Fatal("ABI 6 requires a 96-byte, 8-aligned AdAction")
+		t.Fatal("ABI 6/7 requires a 96-byte, 8-aligned AdAction")
 	}
 	for _, field := range []struct{ got, want uintptr }{
 		{unsafe.Offsetof(a.Kind), 0}, {unsafe.Offsetof(a.Text), 8},
@@ -45,93 +46,96 @@ func nativeTestString(p *byte) string {
 // binding and call paths without a compiler, installed library, or desktop.
 func TestDesktopNativeBindings(t *testing.T) {
 	text := "pipe-only-\"credential-秘密"
-	for _, command := range []string{"status", "snapshot", "setValue", "click", "clear"} {
-		t.Run(command, func(t *testing.T) {
-			runtime.LockOSThread()
-			defer runtime.UnlockOSThread()
-			response := []byte(`{"ok":false,"error":{"code":"STALE_REF","disposition":{"delivery":"not_delivered","retry":"safe"}}}`)
-			storage := append(bytes.Clone(response), 0)
-			var pins runtime.Pinner
-			pins.Pin(&storage[0])
-			defer pins.Unpin()
-			created, destroyed, freed, invoked := 0, 0, 0, 0
-			finish := func(adapter uintptr, out **byte) uintptr {
-				runtime.GC() // Pinned inputs and out storage must survive native calls.
-				if adapter != 17 || out == nil {
-					t.Error("adapter or output pointer was not marshalled")
-					return uintptr(^uint32(0))
-				}
-				invoked++
-				*out = &storage[0]
-				return uintptr(^uint32(0)) // Nonzero results must retain their error envelopes.
-			}
-			symbols := map[string]uintptr{
-				"ad_init": purego.NewCallback(func(major uint32) uintptr {
-					if major != 6 {
-						t.Error("wrong ABI major")
-					}
-					return 0
-				}),
-				"ad_action_size":    purego.NewCallback(func() uintptr { return 96 }),
-				"ad_adapter_create": purego.NewCallback(func() uintptr { created++; return 17 }),
-				"ad_adapter_destroy": purego.NewCallback(func(adapter uintptr) uintptr {
-					if adapter != 17 {
-						t.Error("wrong adapter destroyed")
-					}
-					destroyed++
-					return 0
-				}),
-				"ad_free_string": purego.NewCallback(func(p *byte) uintptr {
-					if p != &storage[0] {
-						t.Error("wrong output freed")
-					}
-					freed++
-					clear(storage)
-					return 0
-				}),
-				"ad_status": purego.NewCallback(func(adapter uintptr, out **byte) uintptr {
-					if command != "status" {
-						t.Error("wrong entrypoint")
-					}
-					return finish(adapter, out)
-				}),
-				"ad_snapshot": purego.NewCallback(func(adapter uintptr, app *byte, surface int32, depth uint8, interactive, compact bool, out **byte) uintptr {
-					runtime.GC()
-					if command != "snapshot" || nativeTestString(app) != "Test app 秘密" || surface != 0 || depth != 32 || interactive || compact {
-						t.Error("snapshot arguments were not marshalled")
-					}
-					return finish(adapter, out)
-				}),
-				"ad_execute_by_ref_timeout": purego.NewCallback(func(adapter uintptr, ref *byte, action *nativeAction, policy int32, timeout int64, out **byte) uintptr {
-					runtime.GC()
-					kind := map[string]int32{"setValue": 4, "click": 0, "clear": 18}[command]
-					if nativeTestString(ref) != "@stest:e1" || action == nil || policy != 0 || timeout != 5000 {
-						t.Error("action arguments or headless policy were not marshalled")
+	for _, major := range []uint32{6, 7} {
+		for _, command := range []string{"status", "snapshot", "setValue", "click", "clear"} {
+			t.Run(strconv.Itoa(int(major))+"/"+command, func(t *testing.T) {
+				runtime.LockOSThread()
+				defer runtime.UnlockOSThread()
+				response := []byte(`{"ok":false,"error":{"code":"STALE_REF","disposition":{"delivery":"not_delivered","retry":"safe"}}}`)
+				storage := append(bytes.Clone(response), 0)
+				var pins runtime.Pinner
+				pins.Pin(&storage[0])
+				defer pins.Unpin()
+				created, destroyed, freed, invoked := 0, 0, 0, 0
+				finish := func(adapter uintptr, out **byte) uintptr {
+					runtime.GC() // Pinned inputs and out storage must survive native calls.
+					if adapter != 17 || out == nil {
+						t.Error("adapter or output pointer was not marshalled")
 						return uintptr(^uint32(0))
 					}
-					want := nativeAction{Kind: kind}
-					if command == "setValue" {
-						want.Text = action.Text
-						if nativeTestString(action.Text) != text {
-							t.Error("private text buffer was not marshalled")
+					invoked++
+					*out = &storage[0]
+					return uintptr(^uint32(0)) // Nonzero results must retain their error envelopes.
+				}
+				symbols := map[string]uintptr{
+					"ad_abi_version": purego.NewCallback(func() uint32 { return major }),
+					"ad_init": purego.NewCallback(func(expected uint32) uintptr {
+						if expected != major {
+							t.Error("wrong ABI major")
 						}
-					}
-					if *action != want {
-						t.Error("action layout or zero initialization changed")
-					}
-					return finish(adapter, out)
-				}),
-			}
-			api, err := bindNative(func(name string) (uintptr, error) { return symbols[name], nil })
-			if err != nil {
-				t.Fatal(err)
-			}
-			r := Request{Command: command, App: "Test app 秘密", Ref: "@stest:e1", Text: &text, MaxDepth: 32}
-			out, err := invokeNative(api, r)
-			if err != nil || !bytes.Equal(out, response) || created != 1 || destroyed != 1 || freed != 1 || invoked != 1 {
-				t.Fatal("native dispatch, ownership, copied output, or error envelope changed")
-			}
-		})
+						return 0
+					}),
+					"ad_action_size":    purego.NewCallback(func() uintptr { return 96 }),
+					"ad_adapter_create": purego.NewCallback(func() uintptr { created++; return 17 }),
+					"ad_adapter_destroy": purego.NewCallback(func(adapter uintptr) uintptr {
+						if adapter != 17 {
+							t.Error("wrong adapter destroyed")
+						}
+						destroyed++
+						return 0
+					}),
+					"ad_free_string": purego.NewCallback(func(p *byte) uintptr {
+						if p != &storage[0] {
+							t.Error("wrong output freed")
+						}
+						freed++
+						clear(storage)
+						return 0
+					}),
+					"ad_status": purego.NewCallback(func(adapter uintptr, out **byte) uintptr {
+						if command != "status" {
+							t.Error("wrong entrypoint")
+						}
+						return finish(adapter, out)
+					}),
+					"ad_snapshot": purego.NewCallback(func(adapter uintptr, app *byte, surface int32, depth uint8, interactive, compact bool, out **byte) uintptr {
+						runtime.GC()
+						if command != "snapshot" || nativeTestString(app) != "Test app 秘密" || surface != 0 || depth != 32 || interactive || compact {
+							t.Error("snapshot arguments were not marshalled")
+						}
+						return finish(adapter, out)
+					}),
+					"ad_execute_by_ref_timeout": purego.NewCallback(func(adapter uintptr, ref *byte, action *nativeAction, policy int32, timeout int64, out **byte) uintptr {
+						runtime.GC()
+						kind := map[string]int32{"setValue": 4, "click": 0, "clear": 18}[command]
+						if nativeTestString(ref) != "@stest:e1" || action == nil || policy != 0 || timeout != 5000 {
+							t.Error("action arguments or headless policy were not marshalled")
+							return uintptr(^uint32(0))
+						}
+						want := nativeAction{Kind: kind}
+						if command == "setValue" {
+							want.Text = action.Text
+							if nativeTestString(action.Text) != text {
+								t.Error("private text buffer was not marshalled")
+							}
+						}
+						if *action != want {
+							t.Error("action layout or zero initialization changed")
+						}
+						return finish(adapter, out)
+					}),
+				}
+				api, err := bindNative(func(name string) (uintptr, error) { return symbols[name], nil })
+				if err != nil {
+					t.Fatal(err)
+				}
+				r := Request{Command: command, App: "Test app 秘密", Ref: "@stest:e1", Text: &text, MaxDepth: 32}
+				out, err := invokeNative(api, r)
+				if err != nil || !bytes.Equal(out, response) || created != 1 || destroyed != 1 || freed != 1 || invoked != 1 {
+					t.Fatal("native dispatch, ownership, copied output, or error envelope changed")
+				}
+			})
+		}
 	}
 }
 
@@ -144,6 +148,7 @@ func TestDesktopNativeFailures(t *testing.T) {
 				storage[maxNativeOutput] = 0
 			}
 			api := nativeAPI{
+				abiVersion: func() uint32 { return 7 },
 				init: func(uint32) int32 {
 					if tc == "abi" {
 						return -1
@@ -200,5 +205,23 @@ func TestDesktopNativeFailures(t *testing.T) {
 		if _, err := bindNative(symbol); err == nil || err.Error() != "native desktop symbol unavailable" {
 			t.Fatal("symbol failure exposed diagnostics")
 		}
+	}
+}
+
+func TestDesktopNativeRejectsUnknownABI(t *testing.T) {
+	for _, major := range []uint32{0, 5, 8, ^uint32(0)} {
+		t.Run(strconv.Itoa(int(major)), func(t *testing.T) {
+			unexpected := func() { t.Fatal("unsupported ABI reached initialization or dispatch") }
+			api := nativeAPI{
+				abiVersion: func() uint32 { return major },
+				init:       func(uint32) int32 { unexpected(); return 0 },
+				actionSize: func() uintptr { unexpected(); return 96 },
+				create:     func() uintptr { unexpected(); return 17 },
+			}
+			out, err := invokeNative(api, Request{Command: "status"})
+			if out != nil || err == nil || err.Error() != "native desktop ABI mismatch" {
+				t.Fatal("unknown ABI accepted or exposed native diagnostics")
+			}
+		})
 	}
 }
