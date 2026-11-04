@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/transport/transporttest"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -17,7 +18,7 @@ func TestConnectionTests(t *testing.T) {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			// This fixture runs several bidirectional bulk tests, not just RPCs.
 			// Leave room for hashing/encryption under the race detector on CI hosts.
-			ctx, c, workers, _ := delegationClusterWithTimeout(t, relay, 90*time.Second)
+			ctx, c, workers, _ := delegationClusterWithTransport(t, relay, 90*time.Second, transporttest.Loopback())
 			mode := "webrtc"
 			if relay {
 				mode = "relay"

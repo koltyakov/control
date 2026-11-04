@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,9 @@ type StandaloneConfig struct {
 	ICEServers []webrtc.ICEServer
 	// AccountRouting uses the requesting account identity even with a local node.
 	AccountRouting bool
+	// PeerOptions is construction-only and follows in-process client copies.
+	// Saved tunnel-service configuration retains the default transport settings.
+	PeerOptions []transport.Options `json:"-"`
 }
 
 type routing struct {
@@ -51,6 +55,7 @@ type routing struct {
 // Close must be called when the CLI or MCP process finishes.
 func (c Client) WithStandalone(ctx context.Context, cfg StandaloneConfig) Client {
 	c = c.WithLifetime(ctx)
+	cfg.PeerOptions = slices.Clone(cfg.PeerOptions)
 	c.routing = &routing{ctx: ctx, cfg: cfg}
 	return c
 }
@@ -145,7 +150,7 @@ func (r *routing) start(ctx context.Context) error {
 		Node:      model.Node{ID: sessionID.ID, Name: "cli-" + id.ID[:16], PublicKey: sessionID.Public, OS: runtime.GOOS},
 		RelayOnly: r.cfg.RelayOnly, ICEServers: r.cfg.ICEServers,
 		RequireDelegation: r.cfg.AccountRouting,
-	}, nil)
+	}, nil, r.cfg.PeerOptions...)
 	peer.SetSoftware(buildinfo.Current())
 	// No listener, providers, health reporting, or update handler is installed.
 	peerCtx, peerCancel := context.WithCancel(r.ctx)

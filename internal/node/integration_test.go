@@ -19,12 +19,13 @@ import (
 	"github.com/koltyakov/control/internal/gateway"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/store"
+	"github.com/koltyakov/control/internal/transport"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const testToken = "integration-test-token-123456789"
 
-func cluster(t *testing.T, relayOnly bool, configure func(int, *Config)) (*Node, *Node, *Node) {
+func cluster(t *testing.T, relayOnly bool, configure func(int, *Config), peerOptions ...transport.Options) (*Node, *Node, *Node) {
 	t.Helper()
 	g, err := gateway.New(t.TempDir(), testToken, gateway.Options{SuperuserKey: testAccount})
 	if err != nil {
@@ -38,7 +39,7 @@ func cluster(t *testing.T, relayOnly bool, configure func(int, *Config)) (*Node,
 	nodes := []*Node{}
 	orchestrators := []*orchestratorFixture{}
 	for range 3 {
-		orchestrators = append(orchestrators, prepareTestOrchestrator(t, ctx, server.URL, testAccount, "legacy", relayOnly))
+		orchestrators = append(orchestrators, prepareTestOrchestrator(t, ctx, server.URL, testAccount, "legacy", relayOnly, peerOptions...))
 	}
 	for i, name := range []string{"source", "worker", "consumer"} {
 		cfg := Config{Name: name, Gateway: server.URL, Token: testToken, DataDir: t.TempDir(), WorkDir: t.TempDir(), RelayOnly: relayOnly, Labels: map[string]string{"role": name}}
@@ -54,7 +55,7 @@ func cluster(t *testing.T, relayOnly bool, configure func(int, *Config)) (*Node,
 			}
 			cfg.Allow[orchestrators[i].owner.ID] = []string{"*"}
 		}
-		n, err := New(cfg)
+		n, err := New(cfg, peerOptions...)
 		if err != nil {
 			t.Fatal(err)
 		}

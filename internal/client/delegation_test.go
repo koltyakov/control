@@ -15,6 +15,7 @@ import (
 	"github.com/koltyakov/control/internal/gateway"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/node"
+	"github.com/koltyakov/control/internal/transport"
 )
 
 type taskFileProvider struct{}
@@ -43,6 +44,11 @@ func delegationCluster(t *testing.T, relay bool) (context.Context, Client, []*no
 
 func delegationClusterWithTimeout(t *testing.T, relay bool, timeout time.Duration, instructionOnly ...bool) (context.Context, Client, []*node.Node, Admin) {
 	t.Helper()
+	return delegationClusterWithTransport(t, relay, timeout, transport.Options{}, instructionOnly...)
+}
+
+func delegationClusterWithTransport(t *testing.T, relay bool, timeout time.Duration, peerOptions transport.Options, instructionOnly ...bool) (context.Context, Client, []*node.Node, Admin) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	t.Cleanup(cancel)
 	const common = "delegation-worker-key-1234567890"
@@ -61,7 +67,7 @@ func delegationClusterWithTimeout(t *testing.T, relay bool, timeout time.Duratio
 			cfg.InstructionOnly = true
 			cfg.Labels = map[string]string{"context": "system"}
 		}
-		w, err := node.New(cfg)
+		w, err := node.New(cfg, peerOptions)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -84,7 +90,7 @@ func delegationClusterWithTimeout(t *testing.T, relay bool, timeout time.Duratio
 	// Even with a listening worker API, account routing must not inherit it.
 	api := httptest.NewServer(workers[0].Handler())
 	t.Cleanup(api.Close)
-	c := (Client{URL: api.URL, Token: common}).WithStandalone(ctx, StandaloneConfig{Gateway: admin, StateDir: t.TempDir(), RelayOnly: relay, AccountRouting: true})
+	c := (Client{URL: api.URL, Token: common}).WithStandalone(ctx, StandaloneConfig{Gateway: admin, StateDir: t.TempDir(), RelayOnly: relay, AccountRouting: true, PeerOptions: []transport.Options{peerOptions}})
 	t.Cleanup(func() { _ = c.Close() })
 	return ctx, c, workers, admin
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/koltyakov/control/internal/client"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/transport/transporttest"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -41,7 +42,7 @@ func TestMCPWorkflowRecoveryEndToEnd(t *testing.T) {
 			defer server.Close()
 			source, worker, consumer := cluster(t, relay, func(_ int, cfg *Config) {
 				cfg.MCP = map[string]Command{"fixture": {URL: server.URL}}
-			})
+			}, transporttest.Loopback())
 			// Close nodes before their configured MCP server, including on failure.
 			defer func() { _ = source.Close(); _ = worker.Close(); _ = consumer.Close() }()
 			ctx, cancel := context.WithTimeout(t.Context(), 40*time.Second)
@@ -159,6 +160,10 @@ func TestMCPWorkflowRecoveryEndToEnd(t *testing.T) {
 			mode := "webrtc"
 			if relay {
 				mode = "relay"
+			}
+			recoveredInfo, err := reconnected.Session(ctx)
+			if err != nil || recoveredInfo.Connections[source.Identity.ID] != mode || recoveredInfo.Connections[worker.Identity.ID] != mode || recoveredInfo.Connections[consumer.Identity.ID] != mode {
+				t.Fatalf("replacement client did not use %s: connections=%+v err=%v", mode, recoveredInfo.Connections, err)
 			}
 			info, err := c.Session(ctx)
 			if err != nil || info.Connections[worker.Identity.ID] != mode || source.Peer.Connections()[worker.Identity.ID] != mode || source.Peer.Connections()[consumer.Identity.ID] != mode {

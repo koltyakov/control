@@ -123,12 +123,12 @@ type Peer struct {
 	lanInbound          map[string]time.Time
 }
 
-func New(cfg Config, handler func(string, net.Conn)) *Peer {
+func New(cfg Config, handler func(string, net.Conn), options ...Options) *Peer {
 	if cfg.DirectTimeout == 0 {
 		cfg.DirectTimeout = 5 * time.Second
 	}
 	return &Peer{
-		cfg: cfg, handler: handler, log: slog.Default(), api: newWebRTCAPI(cfg.DirectTimeout, false), trickleAPI: newWebRTCAPI(cfg.DirectTimeout, true),
+		cfg: cfg, handler: handler, log: slog.Default(), api: newWebRTCAPI(cfg.DirectTimeout, false, options...), trickleAPI: newWebRTCAPI(cfg.DirectTimeout, true, options...),
 		writes: make(chan *gatewayWrite, 64), priorityWrites: make(chan *gatewayWrite, 32),
 		reconnectWake: make(chan struct{}, 1), machineStateWake: make(chan struct{}, 1),
 		lanSlots: make(chan struct{}, 4), lanInbound: map[string]time.Time{},

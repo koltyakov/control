@@ -63,8 +63,14 @@ func (p *Peer) Stats() model.TransportStats {
 // budget, so one unreachable STUN server cannot force every session onto the
 // relay. A larger SCTP window raises the per-carrier throughput ceiling on
 // high-latency paths, where it limits all lanes sharing the carrier.
-func newWebRTCAPI(direct time.Duration, trickle bool) *webrtc.API {
-	return webrtc.NewAPI(webrtc.WithSettingEngine(webRTCSettings(direct, trickle)))
+func newWebRTCAPI(direct time.Duration, trickle bool, options ...Options) *webrtc.API {
+	settings := webRTCSettings(direct, trickle)
+	for _, option := range options {
+		if option.ConfigureWebRTC != nil {
+			option.ConfigureWebRTC(&settings)
+		}
+	}
+	return webrtc.NewAPI(webrtc.WithSettingEngine(settings))
 }
 
 func webRTCSettings(direct time.Duration, trickle bool) webrtc.SettingEngine {

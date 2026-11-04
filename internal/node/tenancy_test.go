@@ -14,12 +14,14 @@ import (
 
 	"github.com/koltyakov/control/internal/gateway"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/transport/transporttest"
 )
 
 func TestPrivateFleetsWithMultipleOrchestrators(t *testing.T) {
 	t.Parallel()
 	for _, relay := range []bool{false, true} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
+			peerOptions := transporttest.Loopback()
 			const super = "tenant-test-superuser-key-123456789"
 			g, err := gateway.New(t.TempDir(), "", gateway.Options{SuperuserKey: super})
 			if err != nil {
@@ -51,7 +53,7 @@ func TestPrivateFleetsWithMultipleOrchestrators(t *testing.T) {
 					t.Fatal("account creation failed", err)
 				}
 				for _, name := range []string{"orchestrator-one", "orchestrator-two", "worker"} {
-					n, err := New(Config{Name: name, Gateway: s.URL, Token: account.Token, DataDir: t.TempDir(), WorkDir: t.TempDir(), RelayOnly: relay})
+					n, err := New(Config{Name: name, Gateway: s.URL, Token: account.Token, DataDir: t.TempDir(), WorkDir: t.TempDir(), RelayOnly: relay}, peerOptions)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -60,7 +62,7 @@ func TestPrivateFleetsWithMultipleOrchestrators(t *testing.T) {
 						t.Fatal(err)
 					}
 					fleets[u] = append(fleets[u], n)
-					attachTestOrchestrator(t, n, prepareTestOrchestrator(t, ctx, s.URL, account.Token, account.User.ID, relay))
+					attachTestOrchestrator(t, n, prepareTestOrchestrator(t, ctx, s.URL, account.Token, account.User.ID, relay, peerOptions))
 				}
 			}
 			for u, fleet := range fleets {

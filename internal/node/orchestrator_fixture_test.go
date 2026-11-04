@@ -28,9 +28,9 @@ type orchestratorFixture struct {
 
 var testOrchestrators sync.Map
 
-func prepareTestOrchestrator(t *testing.T, ctx context.Context, gateway, token, user string, relay bool) *orchestratorFixture {
+func prepareTestOrchestrator(t *testing.T, ctx context.Context, gateway, token, user string, relay bool, peerOptions ...transport.Options) *orchestratorFixture {
 	t.Helper()
-	cfg := client.StandaloneConfig{Gateway: client.Admin{URL: gateway, Key: token}, StateDir: t.TempDir(), RelayOnly: relay, AccountRouting: true}
+	cfg := client.StandaloneConfig{Gateway: client.Admin{URL: gateway, Key: token}, StateDir: t.TempDir(), RelayOnly: relay, AccountRouting: true, PeerOptions: peerOptions}
 	owner, err := identity.Load(filepath.Join(cfg.StateDir, identity.ID([]byte(strings.TrimRight(gateway, "/")+"\x00"+user))))
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +40,7 @@ func prepareTestOrchestrator(t *testing.T, ctx context.Context, gateway, token, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := transport.New(transport.Config{Client: true, Gateway: gateway, Token: token, Identity: transportID, ClientOwner: owner, Node: model.Node{ID: transportID.ID, Name: "cli-" + owner.ID[:16], PublicKey: transportID.Public, OS: runtime.GOOS}, RelayOnly: relay}, nil)
+	p := transport.New(transport.Config{Client: true, Gateway: gateway, Token: token, Identity: transportID, ClientOwner: owner, Node: model.Node{ID: transportID.ID, Name: "cli-" + owner.ID[:16], PublicKey: transportID.Public, OS: runtime.GOOS}, RelayOnly: relay}, nil, peerOptions...)
 	if err = p.Start(ctx); err != nil {
 		t.Fatal(err)
 	}

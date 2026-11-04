@@ -19,9 +19,29 @@ import (
 	"github.com/koltyakov/control/internal/gateway"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/node"
+	"github.com/koltyakov/control/internal/transport"
+	"github.com/koltyakov/control/internal/transport/transporttest"
 )
 
 type ownerProvider struct{}
+
+func TestStandalonePeerOptionsAreCopiedAndNotPersisted(t *testing.T) {
+	cfg := StandaloneConfig{PeerOptions: []transport.Options{transporttest.Loopback()}}
+	c := (Client{}).WithStandalone(t.Context(), cfg)
+	t.Cleanup(func() { _ = c.Close() })
+	cfg.PeerOptions[0] = transport.Options{}
+	if c.routing.cfg.PeerOptions[0].ConfigureWebRTC == nil {
+		t.Fatal("caller changed another client's construction options")
+	}
+	encoded, err := json.Marshal(c.routing.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved StandaloneConfig
+	if err = json.Unmarshal(encoded, &saved); err != nil || len(saved.PeerOptions) != 0 || strings.Contains(string(encoded), "PeerOptions") {
+		t.Fatal("runtime construction options entered saved configuration", string(encoded), err)
+	}
+}
 
 func (ownerProvider) Capability() model.Capability {
 	return model.Capability{Name: "test.owner", InputSchema: json.RawMessage(`{"type":"object"}`)}
@@ -35,6 +55,7 @@ func TestStandalonePeerOperations(t *testing.T) {
 	t.Parallel()
 	for _, relay := range []bool{false, true} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
+			peerOptions := transporttest.Loopback()
 			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 			t.Cleanup(cancel)
 			const super = "standalone-test-superuser-1234567890"
@@ -57,7 +78,7 @@ func TestStandalonePeerOperations(t *testing.T) {
 				if i == 1 {
 					allow = map[string][]string{"*": {"node.describe"}}
 				}
-				w, err := node.New(node.Config{Name: "worker", Gateway: s.URL, Token: issued.Token, DataDir: t.TempDir(), WorkDir: t.TempDir(), RelayOnly: relay, Allow: allow})
+				w, err := node.New(node.Config{Name: "worker", Gateway: s.URL, Token: issued.Token, DataDir: t.TempDir(), WorkDir: t.TempDir(), RelayOnly: relay, Allow: allow}, peerOptions)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -87,7 +108,7 @@ func TestStandalonePeerOperations(t *testing.T) {
 				}
 			})
 			local := Client{URL: api.URL}
-			cfg := StandaloneConfig{Gateway: accounts[0], StateDir: t.TempDir(), RelayOnly: relay, AccountRouting: true}
+			cfg := StandaloneConfig{Gateway: accounts[0], StateDir: t.TempDir(), RelayOnly: relay, AccountRouting: true, PeerOptions: []transport.Options{peerOptions}}
 			c := local.WithStandalone(ctx, cfg)
 			t.Cleanup(func() { _ = c.Close() })
 			var described struct{ ID string }
@@ -270,6 +291,10 @@ func TestStandalonePeerOperations(t *testing.T) {
 			t.Cleanup(func() { _ = resumed.Close() })
 			if err := resumed.Call(ctx, "worker", "tasks.get", map[string]any{"id": spec.ID}, &task); err != nil || task.Owner != owner {
 				t.Fatal("owner was not retained across commands", task, err)
+			}
+			resumedInfo, err := resumed.Session(ctx)
+			if err != nil || resumedInfo.Connections[described.ID] != mode {
+				t.Fatal("replacement client lost the required transport", resumedInfo.Connections, err)
 			}
 			otherCfg := cfg
 			otherCfg.Gateway = accounts[1]

@@ -3,8 +3,10 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,8 @@ import (
 
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/transport"
+	"github.com/koltyakov/control/internal/transport/transporttest"
+	"github.com/pion/webrtc/v4"
 )
 
 func TestCoordinationRequiresLocalDelegation(t *testing.T) {
@@ -144,27 +148,43 @@ func TestArtifactAccessCannotOutliveSignedGrant(t *testing.T) {
 
 func TestMCPDiscoveryRequiresExecutionAuthority(t *testing.T) {
 	t.Parallel()
-	for _, relay := range []bool{true, false} {
-		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
-			source, worker, _ := cluster(t, relay, func(i int, cfg *Config) {
+	for _, tc := range []struct {
+		name    string
+		relay   bool
+		options transport.Options
+	}{
+		{"relay=true", true, transporttest.Loopback()},
+		{"relay=false", false, transporttest.Loopback()},
+		// Exercise two independent cold direct attempts before relay fallback.
+		// The authorization phases must not share one ten-second deadline.
+		{"relay-fallback", false, transport.Options{ConfigureWebRTC: func(settings *webrtc.SettingEngine) {
+			settings.SetIPFilter(func(net.IP) bool { return false })
+		}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source, worker, _ := cluster(t, tc.relay, func(i int, cfg *Config) {
 				if i == 1 {
 					cfg.MCP = map[string]Command{"side-effect": executable(t, "encode")}
 				}
-			})
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
+			}, tc.options)
 			if err := os.WriteFile(filepath.Join(worker.Config.WorkDir, "input.bin"), []byte("marker"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			for _, params := range []map[string]any{{}, {"server": "side-effect"}} {
-				if err := source.Call(ctx, "worker", "mcp.discover", params, nil); err == nil {
-					t.Fatal("worker invoked MCP discovery without execution authority")
+				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+				err := source.Call(ctx, "worker", "mcp.discover", params, nil)
+				cancel()
+				var rpc *model.RPCError
+				if !errors.As(err, &rpc) || rpc.Code != "remote_error" || rpc.Message != "peer execution requires an account-authenticated orchestrator or an instruction-bound delegation" {
+					t.Fatalf("expected remote execution-authority rejection, got %v", err)
 				}
 			}
 			if _, err := os.Stat(filepath.Join(worker.Config.WorkDir, "output.bin")); !os.IsNotExist(err) {
 				t.Fatal("unauthorized discovery started configured subprocess:", err)
 			}
 			var servers map[string]string
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
 			if err := testCall(t, source, ctx, "worker", "mcp.discover", map[string]any{}, &servers); err != nil || len(servers) != 1 {
 				t.Fatal("account-authorized discovery:", servers, err)
 			}
