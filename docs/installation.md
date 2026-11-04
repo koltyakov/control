@@ -237,6 +237,8 @@ The User API uses its normal port, usually `127.0.0.1:7331`; the System companio
 
 On SELinux-enabled Linux hosts, System service installation labels its launcher `bin_t` before starting systemd. This also applies to each new Hybrid companion's private executable, whose `/usr/local/lib` location would otherwise default to a library label and can leave the service in `init_t` with gateway connections denied. The host needs `chcon`; label failures stop startup with an error. SELinux enforcement and policy are not disabled or changed. Older installers need the current attempt's executable relabeled and its service restarted locally, not just a previous attempt's path. A persistent file-context rule alone does not relabel newly copied files.
 
+System retirement also labels its verified cleanup helper `bin_t` before launching the separate systemd cleanup unit. This runs for both newly copied and reused helpers, which would otherwise retain a non-executable state-directory label such as `var_lib_t`. Labeling failures prevent the systemd launch; User and process-mode cleanup are unchanged. The change does not relabel directories, alter SELinux policy, or run cleanup by itself. Existing failed attempts need a node executable containing the fix or an explicitly approved local repair.
+
 ```sh
 control exec workstation -- whoami
 control exec workstation-system -- whoami

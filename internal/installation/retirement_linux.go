@@ -2,6 +2,7 @@ package installation
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -29,6 +30,17 @@ func launchRetiredUninstall(ctx context.Context, helper string, args []string, p
 	}
 	if !owned {
 		return launchDetachedUninstall(helper, args)
+	}
+	return launchRetiredSystemdUninstall(ctx, helper, args, p, flags, "/sys/fs/selinux")
+}
+
+func launchRetiredSystemdUninstall(ctx context.Context, helper string, args []string, p installedNode, flags []string, selinuxRoot string) error {
+	if p.Mode == "system" {
+		// The verified helper may be newly copied or reused after a failed cleanup.
+		// Its state-directory label is not executable by the system manager.
+		if err := labelSystemServiceBinary(ctx, helper, selinuxRoot); err != nil {
+			return fmt.Errorf("prepare retirement cleanup helper: %w", err)
+		}
 	}
 	// A detached child remains in the node's cgroup and would be killed when
 	// systemd stops the supervisor. A transient service has its own cgroup.
