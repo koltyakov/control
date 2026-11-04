@@ -2,6 +2,7 @@ package enrollment
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -33,6 +34,63 @@ func windowsPowerShellFileCommand(t *testing.T, script string) *exec.Cmd {
 		t.Fatal(err)
 	}
 	return exec.CommandContext(t.Context(), "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", file)
+}
+
+func TestPowerShellDownloadsPreserveProgressPreference(t *testing.T) {
+	for name, blocks := range powerShellDownloadBlocks(t) {
+		for index, block := range blocks {
+			t.Run(fmt.Sprintf("%s/%d", name, index), func(t *testing.T) {
+				t.Parallel()
+				verify := `$ErrorActionPreference = 'Stop'
+$base = 'https://release.example/download'
+$asset = 'control_windows_amd64.exe'
+$arch = 'amd64'
+$exe = 'unused-fixture.exe'
+function Assert-Download {
+  $script:requests++
+  if ($ProgressPreference -ne 'SilentlyContinue') { throw 'Download progress was not suppressed' }
+  if ($script:downloadFailure) { throw 'fixture download failure' }
+}
+function Invoke-WebRequest {
+  param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile)
+  Assert-Download
+  if (-not $UseBasicParsing -or $OutFile -cne $exe -or $Uri -notmatch '^https://') { throw 'Binary request changed' }
+}
+function Invoke-RestMethod {
+  param([string]$Uri)
+  Assert-Download
+  if ($Uri -notmatch '^https://') { throw 'Metadata request changed' }
+  return 'download result'
+}
+foreach ($preference in @('Continue', 'Stop', 'Inquire', 'SilentlyContinue')) {
+  foreach ($downloadFailure in @($false, $true)) {
+    $ProgressPreference = [System.Management.Automation.ActionPreference]$preference
+    $original = $ProgressPreference
+    $script:requests = 0
+    $script:downloadFailure = $downloadFailure
+    $manifest = $null
+    $systemScript = $null
+    $failure = $null
+    try {
+      Invoke-Expression ` + PowerShellQuote(block) + `
+    } catch { $failure = $_.Exception.Message }
+    if ($ProgressPreference -ne $original) { throw 'Caller progress preference changed' }
+    if ($script:requests -ne 1) { throw 'Download was skipped or retried' }
+    if ($downloadFailure) {
+      if ($failure -cne 'fixture download failure') { throw "Download failure changed: $failure" }
+    } else {
+      if ($failure) { throw $failure }
+      if (` + PowerShellQuote(block) + ` -match 'Invoke-RestMethod' -and $manifest -cne 'download result' -and $systemScript -cne 'download result') { throw 'Downloaded response was lost' }
+    }
+  }
+}
+`
+				if output, err := windowsPowerShellFileCommand(t, verify).CombinedOutput(); err != nil {
+					t.Fatalf("PowerShell progress scope: %v\n%s", err, output)
+				}
+			})
+		}
+	}
 }
 
 func TestWindowsPowerShellIgnoresInheritedModulePath(t *testing.T) {

@@ -16,11 +16,18 @@ $asset = "control_windows_$arch.exe"
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
-  $manifest = Invoke-RestMethod -Uri "$base/control-manifest.json"
+  # Child scopes suppress slow PowerShell 5.1 progress without changing the caller.
+  $manifest = & {
+    $ProgressPreference = 'SilentlyContinue'
+    Invoke-RestMethod -Uri "$base/control-manifest.json"
+  }
   $metadata = @($manifest.assets | Where-Object { $_.file -eq $asset })
   if ($metadata.Count -ne 1) { throw 'Release does not contain this platform' }
   $exe = Join-Path $tmp 'control.exe'
-  Invoke-WebRequest -UseBasicParsing -Uri "$base/$asset" -OutFile $exe
+  & {
+    $ProgressPreference = 'SilentlyContinue'
+    Invoke-WebRequest -UseBasicParsing -Uri "$base/$asset" -OutFile $exe
+  }
   if ((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -ne $metadata[0].sha256) { throw 'Binary checksum mismatch' }
   & $exe install-self
   if ($LASTEXITCODE -ne 0) { throw 'Installation failed' }

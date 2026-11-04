@@ -195,7 +195,13 @@ try {
       } catch { continue }
     }
   }
-  if (-not $reused) { Invoke-WebRequest -UseBasicParsing -Uri ({{q .Binary}} + '?arch=' + $arch) -OutFile $exe }
+  if (-not $reused) {
+    # A child scope suppresses slow PowerShell 5.1 progress without changing the caller.
+    & {
+      $ProgressPreference = 'SilentlyContinue'
+      Invoke-WebRequest -UseBasicParsing -Uri ({{q .Binary}} + '?arch=' + $arch) -OutFile $exe
+    }
+  }
   if ((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -ne $checksum) { throw 'Binary checksum mismatch' }
 {{if eq .ServiceMode "hybrid"}}  # Run User preflight with the same user's limited token, never Administrator.
   & $exe __hybrid-user --url {{q .Link}}{{if .AutoName}} --auto-name{{end}} --preflight
@@ -218,7 +224,10 @@ try {
       # The System installer verifies .\control.exe against the same pinned checksum.
       Push-Location -LiteralPath $tmp
       try {
-        $systemScript = Invoke-RestMethod -Uri {{q .SystemLink}}
+        $systemScript = & {
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-RestMethod -Uri {{q .SystemLink}}
+        }
         & ([ScriptBlock]::Create($systemScript))
       } finally { Pop-Location }
     }
