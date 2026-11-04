@@ -980,6 +980,8 @@ Windows GPU memory sampling still starts PowerShell per sample in each context, 
 
 ## D113: Limited-token Windows Hybrid User installation
 
+Direct linked-token process creation is superseded by [D118](#d118-validated-desktop-parent-for-windows-hybrid-user-launch). Protected staging, non-elevated User execution, and firewall ownership remain unchanged.
+
 Keep Windows Hybrid's elevated companion installation, but run User preflight and enrollment in a separate process with the installing account's linked limited token. Validate that token's user and elevation, and select it explicitly at process creation. Fail closed on missing tokens or launch errors, including UAC-disabled accounts; never inherit the elevated token or choose another logged-on account. Dispatch the fixed helper before ordinary User profile/log initialization and recheck non-elevation in its limited child. An active ordinary System service needs a separate local uninstall before limited User installation.
 
 Run the child from checksum-verified protected staging, granting its user read/execute only. Do not inherit that grant into System credentials, and copy candidate bytes without importing source ACLs. Check existing companion path ownership and ACLs before recovery executes its launcher. The protected elevated parent configures User firewall rules after enrollment rather than launching the writable User CLI through UAC. A post-registration firewall failure needs explicit firewall repair, not enrollment replay.
@@ -1017,3 +1019,11 @@ Bound message shapes, in-flight requests, handler concurrency, expiry and replay
 Keep JSDoc and explanatory comments in editable console JavaScript, but omit them from binaries produced by `cmd/control-bundle`. Use esbuild's Go API to remove comments and excess whitespace, then supply temporary copies through Go's build overlay for native and cross-platform builds. Preserve top-level names and classic-script scope without module bundling, identifier mangling, source maps, or runtime minification.
 
 This extends D079's embedded console while keeping the existing Go-only build command. It avoids checked-in generated assets, stale copies, source rewrites, and a Node.js build dependency. Direct Go development builds still embed original source. See [console bundling](console.md).
+
+## D118: Validated desktop parent for Windows Hybrid User launch
+
+Windows can return an identification-only impersonation token for `TokenLinkedToken`. Checking its user and elevation does not make it suitable for `CreateProcessAsUser`, which rejects it with `ERROR_BAD_IMPERSONATION_LEVEL`. Do not try to raise that token's impersonation level or substitute the elevated installer's token.
+
+Launch the fixed protected helper with `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`, through Go's `SysProcAttr.ParentProcess`, using the desktop shell's primary token. Before launch, verify that the installer is elevated and the shell has a non-elevated primary token for the same account and Windows session. Keep the opened process handle through command completion. Go supplies an explicit inherited-handle list. Forward output through pipes because console handles cannot be duplicated into the shell process; use NUL input for the non-interactive helper and bound output-pipe cleanup. Preserve structured arguments, a cleaned explicit environment, protected working directory, exit status, and context cancellation.
+
+Missing shells, other-account elevation, elevated shells, and query/launch errors stop installation. There is no shell-command execution, arbitrary process search, or elevated fallback. The child still rechecks non-elevation before profile access. This supersedes only D113's linked-token launch mechanism and requires a desktop session under the installing account. Invitations pin executables, so recovery from an older installer needs newly published binaries and a new invitation. See [Windows Hybrid setup](installation.md#hybrid-user-and-system-contexts).
