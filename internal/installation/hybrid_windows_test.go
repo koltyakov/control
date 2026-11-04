@@ -123,6 +123,17 @@ func TestHybridLimitedChildToken(t *testing.T) {
 	if !windows.GetCurrentProcessToken().IsElevated() || windows.GetShellWindow() == 0 {
 		t.Skip("native limited-child launch requires an elevated user with a desktop shell")
 	}
+	// UAC-disabled administrators can have a desktop shell but no limited token.
+	// They are not a supported installation environment. Do not mistake that
+	// missing prerequisite for a regression in desktop-parent selection.
+	elevationType, err := hybridTokenValue(windows.GetCurrentProcessToken(), windows.TokenElevationType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const tokenElevationTypeFull = 2 // Elevated half of a UAC split token.
+	if elevationType != tokenElevationTypeFull {
+		t.Skip("native limited-child launch requires a UAC split-token administrator")
+	}
 	parent, err := hybridUserParent()
 	if err != nil {
 		t.Fatal("cannot select limited desktop parent:", err)

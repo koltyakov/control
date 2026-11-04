@@ -31,8 +31,9 @@ func fixedTunnelAddress(t *testing.T) string {
 	t.Helper()
 	// Fixed test listeners must survive restarts. Ports from Listen(:0) overlap
 	// outbound ephemeral sockets and can be reclaimed while the listener is down.
-	for range 20000 {
-		port := 10000 + (fixedTunnelPort.Add(1)-1)%20000
+	// Keep 20000..29999 for the concurrently running CLI retirement fixtures.
+	for range 10000 {
+		port := 10000 + (fixedTunnelPort.Add(1)-1)%10000
 		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err != nil {
 			continue

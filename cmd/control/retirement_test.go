@@ -29,8 +29,9 @@ func retirementAPIAddress(t *testing.T) string {
 	// The node starts in another process after this listener closes. Keep its
 	// API port below the default ephemeral ranges so outbound sockets, including
 	// readiness probes, cannot claim it before startup or during a restart.
-	for range 20000 {
-		port := 10000 + (retirementPort.Add(1)-1)%20000
+	// The client package's tunnel fixtures use 10000..19999 concurrently.
+	for range 10000 {
+		port := 20000 + (retirementPort.Add(1)-1)%10000
 		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err != nil {
 			continue
