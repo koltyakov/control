@@ -24,8 +24,8 @@ import (
 type installation struct {
 	enrollment.Invitation
 	CredentialHash string `json:"credentialHash,omitempty"`
-	// Cleared hides a redeemed invitation from listings. The record stays
-	// because it holds the enrolled machine's credential.
+	// Cleared hides invitation history while retaining machine credentials or
+	// incomplete Hybrid records needed for timeout retirement.
 	Cleared bool `json:"cleared,omitempty"`
 	// HybridComplete survives later independent lifecycle changes to either context.
 	HybridComplete bool `json:"hybridComplete,omitempty"`
@@ -676,7 +676,8 @@ func (g *Gateway) revokeInstallation(w http.ResponseWriter, r *http.Request) {
 // clearInstallations tidies the invitation list. Revoked invitations and
 // unredeemed ones past expiry are deleted. Redeemed, unrevoked invitations hold
 // their machine's credential, so they are hidden instead and the machine keeps
-// working. Pending invitations still work and stay listed.
+// working. Revoked incomplete Hybrid records are also hidden until timeout
+// retirement. Pending invitations still work and stay listed.
 func (g *Gateway) clearInstallations(w http.ResponseWriter, r *http.Request) {
 	p := g.requestPrincipal(r)
 	now := time.Now()
@@ -695,6 +696,11 @@ func (g *Gateway) clearInstallations(w http.ResponseWriter, r *http.Request) {
 		}
 		old := i
 		switch {
+		case i.pendingHybrid() && i.Revoked && !i.Cleared:
+			// Remove revoked history without losing the pair's retirement records.
+			i.Cleared = true
+			g.installations[hash] = i
+			hidden++
 		case i.pendingHybrid():
 			// Keep the whole pair until timeout cleanup can retire redeemed contexts.
 			continue

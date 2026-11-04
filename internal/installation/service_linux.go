@@ -67,10 +67,28 @@ func systemdSystemUnit(binary, config string) string {
 	return fmt.Sprintf("# Managed by control\n[Unit]\nDescription=Control peer node\nWants=network-online.target\nAfter=network-online.target\n[Service]\nExecStart=%s node --config %s\nEnvironment=CONTROL_TOKEN=\nRestart=on-failure\nRestartSec=3\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n", systemdQuote(binary), systemdQuote(config))
 }
 
+// Private launchers under /usr/local/lib otherwise inherit lib_t and can leave
+// systemd's child in init_t, which cannot connect to the gateway. Label only the
+// launcher as an executable and let the installed SELinux policy choose its domain.
+func labelSystemServiceBinary(ctx context.Context, binary, selinuxRoot string) error {
+	if _, err := os.Stat(filepath.Join(selinuxRoot, "enforce")); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("check SELinux for system startup: %w", err)
+	}
+	if err := run(ctx, "chcon", "-t", "bin_t", "--", binary); err != nil {
+		return fmt.Errorf("label system service executable for SELinux: %w", err)
+	}
+	return nil
+}
+
 func systemService(ctx context.Context, operation, binary, config string, _ node.Config) error {
 	name := "control-node-" + systemServiceID(config) + ".service"
 	path := filepath.Join("/etc/systemd/system", name)
 	if operation == "start" {
+		if err := labelSystemServiceBinary(ctx, binary, "/sys/fs/selinux"); err != nil {
+			return err
+		}
 		if err := writeManaged(path, []byte(systemdSystemUnit(binary, config))); err != nil {
 			return err
 		}

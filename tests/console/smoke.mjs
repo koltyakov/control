@@ -1255,6 +1255,23 @@ try {
   await page.locator("#modal-form [data-action=close]").click();
 
   const os = await publishInstallers();
+  const groupedInvitations = await page.evaluate(() => {
+    const shared = { expiresAt: new Date(Date.now() + 60000).toISOString() };
+    return groupInvitations([
+      { ...shared, id: "system-first", name: "paired-system", hybridId: "pair", hybridRole: "system", redeemedId: "system-node" },
+      { ...shared, id: "plain", name: "unrelated" },
+      { ...shared, id: "plain-system", name: "unrelated-system" },
+      { ...shared, id: "user-second", name: "paired", hybridId: "pair", hybridRole: "user" },
+      { ...shared, id: "complete-system", name: "complete-system", hybridId: "complete", hybridRole: "system", redeemedId: "complete-system-node" },
+      { ...shared, id: "complete-user", name: "complete", hybridId: "complete", hybridRole: "user", redeemedId: "complete-user-node" },
+    ]).map((i) => ({ id: i.id, name: i.name, redeemedId: i.redeemedId || "", startup: i.serviceMode || "" }));
+  });
+  assert.deepEqual(groupedInvitations, [
+    { id: "user-second", name: "paired", redeemedId: "", startup: "hybrid" },
+    { id: "plain", name: "unrelated", redeemedId: "", startup: "" },
+    { id: "plain-system", name: "unrelated-system", redeemedId: "", startup: "" },
+    { id: "complete-user", name: "complete", redeemedId: "complete-user-node", startup: "hybrid" },
+  ], "Grouping must use pair metadata, prefer User regardless of ordering, and wait for both redemptions");
   await page.locator(".heading-actions [data-action=add]").click();
   await page
     .locator("#modal-form input[name=name]")
@@ -1305,6 +1322,49 @@ try {
     .filter({ has: page.getByText("Pending", { exact: true }) });
   await pending.getByRole("button", { name: "Revoke", exact: true }).click();
   await page.locator("#modal-form button[type=submit]").click();
+
+  // Clear standalone history first, then exercise real Hybrid pair creation,
+  // pair-level revocation, grouped counts, cancellation, and durable clearing.
+  await page.getByRole("button", { name: "Clear history", exact: true }).click();
+  await page.locator("#modal-form button[type=submit]").click();
+  await page.getByText("No invitations yet", { exact: true }).waitFor();
+  const hybridRequest = { name: "browser-hybrid", os, gateway: base, serviceMode: "hybrid" };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const link = await api("/v1/fleet/installations", "POST", hybridRequest, account.token);
+    await page.locator(".heading-actions [data-action=refresh]").click();
+    const row = page.locator("tr").filter({ hasText: "browser-hybrid" })
+      .filter({ has: page.getByText("Pending", { exact: true }) });
+    await row.getByText("Hybrid", { exact: true }).waitFor();
+    assert.equal(await row.count(), 1, "Hybrid invitation must occupy one row");
+    assert.equal(await page.getByText("browser-hybrid-system", { exact: true }).count(), 0);
+    await row.getByRole("button", { name: "Revoke", exact: true }).click();
+    await page.locator("#modal-form button[type=submit]").click();
+    await until(async () => {
+      const invitations = await api("/v1/fleet/installations", "GET", undefined, account.token);
+      const pair = invitations.filter((i) => i.hybridId === link.hybridId);
+      return pair.length === 2 && pair.every((i) => i.revoked);
+    }, "Grouped revoke did not revoke both Hybrid invitations");
+  }
+  await api("/v1/fleet/installations", "POST", { ...hybridRequest, name: "pending-hybrid" }, account.token);
+  await page.locator(".heading-actions [data-action=refresh]").click();
+  await page.getByText("pending-hybrid", { exact: true }).waitFor();
+  assert.equal(await page.locator("tr").filter({ hasText: "browser-hybrid" }).count(), 2,
+    "Same-name attempts must remain separate rows");
+  await page.getByRole("button", { name: "Clear history", exact: true }).click();
+  await page.getByText("Clear 2 invitations from this list.", { exact: false }).waitFor();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.equal((await api("/v1/fleet/installations", "GET", undefined, account.token)).length, 6);
+  await page.getByRole("button", { name: "Clear history", exact: true }).click();
+  await page.locator("#modal-form button[type=submit]").click();
+  await page.getByText("browser-hybrid", { exact: true }).first().waitFor({ state: "hidden" });
+  await page.getByText("pending-hybrid", { exact: true }).waitFor();
+  const remainingInvitations = await api("/v1/fleet/installations", "GET", undefined, account.token);
+  assert.equal(remainingInvitations.length, 2);
+  assert.ok(remainingInvitations.every((i) => !i.revoked && i.hybridId));
+  await page.reload();
+  await page.getByText("pending-hybrid", { exact: true }).waitFor();
+  assert.equal(await page.getByText("browser-hybrid", { exact: true }).count(), 0,
+    "Cleared Hybrid history returned after refresh");
 
   await page.locator('a[href="#overview"]').first().click();
   await page.waitForFunction(

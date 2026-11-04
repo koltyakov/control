@@ -1280,8 +1280,7 @@ function renderOverview() {
     `<a class="stat ${tone}" href="#machines" data-action="filter-machines" data-filter="${filter}"><span class="stat-label">${tone ? '<span class="status-dot"></span>' : ""}${label}</span><span class="stat-value">${value}</span></a>`;
   return `${gatewayPanel()}<div class="fleet-summary">${stat("Online", online, "online", online ? "good" : "")}${stat("Offline", offline, "offline", offline ? "bad" : "")}${stat("Active work", work, "busy", work ? "warn" : "")}</div>${machinePanel(true)}`;
 }
-// Everything but pending invitations: the gateway deletes revoked and expired
-// ones and hides redeemed ones, which keep their machine's credential.
+// Clear history without deleting credentials or incomplete Hybrid retirement state.
 /** @param {Invitation[]} items @returns {Invitation[]} */
 function clearable(items) {
   return items.filter(
@@ -1300,11 +1299,38 @@ function inviteAction(i, status) {
     ? `<button class="secondary compact" data-action="revoke-invite" data-id="${esc(i.id)}">Revoke</button>`
     : "";
 }
+// Pairing comes from invitation metadata, never from a machine-name suffix.
+/** @param {Invitation[]} items @returns {Invitation[]} */
+function groupInvitations(items) {
+  /** @type {Map<string, Invitation[]>} */
+  const groups = new Map();
+  for (const item of items) {
+    const key = item.hybridId ? `hybrid:${item.hybridId}` : `single:${item.id}`;
+    const contexts = groups.get(key);
+    if (contexts) contexts.push(item);
+    else groups.set(key, [item]);
+  }
+  /** @type {Invitation[]} */
+  const rows = [];
+  for (const contexts of groups.values()) {
+    const primary = contexts.find((i) => i.hybridRole === "user") || contexts[0];
+    if (!primary) continue;
+    rows.push(primary.hybridId ? {
+      ...primary,
+      serviceMode: "hybrid",
+      revoked: contexts.some((i) => i.revoked),
+      redeemedId: contexts.length === 2 && contexts.every((i) => i.redeemedId)
+        ? primary.redeemedId : undefined,
+    } : primary);
+  }
+  return rows;
+}
 /** @param {Invitation[]} items @returns {string} */
 function renderInvitations(items) {
   /** @type {Record<string, string>} */
   const startup = { user: "User", system: "System", hybrid: "Hybrid", "": "" };
-  const rows = items.map((item) => {
+  const groups = groupInvitations(items);
+  const rows = groups.map((item) => {
     const i = {...item, serviceMode: item.serviceMode || ""};
     const status = i.revoked
       ? "Revoked"
@@ -1324,7 +1350,7 @@ function renderInvitations(items) {
           "Create a one-time command to install a worker.",
           `<button class="primary" data-action="add">${icon("plus")}Add machine</button>`,
         ),
-    clearable(items).length
+    clearable(groups).length
       ? `<button class="secondary compact" data-action="clear-invites">Clear history</button>`
       : "",
   );
@@ -2716,16 +2742,13 @@ document.addEventListener("click", async (event) => {
       );
     }
     if (action === "clear-invites") {
-      const count = clearable(state.auxiliary?.page === "invitations" ? state.auxiliary.data : []).length;
+      const count = clearable(groupInvitations(state.auxiliary?.page === "invitations" ? state.auxiliary.data : [])).length;
       formDialog(
         "Clear invitation history",
-        `<p>Clear ${esc(plural(count, "invitation"))} from this list. Revoked and expired invitations are deleted. Redeemed ones are hidden, and their machines keep working; manage them from Machines. Pending invitations stay.</p>`,
+        `<p>Clear ${esc(plural(count, "invitation"))} from this list. Enrolled machines keep working; manage them from Machines. Records needed for machine credentials or incomplete Hybrid cleanup are retained internally. Pending invitations stay.</p>`,
         async () => {
-          const result = await api("fleet/installations", "DELETE");
-          toast(
-            "Cleared " +
-              plural(result.removed + (result.hidden || 0), "invitation"),
-          );
+          await api("fleet/installations", "DELETE");
+          toast("Cleared invitation history");
         },
         "Clear history",
         true,

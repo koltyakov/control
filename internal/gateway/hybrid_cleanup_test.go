@@ -294,6 +294,99 @@ func TestHybridCompletedLifecycleIsIndependent(t *testing.T) {
 	}
 }
 
+func TestHybridRevokedHistoryClear(t *testing.T) {
+	for _, scenario := range []string{"unredeemed", "redeemed", "registered"} {
+		for _, role := range []int{0, 1} {
+			t.Run(scenario+"/"+[]string{"pair", "system"}[role], func(t *testing.T) {
+				g, server := installationFixture(t)
+				links := hybridInvite(t, g, server)
+				var id *identity.Identity
+				if scenario != "unredeemed" {
+					var credential string
+					id, credential, _ = hybridRedeem(t, links[1])
+					if scenario == "registered" {
+						hybridConnect(t, server, links[1], id, credential, true)
+					}
+				}
+				admin := testAdmin{URL: server.URL, Key: superKey}
+				ctx := context.Background()
+				if err := admin.JSON(ctx, "DELETE", "/v1/fleet/installations/"+links[role].ID, nil, nil); err != nil {
+					t.Fatal(err)
+				}
+				wantHidden := 2 - role
+				var result struct{ Removed, Hidden int }
+				if err := admin.JSON(ctx, "DELETE", "/v1/fleet/installations", nil, &result); err != nil || result.Removed != 0 || result.Hidden != wantHidden {
+					t.Fatalf("clear = %+v, want %d hidden: %v", result, wantHidden, err)
+				}
+				var listed []enrollment.Invitation
+				if err := admin.JSON(ctx, "GET", "/v1/fleet/installations", nil, &listed); err != nil || len(listed) != role {
+					t.Fatalf("listed %d invitations, want %d: %v", len(listed), role, err)
+				}
+				if role == 1 && listed[0].ID != links[0].ID {
+					t.Fatal("clear hid the usable User invitation")
+				}
+				if err := admin.JSON(ctx, "DELETE", "/v1/fleet/installations", nil, &result); err != nil || result.Removed != 0 || result.Hidden != 0 {
+					t.Fatalf("repeated clear = %+v: %v", result, err)
+				}
+				stored := map[string]installation{}
+				if err := readRecords(g.db, "invitations", "hash", stored); err != nil || len(stored) != 2 {
+					t.Fatal("clear discarded durable retirement records", err)
+				}
+				for _, i := range stored {
+					if i.Cleared != i.Revoked || !i.pendingHybrid() {
+						t.Fatal("incorrectly retained invitation", i.ID)
+					}
+				}
+				// Hidden records must survive restart and still retire installed halves.
+				server.Close()
+				if err := g.Close(); err != nil {
+					t.Fatal(err)
+				}
+				restored, err := New(filepath.Dir(g.path), commonKey, Options{SuperuserKey: superKey})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = restored.Close() }()
+				if err := restored.cleanupHybridInstallations(links[0].ExpiresAt); err != nil {
+					t.Fatal(err)
+				}
+				restored.mu.Lock()
+				defer restored.mu.Unlock()
+				if len(restored.installations) != 0 || len(restored.nodes) != 0 || (id != nil && !restored.machineStates[id.ID].Unregistered) {
+					t.Fatal("cleared history lost timeout retirement")
+				}
+			})
+		}
+	}
+}
+
+func TestHybridRevokedHistoryClearRollback(t *testing.T) {
+	g, server := installationFixture(t)
+	links := hybridInvite(t, g, server)
+	admin := testAdmin{URL: server.URL, Key: superKey}
+	ctx := context.Background()
+	if err := admin.JSON(ctx, "DELETE", "/v1/fleet/installations/"+links[0].ID, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.db.Exec(`CREATE TRIGGER fail_clear BEFORE UPDATE ON invitations BEGIN SELECT RAISE(ABORT, 'fixture'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.JSON(ctx, "DELETE", "/v1/fleet/installations", nil, nil); err == nil {
+		t.Fatal("clear acknowledged failed persistence")
+	}
+	var listed []enrollment.Invitation
+	if err := admin.JSON(ctx, "GET", "/v1/fleet/installations", nil, &listed); err != nil || len(listed) != 2 {
+		t.Fatal("failed clear changed live history", err)
+	}
+	if _, err := g.db.Exec(`DROP TRIGGER fail_clear`); err != nil {
+		t.Fatal(err)
+	}
+	var result struct{ Removed, Hidden int }
+	if err := admin.JSON(ctx, "DELETE", "/v1/fleet/installations", nil, &result); err != nil || result.Hidden != 2 {
+		t.Fatalf("clear retry = %+v: %v", result, err)
+	}
+}
+
 func TestHybridCleanupPreservesSupersedingEnrollment(t *testing.T) {
 	g, server := installationFixture(t)
 	links := hybridInvite(t, g, server)
