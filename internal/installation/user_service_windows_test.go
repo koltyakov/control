@@ -101,6 +101,50 @@ func TestUserTaskLookup(t *testing.T) {
 	}
 }
 
+func TestUserTaskRemovalValidatesOwnershipBeforeMutation(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "node.json")
+	for _, scenario := range []string{"missing", "owned", "foreign-profile", "foreign-user", "lookup-denied", "removal-denied"} {
+		t.Run(scenario, func(t *testing.T) {
+			// Mock task enumeration and removal. Never mutate the real scheduler,
+			// run a task action, change ACLs, or require an elevated test runner.
+			script := `$scenario = ` + powershellLiteral(scenario) + `
+$script:removals = 0
+function Get-ScheduledTask {
+  param($TaskPath, $ErrorAction)
+  if ($TaskPath -cne '\') { throw 'Unexpected task folder' }
+  if ($scenario -eq 'lookup-denied') { throw 'fixture lookup denied' }
+  if ($scenario -eq 'missing') { return }
+  $owner = if ($scenario -eq 'foreign-user') { 'S-1-0-0' } else { $sid }
+  $profile = if ($scenario -eq 'foreign-profile') { 'Another profile' } else { $description }
+  [PSCustomObject]@{ TaskPath = '\'; TaskName = $name; Description = $profile; Principal = [PSCustomObject]@{ UserId = $owner } }
+}
+function Unregister-ScheduledTask {
+  param($InputObject, [switch]$Confirm)
+  $script:removals++
+  if ($InputObject.TaskName -cne $name -or $InputObject.TaskPath -cne '\' -or $Confirm) { throw 'Removal lost task scope' }
+  if ($scenario -eq 'removal-denied') { throw 'fixture removal denied' }
+}
+$failure = $null
+try {
+` + userTaskRemovalScript(config) + `
+} catch { $failure = $_.Exception.Message }
+$expected = if ($scenario -in @('owned', 'removal-denied')) { 1 } else { 0 }
+if ($script:removals -ne $expected) { throw 'Unsafe task removal or automatic retry' }
+switch ($scenario) {
+  'foreign-profile' { if ($failure -notlike '*belongs to another profile or user*') { throw 'Foreign profile was accepted' } }
+  'foreign-user' { if ($failure -notlike '*belongs to another profile or user*') { throw 'Foreign user was accepted' } }
+  'lookup-denied' { if ($failure -cne 'fixture lookup denied') { throw 'Lookup failure was hidden' } }
+  'removal-denied' { if ($failure -cne 'fixture removal denied') { throw 'Removal failure was hidden' } }
+  default { if ($failure) { throw $failure } }
+}
+`
+			if output, err := userPowerShellOutput(t.Context(), script); err != nil || output != "" {
+				t.Fatalf("task removal ownership: %q, %v", output, err)
+			}
+		})
+	}
+}
+
 func TestMissingUserTaskNoOp(t *testing.T) {
 	config := filepath.Join(t.TempDir(), "node.json")
 	for _, operation := range []string{

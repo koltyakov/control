@@ -1,6 +1,7 @@
 package installation
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
@@ -40,6 +41,30 @@ func userTaskArguments(binary, config string) string {
 	// Both arguments are absolute file paths. Windows file names cannot contain
 	// double quotes, and these paths cannot end in a directory separator.
 	return `__user-launch "` + config + `" "` + binary + `"`
+}
+
+// The protected Hybrid parent may remove a matching legacy login task that its
+// limited child cannot delete. Preflight must never perform this preparation.
+func runHybridUserPhase(ctx context.Context, preflight bool, prepare, enroll func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !preflight {
+		if err := prepare(); err != nil {
+			return fmt.Errorf("prepare Hybrid User login startup from protected installer: %w", err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := enroll(); err != nil {
+		return fmt.Errorf("limited-token Hybrid User enrollment: %w", err)
+	}
+	return nil
+}
+
+func userTaskRemovalScript(config string) string {
+	return userTaskScript(config, "if ($task) { Unregister-ScheduledTask -InputObject $task -Confirm:$false }")
 }
 
 func userTaskRegistration(launcher, binary, config string) string {

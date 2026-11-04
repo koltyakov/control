@@ -112,7 +112,7 @@ func userPowerShellOutput(ctx context.Context, script string) (string, error) {
 }
 
 func removeUserTask(ctx context.Context, config string) error {
-	if err := userPowerShell(ctx, userTaskScript(config, "if ($task) { Unregister-ScheduledTask -InputObject $task -Confirm:$false }")); err != nil {
+	if err := userPowerShell(ctx, userTaskRemovalScript(config)); err != nil {
 		return fmt.Errorf("remove User login task: %w", err)
 	}
 	return nil

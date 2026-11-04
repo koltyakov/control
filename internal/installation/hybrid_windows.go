@@ -156,8 +156,12 @@ func RunHybridUser(ctx context.Context, config, link string, preflight, autoName
 	if err != nil {
 		return err
 	}
-	if err = cmd.Run(); err != nil {
-		return fmt.Errorf("limited-token Hybrid User enrollment: %w", err)
+	// Older elevated User installers could leave an administrator-owned task.
+	// Remove only this account/profile's validated task from protected code,
+	// before the limited replacement tries to uninstall it. Do not execute its
+	// action, alter its ACL, or perform any removal during preflight.
+	if err = runHybridUserPhase(ctx, preflight, func() error { return removeUserTask(ctx, config) }, cmd.Run); err != nil {
+		return err
 	}
 	if preflight {
 		return nil

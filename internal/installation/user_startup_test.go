@@ -1,7 +1,9 @@
 package installation
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -50,6 +52,78 @@ func TestUserTaskArgumentsQuotePaths(t *testing.T) {
 	want := `__user-launch "C:\Users\O'Brien\control profile\node.json" "C:\Users\O'Brien\程序\control.exe"`
 	if got := userTaskArguments(binary, config); got != want {
 		t.Fatalf("startup arguments changed paths: %q", got)
+	}
+}
+
+func TestHybridUserPhasePreparation(t *testing.T) {
+	failure := errors.New("access denied")
+	for _, tc := range []struct {
+		name                  string
+		preflight             bool
+		prepareErr, enrollErr error
+		want                  []string
+		failureContext        string
+	}{
+		{"preflight", true, failure, nil, []string{"limited"}, ""},
+		{"enrollment", false, nil, nil, []string{"prepare", "limited"}, ""},
+		{"preparation failed", false, failure, nil, []string{"prepare"}, "prepare Hybrid User login startup"},
+		{"enrollment failed", false, nil, failure, []string{"prepare", "limited"}, "limited-token Hybrid User enrollment"},
+		{"preflight failed", true, nil, failure, []string{"limited"}, "limited-token Hybrid User enrollment"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			err := runHybridUserPhase(t.Context(), tc.preflight, func() error {
+				calls = append(calls, "prepare")
+				return tc.prepareErr
+			}, func() error {
+				calls = append(calls, "limited")
+				return tc.enrollErr
+			})
+			if !slices.Equal(calls, tc.want) {
+				t.Fatalf("phases = %v, want %v", calls, tc.want)
+			}
+			if tc.failureContext == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if !errors.Is(err, failure) || !strings.Contains(err.Error(), tc.failureContext) {
+				t.Fatalf("phase failure lost context or cause: %v", err)
+			}
+		})
+	}
+	for _, beforePrepare := range []bool{true, false} {
+		ctx, cancel := context.WithCancel(t.Context())
+		if beforePrepare {
+			cancel()
+		}
+		err := runHybridUserPhase(ctx, false, func() error {
+			if beforePrepare {
+				t.Fatal("cancelled installation removed a task")
+			}
+			cancel()
+			return nil
+		}, func() error {
+			t.Fatal("cancelled installation started enrollment")
+			return nil
+		})
+		cancel()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal("cancellation was lost:", err)
+		}
+	}
+}
+
+func TestUserTaskRemovalRemainsOwnershipScoped(t *testing.T) {
+	script := userTaskRemovalScript(`C:\Users\user\control\node.json`)
+	validation := strings.Index(script, "throw 'Control login task belongs to another profile or user'")
+	removal := strings.Index(script, "if ($task) { Unregister-ScheduledTask -InputObject $task -Confirm:$false }")
+	if validation < 0 || removal <= validation {
+		t.Fatal("task removal bypassed profile/user ownership validation")
+	}
+	for _, forbidden := range []string{"Start-ScheduledTask", "Register-ScheduledTask", "Set-ScheduledTask", "SetSecurityDescriptor", "Start-Process"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("task removal must not execute an action or rewrite permissions: %s", forbidden)
+		}
 	}
 }
 
