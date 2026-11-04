@@ -33,7 +33,7 @@ func TestTrickleICEConnectsBeforeSlowGatheringAndLegacyFallback(t *testing.T) {
 		legacy := name != "trickle"
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			// A local STUN endpoint that never answers, with no internet dependency.
 			stun, err := net.ListenPacket("udp4", "127.0.0.1:0")
@@ -71,7 +71,10 @@ func TestTrickleICEConnectsBeforeSlowGatheringAndLegacyFallback(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				p := New(Config{Gateway: server.URL, Token: token, Identity: id, Node: model.Node{ID: id.ID, Name: name, PublicKey: id.Public}}, func(_ string, conn net.Conn) { _, _ = io.Copy(conn, conn) })
+				// Legacy SDP waits for two sequential STUN gathers before the
+				// handshake. Leave more than the default budget's one second
+				// for signaling and connection setup on race-enabled CI runners.
+				p := New(Config{Gateway: server.URL, Token: token, Identity: id, DirectTimeout: 10 * time.Second, Node: model.Node{ID: id.ID, Name: name, PublicKey: id.Public}}, func(_ string, conn net.Conn) { _, _ = io.Copy(conn, conn) })
 				p.api, p.trickleAPI = loopbackWebRTCAPI(p.cfg.DirectTimeout, false), loopbackWebRTCAPI(p.cfg.DirectTimeout, true)
 				p.networkSnapshot = func() (string, error) { return "unchanged", nil }
 				if err := p.Start(ctx); err != nil {
