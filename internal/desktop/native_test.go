@@ -68,7 +68,7 @@ func TestDesktopNativeBindings(t *testing.T) {
 					return uintptr(^uint32(0)) // Nonzero results must retain their error envelopes.
 				}
 				symbols := map[string]uintptr{
-					"ad_abi_version": purego.NewCallback(func() uint32 { return major }),
+					"ad_abi_version": purego.NewCallback(func() uintptr { return uintptr(major) }),
 					"ad_init": purego.NewCallback(func(expected uint32) uintptr {
 						if expected != major {
 							t.Error("wrong ABI major")
