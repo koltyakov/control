@@ -95,7 +95,7 @@ func userPowerShellOutput(ctx context.Context, script string) (string, error) {
 	// Windows PowerShell can serialize encoded-command errors as CLIXML even
 	// with text output selected. Catch failures and bypass its error stream.
 	// Suppress module-loading progress so it cannot obscure task state or errors.
-	script = "$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\ntry {\n" + script + "\n} catch {\n[Console]::Error.WriteLine($_.ToString())\nexit 1\n}"
+	script = "$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\ntry {\n" + script + "\n} catch {\n$command = $_.InvocationInfo.MyCommand.Name\nif ($command) { [Console]::Error.WriteLine($command + ': ' + $_.ToString()) } else { [Console]::Error.WriteLine($_.ToString()) }\nexit 1\n}"
 	system, err := windows.GetSystemDirectory()
 	if err != nil {
 		return "", fmt.Errorf("locate Windows PowerShell: %w", err)
@@ -112,7 +112,10 @@ func userPowerShellOutput(ctx context.Context, script string) (string, error) {
 }
 
 func removeUserTask(ctx context.Context, config string) error {
-	return userPowerShell(ctx, userTaskScript(config, "if ($task) { Unregister-ScheduledTask -InputObject $task -Confirm:$false }"))
+	if err := userPowerShell(ctx, userTaskScript(config, "if ($task) { Unregister-ScheduledTask -InputObject $task -Confirm:$false }")); err != nil {
+		return fmt.Errorf("remove User login task: %w", err)
+	}
+	return nil
 }
 
 func finishServiceStop(ctx context.Context, config, mode string) error {
@@ -121,7 +124,10 @@ func finishServiceStop(ctx context.Context, config, mode string) error {
 	}
 	// The API has stopped the supervisor and released its runtime lock. Complete
 	// the task wrapper too so a subsequent start cannot be ignored as a duplicate.
-	return userPowerShell(ctx, userTaskScript(config, "if ($task) { Stop-ScheduledTask -InputObject $task }"))
+	if err := userPowerShell(ctx, userTaskScript(config, "if ($task) { Stop-ScheduledTask -InputObject $task }")); err != nil {
+		return fmt.Errorf("stop User login task: %w", err)
+	}
+	return nil
 }
 
 func checkServiceProfile(config, mode string) error {
@@ -199,14 +205,14 @@ func platformUserService(ctx context.Context, operation, binary, config string, 
 	}
 	state, err := userPowerShellOutput(ctx, userTaskScript(config, "if ($task) { Write-Output $task.State }"))
 	if err != nil {
-		return true, err
+		return true, fmt.Errorf("read User login task state: %w", err)
 	}
 	launcher, err := prepareUserLauncher(binary, cfg.DataDir)
 	if err != nil {
 		return true, err
 	}
 	if err = userPowerShell(ctx, userTaskScript(config, userTaskRegistration(launcher, binary, config))); err != nil {
-		return true, err
+		return true, fmt.Errorf("register User login task: %w", err)
 	}
 	if s != nil {
 		if err = stopWindowsService(ctx, s); err != nil {
@@ -235,5 +241,8 @@ func platformUserService(ctx context.Context, operation, binary, config string, 
 	if err = store.Write(config+".startup.json", startupProfile{Mode: "user"}); err != nil {
 		return true, err
 	}
-	return true, userPowerShell(ctx, userTaskScript(config, "Start-ScheduledTask -TaskName $name -TaskPath '\\'"))
+	if err = userPowerShell(ctx, userTaskScript(config, "Start-ScheduledTask -TaskName $name -TaskPath '\\'")); err != nil {
+		return true, fmt.Errorf("start User login task: %w", err)
+	}
+	return true, nil
 }

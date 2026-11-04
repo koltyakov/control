@@ -57,7 +57,9 @@ $description = %s
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 # A missing named task is a CIM error even with SilentlyContinue, and can leave
 # powershell.exe exiting with status 1. Filter a successful enumeration instead.
-$task = Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskPath -eq '\' -and $_.TaskName -eq $name }
+# Control tasks live in the root folder. Do not enumerate protected Windows
+# subfolders that the limited installing user may not be allowed to inspect.
+$task = Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object { $_.TaskPath -eq '\' -and $_.TaskName -eq $name }
 if ($task) {
   $taskSid = $task.Principal.UserId
   if ($taskSid -notlike 'S-1-*') { $taskSid = (New-Object Security.Principal.NTAccount($taskSid)).Translate([Security.Principal.SecurityIdentifier]).Value }

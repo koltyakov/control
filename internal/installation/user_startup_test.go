@@ -62,7 +62,7 @@ func TestUserTaskOwnershipAndProfileScope(t *testing.T) {
 		t.Fatal("different profiles share a login task")
 	}
 	script := userTaskScript(config, "Write-Output 'owned'")
-	for _, want := range []string{"Get-ScheduledTask -ErrorAction Stop | Where-Object", "$_.TaskPath -eq '\\' -and $_.TaskName -eq $name", "Control user node:", "$taskSid -ne $sid", "$task.Description -ne $description", "throw 'Control login task belongs to another profile or user'", "Write-Output 'owned'"} {
+	for _, want := range []string{"Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | Where-Object", "$_.TaskPath -eq '\\' -and $_.TaskName -eq $name", "Control user node:", "$taskSid -ne $sid", "$task.Description -ne $description", "throw 'Control login task belongs to another profile or user'", "Write-Output 'owned'"} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("script missing %q: %s", want, script)
 		}

@@ -46,6 +46,7 @@ func TestUserPowerShellOutput(t *testing.T) {
 		{"progress", "Write-Progress -Activity 'Loading' -Status 'Working'; Write-Output 'Ready'", "Ready", "", 0},
 		{"throw", "throw 'Startup failed'", "", "Startup failed", 1},
 		{"cmdlet error", "Write-Error 'Startup failed'; Write-Output 'unexpected success'", "", "Startup failed", 1},
+		{"cmdlet identification", "Get-Item -LiteralPath 'NonexistentFixtureDrive:\\missing'", "", "Get-Item:", 1},
 		{"output before failure", "Write-Output 'Before'; throw 'Startup failed'", "", "Startup failed", 1},
 		{"explicit exit", "[Console]::Error.WriteLine('Startup failed'); exit 7", "", "Startup failed", 7},
 	} {
@@ -80,13 +81,14 @@ func TestUserTaskLookup(t *testing.T) {
 		{"other folder", "[PSCustomObject]@{ TaskPath = '\\Other\\'; TaskName = " + powershellLiteral(userTaskName(config)) + " }", "missing", ""},
 		{"owned task", "[PSCustomObject]@{ TaskPath = '\\'; TaskName = $name; Description = $description; Principal = [PSCustomObject]@{ UserId = $sid } }", "owned", ""},
 		{"foreign profile", "[PSCustomObject]@{ TaskPath = '\\'; TaskName = $name; Description = 'Other'; Principal = [PSCustomObject]@{ UserId = $sid } }", "", "belongs to another profile or user"},
+		{"foreign user", "[PSCustomObject]@{ TaskPath = '\\'; TaskName = $name; Description = $description; Principal = [PSCustomObject]@{ UserId = 'S-1-0-0' } }", "", "belongs to another profile or user"},
 		{"scheduler error", "throw 'Scheduler access denied'", "", "Scheduler access denied"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			// Exercise PowerShell filtering and exit status without touching tasks.
-			script := "function Get-ScheduledTask { param($ErrorAction) " + tc.lookup + " }\n" + userTaskScript(config, "if ($task) { Write-Output 'owned' } else { Write-Output 'missing' }")
+			script := "function Get-ScheduledTask { param($TaskPath, $ErrorAction) if ($TaskPath -cne '\\') { throw 'Access denied enumerating protected Windows task folders' }; " + tc.lookup + " }\n" + userTaskScript(config, "if ($task) { Write-Output 'owned' } else { Write-Output 'missing' }")
 			output, err := userPowerShellOutput(ctx, script)
 			if tc.failure != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.failure) || strings.Contains(err.Error(), "CLIXML") {
@@ -107,7 +109,7 @@ func TestMissingUserTaskNoOp(t *testing.T) {
 		"if ($task) { Stop-ScheduledTask -InputObject $task }",
 	} {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		output, err := userPowerShellOutput(ctx, "function Get-ScheduledTask { param($ErrorAction) }\n"+userTaskScript(config, operation))
+		output, err := userPowerShellOutput(ctx, "function Get-ScheduledTask { param($TaskPath, $ErrorAction) if ($TaskPath -cne '\\') { throw 'Access denied enumerating protected Windows task folders' } }\n"+userTaskScript(config, operation))
 		cancel()
 		if err != nil || output != "" {
 			t.Fatalf("missing task must be a successful no-op: %q, %v", output, err)
