@@ -191,9 +191,9 @@ func (g *Gateway) renameMachine(w http.ResponseWriter, r *http.Request, n model.
 		if peer.userID != n.UserID {
 			continue
 		}
-		select {
-		case peer.out <- &protocol.Packet{Kind: "directory.changed", From: update.GatewaySender}:
-		default:
+		// The writer releases every queued packet's reservation, including
+		// metadata-only notifications. Never publish directly to its channel.
+		if !peer.enqueue(&protocol.Packet{Kind: "directory.changed", From: update.GatewaySender}) {
 			_ = peer.ws.CloseNow()
 		}
 	}

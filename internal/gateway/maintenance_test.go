@@ -166,6 +166,10 @@ func TestGatewayRestartProtectsPacketWritesAndBoundsCarrierTracking(t *testing.T
 	if g.reserveRestart(1) {
 		t.Fatal("in-progress packet write passed restart fence")
 	}
+	g.admission.packets.used.Store(-153) // Invalid accounting is not permission to restart.
+	if g.reserveRestart(1) {
+		t.Fatal("negative packet accounting passed restart fence")
+	}
 	g.admission.packets.used.Store(0)
 	a, b := &connection{}, &connection{}
 	for i := range 256 {
