@@ -4,20 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/desktop"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/rpa"
 	"github.com/koltyakov/control/internal/runbooks"
+	"github.com/koltyakov/control/internal/upload"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const desktopInstructions = runbookInstructions + `
+const uploadInstructions = "For local-to-worker files, use control_upload with an explicit ID and localPath on this MCP server host, not repeated base64 files.write calls or the clipboard. It uses one bulk stream, verified resume, and atomic no-overwrite publication. After an interrupted or uncertain upload, inspect control_upload_status before explicitly using control_upload_resume with that ID. Never choose a new ID to retry uncertain publication. Use artifacts for worker-to-worker delivery. "
+
+const desktopInstructions = runbookInstructions + uploadInstructions + `
 When a GUI task needs missing native desktop support, suggest installation and ask for explicit user permission. Control does not bundle or automatically install FFI dependencies. After approval, select the latest compatible release from https://github.com/vercel-labs/agent-desktop/releases. Download its agent-desktop-ffi-* archive for the target User worker's OS/architecture and verify SHA-256 against checksums.txt from the same release. Require ABI major 6 or 7 and a 96-byte AdAction; reject incompatible libraries rather than bypassing the helper's ABI/layout checks. Extract the full package with companions outside workDir into private storage, and merge an absolute desktop.library path into that User profile without replacing other settings. Restart while idle, rediscover desktop.run, and check native status before credential use. OS permission grants need separate approval. See https://github.com/koltyakov/control/blob/main/docs/desktop.md. Do not install the upstream CLI merely to use the native adapter.
 For remote UI work, first use control_describe on the requested User context, then control_call with method exec.run and params {"command":"agent-desktop","args":["version"]} to check for https://github.com/vercel-labs/agent-desktop on that worker. A local installation does not establish remote availability. If present, load its version-matched skills on that same worker with exec.run arguments ["skills","get","desktop"] and ["skills","get","platform"], then check ["status"] for desktop access and permissions. Read the returned data.content before UI actions. Route every agent-desktop command through Control to that same worker using structured arguments, not the orchestrator's desktop. Missing executables, denied execution, missing permissions, or unavailable desktop sessions are blockers, not permission to install software, request OS grants, or switch to System. Ask before installing agent-desktop or its harness skill; the optional skill installer is npx skills add https://github.com/vercel-labs/agent-desktop --skill agent-desktop. If agent-desktop is absent, use an already configured rpa.run when suitable, otherwise ask for setup. Use fresh snapshot-qualified refs, observe after actions, and never replay uncertain effects. Headed physical input requires explicit user permission; do not add --headed as a fallback.
 When desktop.run is advertised, prefer control_desktop for native status, app-scoped snapshot, click, clear, and headless setValue, without Python. Use refs from that adapter's snapshots, not CLI refs: its private state namespace is separate. For login, ask only for worker-local secret names, including the username when private. The user enters values themselves outside chat with control secrets set NAME on the worker, control secrets set NAME --node WORKER in their orchestrator terminal, or the web console's machine Secrets action. Never run secret entry through an AI tool or control exec. Use control_desktop with request {command: "setValue", ref: "@SNAPSHOT:e1", secret: "app.password"} on the same worker/profile. The worker resolves credentials into an anonymous helper stdin pipe, never argv, environment, or persisted task arguments. Use the adapter for subsequent observations too; all responses mask configured secrets, status omits private state paths, and raw helper logs are suppressed. It exposes no screenshots, clipboard, tracing, or physical input. The existing control_rpa secret-reference path remains an alternative; inspect its selectors first because agent-desktop refs are not RPA selectors. Ordinary agent-desktop CLI text commands do not resolve Control secret names, and exec.run output is not secret-masked. Never retrieve secrets through a shell or pass values in tool inputs. If protected input is unavailable, stop for manual login or approved setup, never substitute a shell credential workaround. Do not use raw CLI observations until credentials are no longer visible. Masking is best-effort text protection, not a sandbox. Verify login by non-sensitive application state, not by reading filled values.
 `
+
+type uploadProgressKey struct{}
 
 func (c Client) MCPServer() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "control", Version: buildinfo.Version}, &mcp.ServerOptions{Instructions: "An account-authenticated orchestrator client initiates execution; a worker is an enrolled node executing requested work. Fleet membership and worker/common credentials permit discovery, not independent peer commands. The gateway handles enrollment, discovery, signaling, relay, and fleet administration, not execution. Agent refers to AI software. Default account routing uses this client's stable owner even when a local node is running. Use control_nodes to resolve machine names and control_describe for capability schemas. Do not schedule disabled or controlPending machines. Use control_delegate to execute a specific instruction on one worker through another; the client prepares instruction-bound destination grants. Workflow tasks and artifact delivery prepare grants too. Grants are not ambient worker permissions or inherited by arbitrary worker scripts. Inspect grants with control_access_list and revoke them with control_access_revoke at each destination. Revocation cancels associated tasks and streams but cannot undo effects. Grants expire after one hour idle and are lost on destination restart; accepted tasks keep them active. Synchronous delegated instructions are single-use. Use control_task_start with explicit IDs for long work and reconciliation; accepted tasks survive this process exiting. Concurrent account clients sharing the saved owner can query or cancel them. Use control_forward_start/list/stop for process-owned forwards, with reverse: true for an orchestrator-local dev server. Use control_tunnel_start/list/dispose for retained host-owned tunnels that survive this process exiting and restore listeners after restart. Persistent tunnels need an explicit ID, a fixed listen port, and optional ttlSeconds; omitted TTL means until disposed. Starting accepts desired state, so list to check active/retrying state and reconcile uncertain requests. Never replay interrupted TCP traffic or create replacement IDs automatically. Closing a forward does not stop its destination service. control_session inspects this client without enrolling a machine. Artifacts move directly between producers and consumers. Discover MCP tools before invoking them. Use named execution targets; nodes.list, nodes.select, and activities.pool accept an empty target. Explicit local API routing permits local work and peer discovery, not independent peer execution. Never replay uncertain side effects." + desktopInstructions})
@@ -117,11 +123,57 @@ func (c Client) MCPServer() *mcp.Server {
 			input["required"] = required
 		}
 		server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: input}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			ctx = context.WithValue(ctx, uploadProgressKey{}, request)
 			result, err := call(ctx, request.Params.Arguments)
 			if err != nil {
 				return toolError(err), nil
 			}
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(model.JSON(result))}}}, nil
+		})
+	}
+	for _, resume := range []bool{false, true} {
+		name, description := "control_upload", "Stream one regular file from the MCP server host into a worker workspace. Requires node, explicit id, localPath, and remote path. Uses bounded binary streaming, SHA-256 verification, and atomic no-overwrite publication. Does not require a desktop or local enrolled node. Never upload using repeated files.write calls. After failure query control_upload_status, then explicitly resume; never retry an uncertain upload with a new ID."
+		required := []string{"node", "id", "localPath", "path"}
+		if resume {
+			name = "control_upload_resume"
+			description = "Explicitly resume a retained upload after inspecting its status. localPath is on the MCP server host and must match the original content. Reuses the pinned worker identity and verifies its durable prefix. Does not silently start a replacement or overwrite files."
+			required = []string{"node", "id", "localPath"}
+		}
+		properties := map[string]any{"node": text, "id": text, "localPath": text, "timeoutSeconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 86400}}
+		if !resume {
+			properties["path"] = text
+		}
+		local(name, description, properties, required, func(ctx context.Context, args json.RawMessage) (any, error) {
+			var q UploadSpec
+			if err := json.Unmarshal(args, &q); err != nil {
+				return nil, err
+			}
+			q.Resume = resume
+			if request, ok := ctx.Value(uploadProgressKey{}).(*mcp.CallToolRequest); ok && request.Params.GetProgressToken() != nil {
+				q.Progress = func(p upload.Result) {
+					progressCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+					defer cancel()
+					_ = request.Session.NotifyProgress(progressCtx, &mcp.ProgressNotificationParams{ProgressToken: request.Params.GetProgressToken(), Progress: float64(p.Offset), Total: float64(p.Size), Message: "Upload " + p.State})
+				}
+			}
+			return c.Upload(ctx, q)
+		})
+	}
+	for _, abort := range []bool{false, true} {
+		name, description := "control_upload_status", "Read this owner's upload checkpoint or published receipt. A missing/expired record does not prove publication never occurred. Does not transfer bytes or replay publication."
+		if abort {
+			name = "control_upload_abort"
+			description = "Abandon inactive upload staging. Never deletes or rolls back a published destination. An active upload must first be cancelled and inspected."
+		}
+		local(name, description, map[string]any{"node": text, "id": text}, []string{"node", "id"}, func(ctx context.Context, args json.RawMessage) (any, error) {
+			var q struct {
+				Node string `json:"node"`
+				ID   string `json:"id"`
+			}
+			if err := json.Unmarshal(args, &q); err != nil {
+				return nil, err
+			}
+			return c.UploadStatus(ctx, q.Node, q.ID, abort)
 		})
 	}
 	local("control_runbooks", "Discover shared or machine-specific operational instructions. requires is agent-friendly guidance: plain text, a list, or optional structured details, preserved even when full content is omitted. Use the user's task and worker evidence to choose a suitable machine; do not invent fixed OS, GPU, or capability constraints. Optional node filters machine bindings and adds worker stores; local: true avoids worker contact. source and file read a complete exact-origin document, with node required for worker origins. Reports source errors and conflicts. Discovery does not execute instructions or retrieve secret values.", map[string]any{"node": text, "file": text, "source": text, "local": map[string]any{"type": "boolean"}}, nil, func(ctx context.Context, args json.RawMessage) (any, error) {

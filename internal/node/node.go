@@ -28,6 +28,7 @@ import (
 	"github.com/koltyakov/control/internal/system"
 	"github.com/koltyakov/control/internal/transport"
 	"github.com/koltyakov/control/internal/update"
+	"github.com/koltyakov/control/internal/upload"
 	"github.com/koltyakov/control/internal/wire"
 	"github.com/koltyakov/control/internal/wol"
 	"github.com/koltyakov/control/internal/workgate"
@@ -116,6 +117,7 @@ type Node struct {
 	delegationMu        sync.Mutex
 	delegations         map[string]*delegationState
 	runbookRoots        []runbooks.Root
+	uploads             *upload.Manager
 }
 
 func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
@@ -157,6 +159,11 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 	n.sendWake = wol.Send
 	n.delegations = map[string]*delegationState{}
 	n.artifactStaging = make(map[string]bool)
+	n.uploads, err = upload.New(root, cfg.WorkDir, cfg.DataDir, id.ID, upload.Limits{StagingBytes: cfg.MaxUploadStagingBytes, OwnerBytes: cfg.MaxUploadOwnerBytes, ReserveBytes: cfg.UploadReserveBytes, Retention: time.Duration(cfg.UploadRetentionHours) * time.Hour})
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
 	if err = n.loadArtifactUsage(); err != nil {
 		_ = root.Close()
 		return nil, err
@@ -394,6 +401,10 @@ func (n *Node) handle(caller string, conn net.Conn) {
 		n.serveArtifact(ctx, caller, conn, request.Params)
 		return
 	}
+	if request.Method == upload.OpenMethod {
+		n.serveUpload(ctx, caller, conn, request.Params)
+		return
+	}
 	if request.Method == clipboard.OpenMethod || request.Method == clipboard.PasteMethod {
 		n.serveClipboard(ctx, caller, conn, request.Method, request.Params)
 		return
@@ -527,6 +538,17 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		defer func() { activity.finish(err) }()
 	}
 	switch method {
+	case upload.StatusMethod, upload.AbortMethod:
+		var q struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(args, &q); err != nil {
+			return nil, err
+		}
+		if method == upload.AbortMethod {
+			return n.uploads.Abort(ctx, owner, q.ID)
+		}
+		return n.uploads.Status(ctx, owner, q.ID)
 	case "runbooks.list", "runbooks.read":
 		return n.runbooks(ctx, method, args)
 	case model.ConnectionTestMethod:
@@ -568,7 +590,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		}
 		sort.Strings(agents)
 		sort.Strings(servers)
-		return map[string]any{"id": n.Identity.ID, "name": n.Config.Name, "capabilities": n.Capabilities(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "transport": n.Peer.Stats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot(), "clipboard": map[string]any{"protocol": clipboard.Protocol, "methods": []string{clipboard.OpenMethod, clipboard.PasteMethod}}, "connectionTest": map[string]any{"protocol": model.ConnectionTestProtocol, "methods": []string{model.ConnectionTestMethod, model.ConnectionOpenMethod}, "maxBytes": 256 << 20, "maxSamples": 100, "timeoutSeconds": 120}, "runbooks": map[string]any{"protocol": runbooks.Protocol, "methods": []string{"runbooks.list", "runbooks.read"}}}, nil
+		return map[string]any{"id": n.Identity.ID, "name": n.Config.Name, "capabilities": n.Capabilities(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "transport": n.Peer.Stats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot(), "fileUpload": n.uploads.Description(), "clipboard": map[string]any{"protocol": clipboard.Protocol, "methods": []string{clipboard.OpenMethod, clipboard.PasteMethod}}, "connectionTest": map[string]any{"protocol": model.ConnectionTestProtocol, "methods": []string{model.ConnectionTestMethod, model.ConnectionOpenMethod}, "maxBytes": 256 << 20, "maxSamples": 100, "timeoutSeconds": 120}, "runbooks": map[string]any{"protocol": runbooks.Protocol, "methods": []string{"runbooks.list", "runbooks.read"}}}, nil
 	case "capabilities.list":
 		return n.Capabilities(), nil
 	case "tasks.start":

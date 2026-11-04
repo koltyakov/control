@@ -158,7 +158,7 @@ func run(ctx context.Context, args []string) error {
 			c.Token = cfg.Token
 		}
 		switch args[0] {
-		case "mcp", "system", "call", "exec", "task", "artifact", "tunnel", "session", "clipboard", "dashboard", "speedtest", "diagnostics", "wake", "runbooks":
+		case "mcp", "system", "call", "exec", "task", "artifact", "upload", "tunnel", "session", "clipboard", "dashboard", "speedtest", "diagnostics", "wake", "runbooks":
 			if !explicitAPI && os.Getenv("CONTROL_API") == "" {
 				var override *string
 				if explicitToken {
@@ -473,6 +473,8 @@ func run(ctx context.Context, args []string) error {
 		return callPrint(ctx, c, target, "tasks."+method, map[string]any{"id": args[3]})
 	case "artifact":
 		return artifactCLI(ctx, c, args[1:])
+	case "upload":
+		return uploadCLI(ctx, c, args[1:])
 	case "tunnel":
 		return tunnelCLI(ctx, c, args[1:])
 	default:
@@ -671,6 +673,9 @@ Environment: CONTROL_API, CONTROL_TOKEN
   artifact export NODE PATH
   artifact deliver NODE ID DEST_NODE   Peer-to-peer transfer
   artifact get NODE ID LOCAL_PATH      Resumable, checksum-verified download
+  upload start NODE LOCAL REMOTE [--id ID --timeout DURATION]  Stream a local file, no overwrite
+  upload resume NODE ID LOCAL [--timeout DURATION]  Explicitly resume a verified partial
+  upload status|abort NODE ID          Reconcile publication or abandon staging
   tunnel NODE HOST:PORT [--reverse] [--listen ADDRESS]
   tunnel start NODE HOST:PORT --listen ADDRESS [--reverse] [--id ID] [--ttl DURATION]
   tunnel list

@@ -293,6 +293,9 @@ func (n *Node) runRetention(ctx context.Context) {
 		if err := n.pruneArtifacts(ctx, time.Now()); err != nil && ctx.Err() == nil {
 			slog.Warn("artifact retention", "error", err)
 		}
+		if err := n.uploads.Prune(ctx, time.Now()); err != nil && ctx.Err() == nil {
+			slog.Warn("upload retention", "error", err)
+		}
 		select {
 		case <-ctx.Done():
 			return

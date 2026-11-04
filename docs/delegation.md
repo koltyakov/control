@@ -55,6 +55,10 @@ Synchronous instructions are single-use, so a worker cannot replay a command dur
 
 At most 4,096 grants are retained per destination. Records are in memory and disappear on node restart. Unfinished tasks retain the existing interrupted-on-restart behavior; restart never restores a grant or replays a command. Accepted tasks can outlive the submitting client disconnecting.
 
+## Upload authority
+
+`files.upload.open`, `files.upload.status`, and `files.upload.abort` require current execution authority and their destination method permissions. Upload IDs and durable partials grant no access. Ownership uses the stable client owner, allowing a fresh CLI process with the same client state to resume, but excluding other owners sharing the fleet account. Each System upload attempt obtains an exact single-use stream grant binding its ID, destination, size, digest, and resume intent; closing the stream revokes that temporary grant. Restart retains checkpoints, not grants. Revocation/expiry cancels admitted streams without publishing incomplete content. `peers.call` remains JSON-only and rejects the raw upload method. See [streaming uploads](uploads.md).
+
 ## Upgrade and credential boundaries
 
 Upgrade the gateway and every execution node. `GET /v1/auth` advertises `delegation`; compatible nodes advertise `instructionDelegation`. Default CLI/MCP account routing refuses older gateways and targets before execution. Older receivers retain their old trust rules until upgraded, so a mixed fleet does not provide this protection everywhere.

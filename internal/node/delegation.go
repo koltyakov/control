@@ -12,6 +12,7 @@ import (
 
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/upload"
 )
 
 const delegationIdleTimeout = time.Hour
@@ -346,7 +347,7 @@ func (n *Node) peerCall(ctx context.Context, args json.RawMessage, _ Execution) 
 	if q.Target == "" || q.Method == "" {
 		return nil, errors.New("target and method are required")
 	}
-	if q.Method == "artifacts.open" || q.Method == "tcp.open" || q.Method == "tcp.listen" || q.Method == "clipboard.open" || q.Method == "clipboard.paste" {
+	if q.Method == "artifacts.open" || q.Method == "tcp.open" || q.Method == "tcp.listen" || q.Method == "clipboard.open" || q.Method == "clipboard.paste" || q.Method == upload.OpenMethod {
 		return nil, errors.New("peers.call supports JSON instructions, not raw streaming methods")
 	}
 	var result json.RawMessage

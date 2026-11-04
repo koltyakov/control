@@ -455,6 +455,9 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 	}
 	switch method {
 	case "artifacts.export":
+		if err := n.uploads.CheckPath(q.Path); err != nil {
+			return nil, err
+		}
 		f, err := n.root.Open(q.Path)
 		if err != nil {
 			return nil, err

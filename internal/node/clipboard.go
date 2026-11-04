@@ -81,7 +81,10 @@ func (n *Node) serveClipboard(ctx context.Context, caller string, conn net.Conn,
 			q.Dir = "."
 		}
 		// Root.OpenRoot preserves the configured workspace boundary, including symlinks.
-		root, err = n.root.OpenRoot(q.Dir)
+		err = n.uploads.CheckPath(q.Dir)
+		if err == nil {
+			root, err = n.root.OpenRoot(q.Dir)
+		}
 		if err == nil {
 			err = clipboard.CheckDestination(q.Content, root)
 		}

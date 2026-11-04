@@ -15,6 +15,7 @@ Orchestrators coordinate work; worker nodes execute it and exchange files direct
 - Durable tasks with idempotent submission, cancellation, streamed logs, and restart reconciliation.
 - Commands, scripts, AI CLIs, MCP servers, and opt-in [native desktop automation](docs/desktop.md) with worker-local secret references.
 - SHA-256 artifacts, resumable downloads, and direct worker-to-worker delivery.
+- Streaming local-to-worker uploads with verified resume and atomic no-overwrite publication.
 - Forward/reverse TCP tunnels, private-network HTTP requests, and explicit clipboard pastes.
 - [Wake-on-LAN](docs/wake.md) for offline machines through a same-LAN node or an explicitly selected local client.
 - Leases, bounded parallel workflows, terminal and web dashboards, and idle-only managed updates.
@@ -116,9 +117,11 @@ control system worker --refresh
 control speedtest worker --size 64 --json
 control artifact export worker input.mp4
 control artifact get worker ARTIFACT_ID ./output.mp4
+control upload start worker ./input.mp4 incoming/input.mp4 --id input-001
+control upload status worker input-001
 ```
 
-Dashboard polls read cached resource samples; connection tests run on request. Artifact downloads resume and verify SHA-256. See the [protocol reference](docs/protocol.md) for calls, grants, and workflows.
+Dashboard polls read cached resource samples; connection tests run on request. Artifact downloads resume and verify SHA-256. [Uploads](docs/uploads.md) use one bulk stream, preserve durable checkpoints, and resume only on explicit request. See the [protocol reference](docs/protocol.md) for calls, grants, and workflows.
 
 For repeatable work, keep shared or machine-specific action instructions in [runbooks](docs/runbooks.md). Client node descriptions combine project/global runbooks with authorized worker stores. Use `control runbooks`, add `--node NAME` for worker discovery, or use MCP `control_runbooks`. Discovery never executes instructions or retrieves secret values.
 
@@ -162,6 +165,7 @@ Managed rollouts update idle nodes independently when their verified executables
 - [Linux VPS gateway](docs/gateway.md), [gateway behind expose](docs/expose.md), [installation and enrollment](docs/installation.md), [users and private fleets](docs/users.md), [authority and delegation](docs/delegation.md).
 - [Configuration and protocol](docs/protocol.md), [web console](docs/console.md), [dashboard and metrics](docs/dashboard.md), [managed updates](docs/updates.md).
 - [TCP tunnels](docs/tunnels.md), [connection tests](docs/connections.md), [fleet streaming](docs/streaming.md).
+- [Streaming file uploads](docs/uploads.md), including local CLI/MCP sources and interrupted-transfer recovery.
 - [GUI automation](docs/rpa.md), [native agent-desktop](docs/desktop.md), [worker-local secrets](docs/secrets.md), [clipboard pastes](docs/clipboard.md), [runbooks](docs/runbooks.md).
 - [Terminology](docs/terminology.md), [architecture](docs/architecture.md), [engineering principles](docs/principles.md), [design decisions](docs/decisions.md).
 - [Testing](docs/testing.md), [examples](examples), [contributor guide](AGENTS.md).

@@ -27,6 +27,7 @@ import (
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/installation"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/upload"
 )
 
 func environment(t *testing.T) (context.Context, client.Client) {
@@ -276,6 +277,42 @@ func TestLargeArtifactPeerDelivery(t *testing.T) {
 		t.Fatal("multi-megabyte artifact changed during delivery")
 	}
 	assertTransport(t, ctx, c)
+}
+
+func TestLocalStreamingUpload(t *testing.T) {
+	ctx, c := environment(t)
+	payload := bytes.Repeat([]byte("local streaming upload\x00\xff"), 500000)
+	local := filepath.Join(t.TempDir(), "source.bin")
+	if err := os.WriteFile(local, payload, 0600); err != nil {
+		t.Fatal(err)
+	}
+	id := identity.NewID()
+	destination := "upload-" + id + ".bin"
+	result, err := c.Upload(ctx, client.UploadSpec{Node: "worker", ID: id, LocalPath: local, Path: destination})
+	if err != nil || result.State != "published" || result.BytesSent != int64(len(payload)) {
+		t.Fatal(result, err)
+	}
+	info, err := c.Session(ctx)
+	if err != nil || info.Connections[result.NodeID] != os.Getenv("CONTROL_EXPECT_TRANSPORT") {
+		t.Fatal("upload used unexpected transport", info, err)
+	}
+	var receipt upload.Result
+	if err = json.Unmarshal(cli(t, ctx, "upload", "status", "worker", id), &receipt); err != nil || receipt.State != "published" {
+		t.Fatal("CLI upload status", receipt, err)
+	}
+	if err = json.Unmarshal(cli(t, ctx, "upload", "resume", "worker", id, local), &receipt); err != nil || receipt.State != "published" || receipt.BytesSent != 0 {
+		t.Fatal("CLI receipt replay sent bytes", receipt, err)
+	}
+	var artifact model.Artifact
+	call(t, ctx, c, "worker", "artifacts.export", map[string]any{"path": destination}, &artifact)
+	var downloaded bytes.Buffer
+	if err = c.Download(ctx, artifact, 0, &downloaded); err != nil || !bytes.Equal(downloaded.Bytes(), payload) {
+		t.Fatal("streamed round trip differs", err)
+	}
+	// Exercise the shipped CLI sender from a non-shared test-container path too.
+	if err = json.Unmarshal(cli(t, ctx, "upload", "start", "worker", local, "cli-"+destination, "--id", identity.NewID()), &receipt); err != nil || receipt.State != "published" {
+		t.Fatal("CLI sender", receipt, err)
+	}
 }
 
 func TestPrivateNetworkHTTPAndTCPTunnel(t *testing.T) {

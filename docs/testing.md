@@ -108,6 +108,14 @@ For this isolated fixture, node APIs listen on all container interfaces so the t
 
 Gateway and node health checks gate test startup. The [relay override](../compose.relay.yaml) switches every node to relay-only mode and changes the expected transport in the runner.
 
+## Upload verification
+
+Upload unit tests cover binary boundary sizes and empty files, checkpoint interruption and restart, corrupt prefixes and metadata, owner/specification conflicts, premature finish, excess bytes, invalid offsets and oversized records, quota refusal, private symlink aliases, active-writer exclusion, cleanup/expiry, failed metadata persistence, destination races, and publication-intent reconciliation without replay. Metadata corruption fails closed without rewriting the journal.
+
+Shared client tests run real pinned-TLS uploads over loopback WebRTC and forced relay. They cancel after a durable checkpoint, query control traffic during the transfer, restart both client and worker, obtain new exact System grants, resume only the suffix, verify complete bytes, reject changing sources and other owners, and exercise MCP upload/status without extra gateway connections. CLI tests exercise start/status/resume/abort and argument rejection. The Compose `TestLocalStreamingUpload` transfers a large test-container-only source to a worker, reconciles through the shipped CLI, verifies a streamed artifact round trip, and asserts the actual transport.
+
+Native CI runs the Go upload tests on Windows, macOS, and Linux. Native filesystem smoke checks are still needed for Windows handle sharing and antivirus interference, non-hard-link filesystems, destination mount behavior, and power-loss behavior. Cross-compilation alone does not establish these guarantees. Windows directory-entry power-loss durability is explicitly not promised. See [upload limits and safety](uploads.md).
+
 ## What the container tests verify
 
 Connection-test CLI checks measure orchestrator-to-worker and worker-to-worker paths over the required transport, using payloads larger than the control-frame limit. Core tests cover both transports, MCP routing, checksums, short reads/writes, option bounds, instruction authority, diagnostic grant cleanup, stream limits, revocation, and cancellation. Zero-duration clock samples are valid for local echoes; throughput remains finite when a transfer finishes within one clock tick. The multi-operation bulk fixture has a 90-second budget for race-enabled encryption and hashing on slower runners. These tests use synthetic traffic and no installed speed-test application. See [connection tests](connections.md).

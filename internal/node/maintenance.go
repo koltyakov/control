@@ -10,6 +10,7 @@ import (
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/transport"
 	"github.com/koltyakov/control/internal/update"
+	"github.com/koltyakov/control/internal/upload"
 )
 
 type workContextKey struct{}
@@ -22,7 +23,7 @@ func observational(method string) bool {
 		return true
 	}
 	switch method {
-	case "nodes.list", "nodes.select", "node.describe", "system.info", "capabilities.list", "activities.list", "activities.pool", "tasks.get", "tasks.list", "tasks.page", "tasks.logs", "leases.get", "artifacts.list", "access.list":
+	case "nodes.list", "nodes.select", "node.describe", "system.info", "capabilities.list", "activities.list", "activities.pool", "tasks.get", "tasks.list", "tasks.page", "tasks.logs", "leases.get", "artifacts.list", "access.list", upload.StatusMethod:
 		return true
 	default:
 		return false

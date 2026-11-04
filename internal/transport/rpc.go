@@ -14,6 +14,7 @@ import (
 
 	"github.com/koltyakov/control/internal/gateway"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/upload"
 	"github.com/koltyakov/control/internal/wire"
 )
 
@@ -28,7 +29,7 @@ func (p *Peer) OpenRPC(ctx context.Context, target, method string, params any) (
 		target = peer.ID
 	}
 	lane := ControlLane
-	if method == "artifacts.open" || method == "clipboard.open" || method == "clipboard.paste" || method == model.ConnectionOpenMethod {
+	if method == "artifacts.open" || method == "clipboard.open" || method == "clipboard.paste" || method == model.ConnectionOpenMethod || method == upload.OpenMethod {
 		lane = BulkLane
 	}
 	if method == "tcp.open" || method == "tcp.listen" {

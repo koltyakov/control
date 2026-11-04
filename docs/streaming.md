@@ -63,6 +63,10 @@ Setup cancellation does not cancel another waiter or close an established siblin
 
 Compatible peers trickle ICE through a negotiated gateway packet kind. SDP is sent immediately, candidate queues are bounded, and early candidates wait for remote SDP rather than being dropped. A failed WebRTC attempt shares 30 seconds of backoff across lanes. Subsequent relay operations can trigger a background direct probe without blocking those operations or replacing their existing streams. Successful replacements drain the old relay. See [ICE configuration and signaling](protocol.md#node-configuration).
 
+## Upload local files
+
+Use `control upload start NODE LOCAL REMOTE --id ID` or MCP `control_upload` for local-to-worker files. `files.upload.open` uses one bulk stream per attempt with 256 KiB binary records, bounded backpressure, synced checkpoints, verified explicit resume, and atomic no-overwrite publication. The existing accepted-session receive window remains 1 MiB; adding the upload method does not increase carrier or relay budgets. Do not spawn one CLI process per `files.write` block. See [upload recovery, ownership, and limits](uploads.md).
+
 ## Follow logs and forward services
 
 ```sh

@@ -53,6 +53,10 @@ type Config struct {
 	MaxArtifactBytes      int64  `json:"maxArtifactBytes,omitempty"`
 	ArtifactReserveBytes  uint64 `json:"artifactReserveBytes,omitempty"`
 	PartialRetentionHours int    `json:"partialRetentionHours,omitempty"`
+	MaxUploadStagingBytes int64  `json:"maxUploadStagingBytes,omitempty"`
+	MaxUploadOwnerBytes   int64  `json:"maxUploadOwnerBytes,omitempty"`
+	UploadReserveBytes    uint64 `json:"uploadReserveBytes,omitempty"`
+	UploadRetentionHours  int    `json:"uploadRetentionHours,omitempty"`
 	// Allow maps caller IDs, names, *, or @orchestrator to method glob patterns.
 	// An omitted map permits same-fleet discovery and account-client execution.
 	// An empty map denies incoming calls without a valid instruction/artifact grant.
@@ -155,6 +159,9 @@ func (c *Config) defaults() error {
 	}
 	if c.PartialRetentionHours < 1 || c.PartialRetentionHours > 87600 {
 		return errors.New("partialRetentionHours must be 1..87600")
+	}
+	if c.MaxUploadStagingBytes < 0 || c.MaxUploadOwnerBytes < 0 || c.UploadRetentionHours < 0 || c.UploadRetentionHours > 87600 {
+		return errors.New("upload byte limits must be nonnegative and uploadRetentionHours must be 0..87600")
 	}
 	if err = os.MkdirAll(c.DataDir, 0700); err != nil {
 		return err

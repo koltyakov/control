@@ -273,6 +273,9 @@ func (n *Node) filesList(ctx context.Context, args json.RawMessage, e Execution)
 	if q.Path == "" {
 		q.Path = "."
 	}
+	if err := n.uploads.CheckPath(q.Path); err != nil {
+		return nil, err
+	}
 	f, err := n.root.Open(q.Path)
 	if err != nil {
 		return nil, err
@@ -287,6 +290,9 @@ func (n *Node) filesList(ctx context.Context, args json.RawMessage, e Execution)
 	}
 	result := []map[string]any{}
 	for _, entry := range entries {
+		if n.uploads.CheckPath(filepath.Join(q.Path, entry.Name())) != nil {
+			continue
+		}
 		info, err := entry.Info()
 		if err != nil {
 			return nil, err
@@ -310,6 +316,9 @@ func (n *Node) filesRead(ctx context.Context, args json.RawMessage, e Execution)
 	}
 	if q.Limit == 0 {
 		q.Limit = 64 * 1024
+	}
+	if err := n.uploads.CheckPath(q.Path); err != nil {
+		return nil, err
 	}
 	f, err := n.root.Open(q.Path)
 	if err != nil {
@@ -342,6 +351,9 @@ func (n *Node) filesWrite(ctx context.Context, args json.RawMessage, e Execution
 	}
 	if q.Offset < 0 {
 		return nil, errors.New("invalid offset")
+	}
+	if err := n.uploads.CheckPath(q.Path); err != nil {
+		return nil, err
 	}
 	b, err := base64.StdEncoding.DecodeString(q.Data)
 	if err != nil {
