@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -22,10 +23,12 @@ import (
 )
 
 func TestUploadClientResumeAndMCP(t *testing.T) {
-	t.Parallel()
+	// This fixture transfers several large files and restarts both endpoints.
+	// Do not compete with the other bulk fixture and parallel RPC tests on CI.
 	for _, relay := range []bool{false, true} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
-			ctx, c, workers, admin := delegationClusterWithTransport(t, relay, 90*time.Second, transporttest.Loopback(), true)
+			ctx, c, workers, admin := delegationClusterWithTransport(t, relay, 180*time.Second, transporttest.Loopback(), true)
+			started := time.Now()
 			worker := workers[1]
 			data := bytes.Repeat([]byte("streamed\x00\xff"), 2<<20)
 			source := filepath.Join(t.TempDir(), "local.bin")
@@ -69,6 +72,10 @@ func TestUploadClientResumeAndMCP(t *testing.T) {
 			if result.Offset < upload.CheckpointBytes || result.State != "staging" {
 				t.Fatal("missing durable checkpoint", result)
 			}
+			if ctx.Err() != nil {
+				t.Fatal("fixture expired during intentional cancellation", ctx.Err())
+			}
+			t.Logf("cancelled at durable offset %d after %s", result.Offset, time.Since(started))
 			resumeOffset := result.Offset
 			if _, err = os.Stat(filepath.Join(worker.Config.WorkDir, "remote.bin")); !os.IsNotExist(err) {
 				t.Fatal("partial published", err)
@@ -111,6 +118,7 @@ func TestUploadClientResumeAndMCP(t *testing.T) {
 			if err != nil || !bytes.Equal(got, data) {
 				t.Fatal("uploaded bytes", err)
 			}
+			t.Logf("restart and resume completed after %s", time.Since(started))
 			mode := "webrtc"
 			if relay {
 				mode = "relay"
@@ -185,6 +193,7 @@ func TestUploadClientResumeAndMCP(t *testing.T) {
 			if err = admin.JSON(ctx, http.MethodGet, "/v1/admin/metrics", nil, &afterMetrics); err != nil || afterMetrics.Connects != beforeMetrics.Connects {
 				t.Fatal("MCP uploads introduced gateway connections", beforeMetrics, afterMetrics, err)
 			}
+			t.Logf("MCP upload and status completed after %s", time.Since(started))
 			// A changed local file must not request Finish, even if earlier bytes
 			// have already reached a durable worker checkpoint.
 			var mutate sync.Once
@@ -202,9 +211,11 @@ func TestUploadClientResumeAndMCP(t *testing.T) {
 					})
 				}
 			}})
-			if err == nil || mutateErr != nil {
+			var sourceErr *model.RPCError
+			if !errors.As(err, &sourceErr) || sourceErr.Code != "source_changed" || mutateErr != nil {
 				t.Fatal("source mutation not rejected", err, mutateErr)
 			}
+			t.Logf("source mutation rejected after %s", time.Since(started))
 			if _, e := os.Stat(filepath.Join(worker.Config.WorkDir, "changing.bin")); !os.IsNotExist(e) {
 				t.Fatal("changed source was published", e)
 			}

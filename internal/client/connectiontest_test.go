@@ -13,18 +13,21 @@ import (
 )
 
 func TestConnectionTests(t *testing.T) {
-	t.Parallel()
+	// Keep this multi-transfer fixture out of the parallel RPC tests. Running
+	// both bulk fixtures concurrently exhausted their budgets on Intel macOS CI.
 	for _, relay := range []bool{false, true} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			// This fixture runs several bidirectional bulk tests, not just RPCs.
 			// Leave room for hashing/encryption under the race detector on CI hosts.
-			ctx, c, workers, _ := delegationClusterWithTransport(t, relay, 90*time.Second, transporttest.Loopback())
+			ctx, c, workers, _ := delegationClusterWithTransport(t, relay, 180*time.Second, transporttest.Loopback())
 			mode := "webrtc"
 			if relay {
 				mode = "relay"
 			}
 			q := model.ConnectionTestOptions{Bytes: 9 << 20, Samples: 3}
 			for _, from := range []string{"", "first"} {
+				started := time.Now()
+				t.Logf("starting connection test from %q", from)
 				result, err := c.TestConnection(ctx, ConnectionTestSpec{Node: "second", From: from, ConnectionTestOptions: q})
 				if err != nil {
 					t.Fatalf("connection test from %q: %v (fixture context: %v)", from, err, ctx.Err())
@@ -38,6 +41,7 @@ func TestConnectionTests(t *testing.T) {
 				if from == "" && result.SourceID != c.routing.peer.IdentityID() {
 					t.Fatal("orchestrator test ran on worker", result)
 				}
+				t.Logf("connection test from %q completed in %s", from, time.Since(started))
 			}
 			var grants []model.Delegation
 			if err := c.Call(ctx, "second", "access.list", map[string]any{}, &grants); err != nil || len(grants) != 0 {
