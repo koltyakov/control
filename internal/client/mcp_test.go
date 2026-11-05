@@ -60,6 +60,7 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 			"https://github.com/vercel-labs/agent-desktop/releases",
 			"SHA-256", "checksums.txt", "same release",
 			"ABI major 6 or 7", "96-byte AdAction", "reject incompatible libraries", "before credential use",
+			"data.complete", "nodes_observed", "subtree_truncated", "partial observation",
 			"companions outside workDir", "desktop.library",
 			"other settings", "while idle", "separate approval",
 		}

@@ -14,7 +14,7 @@ import (
 
 // ABI 6/7 AdAction, passed by pointer only. Explicit padding pins its 64-bit
 // layout on all six release targets; no structs cross the ABI by value.
-// Binding reference: agent-desktop v1.1.0 crates/ffi/include/agent_desktop.h.
+// Binding reference: agent-desktop v1.2.0 crates/ffi/include/agent_desktop.h.
 type nativeAction struct {
 	Kind          int32
 	_             uint32

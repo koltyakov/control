@@ -105,7 +105,9 @@ Automatic host restart recovery requires the user's service manager and may requ
 
 ## GUI work, only when needed
 
-Only when a task requires GUI interaction, describe the named User worker. Prefer `desktop.run` through `control_desktop` for private, masked snapshots and `setValue` with `secret` on that profile; `rpa.run` is an alternative. Never replay uncertain actions.
+Only when a task requires GUI interaction, describe the named User worker. Prefer `desktop.run` through `control_desktop` for private, masked snapshots and `setValue` with `secret`; `rpa.run` is an alternative. Never replay uncertain actions.
+
+Inspect `data.complete`, `truncated`, `nodes_observed`, and `subtree_truncated`. A partial observation cannot prove absence or authorize action replay.
 
 If desktop support is missing, suggest installation and ask for explicit user permission. After approval, select the latest compatible release from [public upstream releases](https://github.com/vercel-labs/agent-desktop/releases). Download its OS/architecture `agent-desktop-ffi-*` archive, verify SHA-256 against `checksums.txt` from the same release, and extract with companions outside `workDir` into private storage. Require ABI major 6 or 7 and a 96-byte `AdAction`; reject incompatible libraries. Set absolute `desktop.library` in the User profile, preserve other settings, restart while idle, and check status before credential use. Control does not bundle/install FFI. OS grants require separate approval. See [native setup](https://github.com/koltyakov/control/blob/main/docs/desktop.md).
 

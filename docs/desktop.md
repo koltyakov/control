@@ -8,7 +8,7 @@
 
 Install only when a GUI task needs it, after user approval. Select the latest compatible release from the public [upstream releases](https://github.com/vercel-labs/agent-desktop/releases). Download its `agent-desktop-ffi-*` archive for the worker's OS/architecture and verify SHA-256 against `checksums.txt` from that same release. Extract the full package outside `workDir` into a directory private to the worker's OS user, retaining companion executables and the license. No GitHub login, compiler, Python runtime, or upstream CLI is required. Control supports ABI major 6 or 7 with a 96-byte `AdAction` layout; the isolated helper rejects other versions and layout mismatches at runtime. A newer release number alone does not establish compatibility. Do not bypass these checks or use credentials until native status succeeds. See [library setup](../examples/agent-desktop/README.md).
 
-[agent-desktop v1.1.0](https://github.com/vercel-labs/agent-desktop/releases/tag/v1.1.0) uses ABI 7 and includes native Windows ARM64 FFI assets. Control reads `ad_abi_version`, accepts only 6 or 7, and checks `ad_init` with that exact major plus `ad_action_size` before creating an adapter. ABI 7 changes low-level exact-identity APIs that Control does not call; its status, snapshot, and qualified-ref action signatures and action layout remain unchanged. Existing ABI 6 libraries remain supported. After changing the library version, take fresh snapshots before using refs.
+[agent-desktop v1.2.0](https://github.com/vercel-labs/agent-desktop/releases/tag/v1.2.0) retains ABI 7 and the 96-byte action layout, including native Windows ARM64 FFI assets. Control's status, snapshot, and qualified-ref action bindings remain unchanged. Control reads `ad_abi_version`, accepts only 6 or 7, and checks `ad_init` with that exact major plus `ad_action_size` before creating an adapter. Existing ABI 6 and v1.1.0 libraries remain supported. After changing the library version, take fresh snapshots before using refs. Upstream's new CLI MCP server and stdin text input do not change Control's private-pipe adapter or enable additional commands.
 
 Configure the library's absolute path in the worker's User profile:
 
@@ -40,6 +40,8 @@ control call worker desktop.run '{"command":"snapshot","app":"Example login"}'
 ```
 
 Replace the app name and refs with actual observations. Re-snapshot when UI changes invalidate refs. The C API targets the focused window of the named app; explicit window IDs, skeletons, and root-scoped traversal are not available in this ABI. Ambiguous or stale targets must be resolved through a new observation, not guessed or retried blindly.
+
+In v1.2.0, a snapshot that exhausts its observation budget succeeds with `data.complete: false` and the partial tree, rather than failing with `TIMEOUT`. Control preserves `complete`, `truncated`, `nodes_observed`, and per-node `subtree_truncated` while masking text. Check completeness before concluding that an element is absent. A partial snapshot does not authorize replaying an action or using stale refs.
 
 MCP `control_desktop` takes `node` and a `request` object with the same fields. Generic CLI/MCP calls and tracked `desktop.run` tasks use the same adapter. Use explicit task IDs for reconciliation and node leases for multi-command sequences. Each invocation shares Control's per-user RPA lock and has a two-minute deadline including lock wait. This does not exclude humans, unrelated desktop software, or raw agent-desktop CLI calls.
 

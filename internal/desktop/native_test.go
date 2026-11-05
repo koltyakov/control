@@ -52,6 +52,10 @@ func TestDesktopNativeBindings(t *testing.T) {
 				runtime.LockOSThread()
 				defer runtime.UnlockOSThread()
 				response := []byte(`{"ok":false,"error":{"code":"STALE_REF","disposition":{"delivery":"not_delivered","retry":"safe"}}}`)
+				if command == "snapshot" {
+					// v1.2.0 returns successful partial observations, not TIMEOUT.
+					response = []byte(`{"ok":true,"command":"snapshot","data":{"complete":false,"truncated":true,"nodes_observed":1,"snapshot_id":"stest","tree":{"ref":"@stest:e1","subtree_truncated":true}}}`)
+				}
 				storage := append(bytes.Clone(response), 0)
 				var pins runtime.Pinner
 				pins.Pin(&storage[0])
@@ -65,6 +69,9 @@ func TestDesktopNativeBindings(t *testing.T) {
 					}
 					invoked++
 					*out = &storage[0]
+					if command == "snapshot" {
+						return 0
+					}
 					return uintptr(^uint32(0)) // Nonzero results must retain their error envelopes.
 				}
 				symbols := map[string]uintptr{

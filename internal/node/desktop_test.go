@@ -74,6 +74,11 @@ func TestDesktopHelperProcess(t *testing.T) {
 		"permissions": map[string]any{"note": desktopCredential},
 	}}
 	switch mode {
+	case "partial-snapshot":
+		response = map[string]any{"ok": true, "command": "snapshot", "data": map[string]any{
+			"complete": false, "truncated": true, "nodes_observed": 1, "snapshot_id": "stest",
+			"tree": map[string]any{"name": desktopCredential, "subtree_truncated": true},
+		}}
 	case "fail":
 		response = map[string]any{"ok": false, "error": map[string]any{"message": desktopCredential, "disposition": map[string]any{"delivery": "unknown", "retry": "unsafe"}}}
 	case "exit":
@@ -201,6 +206,40 @@ func TestDesktopSanitizesEveryResponse(t *testing.T) {
 				t.Fatal("status exposed private state")
 			}
 		})
+	}
+}
+
+func TestDesktopPreservesPartialSnapshot(t *testing.T) {
+	n := desktopNode(t, "partial-snapshot")
+	setTestSecret(t, n, "app.password", desktopCredential)
+	var log bytes.Buffer
+	value, err := n.desktopRun(context.Background(), json.RawMessage(`{"command":"snapshot","app":"Test login"}`), Execution{Dir: n.Config.WorkDir, Log: &log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := model.JSON(value)
+	var envelope struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Complete      *bool  `json:"complete"`
+			Truncated     bool   `json:"truncated"`
+			NodesObserved int    `json:"nodes_observed"`
+			SnapshotID    string `json:"snapshot_id"`
+			Tree          struct {
+				Name             string `json:"name"`
+				SubtreeTruncated bool   `json:"subtree_truncated"`
+			} `json:"tree"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(encoded, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	data := envelope.Data
+	if !envelope.OK || data.Complete == nil || *data.Complete || !data.Truncated || data.NodesObserved != 1 || data.SnapshotID != "stest" || !data.Tree.SubtreeTruncated {
+		t.Fatal("partial snapshot metadata was lost or treated as a complete observation")
+	}
+	if hasDesktopCredential(encoded) || data.Tree.Name != "[REDACTED]" || log.Len() != 0 {
+		t.Fatal("partial snapshot exposed credentials or native logs")
 	}
 }
 
