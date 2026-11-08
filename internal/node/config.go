@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/pion/webrtc/v4"
 )
@@ -68,10 +69,24 @@ type Config struct {
 	Providers map[string]Command  `json:"providers,omitempty"`
 	Agents    map[string]Command  `json:"agents,omitempty"`
 	MCP       map[string]Command  `json:"mcp,omitempty"`
-	// RPA opts into desktop access through a configured version-1 helper.
-	RPA *Command `json:"rpa,omitempty"`
 	// Desktop opts into the native agent-desktop private-pipe helper.
 	Desktop *DesktopConfig `json:"desktop,omitempty"`
+}
+
+// UnmarshalJSON rejects the removed RPA setting instead of silently disabling
+// desktop access in existing profiles. Other unknown settings remain tolerated.
+func (c *Config) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for key := range fields {
+		if strings.EqualFold(key, "rpa") {
+			return errors.New("rpa configuration is no longer supported: remove the rpa field and configure desktop.library for desktop.run/control_desktop; migrate tasks and callers explicitly, as native desktop has no action batches, screenshot artifacts, or physical input; see docs/desktop.md#migrate-from-rpa")
+		}
+	}
+	type plain Config
+	return json.Unmarshal(data, (*plain)(c))
 }
 
 func LoadConfig(path string) (Config, error) {

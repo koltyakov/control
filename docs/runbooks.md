@@ -1,6 +1,6 @@
 # Runbooks
 
-[README](../README.md) · [Installation](installation.md#manage-registrations) · [GUI automation](rpa.md) · [Secrets](secrets.md)
+[README](../README.md) · [Installation](installation.md#manage-registrations) · [Native desktop](desktop.md) · [Secrets](secrets.md)
 
 Runbooks are operational action skills for machines. They contain instructions, prerequisites, secret reference names, state checks, verification, and recovery. They are not automatic workflows, execution capabilities, or permission to install software, elevate, or replay uncertain actions.
 

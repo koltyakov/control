@@ -30,10 +30,6 @@ func (n *Node) providerSlots(capability string) (*providerPool, string) {
 		return nil, ""
 	case "files.list", "files.read", "files.write", "http.request", "network.wake":
 		return n.operationsPool, "waiting for operation slot"
-	case "rpa.run":
-		if n.Config.RPA != nil {
-			return n.desktopPool, "waiting for desktop slot"
-		}
 	case "desktop.run":
 		if n.Config.Desktop != nil {
 			return n.desktopPool, "waiting for desktop slot"

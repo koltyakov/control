@@ -111,7 +111,7 @@ type Node struct {
 	startupChanging     bool // Protected by mu; maintenanceMu serializes reservation changes.
 	machineState        model.MachineState
 	startupPending      bool
-	rpaLockPath         string
+	desktopLockPath     string
 	tcpListeners        chan struct{}
 	readClipboard       func(context.Context) (clipboard.Value, error)
 	copyClipboard       func(context.Context, string) error

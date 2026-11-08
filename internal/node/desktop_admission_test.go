@@ -104,111 +104,98 @@ func TestProviderPoolQueuedAdmission(t *testing.T) {
 }
 
 func TestDesktopWaitersDoNotBlockFiles(t *testing.T) {
-	for _, activeMethod := range []string{"rpa.run", "desktop.run"} {
-		t.Run(activeMethod, func(t *testing.T) {
-			n := localNode(t, func(cfg *Config) {
-				cfg.MaxTasks, cfg.MaxOperations = 1, 1
-				cfg.RPA, cfg.Desktop = rpaCommand(t, "success"), desktopCommand(t, "echo")
-			})
-			n.rpaLockPath = filepath.Join(t.TempDir(), "shared-desktop.lock")
-			lock := flock.New(n.rpaLockPath)
-			defer func() { _ = lock.Close() }()
-			if ok, err := lock.TryLock(); err != nil || !ok {
-				t.Fatal("hold fake desktop lock", err)
-			}
-			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-			defer cancel()
-			requests := map[string]json.RawMessage{
-				"rpa.run":     model.JSON(map[string]any{"actions": []map[string]any{{"type": "inspect"}}}),
-				"desktop.run": model.JSON(map[string]any{"command": "status"}),
-			}
-			active, stopActive := context.WithCancel(ctx)
-			defer stopActive()
-			activeDone := make(chan error, 1)
-			go func() { activeDone <- n.Call(active, "", activeMethod, requests[activeMethod], nil) }()
-			eventually(t, ctx, func() bool { return n.desktopPool.snapshot().InUse == 1 })
-			queuedMethod := "desktop.run"
-			if activeMethod == queuedMethod {
-				queuedMethod = "rpa.run"
-			}
-			queuedTask, err := n.startTaskContext(ctx, n.Identity.ID, model.TaskSpec{ID: "queued-desktop", Capability: queuedMethod, Args: requests[queuedMethod]})
-			if err != nil || queuedTask.Phase != "waiting for desktop slot" {
-				t.Fatal("desktop task admission", queuedTask, err)
-			}
-			waiting, stopWaiting := context.WithCancel(ctx)
-			defer stopWaiting()
-			waitingDone := make(chan error, 1)
-			go func() { waitingDone <- n.Call(waiting, "", queuedMethod, requests[queuedMethod], nil) }()
-			eventually(t, ctx, func() bool { return *n.desktopPool.snapshot().Queued == 2 })
-			if n.pauseForUpdate() {
-				t.Fatal("desktop admission did not protect maintenance")
-			}
-			if _, err := n.leaseMethod(n.Identity.ID, "leases.acquire", json.RawMessage(`{}`)); err == nil {
-				t.Fatal("exclusive lease ignored desktop work")
-			}
-			// The shared desktop lock remains held throughout these file calls.
-			files, stopFiles := context.WithTimeout(ctx, 2*time.Second)
-			defer stopFiles()
-			for _, method := range []string{"files.write", "files.read", "files.list"} {
-				params := map[string]any{"path": "responsive.txt", "data": "b2s=", "truncate": true}
-				if method == "files.list" {
-					params = map[string]any{}
-				}
-				if err := n.Call(files, "", method, params, nil); err != nil {
-					t.Fatal("desktop waiters blocked", method, err)
-				}
-			}
-			var description struct {
-				Concurrency model.NodeConcurrency `json:"concurrency"`
-			}
-			if err := n.Call(ctx, "", "node.describe", map[string]any{}, &description); err != nil || description.Concurrency.Desktop == nil {
-				t.Fatal("desktop description missing", err)
-			}
-			assertPool(t, *description.Concurrency.Desktop, 1, 1, 2)
-			assertPool(t, description.Concurrency.Operations, 1, 0, 0)
-			var activity model.NodeActivitySnapshot
-			if err := n.Call(ctx, "", "activities.list", map[string]any{}, &activity); err != nil || activity.Concurrency == nil || activity.Concurrency.Desktop == nil {
-				t.Fatal("desktop activity report missing", err)
-			}
-			assertPool(t, *activity.Concurrency.Desktop, 1, 1, 2)
-			stopWaiting()
-			select {
-			case err := <-waitingDone:
-				if err == nil {
-					t.Fatal("cancelled desktop waiter succeeded")
-				}
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			}
-			if _, err := n.taskMethod(ctx, n.Identity.ID, "tasks.cancel", model.JSON(map[string]string{"id": queuedTask.ID})); err != nil {
-				t.Fatal(err)
-			}
-			finished, err := n.waitTask(ctx, n.Identity.ID, queuedTask.ID, 3*time.Second)
-			if err != nil || finished.State != "cancelled" {
-				t.Fatal("queued desktop cancellation", finished, err)
-			}
-			assertPool(t, n.desktopPool.snapshot(), 1, 1, 0)
-			stopActive()
-			select {
-			case err := <-activeDone:
-				if err == nil {
-					t.Fatal("desktop lock waiter succeeded while lock was held")
-				}
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			}
-			assertPool(t, n.desktopPool.snapshot(), 1, 0, 0)
-			if err := lock.Unlock(); err != nil {
-				t.Fatal(err)
-			}
-			for _, method := range []string{"rpa.run", "desktop.run"} {
-				if err := n.Call(ctx, "", method, requests[method], nil); err != nil {
-					t.Fatal("desktop capacity leaked after cancellation", method, err)
-				}
-			}
-			assertPool(t, n.desktopPool.snapshot(), 1, 0, 0)
-		})
+	n := localNode(t, func(cfg *Config) {
+		cfg.MaxTasks, cfg.MaxOperations = 1, 1
+		cfg.Desktop = desktopCommand(t, "echo")
+	})
+	n.desktopLockPath = filepath.Join(t.TempDir(), "shared-desktop.lock")
+	lock := flock.New(n.desktopLockPath)
+	defer func() { _ = lock.Close() }()
+	if ok, err := lock.TryLock(); err != nil || !ok {
+		t.Fatal("hold fake desktop lock", err)
 	}
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	request := model.JSON(map[string]any{"command": "status"})
+	active, stopActive := context.WithCancel(ctx)
+	defer stopActive()
+	activeDone := make(chan error, 1)
+	go func() { activeDone <- n.Call(active, "", "desktop.run", request, nil) }()
+	eventually(t, ctx, func() bool { return n.desktopPool.snapshot().InUse == 1 })
+	queuedTask, err := n.startTaskContext(ctx, n.Identity.ID, model.TaskSpec{ID: "queued-desktop", Capability: "desktop.run", Args: request})
+	if err != nil || queuedTask.Phase != "waiting for desktop slot" {
+		t.Fatal("desktop task admission", queuedTask, err)
+	}
+	waiting, stopWaiting := context.WithCancel(ctx)
+	defer stopWaiting()
+	waitingDone := make(chan error, 1)
+	go func() { waitingDone <- n.Call(waiting, "", "desktop.run", request, nil) }()
+	eventually(t, ctx, func() bool { return *n.desktopPool.snapshot().Queued == 2 })
+	if n.pauseForUpdate() {
+		t.Fatal("desktop admission did not protect maintenance")
+	}
+	if _, err := n.leaseMethod(n.Identity.ID, "leases.acquire", json.RawMessage(`{}`)); err == nil {
+		t.Fatal("exclusive lease ignored desktop work")
+	}
+	// The shared desktop lock remains held throughout these file calls.
+	files, stopFiles := context.WithTimeout(ctx, 2*time.Second)
+	defer stopFiles()
+	for _, method := range []string{"files.write", "files.read", "files.list"} {
+		params := map[string]any{"path": "responsive.txt", "data": "b2s=", "truncate": true}
+		if method == "files.list" {
+			params = map[string]any{}
+		}
+		if err := n.Call(files, "", method, params, nil); err != nil {
+			t.Fatal("desktop waiters blocked", method, err)
+		}
+	}
+	var description struct {
+		Concurrency model.NodeConcurrency `json:"concurrency"`
+	}
+	if err := n.Call(ctx, "", "node.describe", map[string]any{}, &description); err != nil || description.Concurrency.Desktop == nil {
+		t.Fatal("desktop description missing", err)
+	}
+	assertPool(t, *description.Concurrency.Desktop, 1, 1, 2)
+	assertPool(t, description.Concurrency.Operations, 1, 0, 0)
+	var activity model.NodeActivitySnapshot
+	if err := n.Call(ctx, "", "activities.list", map[string]any{}, &activity); err != nil || activity.Concurrency == nil || activity.Concurrency.Desktop == nil {
+		t.Fatal("desktop activity report missing", err)
+	}
+	assertPool(t, *activity.Concurrency.Desktop, 1, 1, 2)
+	stopWaiting()
+	select {
+	case err := <-waitingDone:
+		if err == nil {
+			t.Fatal("cancelled desktop waiter succeeded")
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if _, err := n.taskMethod(ctx, n.Identity.ID, "tasks.cancel", model.JSON(map[string]string{"id": queuedTask.ID})); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := n.waitTask(ctx, n.Identity.ID, queuedTask.ID, 3*time.Second)
+	if err != nil || finished.State != "cancelled" {
+		t.Fatal("queued desktop cancellation", finished, err)
+	}
+	assertPool(t, n.desktopPool.snapshot(), 1, 1, 0)
+	stopActive()
+	select {
+	case err := <-activeDone:
+		if err == nil {
+			t.Fatal("desktop lock waiter succeeded while lock was held")
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	assertPool(t, n.desktopPool.snapshot(), 1, 0, 0)
+	if err := lock.Unlock(); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Call(ctx, "", "desktop.run", request, nil); err != nil {
+		t.Fatal("desktop capacity leaked after cancellation", err)
+	}
+	assertPool(t, n.desktopPool.snapshot(), 1, 0, 0)
 }
 
 func TestDesktopAdmissionPreservesCrossProfileLock(t *testing.T) {
@@ -218,11 +205,11 @@ func TestDesktopAdmissionPreservesCrossProfileLock(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), "desktop.lock")
 	done := make(chan error, 2)
 	for range 2 {
-		n := localNode(t, func(cfg *Config) { cfg.RPA = rpaCommand(t, "serial") })
-		n.rpaLockPath = lockPath
-		n.Config.RPA.Env["CONTROL_TEST_RPA_TRACE"] = trace
+		n := localNode(t, func(cfg *Config) { cfg.Desktop = desktopCommand(t, "serial") })
+		n.desktopLockPath = lockPath
+		n.Config.Desktop.Env["CONTROL_TEST_DESKTOP_TRACE"] = trace
 		go func() {
-			done <- n.Call(ctx, "", "rpa.run", map[string]any{"actions": []map[string]any{{"type": "inspect"}}}, nil)
+			done <- n.Call(ctx, "", "desktop.run", map[string]any{"command": "status"}, nil)
 		}()
 	}
 	for range 2 {
@@ -237,7 +224,7 @@ func TestDesktopAdmissionPreservesCrossProfileLock(t *testing.T) {
 	}
 	data, err := os.ReadFile(trace)
 	if err != nil || string(data) != "start\nend\nstart\nend\n" {
-		t.Fatalf("desktop batches overlapped across profiles: %q, %v", data, err)
+		t.Fatalf("native desktop invocations overlapped across profiles: %q, %v", data, err)
 	}
 }
 
@@ -247,11 +234,11 @@ func TestPeerDesktopPoolVisibility(t *testing.T) {
 			source, worker, _ := cluster(t, relay, func(i int, cfg *Config) {
 				cfg.MaxOperations = 1
 				if i == 1 {
-					cfg.RPA = rpaCommand(t, "success")
+					cfg.Desktop = desktopCommand(t, "echo")
 				}
 			}, transporttest.Loopback())
-			worker.rpaLockPath = filepath.Join(t.TempDir(), "desktop.lock")
-			lock := flock.New(worker.rpaLockPath)
+			worker.desktopLockPath = filepath.Join(t.TempDir(), "desktop.lock")
+			lock := flock.New(worker.desktopLockPath)
 			defer func() { _ = lock.Close() }()
 			if ok, err := lock.TryLock(); err != nil || !ok {
 				t.Fatal(err)
@@ -259,7 +246,7 @@ func TestPeerDesktopPoolVisibility(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 25*time.Second)
 			defer cancel()
 			for _, id := range []string{"desktop-one", "desktop-two"} {
-				call(t, source, "worker", "tasks.start", model.TaskSpec{ID: id, Capability: "rpa.run", Args: model.JSON(map[string]any{"actions": []map[string]any{{"type": "inspect"}}})}, nil)
+				call(t, source, "worker", "tasks.start", model.TaskSpec{ID: id, Capability: "desktop.run", Args: model.JSON(map[string]any{"command": "status"})}, nil)
 			}
 			eventually(t, ctx, func() bool { return *worker.desktopPool.snapshot().Queued == 1 })
 			files, stopFiles := context.WithTimeout(ctx, 2*time.Second)

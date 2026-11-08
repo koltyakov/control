@@ -14,7 +14,7 @@ import (
 
 func TestRemoteSecretNodeChecks(t *testing.T) {
 	t.Parallel()
-	n := rpaNode(t, "success")
+	n := localNode(t, nil)
 	key, err := secrets.NewManagementKey()
 	if err != nil {
 		t.Fatal(err)

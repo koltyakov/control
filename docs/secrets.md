@@ -1,6 +1,6 @@
 # Worker-local secrets
 
-[README](../README.md) · [Protocol](protocol.md) · [GUI automation](rpa.md) · [Installation](installation.md)
+[README](../README.md) · [Protocol](protocol.md) · [Native desktop](desktop.md) · [Installation](installation.md)
 
 Secrets let an orchestrator request credential use without putting the credential value in prompts, tool arguments, or task specifications. The worker resolves a name immediately before GUI input or an HTTP request. Control has no secret-value read command, RPC method, MCP tool, or resource. Values stay in the worker's local store. Fleet owners can manage them locally, through encrypted CLI writes, or through the web console. The gateway relays ciphertext without storing values or synchronizing them between nodes.
 
@@ -54,31 +54,25 @@ Encryption keeps plaintext out of normal relay traffic, gateway persistence, tas
 
 ## Fill application fields by reference
 
-With a configured desktop helper:
+With the configured [native desktop adapter](desktop.md), pass this request to `desktop.run`, or as MCP `control_desktop.request`:
 
 ```json
 {
-  "actions": [
-    {
-      "type": "setValue",
-      "target": { "app": "Example login", "name": "Password" },
-      "secret": "app.password"
-    }
-  ]
+  "command": "setValue",
+  "ref": "@SNAPSHOT:e1",
+  "secret": "app.password"
 }
 ```
 
-Use actual selectors from GUI inspection. `setValue` and `type` accept exactly one of `text` or `secret`. The node replaces `secret` with `text` only in the private helper's stdin request. The helper contract is unchanged. Resolved values must satisfy the action contract and the helper's platform validation. Missing references reject the whole batch before desktop effects. Both synchronous `rpa.run` and durable tasks support references.
-
-GUI text results and errors mask currently configured secret values, including in subsequent inspection calls. When any secrets are configured, Control suppresses raw helper stdout/stderr in task logs and failure diagnostics. This avoids leaks from chunked writes or truncated output. Structured results remain available after masking. Screenshots are not masked. Do not capture a screen displaying credentials or enable an application's reveal-password control.
+Use a qualified ref from that adapter's own fresh snapshot. `setValue` accepts exactly one of `text` or `secret`. Missing secrets fail before helper launch. Both synchronous `desktop.run` calls and durable tasks support references. There is no secret-reference keystroke typing or physical-input fallback. Do not capture a screen displaying credentials or enable an application's reveal-password control.
 
 ### Agent-desktop login handoff
 
-For an [agent-desktop workflow](rpa.md#use-agent-desktop-on-a-worker), prefer the opt-in [native `desktop.run` adapter](desktop.md). Pass `{"command":"setValue","ref":"@SNAPSHOT:e1","secret":"app.password"}` using a ref from that adapter's own snapshot. It resolves credentials on the worker and passes text only over an anonymous stdin pipe to Control's isolated Go helper mode. That subprocess calls agent-desktop's C library through purego, without C++, Python, or CGO. Private usernames can use the same secret-reference path.
+For an [agent-desktop workflow](desktop.md#use-agent-desktop-on-a-worker), use the opt-in native adapter for credential entry. It resolves credentials on the worker and passes text only over an anonymous stdin pipe to Control's isolated Go helper mode. That subprocess calls agent-desktop's C library through purego, without C++, Python, or CGO. Private usernames can use the same secret-reference path.
 
 Native status, snapshots, action results, and error envelopes mask currently configured values, even on later calls without a `secret` input. Raw native-helper logs are always suppressed, successful status omits private state metadata, and native state paths are masked. Persisted task arguments remain reference-only. The native helper has no screenshot, clipboard, tracing, or headed-input operations. Native refmaps can contain private observed text and live outside `workDir`; protect that state and its backups.
 
-`rpa.run` remains an alternative on the same worker/profile, using inspected selectors rather than native refs. Ordinary agent-desktop CLI text commands do not understand Control secret names, and `exec.run` does not mask output. If protected input is not configured or headless input is unsupported, ask for manual login or approved setup. Never retrieve stored values through a shell, environment, clipboard, script, or filesystem call to bridge that gap. Use masked observations during credential entry and verify non-sensitive application state. Masking remains best-effort, not isolation from an unrestricted process.
+Ordinary agent-desktop CLI text commands do not understand Control secret names, and `exec.run` does not mask output. If protected input is not configured or headless input is unsupported, ask for manual login or approved setup. Never retrieve stored values through a shell, environment, clipboard, script, or filesystem call to bridge that gap. Use masked observations during credential entry and verify non-sensitive application state. Masking remains best-effort, not isolation from an unrestricted process. The removed RPA adapter has no automatic fallback; see [migration differences](desktop.md#migrate-from-rpa).
 
 ## Authenticate HTTP requests by reference
 
@@ -97,6 +91,6 @@ Control masks configured secret values in response headers, response body bytes 
 
 ## What this protects
 
-This prevents accidental exposure through the supported credential-entry operations. It is not protection against an AI or application trying to extract a credential. Existing fleet membership, capability access rules, task ownership, leases, and maintenance admission still apply. Permission to invoke `desktop.run`, `rpa.run`, or `http.request` includes permission to use the worker's stored secrets through that capability.
+This prevents accidental exposure through the supported credential-entry operations. It is not protection against an AI or application trying to extract a credential. Existing fleet membership, capability access rules, task ownership, leases, and maintenance admission still apply. Permission to invoke `desktop.run` or `http.request` includes permission to use the worker's stored secrets through that capability.
 
 Unrestricted commands, filesystem access outside the filesystem API, custom helpers, malicious HTTP destinations, screenshots, application-managed files, and arbitrary value transformations can expose credentials. Masking covers configured values from the invocation's snapshot, not historical values deleted or rotated before a later inspection. Existing transcripts and retained outputs are not scrubbed retroactively. Do not use these secrets for gateway administration keys or assume they create an execution sandbox.

@@ -376,6 +376,8 @@ Clipboard commands use the existing platform-specific helpers with a five-second
 
 ## D040: Opt-in desktop automation through a serialized helper
 
+Superseded by [D126](#d126-retire-the-rpa-adapter-in-favor-of-agent-desktop). The RPA adapter and Python helper are removed; native desktop retains the shared lock and admission contracts.
+
 Expose GUI automation as `rpa.run` only when a node explicitly configures an `rpa` command. Keep OS libraries in a version-1 subprocess helper so Control retains CGO-free builds and providers remain independent of transport. The supplied Python helper uses native accessibility targeting on Windows, macOS, and Linux, with explicit PyAutoGUI coordinate/keyboard actions. Linux coordinate input initially requires X11, and execution requires a logged-in desktop and its OS permissions.
 
 Validate the whole batch before execution, cap it at 100 actions and two minutes, and serialize it with a shared file lock under the OS user's Control configuration directory. Native selector actions must resolve exactly one element in a complete bounded scan and must not silently fall back to coordinates. Import screenshots as bounded PNG artifacts from an invocation-owned temporary directory. Retain existing fleet authorization, tracked-task ownership and idempotency, leases, and update admission.
@@ -383,6 +385,8 @@ Validate the whole batch before execution, cap it at 100 actions and two minutes
 GUI batches are not atomic transactions. Earlier actions and even a failed action may have changed an application. Stop at the first error and retain partial results in tracked tasks; never replay automatically after failure, disconnect, or restart. A node lease coordinates multi-batch callers on that node, but neither it nor the desktop lock blocks humans or unrelated automation. External helper dependencies and permissions need native runtime verification. See [GUI automation](rpa.md).
 
 ## D041: Worker-local secret references for credential entry
+
+The RPA `setValue`/`type` path is removed by [D126](#d126-retire-the-rpa-adapter-in-favor-of-agent-desktop). Native desktop value setting and HTTP references remain supported.
 
 The local-only management restriction is superseded by [D116](#d116-encrypted-owner-managed-worker-secrets). Value-read prohibitions, local storage and reference-only execution remain unchanged.
 
@@ -1066,6 +1070,8 @@ Keep coordination outside both pools to avoid local-child deadlocks. Preserve pe
 
 ## D123: Visible pool queues and independent desktop admission
 
+RPA participation is removed by [D126](#d126-retire-the-rpa-adapter-in-favor-of-agent-desktop). Native desktop keeps the same slot and shared lock.
+
 Task slot lifetimes and transfer-stage visibility are refined by [D124](#d124-bounded-task-staging-execution-and-publication). Desktop separation and per-user locking remain unchanged.
 
 Desktop invocations previously acquired general operation slots before waiting for the shared per-user desktop lock. Enough lock waiters could block independent file or HTTP work. Give the built-in desktop/RPA adapters one separate admission slot per node, without a new configurable concurrency setting, and retain the existing shared per-user file lock across profiles. Unconfigured optional adapter names used by custom providers remain execution work. Coordination still holds no provider slot.
@@ -1089,3 +1095,11 @@ D060's plan-ordered launch loop could fill every workflow slot with children que
 Prefer free provider/input-staging headroom, then unknown readings, then busy pools, with stable plan-order ties. Conservatively subtract this workflow's in-flight children for their full lifetime, including new batch selections, because snapshots may predate task admission. This can double-count already observed children but avoids immediately refilling the same pool from stale headroom. Desktop capability names check both desktop and execution headroom because descriptions cannot distinguish built-in adapters from custom providers using those names. Failed/denied/legacy readings stay unknown. Do not infer arbitrary provider resource use or select another worker. When all candidates are busy, keep submitting in stable order rather than polling for capacity. The bounded window does not promise visibility of every idle destination or fleet-wide fairness.
 
 Keep sequential workflows unchanged, and preserve validated dependencies, artifact provenance, fixed task IDs/targets/specifications, destination-owned grants, total parallel bounds and child lifetimes. Ordering applies only before launch; accepted tasks never move or resubmit. Buffer bounded completion outcomes during probes and observe them before launching further work. An observed failure stops new submissions while already started siblings finish. Publication, leases and resource telemetry remain outside the ordering heuristic; normal destination checks still enforce authority and admission. See [workflow ready ordering](protocol.md#workflow-ready-ordering).
+
+## D126: Retire the RPA adapter in favor of agent-desktop
+
+Remove built-in `rpa.run`, MCP `control_rpa`, the RPA action schema, configuration field, and supplied Python helper rather than maintaining two desktop automation stacks. Keep opt-in native `desktop.run` for masked observations and worker-local secret-reference headless input, with the upstream agent-desktop CLI available separately through ordinary `exec.run`.
+
+Reject any legacy top-level `rpa` key during configuration decoding, including `null`, with explicit removal and migration instructions. Do not silently disable access, translate selectors, rewrite retained tasks, or replay unfinished work under another capability. Native desktop has no action batches, screenshot-artifact import, secret-reference keystroke typing, or physical input. Broader CLI commands do not gain native masking, secret resolution, desktop admission or locking. Unsupported protected input still requires manual login or approved setup, never shell credential retrieval.
+
+Preserve the one-slot native desktop pool, queue observations, task/lease/maintenance behavior and cross-profile per-user file lock. Keep the historical `control/rpa.lock` filename so profiles running different Control versions cannot bypass serialization. Rename internal lock bookkeeping without moving or deleting that lock. This supersedes D040, removes the RPA portion of D041/D123, and retains D102/D103's native security contract. See [migration and feature differences](desktop.md#migrate-from-rpa).

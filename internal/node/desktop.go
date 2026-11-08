@@ -33,7 +33,8 @@ func (n *Node) registerDesktop() error {
 	if err != nil {
 		return err
 	}
-	n.rpaLockPath = filepath.Join(dir, "control", "rpa.lock")
+	// Keep the legacy filename so older and newer profiles share the same lock.
+	n.desktopLockPath = filepath.Join(dir, "control", "rpa.lock")
 	if _, err := n.desktopStateDir(); err != nil {
 		return err
 	}
@@ -97,10 +98,10 @@ func (n *Node) desktopRun(ctx context.Context, args json.RawMessage, e Execution
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	if err := os.MkdirAll(filepath.Dir(n.rpaLockPath), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(n.desktopLockPath), 0700); err != nil {
 		return nil, errors.New("cannot open desktop lock")
 	}
-	lock := flock.New(n.rpaLockPath)
+	lock := flock.New(n.desktopLockPath)
 	defer func() { _ = lock.Close() }()
 	locked, err := lock.TryLockContext(ctx, 50*time.Millisecond)
 	if err != nil || !locked {

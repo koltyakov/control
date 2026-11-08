@@ -40,7 +40,7 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 				t.Errorf("%s instructions omit %q", name, term)
 			}
 		}
-		for _, obsolete := range []string{"fleet agent", "host agent", "Lifecycle-capable agents"} {
+		for _, obsolete := range []string{"fleet agent", "host agent", "Lifecycle-capable agents", "rpa.run", "control_rpa"} {
 			if strings.Contains(text, obsolete) {
 				t.Errorf("%s instructions use obsolete terminology %q", name, obsolete)
 			}
@@ -73,12 +73,12 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 			required = append(required,
 				"npx skills add https://github.com/vercel-labs/agent-desktop --skill agent-desktop",
 				"never substitute a shell credential workaround",
-				"credentials are no longer visible", "not RPA selectors")
+				"credentials are no longer visible", "no action batches", "not feature-equivalent")
 		} else {
 			required = append(required,
 				"Only when a task requires GUI interaction",
 				"skip these checks and skill loads for non-GUI tasks",
-				"https://github.com/koltyakov/control/blob/main/docs/rpa.md",
+				"https://github.com/koltyakov/control/blob/main/docs/desktop.md",
 				"stop for manual login", "never retrieve credentials through a shell")
 			_, gui, found := strings.Cut(text, "## GUI work, only when needed\n")
 			gui, _, _ = strings.Cut(gui, "\n## ")
@@ -96,7 +96,7 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 	}
 }
 
-func TestMCPRoutesRPA(t *testing.T) {
+func TestMCPRoutesDesktop(t *testing.T) {
 	requests := make(chan map[string]json.RawMessage, 1)
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request map[string]json.RawMessage
@@ -107,7 +107,7 @@ func TestMCPRoutesRPA(t *testing.T) {
 		}
 		requests <- request
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"result":{"results":[{"elements":[],"truncated":false}]}}`))
+		_, _ = w.Write([]byte(`{"result":{"ok":true}}`))
 	}))
 	defer httpServer.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -123,49 +123,19 @@ func TestMCPRoutesRPA(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = session.Close() }()
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "control_rpa", Arguments: map[string]any{"node": "desktop", "actions": []any{map[string]any{"type": "inspect"}}}})
-	if err != nil || result.IsError {
-		t.Fatalf("RPA tool failed: %+v, %v", result, err)
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	select {
-	case request := <-requests:
-		if string(request["target"]) != `"desktop"` || string(request["method"]) != `"rpa.run"` || !strings.Contains(string(request["params"]), `"actions"`) {
-			t.Fatalf("incorrect RPA routing: %v", request)
+	for _, tool := range tools.Tools {
+		if tool.Name == "control_rpa" {
+			t.Fatal("removed RPA tool is still advertised")
 		}
-	case <-ctx.Done():
-		t.Fatal("RPA tool did not route a request")
 	}
-	result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "control_rpa", Arguments: map[string]any{"node": "desktop", "actions": []any{map[string]any{"type": "unknown"}}}})
-	if err == nil && !result.IsError {
-		t.Fatal("invalid GUI action bypassed MCP schema validation")
+	if result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "control_rpa", Arguments: map[string]any{}}); err == nil && !result.IsError {
+		t.Fatal("removed RPA tool was callable")
 	}
-	result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "control_rpa", Arguments: map[string]any{
-		"node": "desktop",
-		"actions": []any{map[string]any{
-			"type": "setValue", "target": map[string]any{"app": "Login", "name": "Password"}, "secret": "app.password",
-		}},
-	}})
-	if err != nil || result.IsError {
-		t.Fatalf("credential handoff failed: %+v, %v", result, err)
-	}
-	select {
-	case request := <-requests:
-		if string(request["target"]) != `"desktop"` || string(request["method"]) != `"rpa.run"` {
-			t.Fatalf("credential handoff changed worker or capability: %v", request)
-		}
-		var params struct {
-			Actions []map[string]json.RawMessage `json:"actions"`
-		}
-		if err := json.Unmarshal(request["params"], &params); err != nil {
-			t.Fatal(err)
-		}
-		if len(params.Actions) != 1 || string(params.Actions[0]["secret"]) != `"app.password"` || params.Actions[0]["text"] != nil {
-			t.Fatalf("credential reference was changed: %s", request["params"])
-		}
-	case <-ctx.Done():
-		t.Fatal("credential handoff did not route a request")
-	}
-	result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "control_desktop", Arguments: map[string]any{
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "control_desktop", Arguments: map[string]any{
 		"node": "desktop", "request": map[string]any{"command": "setValue", "ref": "@s123:e1", "secret": "app.password"},
 	}})
 	if err != nil || result.IsError {

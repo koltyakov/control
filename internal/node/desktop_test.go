@@ -16,6 +16,7 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/transport/transporttest"
 )
 
 const desktopCredential = "private-native-\"password-秘密"
@@ -96,6 +97,15 @@ func TestDesktopHelperProcess(t *testing.T) {
 		response = map[string]any{"ok": true, "data": desktopCredential}
 	case "sleep":
 		time.Sleep(time.Minute)
+	case "serial":
+		f, err := os.OpenFile(os.Getenv("CONTROL_TEST_DESKTOP_TRACE"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			os.Exit(10)
+		}
+		_, _ = fmt.Fprintln(f, "start")
+		time.Sleep(100 * time.Millisecond)
+		_, _ = fmt.Fprintln(f, "end")
+		_ = f.Close()
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(response)
 	os.Exit(0)
@@ -115,7 +125,7 @@ func desktopCommand(t *testing.T, mode string) *DesktopConfig {
 func desktopNode(t *testing.T, mode string) *Node {
 	t.Helper()
 	n := localNode(t, func(cfg *Config) { cfg.Desktop = desktopCommand(t, mode) })
-	n.rpaLockPath = filepath.Join(t.TempDir(), "desktop.lock")
+	n.desktopLockPath = filepath.Join(t.TempDir(), "desktop.lock")
 	return n
 }
 
@@ -154,6 +164,10 @@ func TestDesktopOptInAndPrivateState(t *testing.T) {
 	n := localNode(t, func(c *Config) { c.Desktop = &DesktopConfig{Library: library} })
 	if _, exists := n.providers["desktop.run"]; !exists {
 		t.Fatal("library mode did not register desktop.run")
+	}
+	configDir, err := os.UserConfigDir()
+	if err != nil || n.desktopLockPath != filepath.Join(configDir, "control", "rpa.lock") {
+		t.Fatal("native desktop no longer shares the historical per-user lock", err)
 	}
 	encoded, err := json.Marshal(n.Config.Desktop)
 	var decoded DesktopConfig
@@ -270,7 +284,7 @@ func TestDesktopFailuresDoNotLeak(t *testing.T) {
 
 func TestDesktopMissingSecretAndLockCancellation(t *testing.T) {
 	n := desktopNode(t, "echo")
-	lock := flock.New(n.rpaLockPath)
+	lock := flock.New(n.desktopLockPath)
 	defer func() { _ = lock.Close() }()
 	if ok, err := lock.TryLock(); !ok || err != nil {
 		t.Fatal(err)
@@ -316,5 +330,42 @@ func TestDesktopTaskRetainsOnlyReferences(t *testing.T) {
 	repeated, err := n.startTaskContext(context.Background(), "owner", spec)
 	if err != nil || repeated.Updated != finished.Updated {
 		t.Fatal("task reconciliation replayed credential input")
+	}
+}
+
+func TestDesktopPeerTasksAndAuthorization(t *testing.T) {
+	for _, relay := range []bool{true, false} {
+		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
+			source, worker, consumer := cluster(t, relay, func(i int, cfg *Config) {
+				if i == 1 {
+					cfg.Desktop = desktopCommand(t, "echo")
+					cfg.Allow = map[string][]string{"source": {"desktop.run", "tasks.*", "leases.*"}}
+				}
+			}, transporttest.Loopback())
+			worker.desktopLockPath = filepath.Join(t.TempDir(), "desktop.lock")
+			args := json.RawMessage(`{"command":"status"}`)
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+			defer cancel()
+			if err := testCall(t, consumer, ctx, "worker", "desktop.run", args, nil); err == nil {
+				t.Fatal("unauthorized caller accessed desktop")
+			}
+			var lease model.Lease
+			call(t, source, "worker", "leases.acquire", map[string]any{}, &lease)
+			if err := testCall(t, source, ctx, "worker", "desktop.run", args, nil); err == nil {
+				t.Fatal("synchronous desktop call bypassed lease")
+			}
+			spec := model.TaskSpec{ID: "desktop-once", Capability: "desktop.run", Args: args, LeaseID: lease.ID}
+			var accepted model.Task
+			call(t, source, "worker", "tasks.start", spec, &accepted)
+			finished, err := testWaitTask(t, source, ctx, "worker", accepted.ID)
+			if err != nil || finished.State != "succeeded" {
+				t.Fatal("leased desktop task failed", finished, err)
+			}
+			call(t, source, "worker", "tasks.start", spec, &accepted)
+			if accepted.Updated != finished.Updated {
+				t.Fatal("desktop task replayed")
+			}
+			call(t, source, "worker", "leases.release", map[string]string{"id": lease.ID}, nil)
+		})
 	}
 }

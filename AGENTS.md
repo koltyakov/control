@@ -23,7 +23,7 @@ Follow [Terminology](docs/terminology.md) in documentation, code, CLI/dashboard 
 - [Users and private fleets](docs/users.md): account provisioning, isolation, SQLite ownership, and migration.
 - [Authority and delegation](docs/delegation.md): account-client execution, instruction-bound worker grants, expiry, and revocation.
 
-For feature-specific work, also read [gateway deployment](docs/gateway.md), [expose deployment](docs/expose.md), [peer streaming](docs/streaming.md), [connection tests](docs/connections.md), [persistent tunnels](docs/tunnels.md), [clipboard pastes](docs/clipboard.md), [GUI automation](docs/rpa.md), [worker-local secrets](docs/secrets.md), or [runbooks](docs/runbooks.md).
+For feature-specific work, also read [gateway deployment](docs/gateway.md), [expose deployment](docs/expose.md), [peer streaming](docs/streaming.md), [connection tests](docs/connections.md), [persistent tunnels](docs/tunnels.md), [clipboard pastes](docs/clipboard.md), [native desktop automation](docs/desktop.md), [worker-local secrets](docs/secrets.md), or [runbooks](docs/runbooks.md).
 
 ## Fleet operations
 
@@ -45,7 +45,7 @@ Runbook suitability belongs in agent-friendly `requires` metadata, not OS/app/ha
 | `internal/identity` | Persistent Ed25519 identity and pinned peer TLS |
 | `internal/transport` | WebRTC/relay connections and multiplexed peer sessions |
 | `internal/node` | Providers, access checks, tasks, artifacts, leases, workflows |
-| `internal/clipboard`, `internal/rpa`, `internal/secrets` | Desktop clipboard access, GUI action contracts, and worker-local credential storage |
+| `internal/clipboard`, `internal/desktop`, `internal/secrets` | Desktop clipboard access, native GUI helper contracts, and worker-local credential storage |
 | `internal/wire`, `internal/wsio` | Peer JSON framing and bounded reusable WebSocket reads |
 | `internal/model` | Shared application types |
 | `internal/protocol` | Protobuf routing envelope and generated Go bindings |

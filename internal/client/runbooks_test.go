@@ -23,7 +23,7 @@ func runbookClientFixture(t *testing.T, protocol bool, deny bool) (Client, *atom
 	for _, item := range []struct{ root, file, text string }{
 		{project, "shared/vpn/RUNBOOK.md", "# VPN\nProject generic instructions."},
 		{global, "shared/vpn.md", "# VPN\nGlobal generic instructions."},
-		{workerUser, "machines/trader/vpn.md", "---\nrequires:\n  os: [windows]\n  apps: [globalprotect]\n  capabilities: [rpa.run]\n  vpn:\n    vendor: Palo Alto Networks\n    state: configured\n---\n# Trader VPN\nApplication: GlobalProtect\nReferences: vpn.portal vpn.username vpn.password"},
+		{workerUser, "machines/trader/vpn.md", "---\nrequires:\n  os: [windows]\n  apps: [globalprotect]\n  capabilities: [desktop.run]\n  vpn:\n    vendor: Palo Alto Networks\n    state: configured\n---\n# Trader VPN\nApplication: GlobalProtect\nReferences: vpn.portal vpn.username vpn.password"},
 		{workerCommon, "shared/vpn.md", "# VPN\nWorker common instructions."},
 	} {
 		writeScenarioFixture(t, filepath.Join(item.root, filepath.FromSlash(item.file)), item.text)
@@ -87,7 +87,7 @@ func TestClientRunbooksDiscoveryAndExactRead(t *testing.T) {
 	if !catalog.Runbooks[0].Preferred || catalog.Runbooks[0].Machine != "trader" || catalog.Runbooks[0].ConflictCount != 3 {
 		t.Fatalf("machine procedure not preferred: %+v", catalog.Runbooks)
 	}
-	if !reflect.DeepEqual(catalog.Runbooks[0].Requires, map[string]any{"os": []any{"windows"}, "apps": []any{"globalprotect"}, "capabilities": []any{"rpa.run"}, "vpn": map[string]any{"vendor": "Palo Alto Networks", "state": "configured"}}) {
+	if !reflect.DeepEqual(catalog.Runbooks[0].Requires, map[string]any{"os": []any{"windows"}, "apps": []any{"globalprotect"}, "capabilities": []any{"desktop.run"}, "vpn": map[string]any{"vendor": "Palo Alto Networks", "state": "configured"}}) {
 		t.Fatalf("remote applicability metadata omitted: %+v", catalog.Runbooks[0])
 	}
 	read, err := c.Runbooks(ctx, runbooks.Query{Node: "trader", Source: "worker-user", File: "machines/trader/vpn.md"})
@@ -205,7 +205,7 @@ func TestMCPRunbooksAndDescribe(t *testing.T) {
 		}
 		found := false
 		for _, book := range catalog.Runbooks {
-			if reflect.DeepEqual(book.Requires, map[string]any{"os": []any{"windows"}, "apps": []any{"globalprotect"}, "capabilities": []any{"rpa.run"}, "vpn": map[string]any{"vendor": "Palo Alto Networks", "state": "configured"}}) {
+			if reflect.DeepEqual(book.Requires, map[string]any{"os": []any{"windows"}, "apps": []any{"globalprotect"}, "capabilities": []any{"desktop.run"}, "vpn": map[string]any{"vendor": "Palo Alto Networks", "state": "configured"}}) {
 				found = true
 			}
 		}

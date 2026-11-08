@@ -52,9 +52,6 @@ func (n *Node) registerProviders() error {
 			return err
 		}
 	}
-	if err := n.registerRPA(); err != nil {
-		return err
-	}
 	if err := n.registerDesktop(); err != nil {
 		return err
 	}

@@ -23,7 +23,6 @@ func assertPool(t *testing.T, got model.ConcurrencyPool, limit, inUse, queued in
 
 func TestProviderPools(t *testing.T) {
 	n := localNode(t, func(cfg *Config) {
-		cfg.RPA = rpaCommand(t, "success")
 		cfg.Desktop = &DesktopConfig{Command: Command{Command: "unused-desktop-helper"}}
 	})
 	report := n.concurrencySnapshot()
@@ -44,11 +43,9 @@ func TestProviderPools(t *testing.T) {
 			t.Fatal("operation uses execution capacity", method)
 		}
 	}
-	for _, method := range []string{"rpa.run", "desktop.run"} {
-		pool, phase := n.providerSlots(method)
-		if pool != n.desktopPool || phase != "waiting for desktop slot" {
-			t.Fatal("desktop operation uses general I/O capacity", method)
-		}
+	pool, phase := n.providerSlots("desktop.run")
+	if pool != n.desktopPool || phase != "waiting for desktop slot" {
+		t.Fatal("desktop operation uses general I/O capacity")
 	}
 	for _, method := range []string{"exec.run", "agent.run", "mcp.call", "mcp.request", "custom.provider"} {
 		if slots, _ := n.providerSlots(method); slots != n.executionPool {
@@ -62,14 +59,11 @@ func TestProviderPools(t *testing.T) {
 	}
 	custom := localNode(t, func(cfg *Config) {
 		cfg.Providers = map[string]Command{
-			"rpa.run":     {Command: "unused-custom-helper"},
 			"desktop.run": {Command: "unused-custom-helper"},
 		}
 	})
-	for _, method := range []string{"rpa.run", "desktop.run"} {
-		if slots, _ := custom.providerSlots(method); slots != custom.executionPool {
-			t.Fatal("custom provider with an optional built-in name bypassed execution bound", method)
-		}
+	if slots, _ := custom.providerSlots("desktop.run"); slots != custom.executionPool {
+		t.Fatal("custom provider with an optional built-in name bypassed execution bound")
 	}
 	for _, limit := range []int{-1, 257} {
 		cfg := Config{Name: "invalid", Gateway: "http://localhost", Token: testToken, DataDir: t.TempDir(), WorkDir: t.TempDir(), MaxOperations: limit}
@@ -191,10 +185,10 @@ func TestPeerWorkerMultitasking(t *testing.T) {
 			source, worker, _ := cluster(t, relay, func(i int, cfg *Config) {
 				cfg.MaxTasks, cfg.MaxOperations = 2, 2
 				if i == 1 {
-					cfg.RPA = rpaCommand(t, "ok")
+					cfg.Desktop = desktopCommand(t, "echo")
 				}
 			})
-			worker.rpaLockPath = filepath.Join(t.TempDir(), "rpa.lock")
+			worker.desktopLockPath = filepath.Join(t.TempDir(), "desktop.lock")
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
 			for _, id := range []string{"background-one", "background-two"} {
@@ -216,7 +210,7 @@ func TestPeerWorkerMultitasking(t *testing.T) {
 			if err := testCall(t, source, ctx, "worker", "http.request", map[string]string{"url": server.URL}, nil); err != nil {
 				t.Fatal("commands blocked HTTP", err)
 			}
-			call(t, source, "worker", "rpa.run", map[string]any{"actions": []map[string]any{{"type": "inspect"}}}, nil)
+			call(t, source, "worker", "desktop.run", map[string]any{"command": "status"}, nil)
 			call(t, source, "worker", "tasks.start", model.TaskSpec{ID: "independent-files", Capability: "files.list", Args: model.JSON(map[string]any{})}, nil)
 			finished, err := testWaitTask(t, source, ctx, "worker", "independent-files")
 			if err != nil || finished.State != "succeeded" {

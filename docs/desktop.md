@@ -1,6 +1,6 @@
 # Native agent-desktop adapter
 
-[GUI automation](rpa.md) · [Worker-local secrets](secrets.md) · [Protocol](protocol.md) · [Testing](testing.md)
+[README](../README.md) · [Worker-local secrets](secrets.md) · [Protocol](protocol.md) · [Testing](testing.md)
 
 `desktop.run` is an opt-in worker-local adapter for agent-desktop's native C library. Control launches its own executable in an isolated Go helper mode using purego. Only that subprocess loads the library and receives requests through an anonymous stdin pipe. Control stays CGO-free on Windows, macOS, and Linux, on amd64 and arm64. No C++ compiler, Python runtime, or agent-desktop CLI is required.
 
@@ -43,7 +43,7 @@ Replace the app name and refs with actual observations. Re-snapshot when UI chan
 
 In v1.2.0, a snapshot that exhausts its observation budget succeeds with `data.complete: false` and the partial tree, rather than failing with `TIMEOUT`. Control preserves `complete`, `truncated`, `nodes_observed`, and per-node `subtree_truncated` while masking text. Check completeness before concluding that an element is absent. A partial snapshot does not authorize replaying an action or using stale refs.
 
-MCP `control_desktop` takes `node` and a `request` object with the same fields. Generic CLI/MCP calls and tracked `desktop.run` tasks use the same adapter. Use explicit task IDs for reconciliation and node leases for multi-command sequences. Built-in desktop and RPA invocations share one admission slot per node, separate from general I/O, and descriptions/activity snapshots report desktop usage and queues. Each admitted invocation still acquires Control's shared per-user RPA file lock across profiles and has a two-minute deadline including that lock wait. This does not exclude humans, unrelated desktop software, or raw agent-desktop CLI calls.
+MCP `control_desktop` takes `node` and a `request` object with the same fields. Generic CLI/MCP calls and tracked `desktop.run` tasks use the same adapter. Use explicit task IDs for reconciliation and node leases for multi-command sequences. Built-in desktop invocations use one admission slot per node, separate from general I/O, and descriptions/activity snapshots report desktop usage and queues. Each admitted invocation still acquires Control's shared per-user desktop file lock across profiles and has a two-minute deadline including that lock wait. The lock retains its historical `control/rpa.lock` path under the OS user configuration directory so older and newer profiles remain serialized. This does not exclude humans, unrelated desktop software, or raw agent-desktop CLI calls.
 
 | Command | Input |
 | --- | --- |
@@ -69,3 +69,41 @@ The helper accepts one `CDSK0001` packet: eight ASCII magic bytes, then five big
 This avoids accidental credential exposure to the coordinating AI context; it is not an execution sandbox or protection from a compromised worker. The helper, native library, and target application necessarily hold credential values in memory. Native refmaps can retain observed private text outside Control's task storage. Protect that private directory and backups. Control does not promise secure memory erasure, encrypt the store, restrict credentials to approved applications, or mask arbitrary transformations. Rotated or deleted secret values are not available to mask later observations. Keep these credentials away from unrestricted providers, raw CLI observations, screenshots, and public logs.
 
 If the application cannot accept headless value setting, stop for manual login or an explicitly approved alternative. Never retrieve the value through a shell or automatically repeat a failed action. Cancellation and node restarts do not undo UI effects.
+
+## Use agent-desktop on a worker
+
+The upstream CLI is optional and separate from `desktop.library`. For broader GUI operations, discover the requested User worker with `node.describe`, then check the CLI and load its version-matched instructions on that same worker:
+
+```sh
+control exec worker -- agent-desktop version
+control exec worker -- agent-desktop skills get desktop
+control exec worker -- agent-desktop skills get platform
+control exec worker -- agent-desktop status
+```
+
+MCP uses `control_call` with `node: "worker"`, `method: "exec.run"`, and `params: {"command":"agent-desktop","args":["version"]}`. Change the argument array for the other commands. Read the returned skills' `data.content` before acting. Keep all subsequent CLI commands routed to that worker through Control with structured arguments and fresh snapshot-qualified refs. CLI refs cannot be used by the native adapter, or vice versa. Never replay uncertain effects. Physical input with `--headed` requires explicit user permission, not an automatic fallback after a semantic failure.
+
+`version` establishes presence, not desktop readiness. `status` reports platform and permissions. Missing executables, denied execution, unavailable desktop sessions, and missing OS grants are blockers, not permission to switch to System. Ask before installing the CLI or granting permissions. Use an already configured native adapter when suitable. Control does not automatically install either dependency. The CLI's embedded skills need no separate harness installation; upstream's optional harness skill is available with `npx skills add https://github.com/vercel-labs/agent-desktop --skill agent-desktop`.
+
+For login, use native `setValue` with worker-local secret names for both private usernames and passwords. Ordinary CLI text commands do not resolve Control secrets, and `exec.run` output is not secret-masked. Never read the store or construct shell, environment, clipboard, script, or prompt credential substitutions. While credentials may be visible, use masked native observations, not raw CLI snapshots, field reads, screenshots, clipboard reads, or traces. Verify non-sensitive application state before resuming raw observations. If protected input is unavailable or unsupported, stop for manual login or approved setup.
+
+## Migrate from RPA
+
+`rpa.run`, MCP `control_rpa`, and the supplied Python/PyAutoGUI helper are removed. The `rpa` configuration field is rejected whenever present, even as `null` or alongside `desktop`. No automatic conversion or execution fallback occurs.
+
+1. Remove the top-level `rpa` field from each affected node profile before starting the new version. Configure an approved native FFI library with `desktop.library` as described above, then restart while idle and verify native status.
+2. Replace caller/tool references, access rules, runbook requirements, and future task specifications explicitly. Use `desktop.run` with its command object, or `control_desktop` with `node` and `request`. Obtain fresh refs from the adapter's snapshots; old RPA selectors are not native refs.
+3. Reconcile retained RPA task IDs without replaying them. Existing task history is not rewritten. Restart still interrupts unfinished tasks rather than resubmitting them under another capability. Remove a dedicated RPA virtual environment/helper installation only after confirming nothing else uses it. Control's native adapter needs no Python runtime.
+
+The replacement is intentionally narrower:
+
+| Removed RPA feature | Current behavior |
+| --- | --- |
+| Exact selectors from desktop-wide inspection | App-scoped native snapshots with qualified refs, not compatible selector syntax |
+| Secret-reference `setValue` and keystroke `type` | Native headless `setValue` only; no secret typing or physical-input fallback |
+| Screenshot PNG artifacts | No native screenshot command or automatic screenshot-artifact import |
+| Focus, pointer movement, coordinate clicks, drag, scroll, key chords and waits | Not exposed by `desktop.run`; use supported upstream CLI operations separately with required approval, or manual interaction |
+| 1..100-action batches and ordered partial results | One native command per invocation; use leased tracked tasks for exclusive multi-command sequences on one node |
+| Text masking and desktop serialization | Native responses remain masked and raw logs suppressed; the same per-user lock and one-slot desktop pool remain |
+
+Broader upstream CLI operations through `exec.run` are not protected equivalents. They have no Control secret resolution, output masking, automatic screenshot-artifact conversion, or participation in the native desktop lock/pool. Coordinate one writer explicitly and follow the installed CLI skills. Do not expand permissions or expose credentials to bridge a missing feature.

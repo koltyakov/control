@@ -101,7 +101,7 @@
   <text class="m" x="36" y="422">internal/node · enrolled identity</text>
   <rect class="row" x="36" y="436" width="204" height="46" rx="3"/>
   <text class="tl" x="48" y="455">providers</text>
-  <text class="s" x="48" y="472">exec, agent, mcp, rpa, workflow</text>
+  <text class="s" x="48" y="472">exec, agent, mcp, desktop, workflow</text>
   <rect class="row" x="248" y="436" width="156" height="46" rx="3"/>
   <text class="tl" x="260" y="455">tasks</text>
   <text class="s" x="260" y="472">persisted, idempotent</text>
@@ -132,7 +132,7 @@
   <text class="m" x="596" y="422">same binary, either role</text>
   <rect class="row" x="596" y="436" width="204" height="46" rx="3"/>
   <text class="tl" x="608" y="455">providers</text>
-  <text class="s" x="608" y="472">exec, agent, mcp, rpa, workflow</text>
+  <text class="s" x="608" y="472">exec, agent, mcp, desktop, workflow</text>
   <rect class="row" x="808" y="436" width="156" height="46" rx="3"/>
   <text class="tl" x="820" y="455">tasks</text>
   <text class="s" x="820" y="472">persisted, idempotent</text>

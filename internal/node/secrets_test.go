@@ -27,39 +27,8 @@ func setTestSecret(t *testing.T, n *Node, name, value string) {
 	}
 }
 
-func TestRPASecretInjection(t *testing.T) {
-	const credential = "private-\"password-世界"
-	for _, mode := range []string{"secret-echo", "secret-fail"} {
-		t.Run(mode, func(t *testing.T) {
-			n := rpaNode(t, mode)
-			setTestSecret(t, n, "app.password", credential)
-			var log bytes.Buffer
-			args := json.RawMessage(`{"actions":[{"type":"setValue","target":{"name":"Password"},"secret":"app.password"}]}`)
-			value, err := n.rpaRun(context.Background(), args, Execution{Dir: n.Config.WorkDir, Log: &log})
-			if mode == "secret-fail" && err == nil {
-				t.Fatal("expected helper failure")
-			}
-			if mode == "secret-echo" {
-				if err != nil {
-					t.Fatal(err)
-				}
-				response := value.(rpaResponse)
-				if string(response.Results[0]["echo"]) != `"[REDACTED]"` {
-					t.Fatalf("unmasked response: %s", model.JSON(response))
-				}
-			}
-			if log.Len() != 0 || strings.Contains(string(model.JSON(value)), credential) || (err != nil && strings.Contains(err.Error(), credential)) {
-				t.Fatal("credential leaked in result, error, or logs")
-			}
-			if _, err := n.rpaRun(context.Background(), json.RawMessage(`{"actions":[{"type":"type","secret":"missing"}]}`), Execution{Log: &log}); err == nil {
-				t.Fatal("accepted missing secret")
-			}
-		})
-	}
-}
-
 func TestHTTPSecretInjection(t *testing.T) {
-	n := rpaNode(t, "success")
+	n := localNode(t, nil)
 	const credential = "private-api-token"
 	setTestSecret(t, n, "api.token", credential)
 	var received bool
@@ -116,26 +85,26 @@ func TestSecretPeerTaskRetention(t *testing.T) {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
 			source, worker, _ := cluster(t, relay, func(i int, cfg *Config) {
 				if i == 1 {
-					cfg.RPA = rpaCommand(t, "secret-echo")
+					cfg.Desktop = desktopCommand(t, "echo")
 				}
 			})
-			worker.rpaLockPath = filepath.Join(t.TempDir(), "rpa.lock")
-			const credential = "retained-private-password"
+			worker.desktopLockPath = filepath.Join(t.TempDir(), "desktop.lock")
+			const credential = desktopCredential
 			setTestSecret(t, worker, "app.password", credential)
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			spec := model.TaskSpec{ID: "secret-task", Capability: "rpa.run", Args: json.RawMessage(`{"actions":[{"type":"type","secret":"app.password"}]}`)}
+			spec := model.TaskSpec{ID: "secret-task", Capability: "desktop.run", Args: json.RawMessage(`{"command":"setValue","ref":"@s123:e1","secret":"app.password"}`)}
 			var accepted model.Task
 			call(t, source, "worker", "tasks.start", spec, &accepted)
 			finished, err := testWaitTask(t, source, ctx, "worker", accepted.ID)
 			if err != nil || finished.State != "succeeded" {
 				t.Fatalf("task failed: %s, %v", finished.Error, err)
 			}
-			if strings.Contains(string(model.JSON(finished)), credential) || !strings.Contains(string(finished.Result), "[REDACTED]") {
-				t.Fatal("task result leaked credential")
+			if hasDesktopCredential(model.JSON(finished)) || !strings.Contains(string(finished.Result), "[REDACTED]") || !bytes.Equal(finished.Spec.Args, spec.Args) {
+				t.Fatal("task result leaked credential or changed reference arguments")
 			}
 			data, err := os.ReadFile(worker.taskPath(spec.ID))
-			if err != nil || bytes.Contains(data, []byte(credential)) {
+			if err != nil || hasDesktopCredential(data) {
 				t.Fatalf("task metadata leak: %v", err)
 			}
 			logs, err := os.ReadFile(worker.logPath(spec.ID))

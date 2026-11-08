@@ -78,7 +78,7 @@ func workflowProviderPool(capability string) string {
 		return ""
 	case "files.list", "files.read", "files.write", "http.request", "network.wake":
 		return "operations"
-	case "desktop.run", "rpa.run":
+	case "desktop.run":
 		// Descriptions do not distinguish built-in adapters from custom
 		// providers using these names. Selection checks execution as well.
 		return "desktop"

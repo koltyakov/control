@@ -168,7 +168,7 @@ Managed rollouts update idle nodes independently when their verified executables
 - [Configuration and protocol](docs/protocol.md), [web console](docs/console.md), [dashboard and metrics](docs/dashboard.md), [managed updates](docs/updates.md).
 - [TCP tunnels](docs/tunnels.md), [connection tests](docs/connections.md), [fleet streaming](docs/streaming.md).
 - [Streaming file uploads](docs/uploads.md), including local CLI/MCP sources and interrupted-transfer recovery.
-- [GUI automation](docs/rpa.md), [native agent-desktop](docs/desktop.md), [worker-local secrets](docs/secrets.md), [clipboard pastes](docs/clipboard.md), [runbooks](docs/runbooks.md).
+- [Native agent-desktop and GUI workflows](docs/desktop.md), [RPA migration differences](docs/desktop.md#migrate-from-rpa), [worker-local secrets](docs/secrets.md), [clipboard pastes](docs/clipboard.md), [runbooks](docs/runbooks.md).
 - [Terminology](docs/terminology.md), [architecture](docs/architecture.md), [engineering principles](docs/principles.md), [design decisions](docs/decisions.md).
 - [Testing](docs/testing.md), [examples](examples), [contributor guide](AGENTS.md).
 
