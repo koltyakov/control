@@ -46,6 +46,8 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 			}
 		}
 		required := []string{
+			"busy worker is not unavailable", "independent work", "maxTasks", "maxOperations", "inUse",
+			"machine-wide lease", "conflicting", "external state",
 			"control_upload", "control_upload_resume", "control_upload_status", "files.write", "localPath", "no-overwrite",
 			"runbooks", "control_runbooks", ".control/runbooks/",
 			"requires", "agent-friendly", "plain",

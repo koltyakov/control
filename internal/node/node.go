@@ -75,6 +75,7 @@ type Node struct {
 	tombstones          map[string]taskTombstone
 	pruneMu             sync.Mutex
 	slots               chan struct{}
+	operationSlots      chan struct{}
 	wg                  sync.WaitGroup
 	mcpMu               sync.Mutex
 	mcpSessions         map[string]*mcp.ClientSession
@@ -148,6 +149,7 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 	}
 	n := &Node{Config: cfg, Identity: id, root: root, providers: map[string]Provider{}, tasks: map[string]*model.Task{}, cancels: map[string]context.CancelFunc{}, slots: make(chan struct{}, cfg.MaxTasks), mcpSessions: map[string]*mcp.ClientSession{}, transfers: map[string]*transferLock{}}
 	n.lock = lock
+	n.operationSlots = make(chan struct{}, cfg.MaxOperations)
 	n.notifiers = map[string]*taskNotifier{}
 	n.accepting = map[string]*acceptance{}
 	n.tombstones = map[string]taskTombstone{}
@@ -590,7 +592,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		}
 		sort.Strings(agents)
 		sort.Strings(servers)
-		return map[string]any{"id": n.Identity.ID, "name": n.Config.Name, "capabilities": n.Capabilities(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "transport": n.Peer.Stats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot(), "fileUpload": n.uploads.Description(), "clipboard": map[string]any{"protocol": clipboard.Protocol, "methods": []string{clipboard.OpenMethod, clipboard.PasteMethod}}, "connectionTest": map[string]any{"protocol": model.ConnectionTestProtocol, "methods": []string{model.ConnectionTestMethod, model.ConnectionOpenMethod}, "maxBytes": 256 << 20, "maxSamples": 100, "timeoutSeconds": 120}, "runbooks": map[string]any{"protocol": runbooks.Protocol, "methods": []string{"runbooks.list", "runbooks.read"}}}, nil
+		return map[string]any{"id": n.Identity.ID, "name": n.Config.Name, "capabilities": n.Capabilities(), "concurrency": n.concurrencySnapshot(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "transport": n.Peer.Stats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot(), "fileUpload": n.uploads.Description(), "clipboard": map[string]any{"protocol": clipboard.Protocol, "methods": []string{clipboard.OpenMethod, clipboard.PasteMethod}}, "connectionTest": map[string]any{"protocol": model.ConnectionTestProtocol, "methods": []string{model.ConnectionTestMethod, model.ConnectionOpenMethod}, "maxBytes": 256 << 20, "maxSamples": 100, "timeoutSeconds": 120}, "runbooks": map[string]any{"protocol": runbooks.Protocol, "methods": []string{"runbooks.list", "runbooks.read"}}}, nil
 	case "capabilities.list":
 		return n.Capabilities(), nil
 	case "tasks.start":
@@ -627,15 +629,15 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 			return nil, errors.New("node is leased; invoke capabilities through tasks.start with leaseId")
 		}
 		defer func() { n.mu.Lock(); n.activeInvocations--; n.mu.Unlock() }()
-		if method != "workflow.run" && method != "peers.call" {
-			activity.phase("waiting for worker slot")
-			select {
-			case n.slots <- struct{}{}:
-				defer func() { <-n.slots }()
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
+		slots, phase := n.providerSlots(method)
+		if phase != "" {
+			activity.phase(phase)
 		}
+		release, err := acquireProviderSlot(ctx, slots)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 		activity.phase("executing")
 		return p.Run(ctx, args, Execution{Dir: n.Config.WorkDir, Log: io.Discard, Owner: owner})
 	}

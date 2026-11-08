@@ -251,7 +251,8 @@ func (n *Node) startTaskContext(parent context.Context, owner string, spec model
 	}
 	n.mu.Unlock()
 	now := time.Now().UTC()
-	task := &model.Task{ID: spec.ID, Owner: owner, Spec: spec, State: "queued", Phase: "waiting for worker slot", Created: now, Updated: now}
+	_, phase := n.providerSlots(spec.Capability)
+	task := &model.Task{ID: spec.ID, Owner: owner, Spec: spec, State: "queued", Phase: phase, Created: now, Updated: now}
 	// The record is durable before acceptance is visible or acknowledged. The
 	// reservation keeps duplicate submissions and lease changes ordered.
 	if err := store.Write(n.taskPath(task.ID), task); err != nil {
@@ -321,18 +322,14 @@ func (n *Node) updateTask(id string, change func(*model.Task)) (model.Task, erro
 
 func (n *Node) runTask(ctx context.Context, id string, notifier *taskNotifier) {
 	n.mu.Lock()
-	isWorkflow := n.tasks[id].Spec.Capability == "workflow.run" || n.tasks[id].Spec.Capability == "peers.call"
+	slots, _ := n.providerSlots(n.tasks[id].Spec.Capability)
 	n.mu.Unlock()
-	// Coordination must not occupy the only worker slot needed by a local step.
-	if !isWorkflow {
-		select {
-		case n.slots <- struct{}{}:
-			defer func() { <-n.slots }()
-		case <-ctx.Done():
-			n.finishTask(id, ctx, nil, nil, ctx.Err())
-			return
-		}
+	release, err := acquireProviderSlot(ctx, slots)
+	if err != nil {
+		n.finishTask(id, ctx, nil, nil, err)
+		return
 	}
+	defer release()
 	task, err := n.updateTask(id, func(t *model.Task) { t.State, t.Updated = "running", time.Now().UTC() })
 	notifier.notify(false)
 	spec, owner := task.Spec, task.Owner

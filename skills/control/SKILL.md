@@ -45,6 +45,14 @@ Tests require account-client routing, upgraded workers, `connection.open` permis
 
 Use the reported `route` to distinguish `direct`, `turn`, `gateway-relay`, and `unknown`. `transport: "webrtc"` can use TURN and does not alone prove a direct connection. Session and dashboard route counts are observations, not new connection tests.
 
+## Run independent work in parallel
+
+A busy worker is not unavailable. Run independent work on the same worker in parallel when resources permit. Do not wait for unrelated tasks or cancel them to free the machine. Inspect `node.describe.concurrency` for execution and operations pool `limit` and `inUse` counts. These are advisory snapshots, not reservations. Missing fields on older workers mean unknown capacity.
+
+Commands, AI CLIs, custom providers and MCP tools share `maxTasks` execution slots, four by default. Built-in file, HTTP, Wake-on-LAN and desktop operations share separate `maxOperations` slots, eight by default, including when submitted as tasks. A full execution pool does not block that operations pool. Transfers, tunnels and observation have their own admission. Saturated pools queue work with cancellation and task timeouts still enforced.
+
+Use detached submission and explicit task IDs for long work, continue other independent activities, and wait only when a result is needed. Use workflow `maxParallel` for independent ready steps. Do not acquire a machine-wide lease for ordinary independent work. Reserve exclusive execution only when the workflow requires it, and respect existing leases. Serialize conflicting file, application, desktop or shared-session changes. Separate task workspaces do not isolate external state, and per-batch desktop locking does not protect an entire multi-batch interaction.
+
 ## Submit durable work
 
 For a command, use `control exec NAME -- COMMAND ARG...`. The CLI prints a task ID before submission and waits for its result. For long work, use `--detach --id TASK_ID --timeout 4h` before `--` to return after durable acceptance. Follow logs with `control task logs NAME TASK_ID --follow --offset 0`. Stopping a follower or wait does not cancel the task; use `control task cancel`. Use structured argument arrays; do not assume the remote machine has a Unix shell.
