@@ -111,7 +111,7 @@ control task cancel worker job-001
 
 Stopping a wait or log follower does not cancel work. Node restarts do not replay interrupted tasks. Use a new task ID for new work. Finished records, logs, and workspaces are retained for seven days and up to 10,000 tasks by default; [pruning and reconciliation](docs/protocol.md#node-configuration) describe the remaining tombstones.
 
-Independent work can run on the same busy worker. Commands use `maxTasks` execution slots, four by default; built-in file and HTTP operations use a separate `maxOperations` pool, eight by default. Desktop adapters have one separate slot per node and retain the shared per-user desktop lock. Descriptions and peer activity snapshots report pool usage and queues. Use detached tasks to continue other work without waiting. Reserve machine-wide leases for workflows that need exclusive execution. See [worker concurrency](docs/protocol.md#worker-concurrency).
+Independent work can run on the same busy worker. Commands use `maxTasks` execution slots, four by default; built-in file and HTTP operations use a separate `maxOperations` pool, eight by default. Desktop adapters have one separate slot per node and retain the shared per-user desktop lock. Task input staging and output publication each have four separate slots by default, so transfer waits do not hold provider slots. Descriptions and peer activity snapshots report pool usage and queues. Use detached tasks to continue other work without waiting. Reserve machine-wide leases for workflows that need exclusive execution. See [worker concurrency](docs/protocol.md#worker-concurrency).
 
 ```sh
 control system worker

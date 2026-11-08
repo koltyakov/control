@@ -252,6 +252,9 @@ func (n *Node) startTaskContext(parent context.Context, owner string, spec model
 	n.mu.Unlock()
 	now := time.Now().UTC()
 	_, phase := n.providerSlots(spec.Capability)
+	if len(spec.Inputs) != 0 {
+		phase = "waiting for input staging slot"
+	}
 	task := &model.Task{ID: spec.ID, Owner: owner, Spec: spec, State: "queued", Phase: phase, Created: now, Updated: now}
 	// The record is durable before acceptance is visible or acknowledged. The
 	// reservation keeps duplicate submissions and lease changes ordered.
@@ -322,105 +325,50 @@ func (n *Node) updateTask(id string, change func(*model.Task)) (model.Task, erro
 
 func (n *Node) runTask(ctx context.Context, id string, notifier *taskNotifier) {
 	n.mu.Lock()
-	slots, _ := n.providerSlots(n.tasks[id].Spec.Capability)
+	task := cloneTask(n.tasks[id])
 	n.mu.Unlock()
-	release, err := acquireProviderSlot(ctx, slots)
-	if err != nil {
-		n.finishTask(id, ctx, nil, nil, err)
-		return
-	}
-	defer release()
-	task, err := n.updateTask(id, func(t *model.Task) { t.State, t.Updated = "running", time.Now().UTC() })
-	notifier.notify(false)
-	spec, owner := task.Spec, task.Owner
-	ctx = context.WithValue(ctx, activityContextKey{}, activityContext{owner: owner, task: id})
-	n.taskPhase(id, "preparing workspace")
-	if err != nil {
-		n.finishTask(id, ctx, nil, nil, err)
-		return
-	}
+	ctx = context.WithValue(ctx, activityContextKey{}, activityContext{owner: task.Owner, task: id})
 	dir := filepath.Join(n.Config.WorkDir, "tasks", id)
-	if err = os.MkdirAll(dir, 0700); err != nil {
-		n.finishTask(id, ctx, nil, nil, err)
-		return
-	}
-	log, err := os.OpenFile(n.logPath(id), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	if err != nil {
-		n.finishTask(id, ctx, nil, nil, err)
-		return
-	}
-	defer func() { _ = log.Close() }()
-	output := &limitedLog{w: log, remaining: 10 << 20, notify: func() { notifier.notify(false) }}
 	var result any
-	var artifacts []model.Artifact
-	err = func() error {
-		root, e := os.OpenRoot(dir)
-		if e != nil {
-			return e
-		}
-		defer func() { _ = root.Close() }()
-		n.taskPhase(id, "fetching inputs")
-		for _, input := range spec.Inputs {
-			artifact, e := n.pullArtifact(ctx, input.Artifact)
-			if e != nil {
-				return fmt.Errorf("fetch input: %w", e)
-			}
-			if !filepath.IsLocal(input.Path) {
-				return errors.New("input path must be relative to the task workspace")
-			}
-			if e = root.MkdirAll(filepath.Dir(input.Path), 0700); e != nil {
-				return e
-			}
-			dest, e := root.OpenFile(input.Path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-			if e != nil {
-				return e
-			}
-			source, e := os.Open(n.artifactPath(artifact.ID))
-			if e != nil {
-				_ = dest.Close()
-				return e
-			}
-			// Copy rather than link: providers may modify inputs in place, which
-			// must never alter the content-addressed store. File-to-file copies
-			// use the kernel's copy path where the platform provides one.
-			_, e = io.Copy(dest, source)
-			_ = source.Close()
-			ce := dest.Close()
-			if e != nil {
-				return e
-			}
-			if ce != nil {
-				return ce
-			}
-		}
-		n.taskPhase(id, "executing")
-		result, e = n.providers[spec.Capability].Run(ctx, spec.Args, Execution{Dir: dir, Log: output, Owner: owner})
-		if e != nil {
-			return e
-		}
-		n.taskPhase(id, "publishing outputs")
-		for _, path := range spec.Outputs {
-			file, e := root.Open(path)
-			if e != nil {
-				return fmt.Errorf("output %s: %w", path, e)
-			}
-			artifact, e := n.importArtifact(ctx, file, filepath.Base(path))
-			_ = file.Close()
-			if e != nil {
-				return e
-			}
-			artifacts = append(artifacts, artifact)
-		}
-		return nil
-	}()
-	n.finishTask(id, ctx, result, artifacts, err)
+	err := n.stageTaskInputs(ctx, id, dir, task.Spec.Inputs)
+	if err == nil {
+		result, err = n.runTaskProvider(ctx, task, dir, notifier)
+	}
+	// Provider admission has ended. Publication and its waits must not retain
+	// execution, I/O or desktop slots. The accepted task still owns work/grants.
+	n.finishTask(id, ctx, result, nil, err)
 }
 
 func (n *Node) finishTask(id string, ctx context.Context, result any, artifacts []model.Artifact, err error) {
+	n.mu.Lock()
+	outputs := n.tasks[id].Spec.Outputs
+	n.mu.Unlock()
+	if result != nil || (err == nil && len(outputs) != 0) {
+		n.taskPhase(id, "waiting for output publication slot")
+		release, admissionErr := acquireProviderSlot(ctx, n.publicationPool)
+		if admissionErr != nil {
+			err = errors.Join(err, admissionErr)
+			// Cancellation finalizes the task without waiting for unrelated
+			// publishers or starting new artifact work for the retained result.
+			result = nil
+		} else {
+			defer release()
+			n.taskPhase(id, "publishing outputs")
+			if err == nil {
+				published, publishErr := n.publishTaskOutputs(ctx, id, outputs)
+				artifacts = append(artifacts, published...)
+				err = publishErr
+			}
+		}
+	}
 	var resultJSON json.RawMessage
 	var resultArtifact *model.Artifact
 	if result != nil {
-		resultJSON = model.JSON(result)
+		if captured, ok := result.(json.RawMessage); ok {
+			resultJSON = captured
+		} else {
+			resultJSON = model.JSON(result)
+		}
 		if len(resultJSON) > 1<<20 {
 			a, e := n.importArtifact(ctx, bytes.NewReader(resultJSON), "result.json")
 			if e != nil {

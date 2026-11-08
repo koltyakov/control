@@ -42,6 +42,8 @@ type Config struct {
 	ICEServers             []webrtc.ICEServer `json:"iceServers"`
 	MaxTasks               int                `json:"maxTasks,omitempty"`
 	MaxOperations          int                `json:"maxOperations,omitempty"`
+	MaxTaskStaging         int                `json:"maxTaskStaging,omitempty"`
+	MaxTaskPublications    int                `json:"maxTaskPublications,omitempty"`
 	MetricsIntervalSeconds int                `json:"metricsIntervalSeconds,omitempty"`
 	// TaskRetentionHours keeps terminal task records, logs, and workspaces for
 	// reconciliation. Zero selects 168 hours; -1 disables age-based pruning.
@@ -136,6 +138,15 @@ func (c *Config) defaults() error {
 	}
 	if c.MaxOperations < 1 || c.MaxOperations > 256 {
 		return errors.New("maxOperations must be 1..256; zero selects the eight-operation default")
+	}
+	if c.MaxTaskStaging == 0 {
+		c.MaxTaskStaging = 4
+	}
+	if c.MaxTaskPublications == 0 {
+		c.MaxTaskPublications = 4
+	}
+	if c.MaxTaskStaging < 1 || c.MaxTaskStaging > 256 || c.MaxTaskPublications < 1 || c.MaxTaskPublications > 256 {
+		return errors.New("maxTaskStaging and maxTaskPublications must be 1..256; zero selects the four-task default")
 	}
 	if c.MetricsIntervalSeconds == 0 {
 		c.MetricsIntervalSeconds = 15

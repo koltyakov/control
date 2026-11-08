@@ -13,4 +13,7 @@ type NodeConcurrency struct {
 	Operations ConcurrencyPool `json:"operations"`
 	// Older workers have no separate desktop admission or desktop report.
 	Desktop *ConcurrencyPool `json:"desktop,omitempty"`
+	// Task transfer stages are absent on workers predating pipelined admission.
+	InputStaging      *ConcurrencyPool `json:"inputStaging,omitempty"`
+	OutputPublication *ConcurrencyPool `json:"outputPublication,omitempty"`
 }

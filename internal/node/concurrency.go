@@ -95,9 +95,13 @@ func (p *providerPool) snapshot() model.ConcurrencyPool {
 
 func (n *Node) concurrencySnapshot() model.NodeConcurrency {
 	desktop := n.desktopPool.snapshot()
+	staging := n.inputStagingPool.snapshot()
+	publication := n.publicationPool.snapshot()
 	return model.NodeConcurrency{
-		Execution:  n.executionPool.snapshot(),
-		Operations: n.operationsPool.snapshot(),
-		Desktop:    &desktop,
+		Execution:         n.executionPool.snapshot(),
+		Operations:        n.operationsPool.snapshot(),
+		Desktop:           &desktop,
+		InputStaging:      &staging,
+		OutputPublication: &publication,
 	}
 }

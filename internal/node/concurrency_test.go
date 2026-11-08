@@ -33,6 +33,11 @@ func TestProviderPools(t *testing.T) {
 		t.Fatal("missing desktop pool")
 	}
 	assertPool(t, *report.Desktop, 1, 0, 0)
+	if report.InputStaging == nil || report.OutputPublication == nil {
+		t.Fatal("missing task stage pools")
+	}
+	assertPool(t, *report.InputStaging, 4, 0, 0)
+	assertPool(t, *report.OutputPublication, 4, 0, 0)
 	for _, method := range []string{"files.list", "files.read", "files.write", "http.request", "network.wake"} {
 		slots, phase := n.providerSlots(method)
 		if slots != n.operationsPool || phase != "waiting for operation slot" {
@@ -70,6 +75,17 @@ func TestProviderPools(t *testing.T) {
 		cfg := Config{Name: "invalid", Gateway: "http://localhost", Token: testToken, DataDir: t.TempDir(), WorkDir: t.TempDir(), MaxOperations: limit}
 		if err := cfg.defaults(); err == nil {
 			t.Fatal("invalid operation limit accepted", limit)
+		}
+		for _, field := range []string{"staging", "publication"} {
+			cfg.MaxOperations, cfg.MaxTaskStaging, cfg.MaxTaskPublications = 1, 1, 1
+			if field == "staging" {
+				cfg.MaxTaskStaging = limit
+			} else {
+				cfg.MaxTaskPublications = limit
+			}
+			if err := cfg.defaults(); err == nil {
+				t.Fatal("invalid task stage limit accepted", field, limit)
+			}
 		}
 	}
 }

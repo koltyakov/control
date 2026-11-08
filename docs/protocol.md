@@ -43,6 +43,8 @@ Running an invitation on an existing profile replaces its enrollment and can ren
   "relayOnly": false,
   "maxTasks": 4,
   "maxOperations": 8,
+  "maxTaskStaging": 4,
+  "maxTaskPublications": 4,
   "metricsIntervalSeconds": 15,
   "taskRetentionHours": 168,
   "maxRetainedTasks": 10000,
@@ -72,6 +74,8 @@ Run a handwritten configuration with `control node --config /absolute/path/to/co
 | `iceServers` | Omitted/null inherits gateway STUN defaults; `[]` selects host-only ICE; nonempty lists replace defaults |
 | `maxTasks` | Four execution slots when omitted or nonpositive; shared by command, AI CLI, custom provider and MCP invocations, both synchronous and tracked |
 | `maxOperations` | Eight slots when zero/omitted; 1..256 sets a separate pool for built-in file, HTTP and Wake-on-LAN operations, both synchronous and tracked. Desktop adapters have one separate slot per node |
+| `maxTaskStaging` | Four slots when zero/omitted; 1..256 bounds tasks fetching/copying artifact inputs before provider admission. Tasks without inputs bypass this pool |
+| `maxTaskPublications` | Four slots when zero/omitted; 1..256 bounds task output imports and result publication after provider admission ends |
 | `metricsIntervalSeconds` | 15; `1..3600` sets periodic sampling, `-1` disables it, zero restores the default |
 | `taskRetentionHours` | 168; `1..87600` sets terminal-task age retention, `-1` disables it, zero restores the default |
 | `maxRetainedTasks` | 10,000; `1..1000000` sets the terminal-task count limit, `-1` disables it, zero restores the default |
@@ -413,7 +417,7 @@ The input reference above illustrates metadata only. A worker fetching another n
 
 Tasks move through `queued`, `running`, and a terminal state of `succeeded`, `failed`, `cancelled`, or `interrupted`. A submitted ID must be 1..128 ASCII letters, digits, underscores, or hyphens. Omit it to generate one, although generating it before submission makes uncertain network outcomes easier to reconcile.
 
-Active tasks also expose a `phase`, such as waiting for a worker slot, waiting for an operation slot, waiting for a desktop slot, fetching inputs, executing, or publishing outputs. Phase updates support observation; they do not change task state or restart semantics.
+Active tasks also expose a `phase`, such as waiting for an input staging slot, fetching inputs, waiting for a worker/operation/desktop slot, executing, waiting for an output publication slot, or publishing outputs. A task stays `queued` during input staging and while awaiting provider admission, becomes `running` when its provider is admitted, and remains non-terminal through publication. Phase updates support observation; they do not authorize retries or change restart semantics.
 
 ## Worker concurrency
 
@@ -423,11 +427,17 @@ Desktop requests waiting for their local slot or the shared per-user file lock d
 
 `workflow.run` and `peers.call` consume none of these pools, so coordination cannot occupy capacity needed by local children. Observation, artifact streams, uploads, clipboard and TCP tunnels retain their existing separate admission and limits. All provider pools retain disable, authority and lease checks. All admitted work, including queued operations, still blocks node maintenance. Exclusive leases remain machine-wide.
 
-`node.describe.concurrency` and authorized `activities.list` snapshots return `execution`, `operations` and `desktop`, each with numeric `limit`, `inUse` and `queued`. Client/local-API `activities.pool`, MCP `control_activities` and dashboard JSON preserve these peer reports. Gateway-only health summaries do not include them.
+Tracked tasks use separately bounded transfer stages. `inputStaging`, configured by `maxTaskStaging`, covers input-artifact pulls and workspace copies before acquiring the capability's provider slot. A task without inputs bypasses that pool, so a transfer backlog cannot prevent independent input-free work. The capability's execution, operation or desktop slot is held only around provider invocation and its immediate workspace/log setup, then released before any declared-output or result publication.
 
-`inUse` counts admitted synchronous calls and tasks holding that pool's slots. It includes an admitted desktop invocation waiting for another profile's desktop lock, not just batches already acting on the desktop. `queued` counts synchronous and task requests currently waiting for local pool admission, not acceptance persistence, input transfers or cross-profile lock waits. Acquisition, release and cancellation update each pool's counters together. Reports contain no arguments, results, credentials or lock paths and are independent copies. Values are advisory snapshots across pools, not capacity reservations or resource-isolation guarantees.
+`outputPublication`, configured by `maxTaskPublications`, covers declared output imports, large-result artifact creation and result publication. A returned provider result is captured as independent JSON before releasing its provider slot, so a later invocation cannot overwrite a queued result by reusing buffers or maps. Tasks waiting for publication do not hold provider slots. Tasks with no result or declared outputs can finalize without entering it. Provider-internal I/O remains part of the provider invocation; this change does not inspect command arguments or split arbitrary MCP tools. Workflow coordination holds neither input-staging nor publication admission while awaiting child work; its own declared inputs and final results use the stages normally.
 
-Older workers may omit `concurrency`, `desktop` or `queued`; missing readings remain unknown, not zero. Pool exhaustion waits with cancellation; task timeouts include that wait and the total accepted unfinished-task bound remains 256 across all three pools. This change does not introduce an unbounded retained scheduling queue or change synchronous request lifetimes.
+Task ownership, accepted-work admission, delegation activity, lease ownership and the single task timeout span every stage and every wait. Stage transitions never re-admit accepted work through disable/maintenance or renew an expired lease. A lease that expires during staging/publication continues to exclude other owners until its accepted tasks terminate. Cancelling, revoking authority, or stopping the node cancels all stage waits and transfers. Cancellation cleanup records the terminal outcome without waiting for unrelated publishers; a result still waiting for publication may be discarded. Already published artifacts/effects are not undone. Provider or publication failure never automatically reruns a provider.
+
+`node.describe.concurrency` and authorized `activities.list` snapshots return `execution`, `operations`, `desktop`, `inputStaging` and `outputPublication`, each with numeric `limit`, `inUse` and `queued`. Client/local-API `activities.pool`, MCP `control_activities` and dashboard JSON preserve these peer reports. Gateway-only health summaries do not include them.
+
+`inUse` counts admitted work holding that pool's slots. It includes an admitted desktop invocation waiting for another profile's desktop lock, not just batches already acting on the desktop. `queued` counts requests currently waiting for that pool's admission. An input-transfer lock wait counts in `inputStaging.inUse`, and an output-artifact lock wait counts in `outputPublication.inUse`, not in provider usage. Acceptance persistence and cross-profile desktop lock waits are not local pool queues. Acquisition, release and cancellation update each pool's counters together. Reports contain no arguments, results, credentials or lock paths and are independent copies. Values are advisory snapshots across pools, not capacity reservations or resource-isolation guarantees.
+
+Older workers may omit `concurrency`, individual stage/desktop pools or `queued`; missing readings remain unknown, not zero. Pool exhaustion waits with cancellation; task timeouts include that wait and the total accepted unfinished-task bound remains 256 across all stages. That bound also limits tasks retaining provider results while awaiting publication. These are concurrency/count bounds, not process-memory or workspace-byte quotas. This change does not introduce an unbounded retained scheduling queue or change synchronous request lifetimes.
 
 Use `control exec NODE --detach --id ID -- COMMAND ARG...` or MCP `control_task_start` to submit long work without blocking the caller. Submit independent tasks before waiting for results; use distinct IDs and avoid shared mutable paths or application sessions unless coordinated. Do not acquire a lease merely because work is long-running.
 
@@ -512,7 +522,7 @@ MCP tool results with `isError: true` fail `mcp.call`. Synchronous responses use
 - 1 MiB per filesystem read/write, 2 MiB per HTTP response.
 - Commands retain the first 2 MiB of each stdout/stderr stream in their result. `truncated` indicates additional output.
 - Task logs retain the first 10 MiB and support 64 KiB reads by byte offset.
-- Four simultaneous execution invocations by default through `maxTasks`, plus eight built-in I/O invocations through `maxOperations` and one built-in desktop invocation per node; synchronous calls and tasks share their capability's pool. At most 256 accepted unfinished tasks across all three pools.
+- Four simultaneous execution invocations by default through `maxTasks`, plus eight built-in I/O invocations through `maxOperations` and one built-in desktop invocation per node; synchronous calls and tasks share their capability's pool. Task input staging and output publication each default to four separate slots through `maxTaskStaging` and `maxTaskPublications`. At most 256 accepted unfinished tasks across all stages.
 - Coordination workflows do not consume a worker slot, so a workflow can run a local step with `maxTasks: 1`.
 - Task timeouts and artifact/lease TTLs are at most 24 hours. A task defaults to one hour.
 - At most 100 steps per workflow, and at most 16 running at once through `maxParallel`. Steps launch in dependency order.

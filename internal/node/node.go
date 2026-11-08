@@ -77,6 +77,8 @@ type Node struct {
 	executionPool       *providerPool
 	operationsPool      *providerPool
 	desktopPool         *providerPool
+	inputStagingPool    *providerPool
+	publicationPool     *providerPool
 	wg                  sync.WaitGroup
 	mcpMu               sync.Mutex
 	mcpSessions         map[string]*mcp.ClientSession
@@ -155,6 +157,8 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 	// Desktop adapters serialize per user across profiles too. A separate local
 	// slot keeps those lock waiters from consuming general I/O capacity.
 	n.desktopPool = newProviderPool(1)
+	n.inputStagingPool = newProviderPool(cfg.MaxTaskStaging)
+	n.publicationPool = newProviderPool(cfg.MaxTaskPublications)
 	n.notifiers = map[string]*taskNotifier{}
 	n.accepting = map[string]*acceptance{}
 	n.tombstones = map[string]taskTombstone{}

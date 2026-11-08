@@ -11,11 +11,11 @@ func TestConcurrencyLegacyVisibility(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"execution":{"limit":4,"inUse":2},"operations":{"limit":8,"inUse":0}}`), &legacy); err != nil {
 		t.Fatal(err)
 	}
-	if legacy.Execution.Queued != nil || legacy.Operations.Queued != nil || legacy.Desktop != nil {
+	if legacy.Execution.Queued != nil || legacy.Operations.Queued != nil || legacy.Desktop != nil || legacy.InputStaging != nil || legacy.OutputPublication != nil {
 		t.Fatal("legacy unknown capacity reported as known", legacy)
 	}
 	encoded := string(JSON(legacy))
-	if strings.Contains(encoded, "queued") || strings.Contains(encoded, "desktop") {
+	if strings.Contains(encoded, "queued") || strings.Contains(encoded, "desktop") || strings.Contains(encoded, "inputStaging") || strings.Contains(encoded, "outputPublication") {
 		t.Fatal("round trip invented legacy queue/desktop readings", encoded)
 	}
 	var snapshot NodeActivitySnapshot
