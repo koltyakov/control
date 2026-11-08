@@ -49,6 +49,7 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 			"busy worker is not unavailable", "independent work", "maxTasks", "maxOperations", "inUse",
 			"queued", "unknown", "one separate desktop slot", "per-user file lock",
 			"inputStaging", "outputPublication", "maxTaskStaging", "maxTaskPublications", "replaying the provider",
+			"32 unstarted ready steps", "eight destinations", "moves/resubmits accepted tasks",
 			"machine-wide lease", "conflicting", "external state",
 			"control_upload", "control_upload_resume", "control_upload_status", "files.write", "localPath", "no-overwrite",
 			"runbooks", "control_runbooks", ".control/runbooks/",

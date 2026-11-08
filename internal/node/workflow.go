@@ -77,7 +77,7 @@ func (n *Node) workflowRun(ctx context.Context, args json.RawMessage, e Executio
 			return nil, errors.New("workflow dependency cycle")
 		}
 	}
-	// Launch ready steps in dependency order, up to the parallel limit. After a
+	// Reorder only unstarted ready steps, up to the parallel limit. After a
 	// failure no further step starts; steps already running finish on their own
 	// rather than being cancelled mid-effect.
 	type outcome struct {
@@ -87,18 +87,62 @@ func (n *Node) workflowRun(ctx context.Context, args json.RawMessage, e Executio
 	}
 	results := map[string]model.Task{}
 	succeeded, started := map[string]bool{}, map[string]bool{}
-	outcomes := make(chan outcome)
+	outcomes := make(chan outcome, workflow.MaxParallel)
+	active := map[string]WorkflowStep{}
 	running := 0
 	var failure error
+	record := func(o outcome) {
+		running--
+		delete(active, o.name)
+		if o.task.ID != "" {
+			results[o.name] = o.task
+		}
+		if o.err != nil {
+			if failure == nil {
+				failure = o.err
+			}
+		} else {
+			succeeded[o.name] = true
+		}
+	}
+	drain := func() {
+		for {
+			select {
+			case o := <-outcomes:
+				record(o)
+			default:
+				return
+			}
+		}
+	}
 	for {
-		for _, step := range ordered {
-			if failure != nil || running >= workflow.MaxParallel {
+		drain()
+		var candidates []WorkflowStep
+		if failure == nil && running < workflow.MaxParallel {
+			candidates = workflowReadySteps(ordered, started, succeeded)
+		}
+		var reports map[string]*model.NodeConcurrency
+		if workflow.MaxParallel > 1 && len(candidates) > 1 {
+			reports = workflowCapacityReports(ctx, candidates, n.workflowCapacity)
+		}
+		for len(candidates) > 0 && running < workflow.MaxParallel {
+			// A failure may arrive during capacity discovery. Observe it before
+			// starting more work, while allowing accepted children to finish.
+			drain()
+			if ctx.Err() != nil && failure == nil {
+				failure = ctx.Err()
+			}
+			if failure != nil {
 				break
 			}
-			if started[step.Name] || !ready(step, succeeded) {
-				continue
+			index := 0
+			if workflow.MaxParallel > 1 {
+				index = workflowNextStep(candidates, reports, active)
 			}
+			step := candidates[index]
+			candidates = append(candidates[:index], candidates[index+1:]...)
 			started[step.Name] = true
+			active[step.Name] = step
 			running++
 			// Pass upstream results by value so steps never share the map.
 			upstream := map[string]model.Task{}
@@ -111,20 +155,12 @@ func (n *Node) workflowRun(ctx context.Context, args json.RawMessage, e Executio
 			}()
 		}
 		if running == 0 {
+			if failure == nil && len(started) < len(ordered) {
+				continue
+			}
 			break
 		}
-		o := <-outcomes
-		running--
-		if o.task.ID != "" {
-			results[o.name] = o.task
-		}
-		if o.err != nil {
-			if failure == nil {
-				failure = o.err
-			}
-			continue
-		}
-		succeeded[o.name] = true
+		record(<-outcomes)
 	}
 	return results, failure
 }
