@@ -249,6 +249,8 @@ func (n *Node) activitySnapshot(query model.ActivityQuery) model.NodeActivitySna
 	s.ActiveCount = len(s.Active) + s.Omitted
 	info := n.system.Snapshot()
 	s.System = &info
+	concurrency := n.concurrencySnapshot()
+	s.Concurrency = &concurrency
 	return s
 }
 
@@ -328,6 +330,7 @@ func (n *Node) poolActivities(ctx context.Context, caller string, args json.RawM
 				}
 				s.Status, s.ObservedAt, s.Active, s.Recent = "ready", remote.ObservedAt, remote.Active, remote.Recent
 				s.ActiveCount, s.Omitted = remote.ActiveCount, remote.Omitted
+				s.Concurrency = remote.Concurrency
 				s.DirectSessions, s.RelaySessions = remote.DirectSessions, remote.RelaySessions
 				s.ConnectionRoutes = remote.ConnectionRoutes
 				s.Tunnels = remote.Tunnels

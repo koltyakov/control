@@ -43,7 +43,7 @@ Replace the app name and refs with actual observations. Re-snapshot when UI chan
 
 In v1.2.0, a snapshot that exhausts its observation budget succeeds with `data.complete: false` and the partial tree, rather than failing with `TIMEOUT`. Control preserves `complete`, `truncated`, `nodes_observed`, and per-node `subtree_truncated` while masking text. Check completeness before concluding that an element is absent. A partial snapshot does not authorize replaying an action or using stale refs.
 
-MCP `control_desktop` takes `node` and a `request` object with the same fields. Generic CLI/MCP calls and tracked `desktop.run` tasks use the same adapter. Use explicit task IDs for reconciliation and node leases for multi-command sequences. Each invocation shares Control's per-user RPA lock and has a two-minute deadline including lock wait. This does not exclude humans, unrelated desktop software, or raw agent-desktop CLI calls.
+MCP `control_desktop` takes `node` and a `request` object with the same fields. Generic CLI/MCP calls and tracked `desktop.run` tasks use the same adapter. Use explicit task IDs for reconciliation and node leases for multi-command sequences. Built-in desktop and RPA invocations share one admission slot per node, separate from general I/O, and descriptions/activity snapshots report desktop usage and queues. Each admitted invocation still acquires Control's shared per-user RPA file lock across profiles and has a two-minute deadline including that lock wait. This does not exclude humans, unrelated desktop software, or raw agent-desktop CLI calls.
 
 | Command | Input |
 | --- | --- |

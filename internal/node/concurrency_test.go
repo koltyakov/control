@@ -14,22 +14,39 @@ import (
 	"github.com/koltyakov/control/internal/model"
 )
 
+func assertPool(t *testing.T, got model.ConcurrencyPool, limit, inUse, queued int) {
+	t.Helper()
+	if got.Limit != limit || got.InUse != inUse || got.Queued == nil || *got.Queued != queued {
+		t.Fatalf("pool = %+v, queued=%v; want limit=%d inUse=%d queued=%d", got, got.Queued, limit, inUse, queued)
+	}
+}
+
 func TestProviderPools(t *testing.T) {
 	n := localNode(t, func(cfg *Config) {
 		cfg.RPA = rpaCommand(t, "success")
 		cfg.Desktop = &DesktopConfig{Command: Command{Command: "unused-desktop-helper"}}
 	})
-	if cap(n.slots) != 4 || cap(n.operationSlots) != 8 {
-		t.Fatal("unexpected default pool limits", n.concurrencySnapshot())
+	report := n.concurrencySnapshot()
+	assertPool(t, report.Execution, 4, 0, 0)
+	assertPool(t, report.Operations, 8, 0, 0)
+	if report.Desktop == nil {
+		t.Fatal("missing desktop pool")
 	}
-	for _, method := range []string{"files.list", "files.read", "files.write", "http.request", "network.wake", "rpa.run", "desktop.run"} {
+	assertPool(t, *report.Desktop, 1, 0, 0)
+	for _, method := range []string{"files.list", "files.read", "files.write", "http.request", "network.wake"} {
 		slots, phase := n.providerSlots(method)
-		if slots != n.operationSlots || phase != "waiting for operation slot" {
+		if slots != n.operationsPool || phase != "waiting for operation slot" {
 			t.Fatal("operation uses execution capacity", method)
 		}
 	}
+	for _, method := range []string{"rpa.run", "desktop.run"} {
+		pool, phase := n.providerSlots(method)
+		if pool != n.desktopPool || phase != "waiting for desktop slot" {
+			t.Fatal("desktop operation uses general I/O capacity", method)
+		}
+	}
 	for _, method := range []string{"exec.run", "agent.run", "mcp.call", "mcp.request", "custom.provider"} {
-		if slots, _ := n.providerSlots(method); slots != n.slots {
+		if slots, _ := n.providerSlots(method); slots != n.executionPool {
 			t.Fatal("unrestricted provider bypasses execution bound", method)
 		}
 	}
@@ -45,7 +62,7 @@ func TestProviderPools(t *testing.T) {
 		}
 	})
 	for _, method := range []string{"rpa.run", "desktop.run"} {
-		if slots, _ := custom.providerSlots(method); slots != custom.slots {
+		if slots, _ := custom.providerSlots(method); slots != custom.executionPool {
 			t.Fatal("custom provider with an optional built-in name bypassed execution bound", method)
 		}
 	}
@@ -91,12 +108,33 @@ func TestOperationPoolBoundsTasksAndCalls(t *testing.T) {
 	if queued.Phase != "waiting for operation slot" {
 		t.Fatal("operation queue phase missing", queued)
 	}
-	blocked, stop := context.WithTimeout(ctx, 100*time.Millisecond)
-	err = n.Call(blocked, "", "files.list", map[string]any{}, nil)
-	stop()
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatal("synchronous call bypassed shared operation limit", err)
+	blocked, stop := context.WithCancel(ctx)
+	defer stop()
+	blockedDone := make(chan error, 1)
+	go func() { blockedDone <- n.Call(blocked, "", "files.list", map[string]any{}, nil) }()
+	eventually(t, ctx, func() bool { return *n.operationsPool.snapshot().Queued == 2 })
+	var description struct {
+		Concurrency model.NodeConcurrency `json:"concurrency"`
 	}
+	if err := n.Call(ctx, "", "node.describe", map[string]any{}, &description); err != nil {
+		t.Fatal(err)
+	}
+	assertPool(t, description.Concurrency.Operations, 1, 1, 2)
+	var snapshot model.NodeActivitySnapshot
+	if err := n.Call(ctx, "", "activities.list", map[string]any{}, &snapshot); err != nil || snapshot.Concurrency == nil {
+		t.Fatal("activity pool visibility missing", err)
+	}
+	assertPool(t, snapshot.Concurrency.Operations, 1, 1, 2)
+	stop()
+	select {
+	case err := <-blockedDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal("synchronous call bypassed shared operation limit", err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	assertPool(t, n.operationsPool.snapshot(), 1, 1, 1)
 	// A saturated operation pool must not prevent an independent command.
 	if _, err := n.startTaskContext(ctx, n.Identity.ID, execSpec(t, "independent-command", "brief")); err != nil {
 		t.Fatal(err)
@@ -109,9 +147,12 @@ func TestOperationPoolBoundsTasksAndCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	finished, err := n.waitTask(ctx, n.Identity.ID, queued.ID, 5*time.Second)
-	if err != nil || finished.State != "cancelled" || len(n.operationSlots) != 1 {
+	if err != nil || finished.State != "cancelled" || n.operationsPool.snapshot().InUse != 1 {
 		t.Fatal("queued cancellation affected the running operation", finished, err)
 	}
+	assertPool(t, n.operationsPool.snapshot(), 1, 1, 0)
+	// Returned observations do not share mutable queue counters with the node.
+	assertPool(t, snapshot.Concurrency.Operations, 1, 1, 2)
 	stopRequest()
 	select {
 	case err := <-done:
@@ -143,7 +184,7 @@ func TestPeerWorkerMultitasking(t *testing.T) {
 			for _, id := range []string{"background-one", "background-two"} {
 				call(t, source, "worker", "tasks.start", execSpec(t, id, "sleep"), nil)
 			}
-			eventually(t, ctx, func() bool { return len(worker.slots) == 2 })
+			eventually(t, ctx, func() bool { return worker.executionPool.snapshot().InUse == 2 })
 			// These must finish while every execution slot remains occupied.
 			for _, method := range []string{"files.write", "files.read", "files.list"} {
 				params := map[string]any{"path": "parallel.txt", "data": "b2s="}
@@ -166,11 +207,12 @@ func TestPeerWorkerMultitasking(t *testing.T) {
 				t.Fatal("commands blocked an operation task", finished, err)
 			}
 			var description struct {
-				Concurrency nodeConcurrency `json:"concurrency"`
+				Concurrency model.NodeConcurrency `json:"concurrency"`
 			}
 			call(t, source, "worker", "node.describe", map[string]any{}, &description)
-			if description.Concurrency.Execution != (concurrencyPool{Limit: 2, InUse: 2}) || description.Concurrency.Operations.Limit != 2 {
-				t.Fatal("discovery does not report occupied execution capacity", description)
+			assertPool(t, description.Concurrency.Execution, 2, 2, 0)
+			if description.Concurrency.Operations.Limit != 2 {
+				t.Fatal("discovery does not report operation capacity", description)
 			}
 			mode := "webrtc"
 			if relay {

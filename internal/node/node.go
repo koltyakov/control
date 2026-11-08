@@ -74,8 +74,9 @@ type Node struct {
 	accepting           map[string]*acceptance
 	tombstones          map[string]taskTombstone
 	pruneMu             sync.Mutex
-	slots               chan struct{}
-	operationSlots      chan struct{}
+	executionPool       *providerPool
+	operationsPool      *providerPool
+	desktopPool         *providerPool
 	wg                  sync.WaitGroup
 	mcpMu               sync.Mutex
 	mcpSessions         map[string]*mcp.ClientSession
@@ -147,9 +148,13 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	n := &Node{Config: cfg, Identity: id, root: root, providers: map[string]Provider{}, tasks: map[string]*model.Task{}, cancels: map[string]context.CancelFunc{}, slots: make(chan struct{}, cfg.MaxTasks), mcpSessions: map[string]*mcp.ClientSession{}, transfers: map[string]*transferLock{}}
+	n := &Node{Config: cfg, Identity: id, root: root, providers: map[string]Provider{}, tasks: map[string]*model.Task{}, cancels: map[string]context.CancelFunc{}, mcpSessions: map[string]*mcp.ClientSession{}, transfers: map[string]*transferLock{}}
 	n.lock = lock
-	n.operationSlots = make(chan struct{}, cfg.MaxOperations)
+	n.executionPool = newProviderPool(cfg.MaxTasks)
+	n.operationsPool = newProviderPool(cfg.MaxOperations)
+	// Desktop adapters serialize per user across profiles too. A separate local
+	// slot keeps those lock waiters from consuming general I/O capacity.
+	n.desktopPool = newProviderPool(1)
 	n.notifiers = map[string]*taskNotifier{}
 	n.accepting = map[string]*acceptance{}
 	n.tombstones = map[string]taskTombstone{}

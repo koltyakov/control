@@ -1056,6 +1056,16 @@ Use rooted filesystem operations and exclude reserved staging/metadata from ordi
 
 ## D122: Separate execution and operation capacity
 
+Desktop routing and visibility are refined by [D123](#d123-visible-pool-queues-and-independent-desktop-admission). Execution/I/O separation and the safety rules below remain unchanged.
+
 All provider invocations previously shared `maxTasks` slots. A handful of long-running commands could therefore block file reads, HTTP requests and GUI batches even though those activities were independent. Keep commands, AI CLIs, custom providers and MCP tools on that execution pool, and admit known built-in file, HTTP, Wake-on-LAN and desktop capabilities through a separate `maxOperations` pool, eight by default and configurable from 1 to 256. Use identical routing for synchronous calls and durable tasks; do not infer resource use from arbitrary command arguments or MCP tool names.
 
 Keep coordination outside both pools to avoid local-child deadlocks. Preserve per-user GUI locking, total accepted-task bounds, cancellation, durable acceptance, authorization, machine-wide leases and idle-only maintenance. This provides bounded concurrency, not CPU/memory isolation or safety for conflicting external state. Expose advisory execution/operation limits and usage in peer descriptions, and teach CLI/MCP callers that busy workers can still accept independent work. No scheduling or execution moves to the gateway. See [worker concurrency](protocol.md#worker-concurrency).
+
+## D123: Visible pool queues and independent desktop admission
+
+Desktop invocations previously acquired general operation slots before waiting for the shared per-user desktop lock. Enough lock waiters could block independent file or HTTP work. Give the built-in desktop/RPA adapters one separate admission slot per node, without a new configurable concurrency setting, and retain the existing shared per-user file lock across profiles. Unconfigured optional adapter names used by custom providers remain execution work. Coordination still holds no provider slot.
+
+Share admission accounting between synchronous calls and durable tasks. Report limits, in-use slots and current local queue counts in descriptions and authorized peer activity snapshots, preserving them through CLI/MCP aggregation. A desktop invocation admitted locally but waiting on another profile's file lock counts as in use, not locally queued. Keep each pool's counters consistent under a short mutex, never held through provider execution or waiting. Return independent observations and preserve absent legacy queue/desktop readings as unknown.
+
+Retain task/transport bounds, cancellation lifetimes, owner checks, instruction-bound grants, durable acceptance, machine-wide lease exclusion and maintenance protection for queued/admitted work. These reports are advisory, not scheduling reservations or proof of CPU usage. Gateway health, automatic placement and frontend tables remain unchanged. See [worker concurrency](protocol.md#worker-concurrency).

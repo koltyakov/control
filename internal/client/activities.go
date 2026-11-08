@@ -78,6 +78,7 @@ func peerActivities(ctx context.Context, p *transport.Peer, args json.RawMessage
 				}
 				s.Status, s.ObservedAt, s.Active, s.Recent = "ready", remote.ObservedAt, remote.Active, remote.Recent
 				s.ActiveCount, s.Omitted = remote.ActiveCount, remote.Omitted
+				s.Concurrency = remote.Concurrency
 				s.DirectSessions, s.RelaySessions = remote.DirectSessions, remote.RelaySessions
 				s.ConnectionRoutes = remote.ConnectionRoutes
 				s.Tunnels = remote.Tunnels

@@ -61,6 +61,7 @@ type NodeActivitySnapshot struct {
 	Active           []Activity             `json:"active"`
 	Recent           []Activity             `json:"recent"`
 	ActiveCount      int                    `json:"activeCount"`
+	Concurrency      *NodeConcurrency       `json:"concurrency,omitempty"`
 	Omitted          int                    `json:"omitted,omitempty"`
 	DirectSessions   int                    `json:"directSessions"`
 	RelaySessions    int                    `json:"relaySessions"`

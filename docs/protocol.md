@@ -71,7 +71,7 @@ Run a handwritten configuration with `control node --config /absolute/path/to/co
 | `relayOnly` | `false`; skips WebRTC when true |
 | `iceServers` | Omitted/null inherits gateway STUN defaults; `[]` selects host-only ICE; nonempty lists replace defaults |
 | `maxTasks` | Four execution slots when omitted or nonpositive; shared by command, AI CLI, custom provider and MCP invocations, both synchronous and tracked |
-| `maxOperations` | Eight slots when zero/omitted; 1..256 sets a separate pool for built-in file, HTTP, Wake-on-LAN and desktop operations, both synchronous and tracked |
+| `maxOperations` | Eight slots when zero/omitted; 1..256 sets a separate pool for built-in file, HTTP and Wake-on-LAN operations, both synchronous and tracked. Desktop adapters have one separate slot per node |
 | `metricsIntervalSeconds` | 15; `1..3600` sets periodic sampling, `-1` disables it, zero restores the default |
 | `taskRetentionHours` | 168; `1..87600` sets terminal-task age retention, `-1` disables it, zero restores the default |
 | `maxRetainedTasks` | 10,000; `1..1000000` sets the terminal-task count limit, `-1` disables it, zero restores the default |
@@ -257,13 +257,13 @@ For the local HTTP API, `TOKEN` is that node's configured token, not the saved a
 | --- | --- |
 | `nodes.list` | `{}` |
 | `nodes.select` | `labels`, optional `capability`, `minMemoryBytes`, `minDiskBytes`, `maxCpuPercent` in 0..100, and `requireFresh`; excludes known leases and updates, prefers low active work per CPU plus low CPU/memory pressure, and randomizes ties. Resource constraints require health and resource samples no older than 20 seconds. Without constraints, missing health permits directory-only selection. Selection does not reserve capacity |
-| `node.describe` | `{}`; returns ID, capabilities, `concurrency` pool limits/usage, connections, lane/session stream counts, cumulative `transport` counters, configured agent/MCP names |
+| `node.describe` | `{}`; returns ID, capabilities, `concurrency` pool limits/usage/queues, connections, lane/session stream counts, cumulative `transport` counters, configured agent/MCP names |
 | `runbooks.list` | Optional `source`: `worker-user` or `worker-common`; returns bounded shared and self-bound instructions from approved worker stores. Requires execution authority/delegation and method allow permission |
 | `runbooks.read` | Required `source` and relative Markdown/JSON `file`; returns one complete self-applicable runbook, at most 1 MiB; no arbitrary roots, other-machine bindings, credential reads, or execution |
 | `network.wake` | `target` registered machine name/ID; sender resolves an offline same-fleet target and broadcasts magic packets only when an automatically verified `lanPeers` relationship and live interfaces match retained target metadata; normal capability authorization and admission |
 | `connection.test` | `target`, optional `bytes` 1..268435456 per direction and `samples` 1..100; shared client prepares an exact destination-owned `connection.open` grant for the initiating worker; not a task capability |
 | `system.info` | Optional `refresh`; otherwise returns the cached OS, CPU, RAM, disk, and optional GPU sample |
-| `activities.list` | Optional `recent`, 0..64; node-wide activity metadata and cached resources, subject to access rules |
+| `activities.list` | Optional `recent`, 0..64; node-wide activity metadata, `concurrency` pool limits/usage/queues and cached resources, subject to access rules |
 | `activities.pool` | Optional `nodes` array and `recent`; client or local-API aggregation, not a peer RPC; includes offline and unavailable machines |
 | `capabilities.list` | `{}`; descriptions and input schemas |
 | `tasks.start` | A task specification |
@@ -413,15 +413,21 @@ The input reference above illustrates metadata only. A worker fetching another n
 
 Tasks move through `queued`, `running`, and a terminal state of `succeeded`, `failed`, `cancelled`, or `interrupted`. A submitted ID must be 1..128 ASCII letters, digits, underscores, or hyphens. Omit it to generate one, although generating it before submission makes uncertain network outcomes easier to reconcile.
 
-Active tasks also expose a `phase`, such as waiting for a worker slot, waiting for an operation slot, fetching inputs, executing, or publishing outputs. Phase updates support observation; they do not change task state or restart semantics.
+Active tasks also expose a `phase`, such as waiting for a worker slot, waiting for an operation slot, waiting for a desktop slot, fetching inputs, executing, or publishing outputs. Phase updates support observation; they do not change task state or restart semantics.
 
 ## Worker concurrency
 
-A busy worker can accept independent work. `maxTasks` bounds execution of `exec.run`, `agent.run`, configured providers, `mcp.call` and `mcp.request`. A separate `maxOperations` pool bounds `files.list`, `files.read`, `files.write`, `http.request`, `network.wake`, `rpa.run` and `desktop.run`. Each capability uses the same pool whether called synchronously or submitted through `tasks.start`. Thus long-running commands do not prevent file access, HTTP requests or GUI batches. GUI operations retain per-OS-user serialization, and the operation pool does not make conflicting changes safe.
+A busy worker can accept independent work. `maxTasks` bounds execution of `exec.run`, `agent.run`, configured providers, `mcp.call` and `mcp.request`. A separate `maxOperations` pool bounds `files.list`, `files.read`, `files.write`, `http.request` and `network.wake`. Built-in `rpa.run` and `desktop.run` share a third pool with one slot per node, without a new configuration setting. Each capability uses the same pool whether called synchronously or submitted through `tasks.start`. Custom providers using an optional desktop capability's name still use execution capacity when that built-in adapter is not configured.
 
-`workflow.run` and `peers.call` consume neither pool, so coordination cannot occupy capacity needed by local children. Observation, artifact streams, uploads, clipboard and TCP tunnels retain their existing separate admission and limits. Both provider pools retain disable, authority and lease checks. All admitted work, including queued operations, still blocks node maintenance. Exclusive leases remain machine-wide.
+Desktop requests waiting for their local slot or the shared per-user file lock do not consume general I/O slots. The file lock remains shared across node profiles using the same OS-user configuration directory. Separate node pools never permit overlapping GUI batches across those profiles. This does not exclude humans or other automation software, and does not make conflicting changes safe.
 
-`node.describe.concurrency` returns `execution` and `operations`, each with numeric `limit` and `inUse`. Usage includes synchronous calls and running tasks, not queued waiters. Values are advisory snapshots, not capacity reservations or resource-isolation guarantees. Older workers omit the object. Pool exhaustion waits with cancellation; task timeouts include that wait and the total accepted unfinished-task bound remains 256.
+`workflow.run` and `peers.call` consume none of these pools, so coordination cannot occupy capacity needed by local children. Observation, artifact streams, uploads, clipboard and TCP tunnels retain their existing separate admission and limits. All provider pools retain disable, authority and lease checks. All admitted work, including queued operations, still blocks node maintenance. Exclusive leases remain machine-wide.
+
+`node.describe.concurrency` and authorized `activities.list` snapshots return `execution`, `operations` and `desktop`, each with numeric `limit`, `inUse` and `queued`. Client/local-API `activities.pool`, MCP `control_activities` and dashboard JSON preserve these peer reports. Gateway-only health summaries do not include them.
+
+`inUse` counts admitted synchronous calls and tasks holding that pool's slots. It includes an admitted desktop invocation waiting for another profile's desktop lock, not just batches already acting on the desktop. `queued` counts synchronous and task requests currently waiting for local pool admission, not acceptance persistence, input transfers or cross-profile lock waits. Acquisition, release and cancellation update each pool's counters together. Reports contain no arguments, results, credentials or lock paths and are independent copies. Values are advisory snapshots across pools, not capacity reservations or resource-isolation guarantees.
+
+Older workers may omit `concurrency`, `desktop` or `queued`; missing readings remain unknown, not zero. Pool exhaustion waits with cancellation; task timeouts include that wait and the total accepted unfinished-task bound remains 256 across all three pools. This change does not introduce an unbounded retained scheduling queue or change synchronous request lifetimes.
 
 Use `control exec NODE --detach --id ID -- COMMAND ARG...` or MCP `control_task_start` to submit long work without blocking the caller. Submit independent tasks before waiting for results; use distinct IDs and avoid shared mutable paths or application sessions unless coordinated. Do not acquire a lease merely because work is long-running.
 
@@ -506,7 +512,7 @@ MCP tool results with `isError: true` fail `mcp.call`. Synchronous responses use
 - 1 MiB per filesystem read/write, 2 MiB per HTTP response.
 - Commands retain the first 2 MiB of each stdout/stderr stream in their result. `truncated` indicates additional output.
 - Task logs retain the first 10 MiB and support 64 KiB reads by byte offset.
-- Four simultaneous execution invocations by default through `maxTasks`, plus eight built-in I/O/desktop invocations through `maxOperations`; synchronous calls and tasks share their capability's pool. At most 256 accepted unfinished tasks across both pools.
+- Four simultaneous execution invocations by default through `maxTasks`, plus eight built-in I/O invocations through `maxOperations` and one built-in desktop invocation per node; synchronous calls and tasks share their capability's pool. At most 256 accepted unfinished tasks across all three pools.
 - Coordination workflows do not consume a worker slot, so a workflow can run a local step with `maxTasks: 1`.
 - Task timeouts and artifact/lease TTLs are at most 24 hours. A task defaults to one hour.
 - At most 100 steps per workflow, and at most 16 running at once through `maxParallel`. Steps launch in dependency order.
