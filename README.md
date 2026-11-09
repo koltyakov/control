@@ -14,6 +14,7 @@ Orchestrators coordinate work; worker nodes execute it and exchange files direct
 - Direct WebRTC connections with WebSocket relay fallback and mutually authenticated TLS on both paths.
 - Durable tasks with idempotent submission, cancellation, streamed logs, and restart reconciliation.
 - Commands, scripts, AI CLIs, MCP servers, and opt-in [full agent-desktop control](docs/desktop.md) with protected worker-local secret-reference input.
+- Opt-in [agent-browser automation and remote browser viewing](docs/browser.md), with a worker's headless Chrome dashboard forwarded to a local browser.
 - SHA-256 artifacts, resumable downloads, and direct worker-to-worker delivery.
 - Streaming local-to-worker uploads with verified resume and atomic no-overwrite publication.
 - Forward/reverse TCP tunnels, private-network HTTP requests, and explicit clipboard pastes.
@@ -177,6 +178,7 @@ Managed rollouts update idle nodes independently when their verified executables
 - [TCP tunnels](docs/tunnels.md), [connection tests](docs/connections.md), [fleet streaming](docs/streaming.md).
 - [Streaming file uploads](docs/uploads.md), including local CLI/MCP sources and interrupted-transfer recovery.
 - [Native agent-desktop and GUI workflows](docs/desktop.md), [RPA migration differences](docs/desktop.md#migrate-from-rpa), [worker-local secrets](docs/secrets.md), [clipboard pastes](docs/clipboard.md), [runbooks](docs/runbooks.md).
+- [agent-browser and remote browser viewing](docs/browser.md), including manual login/2FA and browser-session cleanup.
 - [Terminology](docs/terminology.md), [architecture](docs/architecture.md), [engineering principles](docs/principles.md), [design decisions](docs/decisions.md).
 - [Testing](docs/testing.md), [examples](examples), [contributor guide](AGENTS.md).
 

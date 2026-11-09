@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/koltyakov/control/internal/browser"
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/desktop"
 	"github.com/koltyakov/control/internal/model"
@@ -20,7 +21,10 @@ const concurrencyInstructions = "A busy worker is not unavailable. Run independe
 
 const taskPipelineInstructions = "Tracked tasks also report inputStaging and outputPublication pools, each with four slots by default through maxTaskStaging and maxTaskPublications. They stage inputs before provider admission and release provider slots before publishing outputs/results. Input-free tasks bypass staging. Tasks retain authority, leases and maintenance protection until terminal completion. A publication failure or cancellation may follow successful provider effects; reconcile the same ID rather than replaying the provider. Missing older stage readings mean unknown capacity. The overall unfinished-task bound remains 256 across stages. Parallel workflows inspect at most 32 unstarted ready steps and probe at most eight destinations within one second per refill. Ordering prefers reported provider/input-staging headroom, then unknown capacity, then busy pools, with stable ties and conservative accounting for in-flight children. This never changes targets or moves/resubmits accepted tasks, and never waits for a busy pool to clear. maxParallel still includes queued children; sequential workflows retain plan order. "
 
-const desktopInstructions = runbookInstructions + uploadInstructions + concurrencyInstructions + taskPipelineInstructions + `
+const browserInstructions = `For web automation discover the opt-in browser.run capability, configured with an absolute browser.cli path to https://github.com/vercel-labs/agent-browser. Use control_browser with request {session:work,args:[snapshot,-i]}. First run args [--version] and [skills,get,core] and read the installed guidance. Default homes/runtime/namespaces are profile- and owner-private; use the same session and fresh refs. Commands share maxTasks and serialize per owner. Installation of agent-browser or Chrome requires approval, never an automatic fallback. CLI args/stdin remain task-visible and do not resolve Control secret references. Text responses mask configured worker secrets, but upstream dashboard activity, live frames, screenshots and files are not redacted.
+For remote manual login or 2FA, explicitly start a dashboard with args [dashboard,start,--port,4848], then use control_browser_view to forward that chosen worker loopback port to a local URL. A dashboard controls all sessions in its namespace, not just one tab; choose a distinct worker port for each concurrently running owner dashboard. Pause AI mutations while the human controls the browser, then take fresh snapshots before resuming. Do not request credentials or verification codes in chat or retrieve secrets through a shell. Passkeys/security keys are not forwarded by viewport streaming. Stop a view with control_forward_stop; it does not close the worker browser. Explicitly run close for sessions you created and dashboard stop when finished. Upstream daemons may survive Control calls/restarts and are not task lifetimes; never replay uncertain effects. `
+
+const desktopInstructions = runbookInstructions + uploadInstructions + concurrencyInstructions + taskPipelineInstructions + browserInstructions + `
 Snapshots can succeed with data.complete false in agent-desktop v1.2.0. Preserve and inspect complete, truncated, nodes_observed, and subtree_truncated before concluding an element is absent. A partial observation never authorizes replaying an action or using stale refs.
 When a GUI task needs missing native desktop support, suggest installation and ask for explicit user permission. Control does not bundle or automatically install FFI dependencies. After approval, select the latest compatible release from https://github.com/vercel-labs/agent-desktop/releases. Download its agent-desktop-ffi-* archive for the target User worker's OS/architecture and verify SHA-256 against checksums.txt from the same release. Require ABI major 6 or 7 and a 96-byte AdAction; reject incompatible libraries rather than bypassing the helper's ABI/layout checks. Extract the full package with companions outside workDir into private storage, and merge an absolute desktop.library path into that User profile without replacing other settings. Restart while idle, rediscover desktop.run, and check native status before credential use. OS permission grants need separate approval. See https://github.com/koltyakov/control/blob/main/docs/desktop.md. Do not install the upstream CLI merely to use the native adapter.
 For remote UI work, first use control_describe on the requested User context. Prefer its configured full desktop.run CLI route described below. For a legacy CLI not configured there, use control_call with method exec.run and params {"command":"agent-desktop","args":["version"]} to check for https://github.com/vercel-labs/agent-desktop on that worker. A local installation does not establish remote availability. If present, load its version-matched skills on that same worker with exec.run arguments ["skills","get","desktop"] and ["skills","get","platform"], then check ["status"] for desktop access and permissions. Read the returned data.content before UI actions. Route every agent-desktop command through Control to that same worker using structured arguments, not the orchestrator's desktop. Missing executables, denied execution, missing permissions, or unavailable desktop sessions are blockers, not permission to install software, request OS grants, or switch to System. Ask before installing agent-desktop or its harness skill; the optional skill installer is npx skills add https://github.com/vercel-labs/agent-desktop --skill agent-desktop. If the CLI is absent, use an already configured native command when suitable, otherwise ask for full setup. Use fresh snapshot-qualified refs, observe after actions, and never replay uncertain effects. Headed physical input requires explicit user permission; do not add --headed as a fallback.
@@ -116,6 +120,16 @@ func (c Client) MCPServer() *mcp.Server {
 	})
 	add("control_artifact_export", "Publish a file from a node's filesystem root as an immutable downloadable artifact.", "artifacts.export", map[string]any{"node": text, "path": text}, []string{"node", "path"}, normal)
 	add("control_artifact_deliver", "Tell the source node to deliver an artifact directly to another node, without passing bytes through the orchestrator.", "artifacts.deliver", map[string]any{"node": text, "id": text, "target": text}, []string{"node", "id", "target"}, normal)
+	add("control_browser", "Run the worker's opt-in agent-browser CLI. request has args, optional session and non-secret stdin. Load --version and skills get core first. Default state is private to this profile/owner. CLI inputs are task-visible; no secret-reference substitution. Text results are masked, live frames/files/upstream activity are not. Pause automation for manual login/2FA through a forwarded dashboard. Never replay uncertain effects.", "browser.run", map[string]any{"node": text, "request": browser.Schema()}, []string{"node", "request"}, func(args map[string]json.RawMessage) (string, any, error) {
+		target, params, err := nested("request")(args)
+		if err != nil {
+			return "", nil, err
+		}
+		if _, err := browser.Decode(args["request"]); err != nil {
+			return "", nil, err
+		}
+		return target, params, nil
+	})
 	local := func(name, description string, properties map[string]any, required []string, call func(context.Context, json.RawMessage) (any, error)) {
 		input := map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
 		if len(required) > 0 {
@@ -130,6 +144,14 @@ func (c Client) MCPServer() *mcp.Server {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(model.JSON(result))}}}, nil
 		})
 	}
+	local("control_browser_view", "Forward an already started agent-browser dashboard on the worker to a local loopback URL. This is interactive access to every session in that dashboard namespace, not read-only viewing. Does not start a browser/dashboard or verify readiness. Start the chosen worker dashboard port explicitly through control_browser; use a different port for other owners. The forward survives this tool call until control_forward_stop or MCP exit. The URL is on this MCP server host. Live frames and user input are not redacted or recorded by Control.", map[string]any{"node": text, "port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535}, "listen": text}, []string{"node"}, func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var spec BrowserViewSpec
+		if err := json.Unmarshal(raw, &spec); err != nil {
+			return nil, err
+		}
+		_, info, err := c.StartBrowserView(ctx, spec)
+		return info, err
+	})
 	for _, resume := range []bool{false, true} {
 		name, description := "control_upload", "Stream one regular file from the MCP server host into a worker workspace. Requires node, explicit id, localPath, and remote path. Uses bounded binary streaming, SHA-256 verification, and atomic no-overwrite publication. Does not require a desktop or local enrolled node. Never upload using repeated files.write calls. After failure query control_upload_status, then explicitly resume; never retry an uncertain upload with a new ID."
 		required := []string{"node", "id", "localPath", "path"}

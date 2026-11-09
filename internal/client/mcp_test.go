@@ -46,6 +46,8 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 			}
 		}
 		required := []string{
+			"browser.run", "browser.cli", "control_browser", "control_browser_view", "skills", "core",
+			"2FA", "dashboard", "loopback", "task-visible", "not redacted", "control_forward_stop",
 			"busy worker is not unavailable", "independent work", "maxTasks", "maxOperations", "inUse",
 			"queued", "unknown", "one separate desktop slot", "per-user file lock",
 			"inputStaging", "outputPublication", "maxTaskStaging", "maxTaskPublications", "replaying the provider",
@@ -110,6 +112,53 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 				t.Errorf("%s instructions omit remote desktop guidance %q", name, fragment)
 			}
 		}
+	}
+}
+
+func TestMCPRoutesBrowser(t *testing.T) {
+	requests := make(chan map[string]json.RawMessage, 1)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]json.RawMessage
+		if json.NewDecoder(r.Body).Decode(&request) != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requests <- request
+		_, _ = w.Write([]byte(`{"result":{"success":true}}`))
+	}))
+	defer api.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	server, err := (Client{URL: api.URL, Token: "test"}).WithLifetime(ctx).MCPServer().Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Close() }()
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Close() }()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "control_browser", Arguments: map[string]any{
+		"node": "worker", "request": map[string]any{"session": "work", "args": []string{"snapshot", "-i"}},
+	}})
+	if err != nil || result.IsError {
+		t.Fatal("browser MCP call failed", result, err)
+	}
+	select {
+	case request := <-requests:
+		if string(request["target"]) != `"worker"` || string(request["method"]) != `"browser.run"` || !strings.Contains(string(request["params"]), `"session":"work"`) {
+			t.Fatal("browser MCP routing changed", request)
+		}
+	case <-ctx.Done():
+		t.Fatal("browser MCP call was not routed")
+	}
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "control_browser_view", Arguments: map[string]any{
+		"node": "worker", "listen": "0.0.0.0:1234",
+	}})
+	if err == nil && !result.IsError {
+		t.Fatal("MCP exposed browser view publicly")
 	}
 }
 

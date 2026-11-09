@@ -68,6 +68,8 @@ At most 32 retained tunnels and 128 simultaneous sockets per tunnel are supporte
 
 ## Dashboard and MCP
 
+For an agent-browser dashboard already running on a worker, `control browser view NODE --port 4848` returns a local loopback URL and keeps its ordinary forward alive until Ctrl+C. MCP `control_browser_view` returns the URL and forward ID until `control_forward_stop` or process exit. It carries HTTP and WebSocket streams without exposing per-session ports, but does not launch the dashboard or verify readiness. See [remote browser workflow and privacy limits](browser.md).
+
 The machine table shows live `Tunnels` after `D/T/R`, as `↑2 ↓1`. Up counts active forward TCP connections; down counts reverse listeners, including idle listeners. These peer-observed counts cover all owners and orchestrator hosts, including foreground and detached processes, not only this service. An idle local forward listener has no worker activity; its connected sockets appear as `tcp.accept`, then move to Recent when closed.
 
 The separate `P.Tun.` column means permanent tunnels and counts this dashboard host and selected login's retained forward/reverse definitions. It includes definitions waiting to retry, excludes expired definitions, and remains available for offline targets. Details and plain-text output always include it. JSON contains live `tunnels: {forward, reverse}` and local `retainedTunnels: {forward, reverse}`, without tunnel addresses or credentials. A missing or unreadable local tunnel store is shown as unknown where appropriate. Dashboard polling reads the atomic store without starting the tunnel service.

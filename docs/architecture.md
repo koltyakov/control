@@ -6,6 +6,8 @@ WebRTC receive loops reuse bounded detached-channel buffers. The gateway drains 
 
 [Contributor guide](../AGENTS.md) · [Engineering principles](principles.md) · [Design decisions](decisions.md) · [Protocol reference](protocol.md)
 
+The optional [agent-browser integration](browser.md) registers `browser.run` for an absolute configured CLI. Structured one-shot commands use normal execution admission, owner-specific file locking, private default home/runtime/namespace and complete bounded text redaction without raw task logs. Agent-browser owns persistent browser/session/dashboard daemons; their lifetimes are not tracked tasks. CLI/MCP browser views reuse the existing client-owned loopback TCP forward, carrying the bundled worker dashboard's HTTP and duplex WebSocket traffic on the interactive peer lane. Standalone clients still need no node, and no browser execution or streaming moves to the gateway. See [D128](decisions.md#d128-agent-browser-cli-and-loopback-dashboard-forwarding).
+
 ## Roles and components
 
 An orchestrator coordinates work through a CLI or MCP client. A worker is a node executing requested work. The gateway handles enrollment, discovery, signaling, encrypted relay fallback, and fleet administration, not application execution. A node can perform both orchestrator and worker roles. AI agents are optional callers or providers, not Control service types. See [terminology](terminology.md) for naming rules.

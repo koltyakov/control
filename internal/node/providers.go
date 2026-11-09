@@ -55,6 +55,9 @@ func (n *Node) registerProviders() error {
 	if err := n.registerDesktop(); err != nil {
 		return err
 	}
+	if err := n.registerBrowser(); err != nil {
+		return err
+	}
 	for name, cfg := range n.Config.Providers {
 		if cfg.Command == "" {
 			return fmt.Errorf("provider %s requires a command", name)

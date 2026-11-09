@@ -158,7 +158,7 @@ func run(ctx context.Context, args []string) error {
 			c.Token = cfg.Token
 		}
 		switch args[0] {
-		case "mcp", "system", "call", "exec", "task", "artifact", "upload", "tunnel", "session", "clipboard", "dashboard", "speedtest", "diagnostics", "wake", "runbooks":
+		case "mcp", "system", "call", "exec", "task", "artifact", "upload", "tunnel", "session", "clipboard", "dashboard", "speedtest", "diagnostics", "wake", "runbooks", "browser":
 			if !explicitAPI && os.Getenv("CONTROL_API") == "" {
 				var override *string
 				if explicitToken {
@@ -181,6 +181,8 @@ func run(ctx context.Context, args []string) error {
 		return installation.StartTunnelService(ctx, binary, dir)
 	})
 	switch args[0] {
+	case "browser":
+		return browserCLI(ctx, c, args[1:])
 	case "runbooks":
 		return runbooksCLI(ctx, c, args[1:])
 	case "login":
@@ -657,6 +659,10 @@ Environment: CONTROL_API, CONTROL_TOKEN
   wake NODE [--from WORKER|local] [--json]
   call NODE METHOD [JSON|@file]         Invoke any operation
   runbooks [--node NAME] [--local]       Discover shared and machine-specific operational instructions
+  browser run NODE [--session NAME] -- COMMAND [ARG...]
+                                       Operate an opt-in worker agent-browser CLI
+  browser view NODE [--port 4848] [--listen 127.0.0.1:0]
+                                       Forward a worker browser dashboard to a local URL
     --source SOURCE --file FILE         Read one complete runbook from its exact origin
   exec NODE [--detach] [--id ID] [--timeout DURATION] [--] COMMAND [ARG...]
   task start NODE JSON|@file [--wait]   Submit a durable task; optionally wait for its result

@@ -30,6 +30,13 @@ type DesktopConfig struct {
 	CLI string `json:"cli,omitempty"`
 }
 
+// BrowserConfig opts into an installed agent-browser CLI. Config optionally
+// selects a trusted upstream configuration, not workspace auto-discovery.
+type BrowserConfig struct {
+	CLI    string `json:"cli"`
+	Config string `json:"config,omitempty"`
+}
+
 type Config struct {
 	Name    string `json:"name"`
 	Gateway string `json:"gateway"`
@@ -74,6 +81,7 @@ type Config struct {
 	MCP       map[string]Command  `json:"mcp,omitempty"`
 	// Desktop opts into worker-local agent-desktop control.
 	Desktop *DesktopConfig `json:"desktop,omitempty"`
+	Browser *BrowserConfig `json:"browser,omitempty"`
 }
 
 // UnmarshalJSON rejects the removed RPA setting instead of silently disabling

@@ -1,0 +1,5 @@
+{
+  "browser": {
+    "cli": "/absolute/path/to/agent-browser"
+  }
+}
