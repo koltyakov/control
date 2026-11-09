@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,6 +13,38 @@ import (
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 )
+
+func taskStartCLI(ctx context.Context, c client.Client, args []string) error {
+	const usage = "usage: control task start NODE JSON|@file [--wait]"
+	if len(args) < 2 {
+		return errors.New(usage)
+	}
+	f := flag.NewFlagSet("task start", flag.ContinueOnError)
+	wait := f.Bool("wait", false, "wait for the task result after durable acceptance")
+	if err := f.Parse(args[1:]); err != nil {
+		return err
+	}
+	if f.NArg() == 0 {
+		return errors.New(usage)
+	}
+	value := f.Arg(0)
+	// Accept flags before or after the specification without interpreting JSON.
+	if err := f.Parse(f.Args()[1:]); err != nil {
+		return err
+	}
+	if f.NArg() != 0 {
+		return errors.New(usage)
+	}
+	b, err := readJSON(value)
+	if err != nil {
+		return err
+	}
+	var spec model.TaskSpec
+	if err = json.Unmarshal(b, &spec); err != nil {
+		return err
+	}
+	return submit(ctx, c, args[0], spec, *wait)
+}
 
 func execCLI(ctx context.Context, c client.Client, args []string) error {
 	if len(args) < 2 {

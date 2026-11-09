@@ -389,6 +389,8 @@ Streaming log clients send peer `tasks.logs` with `id`, `offset`, and `follow: t
 
 `control exec NODE [--detach] [--id ID] [--timeout DURATION] [--] COMMAND [ARG...]` submits a durable `exec.run` task. It prints the chosen task ID before submission. Without `--detach` it waits for completion; with it, it returns after acceptance. Timeout defaults to one hour, accepts 1s through 24h, and includes queue/input time. `control task logs NODE ID [--follow] [--offset BYTES]` either returns one structured log chunk or follows text until completion. Following drains remaining terminal chunks. Cancelling a follower or wait never cancels the task; use `control task cancel NODE ID`. Accepted tasks survive client disconnects and remain subject to their existing restart and idempotency rules.
 
+`control task start NODE JSON|@file [--wait]` accepts an inline specification without creating a local request file. `--wait` can appear before or after the specification. Submission still defaults to returning after durable acceptance; with `--wait`, the same client waits using blocking `tasks.get` and prints the terminal task, including retained results and failure details. A non-success terminal state returns a nonzero exit status. An already terminal submission result is printed without another wait. The chosen or generated ID is printed to stderr before submission, and the specification, including `leaseId`, is preserved. On a wait error, stdout contains the last known task state and the error identifies the original ID for reconciliation. That state is not proof of the current outcome. Neither submission nor waiting automatically resubmits work or cancels an accepted task. Query `control task get NODE ID` after uncertainty; never submit a replacement merely to obtain its result. Use structured MCP task objects or inline CLI JSON rather than generating orchestration payload files. An existing user-supplied specification remains usable through `@file`.
+
 ### Instruction-bound delegation
 
 Authenticated gateway metadata advertises `delegation: true`; compatible machines advertise `instructionDelegation: true`. The gateway assigns `executionAuthority: true` only to account-authenticated live clients, never enrolled machines or common-key clients. Default account routing refuses older targets. Worker membership permits only `nodes.list`, `nodes.select`, `node.describe`, and `capabilities.list` without a grant, still subject to `allow`. `mcp.discover` requires execution authority or an exact delegation, including server listing, because selecting a server can launch a configured subprocess or open a remote session.
@@ -470,7 +472,7 @@ For workflows requiring exclusive execution, select a machine, acquire its lease
 ```sh
 control call '' nodes.select '{"labels":{"role":"worker"}}'
 control call worker leases.acquire '{"ttlSeconds":300}'
-control task start worker '{"capability":"exec.run","leaseId":"LEASE_ID","args":{"command":"ffmpeg","args":["-version"]}}'
+control task start worker --wait '{"id":"FRESH_TASK_ID","capability":"exec.run","leaseId":"LEASE_ID","args":{"command":"ffmpeg","args":["-version"]}}'
 control call worker leases.release '{"id":"LEASE_ID"}'
 ```
 

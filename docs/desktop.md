@@ -96,6 +96,14 @@ In v1.2.0, a snapshot that exhausts its observation budget succeeds with `data.c
 
 MCP `control_desktop` takes `node` and a `request` object with the same fields. Generic CLI/MCP calls and tracked `desktop.run` tasks use the same adapter. Use explicit task IDs for reconciliation and node leases for multi-command sequences. Built-in desktop invocations use one admission slot per node, separate from general I/O, and descriptions/activity snapshots report desktop usage and queues. Each admitted invocation still acquires Control's shared per-user desktop file lock across profiles and has a two-minute deadline including that lock wait. The lock retains its historical `control/rpa.lock` path under the OS user configuration directory so older and newer profiles remain serialized. This does not exclude humans, unrelated desktop software, or raw agent-desktop CLI calls.
 
+While holding a lease, synchronous capability calls are rejected. Submit each request inline with the current lease ID and wait in the same invocation, rather than creating a request file and separately waiting:
+
+```sh
+control task start worker --wait '{"id":"FRESH_TASK_ID","capability":"desktop.run","leaseId":"CURRENT_LEASE_ID","timeoutSeconds":120,"args":{"command":"status"}}'
+```
+
+Use a fresh ID for each new command, inspect the result, and obtain fresh masked observations after mutations before choosing the next action. Load version-matched CLI skills once per worker/backend/version in a session, but check current readiness for each sequence. Group only independent read-only checks where supported. A wait failure does not cancel or retry the task; reconcile the original ID and live state before proceeding. Fallback raw `exec.run` checks under the lease also require inline task specifications with that `leaseId`; `control exec` has no lease option. Their output is still unmasked, so credential safeguards below remain unchanged.
+
 | Command | Input |
 | --- | --- |
 | `status` | No additional fields. Returns masked platform, permissions, and version only |

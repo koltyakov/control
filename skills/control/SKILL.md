@@ -61,15 +61,19 @@ Use detached submission and explicit task IDs for long work, continue other inde
 
 For a command, use `control exec NAME -- COMMAND ARG...`. The CLI prints a task ID before submission and waits for its result. For long work, use `--detach --id TASK_ID --timeout 4h` before `--` to return after durable acceptance. Follow logs with `control task logs NAME TASK_ID --follow --offset 0`. Stopping a follower or wait does not cancel the task; use `control task cancel`. Use structured argument arrays; do not assume the remote machine has a Unix shell.
 
-For AI agents, custom providers, input artifacts, or declared outputs, create a task specification and submit it:
+For other capabilities, input artifacts, or declared outputs, pass a task specification inline or as a structured MCP object. Do not create temporary request files, scripts, or helper files merely to invoke tools. Durable tracking does not require a local request file. When the next step needs the result, submit and wait in one CLI invocation:
 
 ```sh
-control task start worker @task.json
-control task wait worker TASK_ID
-control task logs worker TASK_ID
+control task start worker --wait '{"id":"FRESH_TASK_ID","capability":"files.list","args":{}}'
 ```
 
+`--wait` is also accepted after the JSON. It prints the task ID before submission and returns the terminal task, including retained failure details, with a nonzero exit for failure. Without `--wait`, submission returns after acceptance so independent work can continue. Inspect the returned state; acceptance is not completion. If the installed CLI does not advertise `--wait` in its help, submit inline and use `control task wait worker TASK_ID` on the same ID, not a replacement submission. Stopping a wait does not cancel accepted work. After a wait error, printed task JSON is only the last known state; query the original ID before proceeding. The CLI never automatically resubmits an uncertain command.
+
+While holding an exclusive lease, include its current `leaseId` in every task specification, including fallback `exec.run` checks. Direct capability calls are rejected while leased, and `control exec` has no lease option. Keep requests inline rather than working around this with files. Reserve `@file` for an existing specification the user asked to use, not generated internal payloads.
+
 Choose the task ID before submitting. If the connection fails during submission, query that same ID before retrying. Reusing an ID with the same specification reconciles acceptance while its task record or tombstone remains. A task with `pruned: true` retains its original final state but no result or logs. Full records default to seven days and 10,000 terminal tasks; tombstones are capped at 50,000 and startup discards entries older than 180 days. Once a tombstone is removed, that ID can execute again. Never treat an old missing ID as proof that work did not happen. A failed or interrupted command may already have changed external state; do not automatically submit a replacement task. With MCP, wait with `control_task_get` and `waitSeconds` rather than polling repeatedly. For independent `workflow.run` steps, `maxParallel` (up to 16) runs ready steps concurrently; a failed step stops further steps from starting but lets already-running steps finish.
+
+Reduce model turns, not safety checks. Group independent read-only preflight calls in one tool round when supported. Use `--wait` when a result is immediately needed instead of separate preparation, submission, and wait turns. With MCP, pass the task object directly and, where supported, sequence submission and a blocking get in the same tool execution. Load installed desktop/platform instructions once per worker, backend, and version per session; reload when those change, and check current readiness for each new sequence. Keep conflicting UI actions sequential, read their results, and take fresh masked observations after mutations before choosing the next action. Never batch dependent clicks, skip credential safeguards, or replay uncertain effects for speed.
 
 Use `control dashboard --once` for pool-wide activity. Observation does not grant permission to read or cancel another owner's work.
 
@@ -124,6 +128,16 @@ Inspect `data.complete`, `truncated`, `nodes_observed`, and `subtree_truncated`.
 If desktop support is missing, suggest installation and ask for explicit user permission. After approval, select the latest compatible release from [public upstream releases](https://github.com/vercel-labs/agent-desktop/releases). Download its OS/architecture `agent-desktop-ffi-*` archive, verify SHA-256 against `checksums.txt` from the same release, and extract with companions outside `workDir` into private storage. Require ABI major 6 or 7 and a 96-byte `AdAction`; reject incompatible libraries. Set absolute `desktop.library` in the User profile, preserve other settings, restart while idle, and check status before credential use. Control does not bundle/install FFI. OS grants require separate approval. See [native setup](https://github.com/koltyakov/control/blob/main/docs/desktop.md).
 
 For an unconfigured [agent-desktop CLI](https://github.com/vercel-labs/agent-desktop), run `version`, `skills get desktop`, `skills get platform`, and `status` through worker `exec.run` with structured arguments. Read `data.content`; skip these checks and skill loads for non-GUI tasks. See the [GUI guide](https://github.com/koltyakov/control/blob/main/docs/desktop.md). `--headed` needs explicit user permission. `exec.run` output is not secret-masked: stop for manual login when protected input is unavailable, never retrieve credentials through a shell.
+
+## Leased desktop checks
+
+If the sequence holds a lease, use a leased inline task for each required fallback check, with a fresh ID for each new command:
+
+```sh
+control task start worker --wait '{"id":"FRESH_TASK_ID","capability":"exec.run","leaseId":"CURRENT_LEASE_ID","timeoutSeconds":120,"args":{"command":"agent-desktop","args":["version"]}}'
+```
+
+Replace the argument array for the remaining checks. Do not use a direct `exec.run` call or `control exec` under the lease. These raw CLI checks still lack desktop masking and the native lock; use them only for permitted non-credential work and obtain fresh native refs before protected input.
 
 ## Full agent-desktop commands
 

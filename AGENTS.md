@@ -31,6 +31,10 @@ Before repeatable work, read matching shared or machine-specific runbooks. Use t
 
 Runbook suitability belongs in agent-friendly `requires` metadata, not OS/app/hardware folder names. It may be plain language, any key-value data, a list, or a mix, with no mandatory keys or fixed eligibility schema. Preserve this guidance in discovery and interpret it in context. Do not invent artificial OS/GPU/Control capability restrictions or infer installed apps, VPN connectivity, or execution approval from declarations.
 
+Pass orchestration requests as structured MCP objects or inline CLI JSON. Do not create temporary request files, scripts, or helper files merely to invoke tools. Durable task tracking does not require a local request file. When the next step needs the result, use `control task start NODE --wait 'JSON'` to submit and wait in one invocation; without `--wait`, submission returns after acceptance. Inspect the returned task state. For an older CLI without this option, submit inline and wait on that same ID. Never resubmit a command merely to wait for it. Keep `leaseId` on every task in a leased sequence, including fallback `exec.run` probes; direct capability calls and `control exec` cannot carry that lease.
+
+Group independent read-only checks in the same tool round when supported. Load installed desktop/platform guidance once per worker, backend, and version in a session, and reload if those change. Keep readiness checks fresh for each sequence. Serialize conflicting UI work, inspect each result, and obtain fresh masked observations after mutations before choosing the next action. Do not batch dependent clicks, reuse stale refs, retrieve credentials, or retry uncertain effects to reduce turns.
+
 ## Repository map
 
 | Path | Responsibility |

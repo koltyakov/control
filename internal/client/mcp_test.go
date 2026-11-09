@@ -80,7 +80,13 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 				"Only when a task requires GUI interaction",
 				"skip these checks and skill loads for non-GUI tasks",
 				"https://github.com/koltyakov/control/blob/main/docs/desktop.md",
-				"stop for manual login", "never retrieve credentials through a shell")
+				"stop for manual login", "never retrieve credentials through a shell",
+				"Do not create temporary request files", "control task start worker --wait",
+				"leaseId", "Reduce model turns, not safety checks", "fresh masked observations",
+				"does not cancel accepted work")
+			if strings.Contains(text, "control task start worker @task.json") {
+				t.Errorf("%s teaches temporary orchestration request files", name)
+			}
 			_, gui, found := strings.Cut(text, "## GUI work, only when needed\n")
 			gui, _, _ = strings.Cut(gui, "\n## ")
 			if !found || len(strings.Fields(gui)) > 200 {

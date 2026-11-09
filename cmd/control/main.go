@@ -414,9 +414,12 @@ func run(ctx context.Context, args []string) error {
 		return clipboardCLI(ctx, c, args[1:])
 	case "task":
 		if len(args) < 3 {
-			return errors.New("usage: control task start|get|wait|cancel|logs|list NODE [ID|@spec.json]")
+			return errors.New("usage: control task start|get|wait|cancel|logs|list NODE [ID|JSON|@file] [--wait]")
 		}
 		method, target := args[1], args[2]
+		if method == "start" {
+			return taskStartCLI(ctx, c, args[2:])
+		}
 		if method == "list" {
 			f := flag.NewFlagSet("task list", flag.ContinueOnError)
 			limit := f.Int("limit", 100, "maximum task summaries, 1..200")
@@ -439,17 +442,6 @@ func run(ctx context.Context, args []string) error {
 		}
 		if len(args) < 4 {
 			return errors.New("task ID or specification is required")
-		}
-		if method == "start" {
-			b, err := readJSON(args[3])
-			if err != nil {
-				return err
-			}
-			var spec model.TaskSpec
-			if err = json.Unmarshal(b, &spec); err != nil {
-				return err
-			}
-			return submit(ctx, c, target, spec, false)
 		}
 		if method == "wait" {
 			task, err := c.Wait(ctx, target, args[3])
@@ -491,12 +483,16 @@ func submit(ctx context.Context, c client.Client, target string, spec model.Task
 	if err := c.Call(ctx, target, "tasks.start", spec, &task); err != nil {
 		return fmt.Errorf("submit task %s; query this ID before retrying: %w", spec.ID, err)
 	}
-	if wait {
-		var err error
-		task, err = c.Wait(ctx, target, task.ID)
+	if wait && !task.Terminal() {
+		observed, err := c.Wait(ctx, target, task.ID)
 		if err != nil {
-			return err
+			if observed.ID != "" {
+				task = observed
+			}
+			printJSON(task)
+			return fmt.Errorf("wait for task %s; last known state printed; query this ID before proceeding, do not resubmit automatically: %w", spec.ID, err)
 		}
+		task = observed
 	}
 	printJSON(task)
 	if task.Terminal() && task.State != "succeeded" {
@@ -663,7 +659,7 @@ Environment: CONTROL_API, CONTROL_TOKEN
   runbooks [--node NAME] [--local]       Discover shared and machine-specific operational instructions
     --source SOURCE --file FILE         Read one complete runbook from its exact origin
   exec NODE [--detach] [--id ID] [--timeout DURATION] [--] COMMAND [ARG...]
-  task start NODE JSON|@file            Submit a durable task
+  task start NODE JSON|@file [--wait]   Submit a durable task; optionally wait for its result
   task get|wait|cancel|logs NODE ID      Inspect or manage a task
   task logs NODE ID [--follow] [--offset BYTES]
   task list NODE [--limit N --cursor ID] Page through task summaries

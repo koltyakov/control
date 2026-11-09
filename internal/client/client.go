@@ -134,15 +134,18 @@ const taskWaitSeconds = 30
 
 // Wait returns when the task is terminal. Current workers answer a blocking
 // tasks.get as soon as the task finishes; older workers ignore waitSeconds and
-// answer at once, so the loop keeps a minimum poll interval for them.
+// answer at once, so the loop keeps a minimum poll interval for them. On error,
+// it returns the last successfully observed task, if any, without cancelling it.
 func (c Client) Wait(ctx context.Context, target, id string) (model.Task, error) {
 	const interval = 250 * time.Millisecond
+	var task model.Task
 	for {
 		started := time.Now()
-		var task model.Task
-		if err := c.Call(ctx, target, "tasks.get", map[string]any{"id": id, "waitSeconds": taskWaitSeconds}, &task); err != nil {
+		var observed model.Task
+		if err := c.Call(ctx, target, "tasks.get", map[string]any{"id": id, "waitSeconds": taskWaitSeconds}, &observed); err != nil {
 			return task, err
 		}
+		task = observed
 		if task.Terminal() {
 			return task, nil
 		}
