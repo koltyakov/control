@@ -6,6 +6,8 @@
 
 ## Full upstream command surface
 
+Upgrade the execution node and the orchestrator's CLI/MCP installation before using the new request shape. Older `control_desktop` clients validate only the native subset and reject CLI requests even after the worker is upgraded. Managed fleet updates do not replace standalone CLI/MCP installations.
+
 Configure `desktop.cli` with the absolute path of the native agent-desktop executable, retaining its upstream companion files. Install only after approval, using a compatible public [upstream release](https://github.com/vercel-labs/agent-desktop/releases) for the worker's OS/architecture and verifying its archive against that release's `checksums.txt`. Use private User storage outside `workDir`, preserve other profile settings, and restart while idle. Control does not bundle or automatically install this dependency. A library-only installation provides the native commands below, not the full CLI. The CLI and library can be installed together:
 
 ```json

@@ -61,6 +61,7 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 			"control secrets set NAME", "secret", "setValue", "profile",
 			"exec.run output is not secret-masked",
 			"desktop.run", "control_desktop", "private", "masked",
+			"desktop.cli", "command whitelist", "list-apps", "default state", "declare",
 			"suggest installation", "After approval", "latest compatible release", "agent-desktop-ffi-*",
 			"https://github.com/vercel-labs/agent-desktop/releases",
 			"SHA-256", "checksums.txt", "same release",

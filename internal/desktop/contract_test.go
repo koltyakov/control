@@ -64,6 +64,16 @@ func TestDesktopCLIBoundsAndDiscovery(t *testing.T) {
 	if _, err := Decode(input); err == nil {
 		t.Fatal("aggregate CLI argv bound not enforced")
 	}
+	stdin := strings.Repeat("x", maxCLIInput)
+	input, _ = json.Marshal(Request{Command: "cli", Args: []string{"type"}, Stdin: &stdin})
+	if _, err := Decode(input); err == nil {
+		t.Fatal("combined argv/stdin bound not enforced")
+	}
+	// Full batch/text commands must not inherit the native 4 KiB value limit.
+	input, _ = json.Marshal(Request{Command: "cli", Args: []string{"batch", strings.Repeat("x", 65536)}})
+	if _, err := Decode(input); err != nil {
+		t.Fatal("larger upstream command payload rejected", err)
+	}
 	for _, tc := range []struct {
 		native, cli bool
 		count       int
