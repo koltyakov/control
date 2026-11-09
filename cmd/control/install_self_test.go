@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -49,6 +50,27 @@ func TestInstallSelfInstallsOpenCodeSkill(t *testing.T) {
 			content, err := os.ReadFile(paths.Skill)
 			if err != nil || !bytes.Equal(content, want) {
 				t.Fatalf("skill content: %q, error: %v", content, err)
+			}
+			if existing == "user-owned skill" {
+				if _, err := os.Stat(filepath.Join(filepath.Dir(paths.Skill), "references")); !os.IsNotExist(err) {
+					t.Fatal("unmanaged core conflict wrote reference files", err)
+				}
+			} else {
+				references, err := fs.Glob(skills.ControlFiles, "control/references/*.md")
+				if err != nil || len(references) == 0 {
+					t.Fatal("embedded skill references missing", err)
+				}
+				for _, name := range references {
+					want, err := skills.ControlFiles.ReadFile(name)
+					if err != nil {
+						t.Fatal(err)
+					}
+					path := filepath.Join(filepath.Dir(paths.Skill), "references", filepath.Base(name))
+					got, err := os.ReadFile(path)
+					if err != nil || !bytes.Equal(got, want) {
+						t.Fatalf("install-self reference %s: %v", path, err)
+					}
+				}
 			}
 			binary, err := installation.BinPath()
 			if err != nil {

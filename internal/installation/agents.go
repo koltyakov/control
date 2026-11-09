@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/gofrs/flock"
 	"github.com/koltyakov/control/internal/store"
@@ -135,12 +137,61 @@ func InstallAgent(ctx context.Context, agent, project, binary, config string, mc
 		fmt.Fprintln(os.Stderr, "MCP configured for", agent)
 	}
 	if skill {
-		if err = writeManaged(paths.Skill, skills.Control); err != nil {
+		if err = installSkill(ctx, paths.Skill); err != nil {
 			return err
 		}
 		fmt.Fprintln(os.Stderr, "Skill installed:", paths.Skill)
 	}
 	return nil
+}
+
+func installSkill(ctx context.Context, path string) error {
+	type skillFile struct {
+		path    string
+		content []byte
+	}
+	var files []skillFile
+	err := fs.WalkDir(skills.ControlFiles, "control", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		dest := filepath.Join(filepath.Dir(path), filepath.FromSlash(strings.TrimPrefix(name, "control/")))
+		if err = checkManaged(dest); err != nil {
+			return err
+		}
+		content, err := skills.ControlFiles.ReadFile(name)
+		if err != nil {
+			return err
+		}
+		files = append(files, skillFile{path: dest, content: content})
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	// Check every destination before writing anything. Publish the core last so
+	// an older self-contained skill never points to references not yet installed.
+	for _, file := range files {
+		if file.path == path {
+			continue
+		}
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		if err = writeManaged(file.path, file.content); err != nil {
+			return err
+		}
+	}
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	return writeManaged(path, skills.Control)
 }
 
 func mergeMCP(paths AgentPaths, entry map[string]any) error {

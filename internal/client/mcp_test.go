@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,11 +28,25 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = session.Close() }()
-	skill := strings.ReplaceAll(string(skills.Control), "\r\n", "\n")
+	// Check the complete installed bundle for retained workflow safeguards. The
+	// skills package separately checks that the core loads references on demand.
+	skill := string(skills.Control)
+	references, err := fs.Glob(skills.ControlFiles, "control/references/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, reference := range references {
+		content, err := skills.ControlFiles.ReadFile(reference)
+		if err != nil {
+			t.Fatal(err)
+		}
+		skill += "\n" + string(content)
+	}
+	skill = strings.ReplaceAll(skill, "\r\n", "\n")
 	for name, text := range map[string]string{
-		"mcp":        session.InitializeResult().Instructions,
-		"skill LF":   skill,
-		"skill CRLF": strings.ReplaceAll(skill, "\n", "\r\n"),
+		"mcp":               session.InitializeResult().Instructions,
+		"skill bundle LF":   skill,
+		"skill bundle CRLF": strings.ReplaceAll(skill, "\n", "\r\n"),
 	} {
 		// Windows checkouts can embed CRLF; these checks concern content, not line endings.
 		text = strings.ReplaceAll(text, "\r\n", "\n")

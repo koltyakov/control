@@ -14,12 +14,19 @@ import (
 )
 
 func writeManaged(path string, content []byte) error {
+	if err := checkManaged(path); err != nil {
+		return err
+	}
+	return store.Bytes(path, content, 0600)
+}
+
+func checkManaged(path string) error {
 	if old, err := os.ReadFile(path); err == nil && !bytes.Contains(old, []byte("Managed by control")) {
 		return errors.New("existing service file is not managed by control: " + path)
 	} else if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return store.Bytes(path, content, 0600)
+	return nil
 }
 func InstallSelf(ctx context.Context) (string, error) {
 	return installSelf(ctx, true)
