@@ -15,6 +15,9 @@ func TestDesktopContract(t *testing.T) {
 		`{"command":"setValue","ref":"@s123:e1","secret":"app.password"}`,
 		`{"command":"setValue","ref":"@s123:e1","text":""}`,
 		`{"command":"click","ref":"@s123:e1"}`, `{"command":"clear","ref":"@s123:e1"}`,
+		`{"command":"cli","args":["list-apps"]}`,
+		`{"command":"cli","args":["snapshot","--surface","system-tray"]}`,
+		`{"command":"cli","args":["future-upstream-command","--headed"],"stdin":"public input"}`,
 	} {
 		if _, err := Decode(json.RawMessage(input)); err != nil {
 			t.Fatalf("valid command rejected: %v", err)
@@ -31,9 +34,42 @@ func TestDesktopContract(t *testing.T) {
 		`{"command":"screenshot"}`, `{"command":"clipboard-get"}`, `{"command":"trace"}`,
 		`{"command":"click","ref":"@s123:e1","headed":true}`,
 		`{"command":"status"} {"text":"private"}`,
+		`{"command":"cli","args":[]}`, `{"command":"cli","args":["status"],"secret":"app.password"}`,
+		`{"command":"cli","args":["status"],"text":"private"}`,
+		`{"command":"cli","args":["private\u0000input"]}`,
+		`{"command":"cli","args":["status"],"stdin":"private\u0000input"}`,
+		`{"command":"status","args":["unexpected"]}`,
+		`{"command":"cli","args":["status"],"stdin":null}`,
 	} {
 		if _, err := Decode(json.RawMessage(input)); err == nil || strings.Contains(err.Error(), "private") {
 			t.Fatal("invalid command accepted or input echoed")
+		}
+	}
+}
+
+func TestDesktopCLIBoundsAndDiscovery(t *testing.T) {
+	for _, args := range [][]string{
+		make([]string, 257), {strings.Repeat("x", maxCLIInput+1)}, {strings.Repeat("界", maxCLIInput/2)},
+	} {
+		input, _ := json.Marshal(Request{Command: "cli", Args: args})
+		if _, err := Decode(input); err == nil {
+			t.Fatal("CLI argument bounds not enforced")
+		}
+	}
+	args := make([]string, 17)
+	for i := range args {
+		args[i] = strings.Repeat("x", maxCLIInput/16)
+	}
+	input, _ := json.Marshal(Request{Command: "cli", Args: args})
+	if _, err := Decode(input); err == nil {
+		t.Fatal("aggregate CLI argv bound not enforced")
+	}
+	for _, tc := range []struct {
+		native, cli bool
+		count       int
+	}{{true, false, 5}, {false, true, 1}, {true, true, 6}} {
+		if len(SchemaWithCLI(tc.native, tc.cli)["oneOf"].([]any)) != tc.count {
+			t.Fatal("schema advertised an unconfigured backend")
 		}
 	}
 }

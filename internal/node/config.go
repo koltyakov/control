@@ -20,11 +20,14 @@ type Command struct {
 	URL         string            `json:"url,omitempty"`
 }
 
-// DesktopConfig opts into the built-in Go helper with an explicit library.
-// An explicit external Command is retained for existing profiles and providers.
+// DesktopConfig enables the full installed CLI and/or protected native input.
+// An explicit external Command is retained for existing native-helper profiles.
 type DesktopConfig struct {
 	Command
 	Library string `json:"library,omitempty"`
+	// CLI enables the complete installed agent-desktop command surface.
+	// It may coexist with Library, which retains private-pipe secret input.
+	CLI string `json:"cli,omitempty"`
 }
 
 type Config struct {
@@ -69,7 +72,7 @@ type Config struct {
 	Providers map[string]Command  `json:"providers,omitempty"`
 	Agents    map[string]Command  `json:"agents,omitempty"`
 	MCP       map[string]Command  `json:"mcp,omitempty"`
-	// Desktop opts into the native agent-desktop private-pipe helper.
+	// Desktop opts into worker-local agent-desktop control.
 	Desktop *DesktopConfig `json:"desktop,omitempty"`
 }
 

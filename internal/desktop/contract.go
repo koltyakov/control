@@ -23,9 +23,16 @@ type Request struct {
 	Text     *string `json:"text,omitempty"`
 	Secret   string  `json:"secret,omitempty"`
 	MaxDepth int     `json:"maxDepth,omitempty"`
+	// CLI arguments are forwarded verbatim, without a shell or command whitelist.
+	Args  []string `json:"args,omitempty"`
+	Stdin *string  `json:"stdin,omitempty"`
 }
 
 var refPattern = regexp.MustCompile(`^@[a-zA-Z0-9_-]{3,64}:e[1-9][0-9]{0,9}$`)
+
+// Keep desktop CLI input within the existing task argument budget. Platform
+// process-argument limits can be lower; stdin is available where upstream supports it.
+const maxCLIInput = 1 << 20
 
 var resolved = func() *jsonschema.Resolved {
 	b, _ := json.Marshal(Schema())
@@ -60,6 +67,18 @@ func Decode(args json.RawMessage) (Request, error) {
 	}
 	valid := false
 	switch r.Command {
+	case "cli":
+		valid = len(r.Args) > 0 && len(r.Args) <= 256
+		size := 0
+		for _, arg := range r.Args {
+			size += len(arg)
+			valid = valid && validText(arg, maxCLIInput)
+		}
+		if r.Stdin != nil {
+			size += len(*r.Stdin)
+			valid = valid && validText(*r.Stdin, maxCLIInput)
+		}
+		valid = valid && size <= maxCLIInput
 	case "status":
 		valid = r.App == "" && r.Ref == "" && r.Text == nil && r.Secret == "" && r.MaxDepth == 0
 	case "snapshot":
@@ -99,6 +118,12 @@ func Packet(r Request, home string) []byte {
 }
 
 func Schema() map[string]any {
+	return SchemaWithCLI(true, true)
+}
+
+// SchemaWithCLI advertises only configured backends on an execution node.
+// The client uses Schema so it can route either backend after discovery.
+func SchemaWithCLI(native, cli bool) map[string]any {
 	text := map[string]any{"type": "string", "maxLength": 4096}
 	ref := map[string]any{"type": "string", "pattern": refPattern.String(), "maxLength": 128}
 	variant := func(command string, fields map[string]any, required ...string) map[string]any {
@@ -110,10 +135,20 @@ func Schema() map[string]any {
 	}
 	set := variant("setValue", map[string]any{"ref": ref, "text": text, "secret": map[string]any{"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"}}, "ref")
 	set["oneOf"] = []any{map[string]any{"required": []string{"text"}}, map[string]any{"required": []string{"secret"}}}
-	return map[string]any{"oneOf": []any{
-		variant("status", nil),
-		variant("snapshot", map[string]any{"app": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096}, "maxDepth": map[string]any{"type": "integer", "minimum": 1, "maximum": 32}}, "app"),
-		variant("click", map[string]any{"ref": ref}, "ref"),
-		variant("clear", map[string]any{"ref": ref}, "ref"), set,
-	}}
+	variants := []any{}
+	if native {
+		variants = append(variants,
+			variant("status", nil),
+			variant("snapshot", map[string]any{"app": map[string]any{"type": "string", "minLength": 1, "maxLength": 4096}, "maxDepth": map[string]any{"type": "integer", "minimum": 1, "maximum": 32}}, "app"),
+			variant("click", map[string]any{"ref": ref}, "ref"),
+			variant("clear", map[string]any{"ref": ref}, "ref"), set,
+		)
+	}
+	if cli {
+		variants = append(variants, variant("cli", map[string]any{
+			"args":  map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "items": map[string]any{"type": "string", "maxLength": maxCLIInput}},
+			"stdin": map[string]any{"type": "string", "maxLength": maxCLIInput},
+		}, "args"))
+	}
+	return map[string]any{"oneOf": variants}
 }

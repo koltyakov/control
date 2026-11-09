@@ -1,8 +1,57 @@
-# Native agent-desktop adapter
+# agent-desktop through Control
 
 [README](../README.md) · [Worker-local secrets](secrets.md) · [Protocol](protocol.md) · [Testing](testing.md)
 
-`desktop.run` is an opt-in worker-local adapter for agent-desktop's native C library. Control launches its own executable in an isolated Go helper mode using purego. Only that subprocess loads the library and receives requests through an anonymous stdin pipe. Control stays CGO-free on Windows, macOS, and Linux, on amd64 and arm64. No C++ compiler, Python runtime, or agent-desktop CLI is required.
+`desktop.run` operates the full installed agent-desktop CLI and also offers protected native credential input. Both backends share Control's desktop admission slot, per-user lock, private default state, task ownership, cancellation and text redaction. The node advertises only the configured backends in its capability schema. Control remains CGO-free on Windows, macOS and Linux.
+
+## Full upstream command surface
+
+Configure `desktop.cli` with the absolute path of the native agent-desktop executable, retaining its upstream companion files. Install only after approval, using a compatible public [upstream release](https://github.com/vercel-labs/agent-desktop/releases) for the worker's OS/architecture and verifying its archive against that release's `checksums.txt`. Use private User storage outside `workDir`, preserve other profile settings, and restart while idle. Control does not bundle or automatically install this dependency. A library-only installation provides the native commands below, not the full CLI. The CLI and library can be installed together:
+
+```json
+{
+  "desktop": {
+    "cli": "/absolute/path/to/agent-desktop",
+    "library": "/absolute/path/to/libagent_desktop_ffi.dylib"
+  }
+}
+```
+
+Use the actual platform paths, including `agent-desktop.exe` and the DLL on Windows. `cli` alone is supported when protected native input is not needed. Do not point `desktop.command` at the upstream CLI; that legacy field names a private-pipe native helper.
+
+```sh
+control call worker desktop.run '{"command":"cli","args":["version"]}'
+control call worker desktop.run '{"command":"cli","args":["skills","get","desktop"]}'
+control call worker desktop.run '{"command":"cli","args":["skills","get","platform"]}'
+control call worker desktop.run '{"command":"cli","args":["status"]}'
+control call worker desktop.run '{"command":"cli","args":["list-apps"]}'
+control call worker desktop.run '{"command":"cli","args":["list-windows"]}'
+control call worker desktop.run '{"command":"cli","args":["snapshot","--surface","system-tray"]}'
+```
+
+Read the returned skills' `data.content` and installed command help before acting. Use observed app identities and window IDs, not guessed process names. For a hidden tray app, inspect the supported shell surface before asking the person to open it. Inspect completeness metadata before concluding a control is absent. Physical `--headed` input, clipboard operations, sensitive captures and OS permission changes still require the appropriate user approval.
+
+`command: "cli"` forwards its structured `args` verbatim to the configured executable, without a shell or a Control-maintained upstream command whitelist. It supports all installed upstream features, including app/window/display discovery and management, system surfaces, snapshots and drill-down, find/get/is, ref actions, keyboard/mouse, screenshots, notifications, clipboard, waits, sessions, traces, cursor overlay, skills and batches. New upstream commands do not need new Control bindings. Platform limitations and upstream refusals remain in effect; forwarding a reserved held-key command does not make upstream implement it.
+
+Optional `stdin` carries non-secret text for upstream commands that accept it. Upstream batch JSON remains a positional argument; Control does not add stdin support to commands that lack it. Arguments and stdin are retained in task specifications: never put credentials there. Use native `setValue` with worker-local secret names instead. Both configured backends use the same `AGENT_DESKTOP_HOME` default namespace, so fresh default-session CLI refs can be used for native protected input on the same profile with compatible versions. Inherited `AGENT_DESKTOP_*` variables are removed; only Control's private home is set. Explicit CLI sessions retain their upstream semantics and must not be mixed with sessionless native refs. Raw external CLI invocations use a different state namespace unless configured otherwise and do not share Control's lock.
+
+The CLI runs once per invocation under the caller/task deadline, with cancellation terminating its process tree. Session commands persist upstream state normally, but `desktop.run` is not a persistent stdio/MCP stream. Use the existing [worker MCP configuration](protocol.md#ai-cli-and-mcp-configuration) to host `agent-desktop mcp`. That separate MCP route does not inherit desktop.run's native credential or desktop-lock contract.
+
+CLI responses retain upstream JSON envelopes and add `process: {exitCode, stderr}` with redacted stderr. Non-JSON text such as help is wrapped in `data.stdout` on successful exit or `error.stdout` on failure. A nonzero process exit or upstream `ok: false` fails execution, preserving sanitized output for tracked tasks. Upstream batches can report outer `ok: true` despite failed or unstarted entries; Control also fails those invocations while preserving the original envelope and partial results so dependent workflows do not continue as if every entry succeeded. Raw output never streams to task logs. Oversized output, cancellation and startup failure return fixed diagnostics without raw text. No command is retried automatically.
+
+Limits are 256 arguments, 1 MiB of combined decoded UTF-8 argv/stdin bytes, no NUL, and 2 MiB each of captured stdout/stderr. Existing serialized task-argument bounds and lower OS process-argument limits still apply. Use stdin only where the installed upstream command supports it. Native calls retain their two-minute deadline; CLI calls use their caller/task deadline so upstream waits and batches are not limited to two minutes. Large files belong in task outputs, not JSON/base64 results:
+
+```json
+{
+  "id": "requested-desktop-capture",
+  "capability": "desktop.run",
+  "args": { "command": "cli", "args": ["screenshot", "screen.png", "--screen", "0"] },
+  "outputs": ["screen.png"],
+  "timeoutSeconds": 120
+}
+```
+
+Run this example only for a user-authorized non-sensitive capture. The CLI runs in the task workspace; declared outputs use normal owner-bound artifact publication and direct transfers. Synchronous calls do not automatically import files. Text redaction does not mask image/file bytes, sanitize trace exports, or prevent a trusted upstream process from writing private data to disk. Do not capture credentials or publish sensitive traces. Use leases for multi-command desktop sequences and reconcile task IDs after uncertain outcomes.
 
 ## Enable on a worker
 
@@ -54,7 +103,7 @@ MCP `control_desktop` takes `node` and a `request` object with the same fields. 
 
 Names refer to the [existing worker secret store](secrets.md#enter-credentials-outside-chat). The user enters private usernames and passwords outside chat. Missing secrets fail before starting the helper. Literal `text` is for non-secret content only, at most 4,096 UTF-8 bytes without NUL. No screenshots, clipboard commands, key synthesis, headed fallback, tracing, arbitrary CLI arguments, or application launching are exposed.
 
-The native adapter uses `<dataDir>/desktop` as its private agent-desktop state root. It rejects state within `workDir`, including symlink-resolved paths, and uses `0700` on Unix. Windows depends on the profile's ACLs. Native snapshots persist refmaps there, so refs from ordinary CLI sessions or another profile do not belong to this adapter. Control strips inherited and configured `AGENT_DESKTOP_*` variables from the helper environment; the helper sets only its private home and creates an adapter without a tracing session or log callback.
+The native adapter uses `<dataDir>/desktop` as its private agent-desktop state root, shared with the configured CLI's default state. It rejects state within `workDir`, including symlink-resolved paths, and uses `0700` on Unix. Windows depends on the profile's ACLs. Refs from ordinary external CLI sessions or another profile do not belong to this adapter. Control strips inherited and configured `AGENT_DESKTOP_*` variables from the helper environment; the helper sets only its private home and creates an adapter without a tracing session or log callback.
 
 ## Credential and output handling
 
@@ -72,7 +121,7 @@ If the application cannot accept headless value setting, stop for manual login o
 
 ## Use agent-desktop on a worker
 
-The upstream CLI is optional and separate from `desktop.library`. For broader GUI operations, discover the requested User worker with `node.describe`, then check the CLI and load its version-matched instructions on that same worker:
+Prefer the [full desktop.run CLI route](#full-upstream-command-surface) when configured. The upstream CLI is separate from `desktop.library`; a managed Control update does not install it. For an existing CLI not configured as `desktop.cli`, ordinary execution remains available. Discover the requested User worker with `node.describe`, then check the CLI and load its version-matched instructions on that same worker:
 
 ```sh
 control exec worker -- agent-desktop version
@@ -106,4 +155,4 @@ The replacement is intentionally narrower:
 | 1..100-action batches and ordered partial results | One native command per invocation; use leased tracked tasks for exclusive multi-command sequences on one node |
 | Text masking and desktop serialization | Native responses remain masked and raw logs suppressed; the same per-user lock and one-slot desktop pool remain |
 
-Broader upstream CLI operations through `exec.run` are not protected equivalents. They have no Control secret resolution, output masking, automatic screenshot-artifact conversion, or participation in the native desktop lock/pool. Coordinate one writer explicitly and follow the installed CLI skills. Do not expand permissions or expose credentials to bridge a missing feature.
+Broader upstream CLI operations through ordinary `exec.run` have no Control secret resolution, output masking, automatic screenshot-artifact conversion, or participation in the desktop lock/pool. Use configured `desktop.cli` through `desktop.run` for serialized, text-masked full control and declared task outputs for files. Credential values still belong only in native secret-reference input, never CLI args/stdin. Do not expand permissions or expose credentials to bridge a missing feature.

@@ -151,6 +151,20 @@ func TestMCPRoutesDesktop(t *testing.T) {
 		t.Fatal("native desktop did not route a request")
 	}
 	result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "control_desktop", Arguments: map[string]any{
+		"node": "desktop", "request": map[string]any{"command": "cli", "args": []string{"list-apps"}},
+	}})
+	if err != nil || result.IsError {
+		t.Fatalf("full desktop CLI tool failed: %+v, %v", result, err)
+	}
+	select {
+	case request := <-requests:
+		if string(request["method"]) != `"desktop.run"` || !strings.Contains(string(request["params"]), `"list-apps"`) {
+			t.Fatal("full agent-desktop commands did not route through desktop.run")
+		}
+	case <-ctx.Done():
+		t.Fatal("full desktop CLI request was not routed")
+	}
+	result, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "control_desktop", Arguments: map[string]any{
 		"node": "desktop", "request": map[string]any{"command": "screenshot"},
 	}})
 	if err == nil && !result.IsError {

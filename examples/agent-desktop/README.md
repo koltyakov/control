@@ -1,4 +1,6 @@
-# Native agent-desktop library setup
+# agent-desktop setup
+
+For the full upstream command surface, install the verified native CLI and companion files after approval, set its absolute path as `desktop.cli`, and invoke `desktop.run` with `{"command":"cli","args":["list-apps"]}`. CLI-only profiles are supported. To add protected credential input, also install and configure the native library below. The [example profile](node-config.json) enables both; omit a backend you have not installed. See [full commands, discovery, output artifacts and limits](../../docs/desktop.md#full-upstream-command-surface). Installing only the library does not provide full CLI functionality.
 
 Control includes an isolated Go helper mode using purego. No separate helper build, C++ compiler, Python runtime, or agent-desktop CLI is needed. See [setup, API, and security limits](../../docs/desktop.md).
 

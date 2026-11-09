@@ -1,5 +1,6 @@
 {
   "desktop": {
+    "cli": "/absolute/path/to/agent-desktop",
     "library": "/absolute/path/to/libagent_desktop_ffi.dylib"
   }
 }

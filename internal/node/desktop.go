@@ -22,12 +22,18 @@ func (n *Node) registerDesktop() error {
 		return nil
 	}
 	cfg := n.Config.Desktop
+	if cfg.CLI != "" && !filepath.IsAbs(cfg.CLI) {
+		return errors.New("desktop.cli must be an absolute agent-desktop executable path")
+	}
+	if cfg.Library == "" && cfg.Command.Command == "" && (len(cfg.Args) != 0 || len(cfg.Env) != 0 || cfg.Dir != "") {
+		return errors.New("desktop args, env, and dir require an explicit native helper command; CLI arguments belong to each invocation")
+	}
 	if cfg.Library != "" {
 		if !filepath.IsAbs(cfg.Library) || cfg.Command.Command != "" || len(cfg.Args) != 0 || len(cfg.Env) != 0 || cfg.Dir != "" {
 			return errors.New("desktop.library must be absolute and cannot be combined with an external helper command")
 		}
-	} else if cfg.Command.Command == "" {
-		return errors.New("desktop requires an absolute native library path or an explicit helper command")
+	} else if cfg.Command.Command == "" && cfg.CLI == "" {
+		return errors.New("desktop requires a native library, an agent-desktop CLI, or an explicit helper command")
 	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
@@ -39,8 +45,8 @@ func (n *Node) registerDesktop() error {
 		return err
 	}
 	return n.Register(provider{cap: model.Capability{
-		Name: "desktop.run", InputSchema: model.JSON(desktop.Schema()),
-		Description: "Opt-in native agent-desktop status, scoped snapshot, click, clear, or headless setValue. Use secret names for credentials; values travel only to a worker-local native helper over stdin. All responses mask currently configured secrets and raw helper logs are suppressed. No screenshots, clipboard, tracing, or headed input. Use fresh qualified refs and never replay uncertain effects.",
+		Name: "desktop.run", InputSchema: model.JSON(desktop.SchemaWithCLI(cfg.Library != "" || cfg.Command.Command != "", cfg.CLI != "")),
+		Description: "Operate agent-desktop on this worker. Configured CLI mode forwards the full upstream command surface as structured args, with optional non-secret stdin; load its desktop/platform skills first. Native mode retains protected secret-reference setValue. Both share desktop admission, the per-user lock, private state, and text redaction with no raw task logs. Screenshot/file bytes are not masked. Physical input and clipboard access require user authorization. Never replay uncertain effects.",
 	}, run: n.desktopRun})
 }
 
@@ -85,6 +91,12 @@ func (n *Node) desktopRun(ctx context.Context, args json.RawMessage, e Execution
 	if err != nil {
 		return nil, err
 	}
+	if r.Command == "cli" && n.Config.Desktop.CLI == "" {
+		return nil, errors.New("full agent-desktop commands require desktop.cli; discover the configured backend before calling")
+	}
+	if r.Command != "cli" && n.Config.Desktop.Library == "" && n.Config.Desktop.Command.Command == "" {
+		return nil, errors.New("protected native commands require desktop.library or an explicit native helper")
+	}
 	values, err := n.secretValues()
 	if err != nil {
 		return nil, errors.New("cannot load worker-local credentials")
@@ -96,8 +108,11 @@ func (n *Node) desktopRun(ctx context.Context, args json.RawMessage, e Execution
 		}
 		r.Text, r.Secret = &value, ""
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
+	if r.Command != "cli" {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+	}
 	if err := os.MkdirAll(filepath.Dir(n.desktopLockPath), 0700); err != nil {
 		return nil, errors.New("cannot open desktop lock")
 	}
@@ -110,6 +125,9 @@ func (n *Node) desktopRun(ctx context.Context, args json.RawMessage, e Execution
 	home, err := n.desktopStateDir()
 	if err != nil {
 		return nil, err
+	}
+	if r.Command == "cli" {
+		return n.desktopCLI(ctx, r, home, e, values)
 	}
 	// Always suppress raw output, including observations without secret inputs.
 	helper := n.Config.Desktop.Command
@@ -128,7 +146,12 @@ func (n *Node) desktopRun(ctx context.Context, args json.RawMessage, e Execution
 	if err := cmd.Run(); err != nil || stdout.truncated {
 		return nil, errors.New("native desktop helper failed or exceeded output limit; effects may already have occurred; diagnostics suppressed")
 	}
-	raw := stdout.b.Bytes()
+	return desktopResponse(stdout.b.Bytes(), values, home, r.Command == "status", false)
+}
+
+// Both backends sanitize the complete bounded response before returning it or
+// persisting a task result. Native helper diagnostics never enter this path.
+func desktopResponse(raw []byte, values map[string]string, home string, status, cli bool) (any, error) {
 	var envelope map[string]json.RawMessage
 	if json.Unmarshal(raw, &envelope) != nil || envelope == nil {
 		return nil, errors.New("invalid native desktop response; effects may already have occurred")
@@ -142,7 +165,7 @@ func (n *Node) desktopRun(ctx context.Context, args json.RawMessage, e Execution
 		payloadKey = "data"
 	}
 	var payload map[string]json.RawMessage
-	if json.Unmarshal(envelope[payloadKey], &payload) != nil || payload == nil {
+	if !cli && (json.Unmarshal(envelope[payloadKey], &payload) != nil || payload == nil) {
 		return nil, errors.New("native desktop response has an invalid payload; effects may already have occurred")
 	}
 	// The empty key cannot be a stored secret name. Mask the native state path
@@ -152,7 +175,7 @@ func (n *Node) desktopRun(ctx context.Context, args json.RawMessage, e Execution
 	if err != nil {
 		return nil, errors.New("cannot sanitize native desktop response")
 	}
-	if r.Command == "status" && ok {
+	if status && ok {
 		// Status is health, not a way to discover private state paths or artifacts.
 		var status struct {
 			Data map[string]json.RawMessage `json:"data"`
@@ -167,7 +190,7 @@ func (n *Node) desktopRun(ctx context.Context, args json.RawMessage, e Execution
 		clean = model.JSON(map[string]any{"ok": true, "data": data})
 	}
 	if !ok {
-		return json.RawMessage(clean), errors.New("native desktop request failed; inspect sanitized result; never replay automatically")
+		return json.RawMessage(clean), errors.New("desktop request failed; inspect sanitized result; never replay automatically")
 	}
 	return json.RawMessage(clean), nil
 }

@@ -13,7 +13,7 @@ Orchestrators coordinate work; worker nodes execute it and exchange files direct
 - Private user fleets with persistent machine identities and names.
 - Direct WebRTC connections with WebSocket relay fallback and mutually authenticated TLS on both paths.
 - Durable tasks with idempotent submission, cancellation, streamed logs, and restart reconciliation.
-- Commands, scripts, AI CLIs, MCP servers, and opt-in [native desktop automation](docs/desktop.md) with worker-local secret references.
+- Commands, scripts, AI CLIs, MCP servers, and opt-in [full agent-desktop control](docs/desktop.md) with protected worker-local secret-reference input.
 - SHA-256 artifacts, resumable downloads, and direct worker-to-worker delivery.
 - Streaming local-to-worker uploads with verified resume and atomic no-overwrite publication.
 - Forward/reverse TCP tunnels, private-network HTTP requests, and explicit clipboard pastes.

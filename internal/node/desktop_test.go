@@ -136,6 +136,10 @@ func TestDesktopOptInAndPrivateState(t *testing.T) {
 	}
 	for _, setup := range []func(*Config){
 		func(c *Config) { c.Desktop = &DesktopConfig{} },
+		func(c *Config) { c.Desktop = &DesktopConfig{CLI: "relative-agent-desktop"} },
+		func(c *Config) {
+			c.Desktop = &DesktopConfig{CLI: filepath.Join(t.TempDir(), "agent-desktop"), Command: Command{Args: []string{"ignored"}}}
+		},
 		func(c *Config) { c.Desktop = &DesktopConfig{Library: "relative-library"} },
 		func(c *Config) {
 			c.Desktop = &DesktopConfig{Library: filepath.Join(t.TempDir(), "library"), Command: Command{Args: []string{"unexpected"}}}
@@ -161,7 +165,9 @@ func TestDesktopOptInAndPrivateState(t *testing.T) {
 	}
 	// Opting in advertises the capability without loading the library in the node.
 	library := filepath.Join(t.TempDir(), "not-installed-library")
-	n := localNode(t, func(c *Config) { c.Desktop = &DesktopConfig{Library: library} })
+	n := localNode(t, func(c *Config) {
+		c.Desktop = &DesktopConfig{Library: library, CLI: filepath.Join(t.TempDir(), "agent-desktop")}
+	})
 	if _, exists := n.providers["desktop.run"]; !exists {
 		t.Fatal("library mode did not register desktop.run")
 	}
@@ -171,7 +177,7 @@ func TestDesktopOptInAndPrivateState(t *testing.T) {
 	}
 	encoded, err := json.Marshal(n.Config.Desktop)
 	var decoded DesktopConfig
-	if err != nil || json.Unmarshal(encoded, &decoded) != nil || decoded.Library != library || decoded.Command.Command != "" {
+	if err != nil || json.Unmarshal(encoded, &decoded) != nil || decoded.Library != library || decoded.CLI != n.Config.Desktop.CLI || decoded.Command.Command != "" {
 		t.Fatal("library configuration did not round-trip")
 	}
 }
