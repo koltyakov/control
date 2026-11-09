@@ -55,6 +55,28 @@ Limits are 256 arguments, 1 MiB of combined decoded UTF-8 argv/stdin bytes, no N
 
 Run this example only for a user-authorized non-sensitive capture. The CLI runs in the task workspace; declared outputs use normal owner-bound artifact publication and direct transfers. Synchronous calls do not automatically import files. Text redaction does not mask image/file bytes, sanitize trace exports, or prevent a trusted upstream process from writing private data to disk. Do not capture credentials or publish sensitive traces. Use leases for multi-command desktop sequences and reconcile task IDs after uncertain outcomes.
 
+## Cursor overlay for visible UI
+
+The default MCP and installed skill instructions prefer a presentation-only cursor overlay at `--size 0.75` for user-visible UI actions, so the user can follow the work. Background-only accessibility-tree reads or semantic work that does not expose UI do not need an overlay unless the user requests it. A headless semantic action can still change visible UI; the overlay does not require physical input or `--headed`. This is agent guidance, not an automatic runtime setting.
+
+Use the installed CLI/platform guidance and command help. When supported, reuse a suitable upstream session or create one without tracing before taking snapshots:
+
+```sh
+control call worker desktop.run '{"command":"cli","args":["session","start","--no-trace"]}'
+```
+
+Read the returned `data.session_id`, then substitute it for `SESSION_ID` in subsequent requests:
+
+```sh
+control call worker desktop.run '{"command":"cli","args":["--session","SESSION_ID","cursor-overlay","enable","--size","0.75"]}'
+```
+
+Pass `--session ID` explicitly to every overlay, snapshot and action command, including commands submitted as tracked tasks. Control strips inherited session variables. Session-scoped CLI refs cannot be used by sessionless native credential input. Keep credentials on the protected native path and obtain fresh native refs; do not move credential input into the CLI for visual feedback.
+
+Check `data.rendered` rather than equating an enabled setting with a visible cursor. In upstream v1.2.0, Linux X11 supports rendering while Wayland saves the setting with `rendered: false`. Missing overlay support does not block otherwise permitted UI work. Do not install dependencies, change display servers, grant OS permissions, enable tracing or switch to `--headed` merely to make the cursor visible.
+
+Disable the overlay when returning to background-only work. End sessions you created when finished, but do not end a user-owned session. Respect user preferences and the installed platform's limits. Native-only profiles do not expose the cursor-overlay command.
+
 ## Enable on a worker
 
 Install only when a GUI task needs it, after user approval. Select the latest compatible release from the public [upstream releases](https://github.com/vercel-labs/agent-desktop/releases). Download its `agent-desktop-ffi-*` archive for the worker's OS/architecture and verify SHA-256 against `checksums.txt` from that same release. Extract the full package outside `workDir` into a directory private to the worker's OS user, retaining companion executables and the license. No GitHub login, compiler, Python runtime, or upstream CLI is required. Control supports ABI major 6 or 7 with a 96-byte `AdAction` layout; the isolated helper rejects other versions and layout mismatches at runtime. A newer release number alone does not establish compatibility. Do not bypass these checks or use credentials until native status succeeds. See [library setup](../examples/agent-desktop/README.md).

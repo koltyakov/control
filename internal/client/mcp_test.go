@@ -69,6 +69,16 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 			"data.complete", "nodes_observed", "subtree_truncated", "partial observation",
 			"companions outside workDir", "desktop.library",
 			"other settings", "while idle", "separate approval",
+			"user-visible UI actions", "presentation-only cursor overlay with --size 0.75",
+			"Skip the overlay for background-only accessibility-tree reads",
+			"Headless semantic actions can still expose UI", "unless the user requests it",
+			"session start --no-trace before taking snapshots", "cursor-overlay enable --size 0.75",
+			"--session ID explicitly to every overlay, snapshot and action command",
+			"native credential input sessionless with fresh native refs",
+			"Disable the overlay when returning to background-only work", "end only sessions you created",
+			"data.rendered", "no cursor was drawn", "unsupported Linux Wayland sessions",
+			"Missing overlay support does not block otherwise permitted UI work",
+			"Do not install software, change display servers, grant OS permissions, enable tracing or add --headed merely to show a cursor",
 		}
 		if name == "mcp" {
 			required = append(required,
