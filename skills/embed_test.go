@@ -27,6 +27,13 @@ func TestControlSkillProgressiveDisclosure(t *testing.T) {
 		"query that same ID", "Never treat an old missing ID as proof",
 		"does not cancel accepted work", "leaseId", "Never batch dependent clicks",
 		"Never request, retrieve, print, or paste credential values",
+		"control machines --compact --node NAME", "Reuse these results instead of repeating discovery",
+		"Do not separately fetch the same catalog unless it is missing or incomplete",
+		"a source error is not a reason to retry or bypass it",
+		"description lacks needed resources", "workDir/tasks/ID", "original task workspace",
+		"For isolated file tasks", "one tracked inline command", "hashes protected files",
+		"creates output without overwriting", "Report failed checks and partial effects",
+		"does not permit batching dependent UI actions, credential operations, or uncertain-effect retries",
 	} {
 		if !strings.Contains(core, required) {
 			t.Errorf("core omits routing or universal safeguard %q", required)
@@ -80,7 +87,7 @@ func TestControlSkillProgressiveDisclosure(t *testing.T) {
 
 func TestControlSkillReferences(t *testing.T) {
 	for name, required := range map[string][]string{
-		"runbooks":       {"control_runbooks", "contentOmitted", "--source SOURCE --file FILE", "requires", "agent-friendly", "no fixed requirement schema"},
+		"runbooks":       {"control_runbooks", "contentOmitted", "--source SOURCE --file FILE", "requires", "agent-friendly", "no fixed requirement schema", "Reuse the combined", "missing or incomplete", "Source errors do not authorize retries or bypasses"},
 		"execution":      {"maxTasks", "maxOperations", "inputStaging", "outputPublication", "32 unstarted ready steps", "control_delegate", "access.revoke", "pruned: true"},
 		"browser":        {"browser.run", "skills get core", "control_browser_view", "2FA", "not redacted", "Pause AI mutations", "dashboard stop"},
 		"desktop":        {"control_desktop", "skills get desktop", "skills get platform", "ABI major 6 or 7", "leaseId", "desktop.cli", "cursor-overlay enable", "Never put credentials in CLI args"},

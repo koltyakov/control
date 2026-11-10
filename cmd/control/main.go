@@ -344,15 +344,7 @@ func run(ctx context.Context, args []string) error {
 	case "mcp":
 		return c.MCPServer().Run(ctx, &mcp.StdioTransport{})
 	case "machines":
-		if len(args) > 1 {
-			return machineCLI(ctx, admin(), args[1:])
-		}
-		var machines []model.Node
-		if err := admin().JSON(ctx, http.MethodGet, "/v1/nodes", nil, &machines); err != nil {
-			return err
-		}
-		printJSON(machines)
-		return nil
+		return machinesCLI(ctx, admin(), args[1:])
 	case "dashboard":
 		var override *string
 		flags.Visit(func(f *flag.Flag) {
@@ -652,7 +644,7 @@ Environment: CONTROL_API, CONTROL_TOKEN
   install-mcp CLIENT [--project DIR]    Configure an AI client's MCP server
   install-skill CLIENT [--project DIR]  Install the Control CLI skill
   mcp                                  Serve MCP over stdio using saved credentials
-  machines                             List your fleet directly from the gateway
+  machines [--compact] [--node NAME_OR_ID] List fleet JSON; optionally project or filter it
   dashboard [--once] [--json] [--node NAME,...]  Gateway status, fleet activity and resources
   system NODE [--refresh]               Cached or requested system sample
   speedtest NODE [--from WORKER] [--size MiB] [--samples N] [--timeout DURATION] [--json]

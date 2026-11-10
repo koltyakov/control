@@ -74,6 +74,8 @@ control exec worker -- hostname
 control call worker node.describe
 ```
 
+For concise discovery, use `control machines --compact` or `control machines --compact --node worker`. `--node` matches an exact case-sensitive name or stable ID and keeps the JSON array shape. Plain `control machines` still returns full records. Reuse the description's cached resources and runbook catalog rather than fetching them again. See [discovery options](docs/protocol.md#gateway-observation).
+
 To also run this machine as a worker:
 
 ```sh
