@@ -2,6 +2,14 @@
 
 # Workflows, capacity and delegation
 
+## Read-only recovery and file processing
+
+When task creation is prohibited, inspect the original task with `control task get NAME ID`, then use direct `control call NAME files.read` or `files.list` for permitted file observations. MCP equivalents are `control_task_get` and `control_call` with the file method. A tracked read through `tasks.start` or `control_task_start` still creates task metadata and a workspace. It violates a no-new-task instruction even if its provider only reads. Do not use `exec`, a workflow, or a new ID as a read-only workaround. Direct calls cannot carry a lease; if an existing lease or access rule blocks the permitted route, report the blocker rather than bypassing it.
+
+For authorized PowerShell execution, choose descriptive helper names such as `Get-ProtectedFileDigest`, not aliases such as `H`/`h` for `Get-History`. Alias lookup takes precedence over a same-named function. Variable names are case-insensitive: `$q` and `$Q` are one variable. Use names such as `$csvText` and `$quoteCharacter` instead, and avoid automatic/read-only variables such as `$input`, `$args`, `$PID` and `$Host`. `-NoProfile` does not remove built-in aliases or automatic variables.
+
+Prefer an installed CSV reader over a hand-written parser or line/comma splitting. Python's `csv.DictReader` with `open(path, encoding="utf-8", newline="")`, PowerShell `Import-Csv -LiteralPath PATH -Encoding UTF8`, or .NET `Microsoft.VisualBasic.FileIO.TextFieldParser` with an explicit encoding can handle quoted multiline fields. Choose the encoding from the input contract, including BOM handling when applicable. Preserve file order for tie-breaking and validate headers, numeric types and ranges before publication. Do not install a parser or silently change malformed input. These examples do not authorize execution when only direct reads are allowed.
+
 ## Run independent work in parallel
 
 A busy worker is not unavailable. Run independent work on the same worker in parallel when resources permit. Do not wait for unrelated tasks or cancel them to free the machine. Inspect `node.describe.concurrency` or peer activity snapshots through `control_activities` for execution, operations and desktop pool `limit`, `inUse` and `queued` counts. These are advisory snapshots, not reservations. Missing fields on older workers mean unknown capacity, not zero.

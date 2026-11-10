@@ -57,7 +57,11 @@ For a command, use `control exec NAME -- COMMAND ARG...`. The CLI prints a task 
 
 `files.*` paths start at `workDir`. An `exec.run` relative `dir` starts at the invocation workspace, `workDir/tasks/ID` for tracked tasks. Use a verified absolute path or an explicit task-relative path, not a `files.*` path copied into `dir`. Declared outputs stay relative to the original task workspace.
 
-For isolated file tasks, prefer one tracked inline command that validates inputs, hashes protected files, computes the result, creates output without overwriting, then reads/hashes it and checks protected files are unchanged. Report failed checks and partial effects. Avoid separate probes or listings when that command can establish the same facts. This does not permit batching dependent UI actions, credential operations, or uncertain-effect retries.
+When task creation is prohibited, use direct `files.read`/`files.list` calls, not tracked read tasks. Reads wrapped in `tasks.start` still create tasks. Respect leases; if no permitted read route exists, report the blocker.
+
+For isolated file tasks with task creation authorized, prefer one tracked inline command that validates inputs, hashes protected files, computes the result, creates output without overwriting, then reads/hashes it and checks protected files are unchanged. Report failed checks and partial effects. Avoid separate probes or listings when that command can establish the same facts. This does not permit batching dependent UI actions, credential operations, or uncertain-effect retries.
+
+In PowerShell, avoid alias names such as `H`/`h` for helpers; variable names are case-insensitive, so `$q` and `$Q` collide. Use descriptive distinct names. Prefer existing CSV readers with explicit encoding and quoted multiline-field support over hand-written parsers. Read the execution reference for examples.
 
 For other capabilities, input artifacts, or declared outputs, pass a task specification inline or as a structured MCP object. Do not create temporary request files, scripts, or helper files merely to invoke tools. Durable tracking does not require a local request file. When the next step needs the result, submit and wait in one CLI invocation:
 

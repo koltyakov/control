@@ -31,7 +31,11 @@ func TestControlSkillProgressiveDisclosure(t *testing.T) {
 		"Do not separately fetch the same catalog unless it is missing or incomplete",
 		"a source error is not a reason to retry or bypass it",
 		"description lacks needed resources", "workDir/tasks/ID", "original task workspace",
-		"For isolated file tasks", "one tracked inline command", "hashes protected files",
+		"For isolated file tasks with task creation authorized", "one tracked inline command", "hashes protected files",
+		"When task creation is prohibited", "direct `files.read`/`files.list` calls, not tracked read tasks",
+		"Respect leases", "if no permitted read route exists, report the blocker",
+		"alias names such as `H`/`h`", "variable names are case-insensitive", "`$q` and `$Q` collide",
+		"existing CSV readers with explicit encoding and quoted multiline-field support over hand-written parsers",
 		"creates output without overwriting", "Report failed checks and partial effects",
 		"does not permit batching dependent UI actions, credential operations, or uncertain-effect retries",
 	} {
@@ -88,7 +92,7 @@ func TestControlSkillProgressiveDisclosure(t *testing.T) {
 func TestControlSkillReferences(t *testing.T) {
 	for name, required := range map[string][]string{
 		"runbooks":       {"control_runbooks", "contentOmitted", "--source SOURCE --file FILE", "requires", "agent-friendly", "no fixed requirement schema", "Reuse the combined", "missing or incomplete", "Source errors do not authorize retries or bypasses"},
-		"execution":      {"maxTasks", "maxOperations", "inputStaging", "outputPublication", "32 unstarted ready steps", "control_delegate", "access.revoke", "pruned: true"},
+		"execution":      {"maxTasks", "maxOperations", "inputStaging", "outputPublication", "32 unstarted ready steps", "control_delegate", "access.revoke", "pruned: true", "control_task_start", "still creates task metadata and a workspace", "Direct calls cannot carry a lease", "Get-ProtectedFileDigest", "Get-History", "-NoProfile", "csv.DictReader", "newline=\"\"", "Import-Csv -LiteralPath PATH -Encoding UTF8", "TextFieldParser", "quoted multiline fields", "Preserve file order", "validate headers, numeric types and ranges", "do not authorize execution"},
 		"browser":        {"browser.run", "skills get core", "control_browser_view", "2FA", "not redacted", "Pause AI mutations", "dashboard stop"},
 		"desktop":        {"control_desktop", "skills get desktop", "skills get platform", "ABI major 6 or 7", "leaseId", "desktop.cli", "cursor-overlay enable", "Never put credentials in CLI args"},
 		"transfers":      {"control_upload", "control_upload_resume", "no-overwrite", "artifacts.grant", "Only transfer a clipboard when the user requests it"},
