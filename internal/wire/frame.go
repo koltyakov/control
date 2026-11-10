@@ -51,9 +51,17 @@ func ReadFrameLimit(r io.Reader, value any, limit uint32) error {
 	if n > limit || n > MaxFrame {
 		return errors.New("control message exceeds frame limit")
 	}
-	b := make([]byte, n)
-	if _, err := io.ReadFull(r, b); err != nil {
+	// Grow with received bytes, not the claimed size. A stalled peer must not
+	// reserve a full MaxFrame buffer on each of its open streams.
+	b, err := io.ReadAll(io.LimitReader(r, int64(n)))
+	if err != nil {
 		return err
+	}
+	if len(b) != int(n) {
+		if len(b) == 0 {
+			return io.EOF
+		}
+		return io.ErrUnexpectedEOF
 	}
 	return json.Unmarshal(b, value)
 }

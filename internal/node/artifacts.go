@@ -458,14 +458,11 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 		if err := n.uploads.CheckPath(q.Path); err != nil {
 			return nil, err
 		}
-		f, err := n.root.Open(q.Path)
+		f, _, err := openRegularFile(n.root, q.Path)
 		if err != nil {
 			return nil, err
 		}
 		defer func() { _ = f.Close() }()
-		if stat, e := f.Stat(); e != nil || !stat.Mode().IsRegular() {
-			return nil, errors.New("artifact must be a regular file")
-		}
 		return n.importArtifact(ctx, f, filepath.Base(q.Path))
 	case "artifacts.list":
 		paths, err := filepath.Glob(filepath.Join(n.Config.DataDir, "artifacts", "*.json"))

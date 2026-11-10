@@ -275,6 +275,43 @@ func TestInstallationPersistsAndEnforcesSignedRegistration(t *testing.T) {
 	}
 }
 
+func TestFailedRedemptionRestoresAbsentMachineState(t *testing.T) {
+	g, server := installationFixture(t)
+	link := invite(t, server, "new-worker")
+	proof, credential := redeemRequest(t, link)
+	id := identity.ID(proof.PublicKey)
+	if _, err := g.db.Exec(`CREATE TRIGGER reject_enrollment BEFORE INSERT ON invitations BEGIN SELECT RAISE(FAIL, 'test failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := (testAdmin{URL: link.URL}).JSON(t.Context(), "POST", "/redeem", proof, nil); err == nil {
+		t.Fatal("redemption acknowledged failed persistence")
+	}
+	g.mu.Lock()
+	_, hasState := g.machineStates[id]
+	_, hasOwner := g.owners[id]
+	g.mu.Unlock()
+	if hasState || hasOwner {
+		t.Fatal("failed redemption left uncommitted identity state", hasState, hasOwner)
+	}
+	if role, _ := g.role(credential); role != "" {
+		t.Fatal("failed redemption published its credential")
+	}
+	if _, err := g.db.Exec(`DROP TRIGGER reject_enrollment`); err != nil {
+		t.Fatal(err)
+	}
+	// A later commit referencing that absent state must not insert a row with
+	// a foreign key to an identity rolled back by the failed redemption.
+	g.mu.Lock()
+	err := g.commit(change{machineStates: []string{id}})
+	g.mu.Unlock()
+	if err != nil {
+		t.Fatal("failed redemption poisoned later state commits", err)
+	}
+	if err := (testAdmin{URL: link.URL}).JSON(t.Context(), "POST", "/redeem", proof, nil); err != nil {
+		t.Fatal("explicit redemption after known persistence failure failed", err)
+	}
+}
+
 func TestReenrollmentReplacesRegistrationAndCredential(t *testing.T) {
 	g, server := installationFixture(t)
 	id, err := identity.Load(t.TempDir())

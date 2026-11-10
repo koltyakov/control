@@ -20,9 +20,10 @@ import (
 )
 
 type pipelineArgs struct {
-	Output      string `json:"output,omitempty"`
-	LargeResult bool   `json:"largeResult,omitempty"`
-	Fail        bool   `json:"fail,omitempty"`
+	Output       string `json:"output,omitempty"`
+	LargeResult  bool   `json:"largeResult,omitempty"`
+	InlineResult string `json:"inlineResult,omitempty"`
+	Fail         bool   `json:"fail,omitempty"`
 }
 
 func pipelineSpec(id string, args pipelineArgs) model.TaskSpec {
@@ -54,6 +55,9 @@ func pipelineNode(t *testing.T) (*Node, *atomic.Int32) {
 			}
 		}
 		var result any
+		if args.InlineResult != "" {
+			result = args.InlineResult
+		}
 		if args.LargeResult {
 			result = strings.Repeat("z", 2<<20)
 		}
@@ -251,6 +255,56 @@ func TestTaskPublicationFailureDoesNotReplay(t *testing.T) {
 	assertPool(t, n.publicationPool.snapshot(), 1, 0, 0)
 }
 
+func TestTaskInlineResultsBypassPublication(t *testing.T) {
+	n, _ := pipelineNode(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	release, err := acquireProviderSlot(ctx, n.publicationPool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	for _, fail := range []bool{false, true} {
+		spec := pipelineSpec(fmt.Sprintf("inline-%v", fail), pipelineArgs{InlineResult: "retained diagnostics", Fail: fail})
+		if _, err := n.startTaskContext(ctx, n.Identity.ID, spec); err != nil {
+			t.Fatal(err)
+		}
+		state := "succeeded"
+		if fail {
+			state = "failed"
+		}
+		got := pipelineFinished(t, n, ctx, n.Identity.ID, spec.ID, state)
+		if string(got.Result) != `"retained diagnostics"` || got.ResultArtifact != nil {
+			t.Fatal("inline result lost", got)
+		}
+		assertPool(t, n.publicationPool.snapshot(), 1, 1, 0)
+	}
+}
+
+func TestTaskCancelledPublicationRetainsInlineResult(t *testing.T) {
+	n, _ := pipelineNode(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	release, err := acquireProviderSlot(ctx, n.publicationPool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	spec := pipelineSpec("cancel-inline-publication", pipelineArgs{Output: "not published", InlineResult: "retained diagnostics"})
+	if _, err := n.startTaskContext(ctx, n.Identity.ID, spec); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, ctx, func() bool { return *n.publicationPool.snapshot().Queued == 1 })
+	if _, err := n.taskMethod(ctx, n.Identity.ID, "tasks.cancel", model.JSON(map[string]string{"id": spec.ID})); err != nil {
+		t.Fatal(err)
+	}
+	got := pipelineFinished(t, n, ctx, n.Identity.ID, spec.ID, "cancelled")
+	if string(got.Result) != `"retained diagnostics"` || len(got.Artifacts) != 0 || got.ResultArtifact != nil {
+		t.Fatal("cancelled publication lost inline diagnostics or created artifacts", got)
+	}
+	assertPool(t, n.publicationPool.snapshot(), 1, 1, 0)
+}
+
 func TestTaskPublicationRetainsIndependentProviderResults(t *testing.T) {
 	n, _ := pipelineNode(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -258,7 +312,7 @@ func TestTaskPublicationRetainsIndependentProviderResults(t *testing.T) {
 	shared := map[string]string{}
 	if err := n.Register(provider{cap: model.Capability{Name: "test.shared-result", InputSchema: schema(nil)}, run: func(ctx context.Context, raw json.RawMessage, e Execution) (any, error) {
 		shared["id"] = filepath.Base(e.Dir)
-		return shared, nil
+		return shared, os.WriteFile(filepath.Join(e.Dir, "output.txt"), []byte("output"), 0600)
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +324,7 @@ func TestTaskPublicationRetainsIndependentProviderResults(t *testing.T) {
 	unblock := func() { once.Do(release) }
 	defer unblock()
 	for i, id := range []string{"result-one", "result-two"} {
-		if _, err := n.startTaskContext(ctx, n.Identity.ID, model.TaskSpec{ID: id, Capability: "test.shared-result", Args: model.JSON(map[string]any{})}); err != nil {
+		if _, err := n.startTaskContext(ctx, n.Identity.ID, model.TaskSpec{ID: id, Capability: "test.shared-result", Args: model.JSON(map[string]any{}), Outputs: []string{"output.txt"}}); err != nil {
 			t.Fatal(err)
 		}
 		eventually(t, ctx, func() bool { return *n.publicationPool.snapshot().Queued == i+1 })

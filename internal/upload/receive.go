@@ -41,12 +41,12 @@ func (m *Manager) Serve(ctx context.Context, owner string, conn net.Conn, q Requ
 		if err == nil {
 			return
 		}
+		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if !acknowledged {
 			_ = wire.WriteFrame(conn, model.ErrorResponse(err))
 			return
 		}
 		e := model.OperationError(err, "unknown")
-		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		_ = wire.WriteFrame(conn, Progress{Result: current, Error: e.Message, Code: e.Code})
 	}()
 	if q.Protocol != Protocol {
@@ -74,6 +74,7 @@ func (m *Manager) Serve(ctx context.Context, owner string, conn net.Conn, q Requ
 	}
 	current = r.Result
 	if r.State == "published" {
+		_ = conn.SetWriteDeadline(time.Now().Add(IdleTimeout))
 		return wire.WriteFrame(conn, model.Response{Result: model.JSON(Ready{Protocol: Protocol, Result: r.Result})})
 	}
 	if r.State != "staging" {
@@ -153,10 +154,12 @@ func (m *Manager) Serve(ctx context.Context, owner string, conn net.Conn, q Requ
 		return Error("partial_corrupt", "durable upload prefix checksum mismatch")
 	}
 	generation := identity.NewID()
+	_ = conn.SetWriteDeadline(time.Now().Add(IdleTimeout))
 	if err = wire.WriteFrame(conn, model.Response{Result: model.JSON(Ready{Protocol: Protocol, Generation: generation, Result: r.Result})}); err != nil {
 		return err
 	}
 	acknowledged = true
+	_ = conn.SetReadDeadline(time.Now().Add(IdleTimeout))
 	kind, b, err := ReadRecord(conn, recv.buf)
 	if err != nil {
 		return err

@@ -30,6 +30,8 @@ Upload state belongs to the stable client owner, not an individual CLI/MCP proce
 
 Default attempt timeout is one hour; `--timeout` accepts one second through 24 hours. Cancellation closes the attempt and preserves the last acknowledged checkpoint. Status can briefly report `active: true` while the receiver releases the stream; wait for it to become inactive before resuming or aborting. Keepalives and status reads do not renew partial retention.
 
+Receiver network reads and writes have a 60-second idle timeout, including the initial reply, retained completion receipt, and wait for Start. Terminal-error replies have a separate five-second write limit. A stalled handshake releases its active-operation slot without publishing content.
+
 `state: published` is a retained completion receipt, not a fresh assertion that nobody has subsequently changed or deleted the workspace file. Repeating a matching completed upload returns that receipt without sending payload or publishing again. An unknown or expired ID is not proof that publication never happened.
 
 Abandon an inactive partial with:

@@ -572,7 +572,7 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 	// A signed redemption replaces this identity's previous installation, even
 	// when its name changes. Commit the rename and credential revocation together.
 	previousNode, registered := g.nodes[id]
-	previousState := g.machineStates[id]
+	previousState, hadState := g.machineStates[id]
 	if previousState.Name != "" {
 		state := previousState
 		state.Name = ""
@@ -604,7 +604,11 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 		persisted.invitations = append(persisted.invitations, h)
 	}
 	if err := g.commit(persisted); err != nil {
-		g.machineStates[id] = previousState
+		if hadState {
+			g.machineStates[id] = previousState
+		} else {
+			delete(g.machineStates, id)
+		}
 		if registered {
 			g.nodes[id] = previousNode
 		}

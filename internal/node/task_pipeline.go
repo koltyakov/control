@@ -118,7 +118,7 @@ func (n *Node) publishTaskOutputs(ctx context.Context, id string, outputs []stri
 		if err := ctx.Err(); err != nil {
 			return artifacts, err
 		}
-		file, err := root.Open(path)
+		file, _, err := openRegularFile(root, path)
 		if err != nil {
 			return artifacts, fmt.Errorf("output %s: %w", path, err)
 		}

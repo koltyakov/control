@@ -343,14 +343,25 @@ func (n *Node) finishTask(id string, ctx context.Context, result any, artifacts 
 	n.mu.Lock()
 	outputs := n.tasks[id].Spec.Outputs
 	n.mu.Unlock()
-	if result != nil || (err == nil && len(outputs) != 0) {
+	var resultJSON json.RawMessage
+	if result != nil {
+		if captured, ok := result.(json.RawMessage); ok {
+			resultJSON = captured
+		} else {
+			resultJSON = model.JSON(result)
+		}
+	}
+	largeResult := len(resultJSON) > 1<<20
+	if largeResult || (err == nil && len(outputs) != 0) {
 		n.taskPhase(id, "waiting for output publication slot")
 		release, admissionErr := acquireProviderSlot(ctx, n.publicationPool)
 		if admissionErr != nil {
 			err = errors.Join(err, admissionErr)
-			// Cancellation finalizes the task without waiting for unrelated
-			// publishers or starting new artifact work for the retained result.
-			result = nil
+			// Retain inline diagnostics even if output publication is cancelled.
+			// Large results need artifact I/O and cannot bypass admission.
+			if largeResult {
+				resultJSON = nil
+			}
 		} else {
 			defer release()
 			n.taskPhase(id, "publishing outputs")
@@ -361,23 +372,15 @@ func (n *Node) finishTask(id string, ctx context.Context, result any, artifacts 
 			}
 		}
 	}
-	var resultJSON json.RawMessage
 	var resultArtifact *model.Artifact
-	if result != nil {
-		if captured, ok := result.(json.RawMessage); ok {
-			resultJSON = captured
+	if len(resultJSON) > 1<<20 {
+		a, e := n.importArtifact(ctx, bytes.NewReader(resultJSON), "result.json")
+		if e != nil {
+			err = errors.Join(err, fmt.Errorf("store task result: %w", e))
 		} else {
-			resultJSON = model.JSON(result)
+			resultArtifact = &a
 		}
-		if len(resultJSON) > 1<<20 {
-			a, e := n.importArtifact(ctx, bytes.NewReader(resultJSON), "result.json")
-			if e != nil {
-				err = errors.Join(err, fmt.Errorf("store task result: %w", e))
-			} else {
-				resultArtifact = &a
-			}
-			resultJSON = nil
-		}
+		resultJSON = nil
 	}
 	final := func(task *model.Task) {
 		task.Phase = ""

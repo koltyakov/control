@@ -541,6 +541,52 @@ func TestUploadRecordsReuseStorageAndHandleShortIO(t *testing.T) {
 	}
 }
 
+func TestUploadHandshakeIdleDeadlines(t *testing.T) {
+	for _, phase := range []string{"ready", "start", "receipt", "error"} {
+		t.Run(phase, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m := fixture(t)
+				q := request("idle", []byte("contents"))
+				if phase == "receipt" {
+					if _, err := attempt(t, m, "owner", q, []byte("contents"), 8, true, nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if phase == "error" {
+					q.Protocol = "invalid"
+				}
+				a, b := net.Pipe()
+				defer func() { _ = a.Close(); _ = b.Close() }()
+				done := make(chan error, 1)
+				go func() { done <- m.Serve(t.Context(), "owner", a, q, func() error { return nil }, func(int64) {}) }()
+				if phase == "start" {
+					var ack model.Response
+					if err := wire.ReadFrame(b, &ack); err != nil || ack.Error != "" {
+						t.Fatal("ready", ack, err)
+					}
+				}
+				// The peer neither reads the reply nor sends Start. Include the
+				// separately bounded terminal-error write after the idle timeout.
+				time.Sleep(IdleTimeout + 6*time.Second)
+				select {
+				case err := <-done:
+					if phase != "receipt" && phase != "error" {
+						var timeout net.Error
+						if !errors.As(err, &timeout) || !timeout.Timeout() {
+							t.Fatal("stalled handshake did not time out", err)
+						}
+					}
+				case <-time.After(time.Second):
+					t.Fatal("stalled handshake retained its stream")
+				}
+				if m.active != 0 || len(m.owners) != 0 {
+					t.Fatal("stalled handshake leaked active upload slots")
+				}
+			})
+		})
+	}
+}
+
 func TestUploadDisconnectDuringVerificationDoesNotPublish(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := fixture(t)

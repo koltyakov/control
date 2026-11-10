@@ -44,7 +44,7 @@ func (c Client) FollowLogs(ctx context.Context, target, id string, offset int64,
 		if destination.InstructionOnly {
 			return c.followLogsPoll(ctx, destination.ID, id, offset, dest)
 		}
-		return peer.FollowTaskLogs(ctx, target, id, offset, emit)
+		return peer.FollowTaskLogs(ctx, destination.ID, id, offset, emit)
 	}
 	u := strings.TrimRight(c.URL, "/") + "/v1/logs?" + url.Values{"target": {target}, "id": {id}, "offset": {strconv.FormatInt(offset, 10)}}.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)

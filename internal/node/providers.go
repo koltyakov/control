@@ -320,18 +320,11 @@ func (n *Node) filesRead(ctx context.Context, args json.RawMessage, e Execution)
 	if err := n.uploads.CheckPath(q.Path); err != nil {
 		return nil, err
 	}
-	f, err := n.root.Open(q.Path)
+	f, info, err := openRegularFile(n.root, q.Path)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("path must be a regular file")
-	}
 	if _, err = f.Seek(q.Offset, io.SeekStart); err != nil {
 		return nil, err
 	}
