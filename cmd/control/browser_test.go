@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -41,5 +42,18 @@ func TestBrowserCLI(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatal("invalid browser arguments contacted a worker")
+	}
+}
+
+func TestBrowserCLIFailureDiagnostics(t *testing.T) {
+	const diagnostic = `browser request failed; exit code 7; never replay automatically; sanitized result: {"success":false,"data":{"error":"element not found [REDACTED]"}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(model.Response{Error: diagnostic, Code: "operation_failed", Outcome: "unknown"})
+	}))
+	defer server.Close()
+	c := client.Client{URL: server.URL, Token: "test"}
+	err := browserCLI(t.Context(), c, []string{"run", "worker", "--", "click", "@e1"})
+	if err == nil || !strings.Contains(err.Error(), diagnostic) {
+		t.Fatal("browser convenience CLI lost failure diagnostics or succeeded", err)
 	}
 }

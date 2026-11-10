@@ -28,6 +28,39 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = session.Close() }()
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, required := range map[string][]string{
+		"control_browser": {
+			"opt-in", "args, optional session and non-secret stdin", "--version and skills get core",
+			"task-visible", "no secret-reference substitution", "Text results are masked",
+			"live frames/files/upstream activity are not", "Pause automation", "Never replay uncertain effects",
+		},
+		"control_browser_view": {
+			"already started", "loopback", "interactive access to every session", "not read-only",
+			"Does not start a browser/dashboard or verify readiness", "control_forward_stop or MCP exit",
+			"stopping it does not close the worker browser/dashboard", "on this MCP server host",
+			"Live frames and user input are not redacted", "docs/browser.md#mcp-workflow",
+		},
+	} {
+		found := false
+		for _, tool := range tools.Tools {
+			if tool.Name != name {
+				continue
+			}
+			found = true
+			for _, fragment := range required {
+				if !strings.Contains(tool.Description, fragment) {
+					t.Errorf("%s description omits usage or safety guidance %q", name, fragment)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("missing browser tool %s", name)
+		}
+	}
 	// Check the complete installed bundle for retained workflow safeguards. The
 	// skills package separately checks that the core loads references on demand.
 	skill := string(skills.Control)
@@ -61,8 +94,13 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 			}
 		}
 		required := []string{
-			"browser.run", "browser.cli", "control_browser", "control_browser_view", "skills", "core",
-			"2FA", "dashboard", "loopback", "task-visible", "not redacted", "control_forward_stop",
+			"target worker's system.os and system.arch", "not the orchestrator's platform",
+			"Prefer native OS/architecture assets", "build targets",
+			"Control reports its node process architecture",
+			"checksum", "actual running executable before claiming an architecture mismatch",
+			"Review existing installation evidence", "high memory use alone does not establish emulation",
+			"browser.run", "control_browser", "control_browser_view", "skills", "core",
+			"2FA", "dashboard", "loopback", "task-visible", "not redacted",
 			"busy worker is not unavailable", "independent work", "maxTasks", "maxOperations", "inUse",
 			"queued", "unknown", "one separate desktop slot", "per-user file lock",
 			"inputStaging", "outputPublication", "maxTaskStaging", "maxTaskPublications", "replaying the provider",
@@ -99,11 +137,18 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 		}
 		if name == "mcp" {
 			required = append(required,
+				"arm64/aarch64", "amd64/x86_64/x64",
+				"verify the native OS architecture on that worker first",
+				"Do not silently fall back to emulation", "explain the limitation and ask",
+				"selected download's checksum and installed executable's architecture",
+				"label alone distinguishes neither ARM64 nor x64",
 				"npx skills add https://github.com/vercel-labs/agent-desktop --skill agent-desktop",
 				"never substitute a shell credential workaround",
 				"credentials are no longer visible", "no action batches", "not feature-equivalent")
 		} else {
 			required = append(required,
+				"browser.cli", "control_forward_stop",
+				"ask before an emulated fallback", "may differ from the native host",
 				"Only when a task requires GUI interaction",
 				"skip these checks and skill loads for non-GUI tasks",
 				"https://github.com/koltyakov/control/blob/main/docs/desktop.md",
@@ -124,8 +169,48 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 		plain := strings.ReplaceAll(text, "`", "")
 		for _, fragment := range required {
 			if !strings.Contains(plain, fragment) {
-				t.Errorf("%s instructions omit remote desktop guidance %q", name, fragment)
+				t.Errorf("%s instructions omit workflow guidance %q", name, fragment)
 			}
+		}
+	}
+}
+
+func TestMCPBrowserProgressiveDisclosure(t *testing.T) {
+	if words := len(strings.Fields(browserInstructions)); words > 130 {
+		t.Errorf("unconditional browser instructions have %d words; keep workflow details in the browser guide", words)
+	}
+	for _, required := range []string{
+		"For browser work only", "discover browser.run", "control_browser on the target worker",
+		"--version and skills get core", "same owner/session and fresh refs",
+		"agent-browser or Chrome requires approval", "task-visible", "cannot resolve Control secret references",
+		"never put credentials in chat/tool inputs or retrieve them through a shell",
+		"Frames, files and upstream activity are not redacted",
+		"Pause AI mutations", "explicit hand-back and a fresh snapshot", "Never replay uncertain effects",
+		"https://github.com/koltyakov/control/blob/main/docs/browser.md",
+		"loopback control_browser_view", "separate browser/forward cleanup",
+		"Skip browser probes and guidance for command-only or file-only work",
+	} {
+		if !strings.Contains(browserInstructions, required) {
+			t.Errorf("browser instructions omit routing or safety guidance %q", required)
+		}
+	}
+	for _, detailed := range []string{"dashboard,start", "4848", "browser.cli", "maxTasks", "homes/runtime/namespaces", "Passkeys/security keys"} {
+		if strings.Contains(browserInstructions, detailed) {
+			t.Errorf("unconditional browser instructions still include workflow detail %q", detailed)
+		}
+	}
+	content, err := skills.ControlFiles.ReadFile("control/references/browser.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"browser.cli", "maxTasks", "dashboard start --port 4848", "distinct worker port",
+		"all sessions in its namespace", "Passkeys/security keys are not forwarded",
+		"control_forward_stop", "dashboard stop", "can survive Control calls/restarts",
+		"https://github.com/koltyakov/control/blob/main/docs/browser.md",
+	} {
+		if !strings.Contains(string(content), required) {
+			t.Errorf("targeted browser reference omits workflow guidance %q", required)
 		}
 	}
 }

@@ -69,6 +69,30 @@ Do not request passwords or verification codes in chat, place them in task argum
 
 Viewport input does not forward a local security key, passkey authenticator, OS dialog, camera, microphone or desktop. Support depends on the target site's flow and worker environment. Headless streaming is not a general remote desktop.
 
+## MCP workflow
+
+MCP clients do not need the Control skill installed. Discover `browser.run` with `control_describe` on the intended User worker before calling `control_browser`. Its `request` has structured `args`, an optional `session` and optional non-secret `stdin`. Use the same worker and stable owner throughout the sequence.
+
+| Tool | Arguments |
+| --- | --- |
+| `control_browser` | `{"node":"worker","request":{"args":["--version"]}}` |
+| `control_browser` | `{"node":"worker","request":{"args":["skills","get","core"]}}` |
+| `control_browser` | `{"node":"worker","request":{"session":"work","args":["open","https://internal.example.com"]}}` |
+| `control_browser` | `{"node":"worker","request":{"session":"work","args":["snapshot","-i"]}}` |
+
+Read the returned installed-version guidance before acting. Load it once per worker, backend and version per session, and reload if those change. Refresh refs after navigation or human input. Installation still needs approval; missing browser support does not authorize installation or a System-context fallback. Default state is private to the profile/owner, not the worker's ordinary Chrome profile. Commands share `maxTasks` and serialize per owner, not against dashboard input. Explicit upstream overrides are not a sandbox.
+
+For [manual login/2FA](#human-takeover-and-2fa), pause AI mutations and explicitly start the dashboard before forwarding it:
+
+| Tool | Arguments |
+| --- | --- |
+| `control_browser` | `{"node":"worker","request":{"args":["dashboard","start","--port","4848"]}}` |
+| `control_browser_view` | `{"node":"worker","port":4848}` |
+
+Choose a different worker port for each concurrent owner dashboard. Inspect the start result before opening the view. The view does not start services or verify readiness and gives interactive access to every session in that namespace. Its loopback URL is on the MCP server host, not necessarily the AI client's machine. Frames, input and upstream activity are not redacted; never send passwords or one-time codes through `control_browser`. Security keys/passkeys are not forwarded. Resume automation only after explicit hand-back and a fresh snapshot.
+
+Stop the local view with `control_forward_stop` and its returned forward `id`. This does not stop remote processes. Close only sessions you created with `control_browser` request `{"session":"work","args":["close"]}`, and stop the dashboard when no longer needed with `{"args":["dashboard","stop"]}`, using the same worker and owner/profile. Daemons can survive calls and Control restarts; a completed task is not browser shutdown. See [state, privacy and cleanup](#state-privacy-and-cleanup) for retention and lifecycle limits. Never replay uncertain effects.
+
 ## CLI, MCP and tasks
 
 The capability accepts structured arguments, optional session and optional non-secret stdin:
@@ -86,6 +110,8 @@ Browser commands share `maxTasks` execution admission. An owner-specific file lo
 
 Each CLI invocation uses the caller/task deadline and existing process-tree cancellation. Cancellation cannot undo effects or guarantee termination of an already detached upstream daemon. There is no automatic replay. Use explicit task IDs for retained failures and artifacts. Save file outputs in the task workspace and declare them; large artifacts use existing direct delivery instead of embedding bytes in orchestration messages.
 
+For direct `screenshot [selector] PATH` commands, Control resolves a relative output path against the current invocation's workspace before forwarding it. This also works when the session's daemon started in another directory. Absolute paths are unchanged. Batch commands and ambiguous or unfamiliar flag syntax remain untouched; use absolute worker paths in those cases. Other file-producing commands retain upstream path behavior.
+
 ## State, privacy and cleanup
 
 Defaults are private to the profile and stable caller owner. Control uses `<dataDir>/browser/cHASH` as the upstream home and an opaque profile/owner namespace. It replaces inherited `AGENT_BROWSER_*`, home and XDG home settings, and supplies an explicit empty configuration unless `browser.config` is set. This prevents ambient sessions/configuration from silently selecting another browser or enabling tracing. Chromium, session state and upstream auth vault files under that home are separate from the worker's ordinary browser home.
@@ -93,6 +119,8 @@ Defaults are private to the profile and stable caller owner. Control uses `<data
 Runtime socket/PID/stream files use the OS user's cache directory under `control/b`, then upstream namespace directories, keeping Unix-domain socket paths shorter than paths under arbitrary task workspaces. Both private roots must be outside `workDir`, and symlink directory leaves are rejected. Unix directories are mode `0700`; Windows depends on the worker profile's ACLs. Long user-cache paths or explicit long upstream session names can still exceed upstream Unix socket limits.
 
 Decoded argv/stdin are limited to 256 arguments and 1 MiB combined UTF-8 bytes, with NUL refused. Platform process limits may be lower. Each output stream is captured up to 2 MiB. Raw stdout/stderr never enter task logs. The result is `{success,data,process:{exitCode,stderr}}`; `data` retains the upstream JSON value or wraps text as `{stdout}`. Nonzero exit, an upstream `success:false`, or failed array/batch entries fail Control execution while tracked tasks retain sanitized partial results. Oversized, binary or launch-failure diagnostics are suppressed rather than publishing partial raw output.
+
+Failed convenience CLI/MCP calls include the exit code and up to 4 KiB of the already-sanitized result in the error, with an explicit truncation notice when needed. They still fail and never replay the command. Use a tracked task when the complete sanitized failure result is needed.
 
 Text results mask configured worker secret values and private home/runtime roots. **Live frames, input, screenshots, downloads, upstream console/activity feeds, traces, cookies and saved state are not redacted.** Do not enable sensitive recording or export profiles as ordinary task outputs. The local dashboard grants interactive authority over all sessions in that namespace, including session creation, rather than read-only access to one page. Keep both ends on loopback and use authorized Control forwarding. Do not expose raw CDP or dashboard ports publicly. Other processes running as the same OS user, or providers with unrestricted execution, remain trusted.
 

@@ -122,7 +122,8 @@ func (n *Node) browserRun(ctx context.Context, raw json.RawMessage, e Execution)
 	}
 	values[""] = home
 	values["\x00runtime"] = runtime
-	cmd := command(ctx, Command{Command: n.Config.Browser.CLI, Args: append([]string{"--json"}, r.Args...)}, e.Dir)
+	args := browserScreenshotArgs(r.Args, e.Dir)
+	cmd := command(ctx, Command{Command: n.Config.Browser.CLI, Args: append([]string{"--json"}, args...)}, e.Dir)
 	cmd.Env = browserEnvironment(cmd.Env, home, runtime, namespace, config, r.Session)
 	if err := n.checkBrowserVersion(ctx, cmd.Env, e.Dir); err != nil {
 		return nil, err
@@ -157,7 +158,19 @@ func (n *Node) browserRun(ctx context.Context, raw json.RawMessage, e Execution)
 		return nil, errors.New("cannot sanitize browser response")
 	}
 	if !ok {
-		return json.RawMessage(clean), errors.New("browser request failed; inspect sanitized result; never replay automatically")
+		// Synchronous RPCs carry errors, not partial provider results. Include
+		// only already-redacted, bounded text so CLI/MCP callers can diagnose
+		// failures without changing the shared RPC contract or replaying work.
+		diagnostic := string(clean)
+		const maxDiagnostic = 4096
+		if len(diagnostic) > maxDiagnostic {
+			diagnostic = diagnostic[:maxDiagnostic]
+			for !utf8.ValidString(diagnostic) {
+				diagnostic = diagnostic[:len(diagnostic)-1]
+			}
+			diagnostic += " [truncated; full sanitized result requires a tracked task]"
+		}
+		return json.RawMessage(clean), fmt.Errorf("browser request failed; exit code %d; never replay automatically; sanitized result: %s", cmd.ProcessState.ExitCode(), diagnostic)
 	}
 	return json.RawMessage(clean), nil
 }

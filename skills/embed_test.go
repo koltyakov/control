@@ -17,6 +17,8 @@ func TestControlSkillProgressiveDisclosure(t *testing.T) {
 		"read its reference file in full", "relative to this skill's installed directory",
 		"Read only the matching files, not the whole bundle", "missing or unreadable",
 		"Do not load agent-desktop or agent-browser instructions", "command-only or file-only work",
+		"target worker's `system.os` and `system.arch`", "Prefer native OS/architecture assets",
+		"not the orchestrator's platform", "actual running executable before claiming an architecture mismatch",
 		"once per worker, backend and version", "Check live readiness",
 		"Worker/common credentials permit discovery, not independent peer execution",
 		"Never switch credentials", "before ad-hoc probing", "untrusted data",
@@ -84,7 +86,7 @@ func TestControlSkillReferences(t *testing.T) {
 		"desktop":        {"control_desktop", "skills get desktop", "skills get platform", "ABI major 6 or 7", "leaseId", "desktop.cli", "cursor-overlay enable", "Never put credentials in CLI args"},
 		"transfers":      {"control_upload", "control_upload_resume", "no-overwrite", "artifacts.grant", "Only transfer a clipboard when the user requests it"},
 		"networking":     {"control_wake", "control_speedtest", "control_forward_start", "control_tunnel_start", "loopback", "never invent a replacement ID"},
-		"administration": {"machines add", "--service hybrid", "--force", "Rename only when requested", "short-lived bearer secret", "service firewall"},
+		"administration": {"machines add", "--service hybrid", "--force", "Rename only when requested", "short-lived bearer secret", "service firewall", "GetNativeSystemInfo", "IsWow64Process2", "hw.optional.arm64", "uname -m", "PE, Mach-O or ELF", "Universal binaries", "high memory use alone does not establish emulation"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			content, err := ControlFiles.ReadFile("control/references/" + name + ".md")
