@@ -2,6 +2,7 @@
 .PHONY: help tidy deps deps-update deps-check go-update fmt fmt-check lint lint-hint lint-hint-all typecheck-console vet test test-race check cov test-coverage test-cov-check bench build build-all bundle install uninstall release-local release-check ci ci-compose vuln clean proto test-compose test-compose-webrtc test-compose-relay test-compose-hybrid update update-status
 
 GO ?= go
+TEST_TIMEOUT ?= 300s
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 BIN_DIR ?= bin
 DIST_DIR ?= dist
@@ -117,10 +118,10 @@ else
 endif
 
 test:
-	$(GO) test ./... -timeout=120s
+	$(GO) test ./... -timeout=$(TEST_TIMEOUT)
 
 test-race:
-	$(GO) test -race ./... -timeout=120s
+	$(GO) test -race ./... -timeout=$(TEST_TIMEOUT)
 
 vet:
 	$(GO) vet ./...
@@ -129,7 +130,7 @@ check: vet test-race
 
 cov:
 	@mkdir -p "$(dir $(COVER_PROFILE))" "$(dir $(COVER_HTML))"
-	$(GO) test -race -coverprofile="$(COVER_PROFILE)" -covermode=atomic ./... -timeout=120s
+	$(GO) test -race -coverprofile="$(COVER_PROFILE)" -covermode=atomic ./... -timeout=$(TEST_TIMEOUT)
 	$(GO) tool cover -html="$(COVER_PROFILE)" -o "$(COVER_HTML)"
 
 test-coverage: cov

@@ -98,6 +98,8 @@ make test-compose
 
 This builds the images, runs vet and the race-enabled Go suite, and runs cross-container tests twice. The first deployment requires WebRTC connections. The second uses fresh node state with `relayOnly: true` and requires relay connections. A silent fallback to the relay fails the WebRTC test.
 
+The core Go suite has a 300-second per-package timeout in native CI, Compose, and the Make targets used by release verification. This budget includes serial fixtures and queued parallel tests, not just each test's execution time. Override `TEST_TIMEOUT` for local Make runs when needed. The cross-container suite retains its separate 180-second timeout.
+
 The script runs the core Go suite once, preserves the failing test's exit status, prints service logs on failure, and removes its containers, network, and volumes when finished. Each invocation uses a unique Compose project name. Images and build caches remain for subsequent runs.
 
 Run one transport mode when investigating a failure:

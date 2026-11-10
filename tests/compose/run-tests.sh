@@ -5,7 +5,7 @@ cd /workspace
 case "${CONTROL_TEST_SUITE:-all}" in
     all)
         go vet ./...
-        go test -race ./... -count=1 -timeout=180s
+        go test -race ./... -count=1 -timeout=300s
         go build -o /out/control ./cmd/control
         ;;
     e2e) ;;

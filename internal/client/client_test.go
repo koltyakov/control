@@ -68,10 +68,17 @@ func TestLocalAPIAndMCP(t *testing.T) {
 	if len(tools.Tools) < 10 {
 		t.Fatal("missing routing tools")
 	}
-	for _, name := range []string{"control_nodes", "control_describe", "control_call"} {
-		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: map[string]any{"node": "local", "method": "files.list", "params": map[string]any{}}})
+	for _, tool := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"control_nodes", map[string]any{}},
+		{"control_describe", map[string]any{"node": "local"}},
+		{"control_call", map[string]any{"node": "local", "method": "files.list", "params": map[string]any{}}},
+	} {
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool.name, Arguments: tool.args})
 		if err != nil || result.IsError {
-			t.Fatalf("%s: %v %+v", name, err, result)
+			t.Fatalf("%s: %v %s", tool.name, err, model.JSON(result))
 		}
 	}
 	worker, err := node.New(node.Config{Name: "worker", Gateway: gatewayServer.URL, Token: token, DataDir: t.TempDir(), WorkDir: t.TempDir(), RelayOnly: true})
@@ -102,7 +109,7 @@ func TestLocalAPIAndMCP(t *testing.T) {
 		t.Helper()
 		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
 		if err != nil || result.IsError {
-			t.Fatalf("%s: %v %+v", name, err, result)
+			t.Fatalf("%s: %v %s", name, err, model.JSON(result))
 		}
 		if dest != nil {
 			if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), dest); err != nil {
