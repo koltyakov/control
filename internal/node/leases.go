@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/koltyakov/control/internal/identity"
@@ -60,6 +61,27 @@ func (n *Node) lockLeaseSettled(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+// reserveLeaseSensitiveStream orders workspace uploads and clipboard access
+// against lease acquisition. Artifact and TCP streams deliberately do not use
+// this guard. Maintenance admission is separate and must already be held.
+func (n *Node) reserveLeaseSensitiveStream(ctx context.Context) (func(), error) {
+	if err := n.lockLeaseSettled(ctx); err != nil {
+		return nil, err
+	}
+	defer n.mu.Unlock()
+	if n.lease != nil && (time.Now().Before(n.lease.Expires) || n.leaseBusy()) {
+		return nil, &model.RPCError{Code: "node_leased", Outcome: "unknown", Message: "node is leased; upload and clipboard streams require an unleased node"}
+	}
+	// The check and reservation share n.mu with leases.acquire. Neither side
+	// can pass admission in the gap between the other's check and publication.
+	n.activeInvocations++
+	return sync.OnceFunc(func() {
+		n.mu.Lock()
+		n.activeInvocations--
+		n.mu.Unlock()
+	}), nil
 }
 
 func (n *Node) leaseMethod(owner, method string, args json.RawMessage) (any, error) {

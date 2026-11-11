@@ -61,4 +61,6 @@ Interrupted or corrupt files never replace destination entries, and their tempor
 }
 ```
 
+Both methods require an unleased serving node, including reverse reads, the lease owner and the trusted local API. A lease rejection returns `node_leased` before clipboard access or destination publication; no streaming `leaseId` is accepted. An admitted clipboard operation blocks lease acquisition until transfer and cleanup finish, without being preempted. Perform clipboard operations before acquiring or after releasing the execution lease. A node merely relaying bytes retains maintenance admission but is not blocked by its own execution lease. Older workers allow the previous overlap. See [lease policy](protocol.md#shared-pool-leases).
+
 Clipboard text and file bytes can contain passwords or other private information. Transfers are encrypted, but clipboard contents are not secret-masked. Do not use this to retrieve [worker-local secrets](secrets.md). Results and activity records exclude clipboard text; text is still present in the authorized paste request and destination clipboard. Clipboard streams hold maintenance admission until closed so managed updates do not interrupt a paste.

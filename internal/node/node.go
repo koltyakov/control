@@ -97,7 +97,7 @@ type Node struct {
 	closeOnce           sync.Once
 	closeErr            error
 	closed              bool
-	activeInvocations   int
+	activeInvocations   int // Synchronous providers and lease-sensitive streams.
 	activityMu          sync.Mutex
 	activities          map[string]*activityHandle
 	recentActivities    []model.Activity

@@ -88,6 +88,8 @@ This supports the initial single-gateway deployment without an external database
 
 Sequential-only workflow execution and first-match selection are superseded by [D060](#d060-bounded-parallel-workflows-and-load-preferring-selection). Leases are unchanged.
 
+Upload and clipboard admission is tightened by [D131](#d131-lease-sensitive-upload-and-clipboard-admission). The artifact/TCP exemptions below and leased-task lifetime rules remain unchanged.
+
 Machine selection returns an online label/capability match. Exclusive execution leases are acquired atomically on the selected node, persisted there, and checked when tasks are accepted. Selection itself is advisory.
 
 A lease cannot be released while its tasks remain active. Expiry prevents new submissions under that lease, but does not let another owner overlap a still-running task. Leases reserve execution capacity rather than revoking existing artifact or TCP access.
@@ -1137,3 +1139,13 @@ Project the existing fleet-scoped directory response locally rather than requiri
 Reserve output-publication capacity only for successful declared-output imports or JSON results above the existing 1 MiB inline limit. Small results require no artifact I/O and must not wait behind unrelated transfers. Keep independent JSON capture under provider admission, large-result artifact bounds, durable task completion, ownership, leases and maintenance protection unchanged.
 
 Cancellation while awaiting output publication retains captured inline diagnostics but does not import outputs or bypass admission for a large result. Large unpublished results may still be discarded, and no provider is replayed. This refines D124's admission condition and cancellation-result behavior. See [worker concurrency](protocol.md#worker-concurrency).
+
+## D131: Lease-sensitive upload and clipboard admission
+
+Reject new `files.upload.open`, `clipboard.open` and `clipboard.paste` streams while the serving node has an unexpired execution lease or an expired lease still held by unfinished leased tasks. Apply the rule to every caller, including the lease owner and local API. Uploads and clipboard operations can publish workspace files or interact with shared desktop state outside provider admission. Artifact operations and TCP access retain D010's existing exemptions; relaying bytes alone does not reserve execution capacity.
+
+After authorization and maintenance admission, wait cancellably for pending lease persistence, then check lease state and reserve an active invocation under the same node mutex used by lease acquisition. A stream admitted first makes lease acquisition fail as busy. A lease committed first rejects the stream. Failed lease persistence leaves the previous state authoritative. Never hold the mutex during clipboard, disk or network I/O. Release the reservation once, after the operation's owned I/O and cleanup finish, including verification, publication and completion replies.
+
+Do not preempt in-flight operations to grant a lease. Existing cancellation, authority expiry, deadlines, shutdown and uncertain-effect reconciliation remain unchanged. Inactive upload partials do not reserve execution capacity, but resume attempts require fresh admission. Status and owner-authorized abort remain available during a lease. All upload-open requests pass the gate, even retained-receipt requests; use status to reconcile during a lease.
+
+Keep stream framing and request schemas unchanged, with no streaming `leaseId` or owner bypass. Return `node_leased` on a lease rejection without authorizing automatic retry. Upload before acquiring the lease and use clipboard operations before acquiring or after releasing it. Older workers do not enforce this restriction; upgrade every relevant worker before relying on it. Leases are node/profile-wide, not host-wide locks across Hybrid contexts, humans or unrelated OS processes. See [lease policy](protocol.md#shared-pool-leases), [uploads](uploads.md) and [clipboard permissions](clipboard.md#permissions).

@@ -185,6 +185,7 @@ func TestClipboardStreamLimit(t *testing.T) {
 		_ = conn.Close()
 	}
 	eventually(t, ctx, func() bool { return !worker.updateBusy() })
+	assertNoLeaseStreams(t, worker)
 }
 
 func TestClipboardAPIAndCancellation(t *testing.T) {

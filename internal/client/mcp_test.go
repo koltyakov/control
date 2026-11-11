@@ -33,6 +33,15 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, required := range map[string][]string{
+		"control_upload": {
+			"unleased destination", "including for the lease owner", "before acquiring an execution lease", "status and abort remain available",
+		},
+		"control_upload_resume": {
+			"unleased destination", "including for the lease owner", "status and abort remain available",
+		},
+		"control_clipboard_paste": {
+			"serving node must be unleased", "lease owner and reverse reads", "do not retry an uncertain paste",
+		},
 		"control_browser": {
 			"opt-in", "args, optional session and non-secret stdin", "--version and skills get core",
 			"task-visible", "no secret-reference substitution", "Text results are masked",
@@ -58,7 +67,7 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("missing browser tool %s", name)
+			t.Errorf("missing tool %s", name)
 		}
 	}
 	// Check the complete installed bundle for retained workflow safeguards. The
@@ -76,6 +85,11 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 		skill += "\n" + string(content)
 	}
 	skill = strings.ReplaceAll(skill, "\r\n", "\n")
+	for _, fragment := range []string{"Upload before acquiring an execution lease", "Status and owner-authorized abort remain available during leases", "Both clipboard methods require an unleased serving node", "artifact and TCP access retain their existing exemptions"} {
+		if !strings.Contains(skill, fragment) {
+			t.Errorf("skill bundle omits stream lease guidance %q", fragment)
+		}
+	}
 	for name, text := range map[string]string{
 		"mcp":               session.InitializeResult().Instructions,
 		"skill bundle LF":   skill,

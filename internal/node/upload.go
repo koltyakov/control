@@ -31,6 +31,12 @@ func (n *Node) serveUpload(ctx context.Context, caller string, conn net.Conn, pa
 		return
 	}
 	defer release()
+	releaseInvocation, err := n.reserveLeaseSensitiveStream(ctx)
+	if err != nil {
+		_ = writeFrame(conn, model.ErrorResponse(err))
+		return
+	}
+	defer releaseInvocation()
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()); _ = conn.Close() })
 	defer stop()
 	activity := n.beginActivity(ctx, "transfer", upload.OpenMethod, n.executionOwner(ctx, caller), caller)

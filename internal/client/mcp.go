@@ -184,6 +184,7 @@ func (c Client) MCPServer() *mcp.Server {
 			description = "Explicitly resume a retained upload after inspecting its status. localPath is on the MCP server host and must match the original content. Reuses the pinned worker identity and verifies its durable prefix. Does not silently start a replacement or overwrite files."
 			required = []string{"node", "id", "localPath"}
 		}
+		description += " Requires an unleased destination, including for the lease owner. Upload before acquiring an execution lease; status and abort remain available during it."
 		properties := map[string]any{"node": text, "id": text, "localPath": text, "timeoutSeconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 86400}}
 		if !resume {
 			properties["path"] = text
@@ -255,7 +256,7 @@ func (c Client) MCPServer() *mcp.Server {
 		}
 		return c.TestConnection(ctx, spec)
 	})
-	local("control_clipboard_paste", "Paste this machine's clipboard onto a remote node. Text goes to its desktop clipboard; copied regular files stream into an existing dir relative to the worker's workDir, default '.'. Set reverse to paste the remote clipboard onto this machine, with dir then a local directory. Transfer happens only on this explicit call. Does not delete source files, overwrite files, or sync automatically. Requires clipboard.paste permission, or clipboard.open for reverse. Both desktops need clipboard access for text. Returns metadata only, never clipboard text. Do not read or transfer a user's clipboard without their request, and do not retry an uncertain paste.", map[string]any{"node": text, "dir": text, "reverse": map[string]any{"type": "boolean"}}, []string{"node"}, func(ctx context.Context, args json.RawMessage) (any, error) {
+	local("control_clipboard_paste", "Paste this machine's clipboard onto a remote node. Text goes to its desktop clipboard; copied regular files stream into an existing dir relative to the worker's workDir, default '.'. Set reverse to paste the remote clipboard onto this machine, with dir then a local directory. Transfer happens only on this explicit call. Does not delete source files, overwrite files, or sync automatically. Requires clipboard.paste permission, or clipboard.open for reverse. The serving node must be unleased, including for the lease owner and reverse reads. Both desktops need clipboard access for text. Returns metadata only, never clipboard text. Do not read or transfer a user's clipboard without their request, and do not retry an uncertain paste.", map[string]any{"node": text, "dir": text, "reverse": map[string]any{"type": "boolean"}}, []string{"node"}, func(ctx context.Context, args json.RawMessage) (any, error) {
 		var spec ClipboardSpec
 		if err := json.Unmarshal(args, &spec); err != nil {
 			return nil, err

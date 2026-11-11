@@ -4,6 +4,8 @@
 
 ## Upload local files
 
+Upload before acquiring an execution lease. New opens, resumes and receipt-open requests require an unleased destination, even for the lease owner. Status and owner-authorized abort remain available during leases; inactive partials do not block lease acquisition. An already admitted upload blocks acquisition until its publication/reply/cleanup finishes and is not preempted. Older workers do not enforce this restriction; see the protocol lease policy.
+
 For a regular file on this orchestrator, use `control upload start WORKER LOCAL_PATH REMOTE_PATH --id UNIQUE_ID` or MCP `control_upload` with `node`, explicit `id`, `localPath`, and `path`. The MCP source path is on the machine running the MCP server. Discover `node.describe.fileUpload` first. Remote paths use `/` separators relative to `workDir` and require an existing parent directory. Uploads stream binary bytes through one bulk connection, verify SHA-256, and use atomic no-overwrite publication. They do not install or execute the uploaded file. No clipboard access or local enrolled node is needed; explicit local API routing is unsupported.
 
 Do not transfer bulk files using repeated base64 `files.write` calls or one CLI process per chunk. Each process creates a new transport identity and handshake; the gateway defaults to 120 new identities per minute per account. Larger chunks only reduce that churn, not reuse the connection. Use the upload tool rather than raising limits or restarting services.
@@ -19,6 +21,8 @@ control artifact get worker ARTIFACT_ID ./result.bin
 ```
 
 ## Paste a clipboard
+
+Both clipboard methods require an unleased serving node, including the lease owner and reverse reads. Perform the transfer before acquiring or after releasing that node's execution lease. An admitted clipboard operation blocks acquisition through completion/cleanup. There is no streaming leaseId or automatic retry/fallback. A node merely relaying bytes is not lease-sensitive; artifact and TCP access retain their existing exemptions.
 
 Only transfer a clipboard when the user requests it. Use `control clipboard paste NAME` or MCP `control_clipboard_paste` with `node`. Text replaces the remote OS clipboard; copied regular files stream into the node's workspace when the call is made. `--dir incoming` chooses an existing directory relative to `workDir`. With `--reverse` or MCP `reverse: true`, the remote clipboard is the source and `dir` is an existing local directory. Results report only basenames and byte counts, never clipboard text. Do not inspect clipboard text through generic calls or use clipboard transfer to retrieve secrets.
 
