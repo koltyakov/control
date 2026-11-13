@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"testing"
 )
 
@@ -35,8 +36,8 @@ func TestIndependentPublicationOnlyBlocksUnresolvedCommitsAndSwitch(t *testing.T
 		t.Fatal(err)
 	}
 	m.Version = "v3"
-	if _, err := r.Publish(m, "test"); err == nil {
-		t.Fatal("superseded unresolved node commit")
+	if _, err := r.Publish(m, "test"); err == nil || !strings.Contains(err.Error(), "unresolved node update commits: worker") {
+		t.Fatal("unresolved node commit was superseded or hidden behind a generic install error", err)
 	}
 	if err := r.NodeInstall(d.ID, "worker", false); err != nil {
 		t.Fatal(err)
@@ -44,8 +45,8 @@ func TestIndependentPublicationOnlyBlocksUnresolvedCommitsAndSwitch(t *testing.T
 	if err := r.SetGatewayState(d.ID, "switching"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Publish(m, "test"); err == nil {
-		t.Fatal("superseded gateway switch")
+	if _, err := r.Publish(m, "test"); err == nil || !strings.Contains(err.Error(), "gateway update switch is in progress") {
+		t.Fatal("gateway switch was superseded or hidden behind a generic install error", err)
 	}
 	if err := r.SetGatewayState(d.ID, "error"); err != nil {
 		t.Fatal(err)

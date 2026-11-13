@@ -67,7 +67,7 @@ func rememberInstallation(ctx context.Context, binary, config, mode string, cfg 
 }
 
 // ScheduleRetiredUninstall starts an independent cleanup process. It must outlive
-// both the node and its supervisor, including their service-manager process group.
+// the node runtime, including its service-manager process group.
 // Unmanaged node processes have no installation to remove.
 func ScheduleRetiredUninstall(config, id string) error {
 	config, err := filepath.Abs(config)
@@ -91,7 +91,10 @@ func ScheduleRetiredUninstall(config, id string) error {
 	if err != nil {
 		return err
 	}
-	sha := buildinfo.Current().SHA256
+	sha, err := buildinfo.ExecutableSHA256()
+	if err != nil {
+		return err
+	}
 	if len(sha) != 64 {
 		return errors.New("cannot identify the running uninstall executable")
 	}

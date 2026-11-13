@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -68,6 +70,16 @@ func main() {
 	if len(args) > 0 && args[0] == "__uninstall" {
 		if err := retiredUninstallCLI(ctx, args[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, "control uninstall:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if (len(args) == 1 || len(args) == 3) && args[0] == "__update-handoff" {
+		if err := runManagedHandoff(ctx, args[1:]...); err != nil {
+			if os.Stdout != os.Stderr {
+				_, _ = fmt.Fprintf(os.Stdout, "error: %.1024s\n", err.Error())
+			}
+			fmt.Fprintln(os.Stderr, "control update handoff:", err)
 			os.Exit(1)
 		}
 		return
@@ -308,6 +320,7 @@ func run(ctx context.Context, args []string) error {
 		if *token != "" {
 			cfg.Token = *token
 		}
+		ctx = withManagedNodeProfile(ctx, *path)
 		return managed(ctx, cfg.DataDir, commandArgs, func(ctx context.Context, apply func(string) error) (err error) {
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
@@ -604,12 +617,25 @@ func readJSON(value string) (json.RawMessage, error) {
 }
 
 func serve(ctx context.Context, server *http.Server, cert, key string) error {
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = listener.Close() }()
+	if cert != "" || key != "" {
+		if _, err = tls.LoadX509KeyPair(cert, key); err != nil {
+			return err
+		}
+	}
+	if err = signalManagedReady(ctx); err != nil {
+		return err
+	}
 	result := make(chan error, 1)
 	go func() {
 		if cert != "" || key != "" {
-			result <- server.ListenAndServeTLS(cert, key)
+			result <- server.ServeTLS(listener, cert, key)
 		} else {
-			result <- server.ListenAndServe()
+			result <- server.Serve(listener)
 		}
 	}()
 	slog.Info("listening", "address", server.Addr)

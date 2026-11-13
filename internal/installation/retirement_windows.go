@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/koltyakov/control/internal/node"
+
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -65,7 +67,11 @@ func removeRetiredStartup(ctx context.Context, p installedNode) error {
 	if err != nil {
 		return err
 	}
-	if len(args) != 3 || !strings.EqualFold(filepath.Clean(args[0]), p.Binary) || args[1] != "__service" || !strings.EqualFold(filepath.Clean(args[2]), p.Config) {
+	cfg, err := node.LoadConfig(p.Config)
+	if err != nil {
+		return err
+	}
+	if len(args) != 3 || (!strings.EqualFold(filepath.Clean(args[0]), p.Binary) && !strings.EqualFold(filepath.Clean(args[0]), WindowsRuntimePath(cfg.DataDir))) || args[1] != "__service" || !strings.EqualFold(filepath.Clean(args[2]), p.Config) {
 		return errors.New("system service belongs to another installation")
 	}
 	return s.Delete()
@@ -89,7 +95,7 @@ func grantServiceSelfRemoval(ctx context.Context, s *mgr.Service, binary, config
 		return err
 	}
 	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
-		AccessPermissions: windows.DELETE | windows.SERVICE_QUERY_CONFIG,
+		AccessPermissions: windows.DELETE | windows.SERVICE_QUERY_CONFIG | windows.SERVICE_QUERY_STATUS | windows.SERVICE_START,
 		AccessMode:        windows.GRANT_ACCESS,
 		Trustee: windows.TRUSTEE{TrusteeForm: windows.TRUSTEE_IS_SID, TrusteeType: windows.TRUSTEE_IS_USER,
 			TrusteeValue: windows.TrusteeValueFromSID(sid)},

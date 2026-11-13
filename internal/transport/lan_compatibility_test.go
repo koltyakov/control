@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/gateway"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
@@ -102,7 +103,7 @@ func TestLANMetadataNegotiatesBeforeAutomaticReporting(t *testing.T) {
 			if tc.label {
 				labels["lan"] = "home"
 			}
-			p := New(Config{Gateway: s.URL, Token: "fixture", Identity: id, Node: model.Node{ID: id.ID, PublicKey: id.Public, Name: "worker", Labels: labels}}, nil)
+			p := New(Config{Gateway: s.URL, Token: "fixture", Identity: id, Node: model.Node{ID: id.ID, PublicKey: id.Public, Name: "worker", Labels: labels, Software: buildinfo.Info{Runtime: "supervised"}}}, nil)
 			defer func() { _ = p.Close() }()
 			var samples atomic.Int32
 			p.wakeSnapshot = func() ([]model.WakeInterface, error) {
@@ -114,6 +115,9 @@ func TestLANMetadataNegotiatesBeforeAutomaticReporting(t *testing.T) {
 				t.Fatal("rolling-upgrade registration failed", err)
 			}
 			node := <-observed
+			if tc.nodeBytes && node.Software.Runtime != "supervised" || !tc.nodeBytes && node.Software.Runtime != "" {
+				t.Fatal("runtime metadata changed legacy registration bytes", node.Software)
+			}
 			if (len(node.WakeInterfaces) > 0) != tc.wantInterfaces || (samples.Load() > 0) != tc.wantInterfaces {
 				t.Fatal("incorrect metadata negotiation", node, samples.Load())
 			}

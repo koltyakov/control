@@ -11,6 +11,9 @@ import (
 
 func TestMain(m *testing.M) {
 	if os.Getenv("CONTROL_TEST_CLI_MAIN") == "1" {
+		if handled := testManagedFixture(); handled {
+			return
+		}
 		main()
 		return
 	}

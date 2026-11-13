@@ -70,7 +70,10 @@ func PrepareStartupChange(ctx context.Context, config, id, mode string) error {
 	if err != nil {
 		return err
 	}
-	sha := buildinfo.Current().SHA256
+	sha, err := buildinfo.ExecutableSHA256()
+	if err != nil {
+		return err
+	}
 	if len(sha) != 64 {
 		return errors.New("cannot verify the startup migration helper")
 	}
@@ -84,7 +87,7 @@ func PrepareStartupChange(ctx context.Context, config, id, mode string) error {
 	return launchDetachedUninstall(helper, []string{"__startup-system", p.Config, cfg.DataDir, id})
 }
 
-// ApplyStartupChange runs only in the detached helper after the old supervisor
+// ApplyStartupChange runs only in the detached helper after the old runtime
 // exits. It validates the profile again and retains all identity and work files.
 func ApplyStartupChange(ctx context.Context, config, dataDir, id string) error {
 	if runtime.GOOS != "windows" {
@@ -101,7 +104,7 @@ func ApplyStartupChange(ctx context.Context, config, dataDir, id string) error {
 	defer func() { _ = lock.Close() }()
 	held, err := lock.TryLockContext(ctx, 100*time.Millisecond)
 	if err != nil || !held {
-		return errors.New("the previous supervisor did not stop; inspect the machine before recovery")
+		return errors.New("the previous runtime did not stop; inspect the machine before recovery")
 	}
 	p, cfg, err := startupInstallation(config, id)
 	if err != nil {
@@ -110,7 +113,7 @@ func ApplyStartupChange(ctx context.Context, config, dataDir, id string) error {
 	if cfg.DataDir != dataDir || p.Mode != "user" {
 		return errors.New("the startup profile changed before migration")
 	}
-	// Service starts the new supervisor, which needs this same lock.
+	// Service starts the new runtime, which needs this same lock.
 	if err = lock.Unlock(); err != nil {
 		return err
 	}

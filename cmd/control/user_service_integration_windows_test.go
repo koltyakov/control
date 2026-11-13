@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,15 +29,13 @@ func TestWindowsUserStartupLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	binary := filepath.Join(dir, "control.exe")
-	if output, err := exec.CommandContext(ctx, "go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
-		t.Fatalf("build: %v: %s", err, output)
-	}
+	windowsSmokeBinary(t, ctx, binary)
 	const token = "windows-user-startup-test-credential"
 	g, err := gateway.New(t.TempDir(), token)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer g.Close()
+	defer func() { _ = g.Close() }()
 	server := httptest.NewServer(g.Handler())
 	defer server.Close()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -46,7 +43,7 @@ func TestWindowsUserStartupLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	address := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 	config := filepath.Join(dir, "node.json")
 	if err = createNodeConfig(config, "user-startup-test", server.URL, token, address, false); err != nil {
 		t.Fatal(err)

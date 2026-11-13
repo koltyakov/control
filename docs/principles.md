@@ -62,6 +62,8 @@ Gateway resource bounds must apply across destinations and authenticated account
 
 The component that creates a connection, goroutine, subprocess, or temporary file must define how it terminates. Node shutdown should wait for owned work to stop before releasing its state directory. Lease expiry must not allow a new owner to overlap a still-running leased task.
 
+Keep managed services single-process in steady state. Update helpers must be temporary, require committed graceful shutdown before replacement, and never treat process launch alone as successful installation. Preserve OS service-manager ownership and container PID 1 during replacement.
+
 ## Keep changes testable across operating systems
 
 Use structured arguments instead of shell command strings. Isolate OS-specific behavior and keep the core build independent of CGO.

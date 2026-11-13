@@ -9,8 +9,12 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/installation"
+	"github.com/koltyakov/control/internal/node"
 	"github.com/koltyakov/control/internal/processutil"
+	"github.com/koltyakov/control/internal/store"
+	"github.com/koltyakov/control/internal/update"
 	"golang.org/x/sys/windows/svc"
 )
 
@@ -24,7 +28,7 @@ func runPlatformService(ctx context.Context, args []string) (bool, error) {
 		}
 		return true, installation.CheckHybridSystem(ctx, args[1], args[2], "auto")
 	}
-	if len(args) == 0 || (args[0] != "__service" && args[0] != "__user" && args[0] != "__user-launch") {
+	if len(args) == 0 || (args[0] != "__service" && args[0] != "__user" && args[0] != "__user-launch" && args[0] != "__user-direct") {
 		return false, nil
 	}
 	count := 2
@@ -32,17 +36,37 @@ func runPlatformService(ctx context.Context, args []string) (bool, error) {
 		count = 3
 	}
 	if len(args) != count || !filepath.IsAbs(args[1]) {
-		return true, errors.New("Windows service requires an absolute node configuration path")
+		return true, errors.New("absolute node configuration path required for Windows service")
 	}
 	if args[0] == "__user-launch" && !filepath.IsAbs(args[2]) {
 		return true, errors.New("user startup requires an absolute installed CLI path")
 	}
 	config := args[1]
+	if args[0] == "__user" {
+		ctx = context.WithValue(ctx, windowsManagedKey{}, windowsManagedMode{Mode: "user", Config: config, Legacy: true, Bootstrap: true})
+	}
+	if args[0] == "__user-direct" {
+		cfg, err := node.LoadConfig(config)
+		if err != nil {
+			return true, err
+		}
+		var selected update.RuntimeBinary
+		if err = store.Read(filepath.Join(cfg.DataDir, "runtime.json"), &selected); err != nil {
+			return true, err
+		}
+		if err = update.Verify(selected.Path, selected.Asset); err != nil {
+			return true, err
+		}
+		if err = buildinfo.UseWindowsGUISource(selected.Path); err != nil {
+			return true, err
+		}
+		ctx = context.WithValue(ctx, windowsManagedKey{}, windowsManagedMode{Mode: "user", Config: config})
+	}
 	log, err := os.OpenFile(filepath.Join(filepath.Dir(config), "node.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return true, err
 	}
-	defer log.Close()
+	defer func() { _ = log.Close() }()
 	stdout, stderr := os.Stdout, os.Stderr
 	os.Stdout, os.Stderr = log, log
 	defer func() { os.Stdout, os.Stderr = stdout, stderr }()
@@ -55,12 +79,13 @@ func runPlatformService(ctx context.Context, args []string) (bool, error) {
 		cmd.Stdout, cmd.Stderr = log, log
 		return true, cmd.Run()
 	}
-	if args[0] == "__user" {
+	if args[0] == "__user" || args[0] == "__user-direct" {
 		return true, run(ctx, []string{"--token", "", "node", "--config", config})
 	}
 	return true, svc.Run(installation.WindowsServiceName(config), &windowsNodeService{
 		ctx: ctx,
 		run: func(ctx context.Context) error {
+			ctx = context.WithValue(ctx, windowsManagedKey{}, windowsManagedMode{Mode: "service", Config: config})
 			return run(ctx, []string{"--token", "", "node", "--config", config})
 		},
 	})

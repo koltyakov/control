@@ -14,6 +14,8 @@ import (
 	"github.com/koltyakov/control/internal/gateway"
 	"github.com/koltyakov/control/internal/installation"
 	"github.com/koltyakov/control/internal/processutil"
+	"github.com/koltyakov/control/internal/store"
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -34,16 +36,13 @@ func TestWindowsServiceLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	binary := filepath.Join(dir, "control.exe")
-	build := exec.CommandContext(ctx, "go", "build", "-o", binary, ".")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v: %s", err, output)
-	}
+	windowsSmokeBinary(t, ctx, binary)
 	const token = "windows-service-test-credential"
 	g, err := gateway.New(t.TempDir(), token)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer g.Close()
+	defer func() { _ = g.Close() }()
 	server := httptest.NewServer(g.Handler())
 	defer server.Close()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -51,7 +50,7 @@ func TestWindowsServiceLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	address := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 	config := filepath.Join(dir, "node.json")
 	if err = createNodeConfig(config, "service-test", server.URL, token, address, false); err != nil {
 		t.Fatal(err)
@@ -91,28 +90,36 @@ func TestWindowsServiceLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Disconnect()
+	defer func() { _ = m.Disconnect() }()
 	s, err := m.OpenService(installation.WindowsServiceName(config))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	settings, err := s.Config()
 	if err != nil || settings.StartType != mgr.StartAutomatic || settings.ServiceStartName != `NT AUTHORITY\LocalService` {
 		t.Fatalf("service settings: %+v, %v", settings, err)
+	}
+	var selected runtimeBinary
+	if err = store.Read(filepath.Join(dir, "state", "runtime.json"), &selected); err != nil {
+		t.Fatal(err)
+	}
+	if selected.Path == binary {
+		t.Fatal("service selection is still bound to the independently updated CLI")
 	}
 	status, err := s.Query()
 	if err != nil || status.State != svc.Running {
 		t.Fatalf("service status: %+v, %v", status, err)
 	}
-	process, err := os.FindProcess(int(status.ProcessId))
+	process, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, status.ProcessId)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = process.Kill(); err != nil {
+	if err = windows.TerminateProcess(process, 1); err != nil {
+		_ = windows.CloseHandle(process)
 		t.Fatal(err)
 	}
-	process.Release()
+	_ = windows.CloseHandle(process)
 	waitWindowsNode(t, ctx, func() bool {
 		after, err := s.Query()
 		return err == nil && after.State == svc.Running && after.ProcessId != status.ProcessId &&

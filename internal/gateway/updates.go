@@ -83,6 +83,37 @@ func updateAppliedAndResumed(d *update.Deployment, status update.Status) bool {
 	return ok && update.IsCurrent(status.Software, d.Manifest.Version, asset)
 }
 
+// Startup migration is pending only after the exact selected executable is
+// running. This is not an applied acknowledgement and never authorizes a retry.
+func updateStartupRefreshRequired(d *update.Deployment, status update.Status) bool {
+	if d == nil || status.ID != d.ID || status.Software.Runtime != "supervised" || status.Software.Version != d.Manifest.Version {
+		return false
+	}
+	asset, ok := d.Manifest.Asset(status.Software.OS, status.Software.Arch)
+	return ok && update.Matches(status.Software, asset)
+}
+
+func updateSoftwareSettled(d *update.Deployment, status update.Status) bool {
+	return !status.Paused && status.State != "restarting" &&
+		(updateAppliedAndResumed(d, status) || updateStartupRefreshRequired(d, status))
+}
+
+func startupRefreshBlockers(d *update.Deployment, peers []rolloutPeer) int {
+	if len(d.InFlight) != 0 {
+		return 0
+	}
+	count := 0
+	for _, peer := range peers {
+		if !peer.fresh || !updateSoftwareSettled(d, peer.status) {
+			return 0
+		}
+		if updateStartupRefreshRequired(d, peer.status) {
+			count++
+		}
+	}
+	return count
+}
+
 // Called under g.mu. Display grace never changes routing or rollout readiness.
 func (g *Gateway) nodeUpdating(n model.Node, now time.Time, d *update.Deployment) bool {
 	status := g.updateStatus[n.ID]
@@ -93,6 +124,9 @@ func nodeUpdating(n model.Node, status update.Status, now time.Time, d *update.D
 	fresh := n.Online && now.Sub(status.SeenAt) < updateStatusFreshness
 	if fresh && updateAppliedAndResumed(d, status) {
 		return false
+	}
+	if fresh && updateStartupRefreshRequired(d, status) {
+		return true
 	}
 	if now.Before(n.UpdateUntil) {
 		return true
@@ -482,11 +516,25 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 			}
 			gatewayAsset, hasGateway := d.Manifest.Asset(g.options.Software.OS, g.options.Software.Arch)
 			gatewayCurrent := hasGateway && update.IsCurrent(g.options.Software, d.Manifest.Version, gatewayAsset)
-			peersApplied, err := g.advanceNodes(d, peers, gatewayCurrent, send)
+			// The selected gateway code can coordinate compatible node updates
+			// even while its own startup entry still needs supervisor migration.
+			gatewaySoftwareCurrent := hasGateway && update.IsSoftwareCurrent(g.options.Software, d.Manifest.Version, gatewayAsset)
+			peersApplied, err := g.advanceNodes(d, peers, gatewaySoftwareCurrent, send)
 			if err != nil {
 				return
 			}
 			d = g.updates.Current()
+			if gatewayCurrent {
+				if blocked := startupRefreshBlockers(d, peers); blocked != 0 {
+					if err := g.updates.SetGatewayState(d.ID, "applied"); err != nil {
+						return
+					}
+					if d.Phase != "blocked" {
+						_ = g.updates.SetPhase(d.ID, "blocked", fmt.Errorf("startup refresh required for %d node profiles; selected software is running, but legacy supervisors remain", blocked))
+					}
+					return
+				}
+			}
 			if peersApplied && gatewayCurrent {
 				if err := g.updates.SetGatewayState(d.ID, "applied"); err != nil {
 					return
@@ -561,12 +609,12 @@ func stagedStatus(s update.Status) bool {
 	return s.State == "staged" || s.State == "ready" || s.State == "busy" || s.State == "restarting"
 }
 
-func (g *Gateway) nodeMayUpdate(d *update.Deployment, s update.Status, gatewayCurrent bool) bool {
+func (g *Gateway) nodeMayUpdate(d *update.Deployment, s update.Status, gatewaySoftwareCurrent bool) bool {
 	if s.StagedSoftware.NodeGatewayMax != 0 {
 		asset, ok := d.Manifest.Asset(s.Software.OS, s.Software.Arch)
 		return ok && s.StagedSoftware.Version == d.Manifest.Version && update.Matches(s.StagedSoftware, asset) && s.StagedSoftware.SupportsGateway(g.options.Software.GatewayProtocol)
 	}
-	return gatewayCurrent
+	return gatewaySoftwareCurrent
 }
 
 func (g *Gateway) nodeUpdateProgress(d *update.Deployment, s update.Status, now time.Time) string {
@@ -576,11 +624,14 @@ func (g *Gateway) nodeUpdateProgress(d *update.Deployment, s update.Status, now 
 	if updateAppliedAndResumed(d, s) {
 		return "applied"
 	}
+	if updateStartupRefreshRequired(d, s) && !s.Paused && s.State != "restarting" {
+		return "startup-refresh-required"
+	}
 	if s.State == "error" || s.State == "downloading" || s.State == "restarting" {
 		return s.State
 	}
 	asset, ok := d.Manifest.Asset(g.options.Software.OS, g.options.Software.Arch)
-	if stagedStatus(s) && !g.nodeMayUpdate(d, s, ok && update.IsCurrent(g.options.Software, d.Manifest.Version, asset)) {
+	if stagedStatus(s) && !g.nodeMayUpdate(d, s, ok && update.IsSoftwareCurrent(g.options.Software, d.Manifest.Version, asset)) {
 		return "waiting-gateway"
 	}
 	if s.Busy {
@@ -596,10 +647,10 @@ func (g *Gateway) nodeUpdateProgress(d *update.Deployment, s update.Status, now 
 // snapshot. At most two live contexts receive commit intent concurrently.
 // Excess reservations, including those left by an older coordinator, are
 // released. Node-owned admission rechecks work immediately before replacement.
-func (g *Gateway) advanceNodes(d *update.Deployment, peers []rolloutPeer, gatewayCurrent bool, send func(string, string, update.Command)) (bool, error) {
+func (g *Gateway) advanceNodes(d *update.Deployment, peers []rolloutPeer, gatewaySoftwareCurrent bool, send func(string, string, update.Command)) (bool, error) {
 	for _, peer := range peers {
 		if peer.fresh && peer.status.ID == d.ID && slices.Contains(d.InFlight, peer.node.ID) &&
-			(updateAppliedAndResumed(d, peer.status) || peer.status.State == "error" && !peer.status.Paused) {
+			(updateSoftwareSettled(d, peer.status) || peer.status.State == "error" && !peer.status.Paused) {
 			if err := g.updates.NodeInstall(d.ID, peer.node.ID, false); err != nil {
 				return false, err
 			}
@@ -633,11 +684,19 @@ func (g *Gateway) advanceNodes(d *update.Deployment, peers []rolloutPeer, gatewa
 			}
 			continue
 		}
+		if matching && updateStartupRefreshRequired(d, s) {
+			// The binary switch has settled; retrying this same selection cannot
+			// retire an unsupported launcher and would monopolize commit slots.
+			if s.Paused && s.State != "restarting" {
+				send(peer.node.ID, "update.resume", update.Command{ID: d.ID})
+			}
+			continue
+		}
 		if !matching || !stagedStatus(s) {
 			send(peer.node.ID, "update.offer", command)
 			continue
 		}
-		if !g.nodeMayUpdate(d, s, gatewayCurrent) {
+		if !g.nodeMayUpdate(d, s, gatewaySoftwareCurrent) {
 			continue
 		}
 		if s.State == "restarting" {

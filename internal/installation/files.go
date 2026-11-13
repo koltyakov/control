@@ -63,14 +63,17 @@ func installSelf(ctx context.Context, userPath bool) (string, error) {
 	if source == dest {
 		return finish()
 	}
-	info := buildinfo.Current()
+	sha, err := buildinfo.ExecutableSHA256()
+	if err != nil {
+		return "", err
+	}
 	if old, err := os.Stat(dest); err == nil {
 		if !old.Mode().IsRegular() {
 			return "", errors.New("installation destination is not a regular file")
 		}
 		// Never execute an existing installation to identify it. In particular,
 		// an elevated installer must treat a per-user executable as untrusted.
-		if update.Verify(dest, update.Asset{Size: old.Size(), SHA256: info.SHA256}) == nil {
+		if update.Verify(dest, update.Asset{Size: old.Size(), SHA256: sha}) == nil {
 			return finish()
 		}
 		prior, err := gobuildinfo.ReadFile(dest)
@@ -89,7 +92,7 @@ func installSelf(ctx context.Context, userPath bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	a := update.Asset{Size: stat.Size(), SHA256: info.SHA256}
+	a := update.Asset{Size: stat.Size(), SHA256: sha}
 	if err = update.SaveBinary(f, dest, a); err != nil {
 		return "", err
 	}

@@ -2,10 +2,12 @@ package update
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -116,8 +118,16 @@ func (r *Repository) Publish(manifest Manifest, source string) (*Deployment, err
 		copy := *r.current
 		return &copy, nil
 	}
-	if r.current != nil && (len(r.current.InFlight) != 0 || r.current.GatewayState == "switching" || r.current.Contract == 0 && r.current.Phase == "installing") {
-		return nil, errors.New("another update is installing; wait for it to complete")
+	if r.current != nil {
+		if len(r.current.InFlight) != 0 {
+			return nil, fmt.Errorf("unresolved node update commits: %s; inspect control update status before publishing", strings.Join(r.current.InFlight, ", "))
+		}
+		if r.current.GatewayState == "switching" {
+			return nil, errors.New("gateway update switch is in progress; wait for gateway readiness before publishing")
+		}
+		if r.current.Contract == 0 && r.current.Phase == "installing" {
+			return nil, errors.New("legacy update is installing; wait for it to complete")
+		}
 	}
 	d := &Deployment{ID: id, Manifest: manifest, Source: source, Phase: "staging", Contract: 2, UpdatedAt: time.Now().UTC()}
 	if err := store.Write(filepath.Join(r.dir, "deployment.json"), d); err != nil {
@@ -172,8 +182,9 @@ func (r *Repository) BeginInstall(id string, participants []string) error {
 }
 
 // NodeInstall durably records commit intent, or clears it only after a fresh
-// applied/resumed or explicit failed/resumed acknowledgement. Disconnection is
-// not an acknowledgement and must not unlock publication.
+// applied/resumed, exact-software/startup-blocked/resumed, or explicit failed/
+// resumed acknowledgement. Disconnection is not an acknowledgement and must not
+// unlock publication; settling software does not claim startup migration passed.
 func (r *Repository) NodeInstall(id, node string, pending bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -856,7 +856,7 @@ function machineState(node) {
 function statusDetail(node) {
   if (node.contexts && node.contexts.length > 1) node = hostStatusContext(node);
   if (node.status === "update")
-    return (/** @type {Record<string, string>} */ ({ "waiting-idle": "Waiting for idle", "waiting-gateway": "Waiting for gateway", "downloading": "Downloading", "staged": "Staged", "reserved": "Restart reserved", "restarting": "Restarting" }))[node.updateState || ""] || "";
+    return (/** @type {Record<string, string>} */ ({ "waiting-idle": "Waiting for idle", "waiting-gateway": "Waiting for gateway", "downloading": "Downloading", "staged": "Staged", "reserved": "Restart reserved", "restarting": "Restarting", "startup-refresh-required": "Startup refresh required" }))[node.updateState || ""] || "";
   if (!node.online)
     return age(node.lastSeen) === "Unknown"
       ? ""

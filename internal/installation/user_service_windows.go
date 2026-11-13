@@ -106,7 +106,7 @@ func userPowerShellOutput(ctx context.Context, script string) (string, error) {
 	cmd.Env = powerShellEnvironment(cleanEnvironment(), filepath.Join(home, "Modules"))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("Windows login startup: %w: %s", err, strings.TrimSpace(string(output)))
+		return "", fmt.Errorf("configure Windows login startup: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return strings.TrimSpace(string(output)), nil
 }
@@ -122,8 +122,8 @@ func finishServiceStop(ctx context.Context, config, mode string) error {
 	if mode != "user" {
 		return nil
 	}
-	// The API has stopped the supervisor and released its runtime lock. Complete
-	// the task wrapper too so a subsequent start cannot be ignored as a duplicate.
+	// The API has stopped the runtime and released its lock. Complete the task
+	// instance too so a subsequent start cannot be ignored as a duplicate.
 	if err := userPowerShell(ctx, userTaskScript(config, "if ($task) { Stop-ScheduledTask -InputObject $task }")); err != nil {
 		return fmt.Errorf("stop User login task: %w", err)
 	}
@@ -136,7 +136,7 @@ func checkServiceProfile(config, mode string) error {
 	}
 	s, err := userMigrationService(config)
 	if s != nil {
-		s.Close()
+		_ = s.Close()
 	}
 	return err
 }
@@ -149,7 +149,7 @@ func userMigrationService(config string) (*mgr.Service, error) {
 		return nil, err
 	}
 	m := &mgr.Mgr{Handle: handle}
-	defer m.Disconnect()
+	defer func() { _ = m.Disconnect() }()
 	name, err := windows.UTF16PtrFromString(WindowsServiceName(config))
 	if err != nil {
 		return nil, err
@@ -164,7 +164,7 @@ func userMigrationService(config string) (*mgr.Service, error) {
 	readOnly := &mgr.Service{Name: WindowsServiceName(config), Handle: serviceHandle}
 	settings, configErr := readOnly.Config()
 	status, statusErr := readOnly.Query()
-	readOnly.Close()
+	_ = readOnly.Close()
 	if configErr != nil || statusErr != nil {
 		return nil, errors.Join(configErr, statusErr)
 	}
@@ -201,18 +201,11 @@ func platformUserService(ctx context.Context, operation, binary, config string, 
 		return true, err
 	}
 	if s != nil {
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 	}
 	state, err := userPowerShellOutput(ctx, userTaskScript(config, "if ($task) { Write-Output $task.State }"))
 	if err != nil {
 		return true, fmt.Errorf("read User login task state: %w", err)
-	}
-	launcher, err := prepareUserLauncher(binary, cfg.DataDir)
-	if err != nil {
-		return true, err
-	}
-	if err = userPowerShell(ctx, userTaskScript(config, userTaskRegistration(launcher, binary, config))); err != nil {
-		return true, fmt.Errorf("register User login task: %w", err)
 	}
 	if s != nil {
 		if err = stopWindowsService(ctx, s); err != nil {
@@ -226,14 +219,17 @@ func platformUserService(ctx context.Context, operation, binary, config string, 
 		if err = s.UpdateConfig(settings); err != nil {
 			return true, err
 		}
-	} else {
-		// A currently running login task should not be interrupted on repeated
-		// starts. Otherwise stop any detached supervisor before changing account.
-		if state != "Running" {
-			if err = stopLegacyNode(ctx, cfg); err != nil {
-				return true, err
-			}
+	} else if state != "Running" {
+		if err = stopLegacyNode(ctx, cfg); err != nil {
+			return true, err
 		}
+	}
+	launcher, err := prepareDirectWindowsRuntime(ctx, binary, cfg, true)
+	if err != nil {
+		return true, err
+	}
+	if err = userPowerShell(ctx, userTaskScript(config, userTaskRegistration(launcher, config))); err != nil {
+		return true, fmt.Errorf("register User login task: %w", err)
 	}
 	if err = uninstallService(ctx, config); err != nil {
 		return true, err

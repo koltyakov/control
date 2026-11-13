@@ -9,7 +9,7 @@ import (
 )
 
 // WindowsRuntimePath is the stable executable path covered by the node's
-// firewall rules. The supervisor publishes verified copies here between runs.
+// firewall rules. Installation and temporary updaters publish copies between runs.
 func WindowsRuntimePath(dir string) string {
 	return filepath.Join(dir, "runtime", "control.exe")
 }

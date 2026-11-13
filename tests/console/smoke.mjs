@@ -808,6 +808,9 @@ async function assertHybridGrouping(page, snapshot) {
       assert.equal(await page.locator('.stat[data-filter="online"] .stat-value').textContent(), "2", "Restart grace must not alter host online counts");
       await assertOfflineChip(updating === user ? "User" : "System", !online);
     }
+    updating.updateState = "startup-refresh-required";
+    await refresh();
+    assert.equal(await row.locator(".status-column small").textContent(), "Startup refresh required", "Settled software with a retained supervisor must show an actionable blocker rather than Staged");
     // The gateway ends grace on confirmation or expiry. Do not retain stale
     // client-side Updating after normal availability returns.
     updating.status = "offline";

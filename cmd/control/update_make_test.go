@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -84,5 +85,25 @@ fi
 				t.Fatalf("steps = %q, want %q: %v\n%s", steps, want, err, output)
 			}
 		})
+	}
+}
+
+func TestMakeUpdateUsesOneFreshDirtyVersion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Make recipes require a POSIX shell")
+	}
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("make is not installed")
+	}
+	cmd := exec.CommandContext(t.Context(), makePath, "-n", "update", "GO=true", "VERSION=v0.8.3-dirty")
+	cmd.Dir = filepath.Join("..", "..")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make dry run: %v: %s", err, output)
+	}
+	versions := regexp.MustCompile(`--version "(v0\.8\.3-dirty-[0-9]{8}T[0-9]{6}Z)"`).FindAllStringSubmatch(string(output), -1)
+	if len(versions) != 2 || versions[0][1] != versions[1][1] {
+		t.Fatalf("native CLI and bundle did not share a fresh dirty rollout version: %s", output)
 	}
 }

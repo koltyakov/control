@@ -129,6 +129,28 @@ func TestIsCurrentKeepsBinaryValidationStrict(t *testing.T) {
 	}
 }
 
+func TestSupervisedRuntimeStillNeedsMigration(t *testing.T) {
+	asset := Asset{OS: "windows", Arch: "amd64", SHA256: strings.Repeat("a", 64)}
+	software := buildinfo.Info{Version: "target", OS: asset.OS, Arch: asset.Arch, SHA256: asset.SHA256, Runtime: "supervised"}
+	if IsCurrent(software, "target", asset) {
+		t.Fatal("a retained legacy supervisor was acknowledged as fully updated")
+	}
+	if !IsSoftwareCurrent(software, "target", asset) {
+		t.Fatal("runtime migration blocked selected-software compatibility")
+	}
+	if !Matches(software, asset) {
+		t.Fatal("runtime observation weakened byte validation")
+	}
+	software.Runtime = "single"
+	if !IsCurrent(software, "target", asset) {
+		t.Fatal("the migrated runtime was not acknowledged")
+	}
+	software.Runtime = ""
+	if !IsCurrent(software, "target", asset) {
+		t.Fatal("older executable metadata lost compatibility")
+	}
+}
+
 func TestUpdaterSkipsSameVersionWithoutDownloadOrRestart(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("same-version update downloaded a binary")

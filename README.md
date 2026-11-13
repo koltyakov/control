@@ -171,6 +171,8 @@ Compose tests run a gateway, three nodes, and an FFmpeg workflow over WebRTC and
 
 `control update` updates the CLI from GitHub Releases. Managed node restarts wait for idle reservations. With saved superuser authorization, `make update` pushes a development bundle to the gateway and nodes; `make update-status` tracks it. See [managed updates](docs/updates.md).
 
+Current node and gateway entry points run without a permanent supervisor. Unix updates replace the process after graceful shutdown; Windows starts a temporary updater that exits after restart readiness. Supported Windows legacy startup entries migrate automatically with existing permissions; restricted SCM and old Unix/container entry points report a [required startup refresh](docs/updates.md#migrate-an-existing-supervisor) instead of silently completing with a supervisor still running.
+
 Managed rollouts update idle nodes independently when their verified executables declare compatibility with the running gateway. Other nodes wait for the gateway; busy nodes remain pending. Gateway restarts separately drain relay traffic without cancelling streams. Offline nodes catch up on startup. Nodes prefer an exact signed GitHub release and use the gateway's retained bundle when GitHub is unavailable or its assets differ.
 
 ## Documentation

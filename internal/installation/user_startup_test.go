@@ -47,10 +47,9 @@ func TestEncodedPowerShell(t *testing.T) {
 }
 
 func TestUserTaskArgumentsQuotePaths(t *testing.T) {
-	binary := `C:\Users\O'Brien\程序\control.exe`
 	config := `C:\Users\O'Brien\control profile\node.json`
-	want := `__user-launch "C:\Users\O'Brien\control profile\node.json" "C:\Users\O'Brien\程序\control.exe"`
-	if got := userTaskArguments(binary, config); got != want {
+	want := `__user-direct "C:\Users\O'Brien\control profile\node.json"`
+	if got := userTaskArguments(config); got != want {
 		t.Fatalf("startup arguments changed paths: %q", got)
 	}
 }
@@ -147,8 +146,8 @@ func TestUserTaskOwnershipAndProfileScope(t *testing.T) {
 }
 
 func TestUserTaskRunsAtLoginWithoutElevationOrPassword(t *testing.T) {
-	script := userTaskRegistration(`C:\control\startup\control-user.exe`, `C:\control\control.exe`, `C:\control\node.json`)
-	for _, want := range []string{"-AtLogOn -User $sid", "-LogonType Interactive -RunLevel Limited", "-MultipleInstances IgnoreNew", "-ExecutionTimeLimit ([TimeSpan]::Zero)", "-RestartCount 3", `-Execute 'C:\control\startup\control-user.exe'`, `-Argument '__user-launch "C:\control\node.json" "C:\control\control.exe"'`} {
+	script := userTaskRegistration(`C:\control\runtime\control.exe`, `C:\control\node.json`)
+	for _, want := range []string{"-AtLogOn -User $sid", "-LogonType Interactive -RunLevel Limited", "-MultipleInstances IgnoreNew", "-ExecutionTimeLimit ([TimeSpan]::Zero)", "-RestartCount 3", `-Execute 'C:\control\runtime\control.exe'`, `-Argument '__user-direct "C:\control\node.json"'`} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("registration missing %q: %s", want, script)
 		}
@@ -160,5 +159,28 @@ func TestUserTaskRunsAtLoginWithoutElevationOrPassword(t *testing.T) {
 		if strings.Contains(script, unwanted) {
 			t.Fatalf("login task retained a console wrapper: %s", unwanted)
 		}
+	}
+}
+
+func TestUserTaskRegistrationPreservesACLAndGrantsLimitedMaintenance(t *testing.T) {
+	script := userTaskRegistration(`C:\control\runtime\control.exe`, `C:\control\node.json`)
+	for _, want := range []string{
+		"$maintenance = 0x1201bf", "$registered.GetSecurityDescriptor(7)",
+		"$ace.SecurityIdentifier.Value -eq $sid", "$granted -band $maintenance",
+		"$security.DiscretionaryAcl.InsertAce(0, $grant)",
+		"[Security.Principal.SecurityIdentifier]::new($sid)",
+		"$registered.SetSecurityDescriptor(", "-LogonType Interactive -RunLevel Limited",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("missing scoped task maintenance permission: %s", want)
+		}
+	}
+	for _, forbidden := range []string{"SetOwner", "WriteOwner", "WriteDac", "Clear()", "LocalSystem", "Highest", ";;;WD", ";;;AU"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("task maintenance widened unrelated authority: %s", forbidden)
+		}
+	}
+	if strings.Index(script, "Register-ScheduledTask") > strings.Index(script, "$registered.GetSecurityDescriptor") {
+		t.Fatal("permissions were changed before registering the owned task")
 	}
 }

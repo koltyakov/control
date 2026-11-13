@@ -29,7 +29,7 @@ func addUserPath(dir string) error {
 	if err != nil {
 		return err
 	}
-	defer key.Close()
+	defer func() { _ = key.Close() }()
 	value, kind, err := key.GetStringValue("Path")
 	if err != nil && err != registry.ErrNotExist {
 		return err
@@ -49,7 +49,7 @@ func addUserPath(dir string) error {
 	return key.SetStringValue("Path", value)
 }
 func installService(ctx context.Context, binary, config string) error {
-	return errors.New("Windows startup must use the Service Control Manager")
+	return errors.New("use the Windows Service Control Manager for startup")
 }
 func uninstallService(ctx context.Context, config string) error {
 	key, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Run`, registry.QUERY_VALUE|registry.SET_VALUE)
@@ -59,7 +59,7 @@ func uninstallService(ctx context.Context, config string) error {
 	if err != nil {
 		return err
 	}
-	defer key.Close()
+	defer func() { _ = key.Close() }()
 	value, _, err := key.GetStringValue("ControlNode")
 	if err == registry.ErrNotExist {
 		return nil
@@ -109,7 +109,7 @@ func CheckServiceMode(mode string) error {
 		}
 	}
 	if mode != "process" && mode != "user" && !windows.GetCurrentProcessToken().IsElevated() {
-		return errors.New("Windows service installation requires Administrator PowerShell; rerun the command there")
+		return errors.New("installing a Windows service requires Administrator PowerShell; rerun the command there")
 	}
 	return nil
 }
@@ -134,7 +134,7 @@ func platformService(ctx context.Context, operation, binary, config, mode string
 	if err != nil {
 		return true, err
 	}
-	defer m.Disconnect()
+	defer func() { _ = m.Disconnect() }()
 	s, err := m.OpenService(WindowsServiceName(config))
 	if err != nil && !errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
 		return true, err
@@ -146,13 +146,37 @@ func platformService(ctx context.Context, operation, binary, config, mode string
 		// Remove this user's login startup before SCM takes over the identity.
 		if err = removeUserTask(ctx, config); err != nil {
 			if s != nil {
-				s.Close()
+				_ = s.Close()
 			}
 			return true, err
 		}
 		if err = prepareServiceFiles(ctx, binary, config, cfg); err != nil {
 			if s != nil {
-				s.Close()
+				_ = s.Close()
+			}
+			return true, err
+		}
+		if s == nil {
+			if err = stopLegacyNode(ctx, cfg); err != nil {
+				return true, err
+			}
+		} else {
+			status, queryErr := s.Query()
+			if queryErr != nil {
+				_ = s.Close()
+				return true, queryErr
+			}
+			if status.State == svc.Stopped {
+				if err = stopLegacyNode(ctx, cfg); err != nil {
+					_ = s.Close()
+					return true, err
+				}
+			}
+		}
+		runtime, err := prepareDirectWindowsRuntime(ctx, binary, cfg, false)
+		if err != nil {
+			if s != nil {
+				_ = s.Close()
 			}
 			return true, err
 		}
@@ -161,7 +185,7 @@ func platformService(ctx context.Context, operation, binary, config, mode string
 			if cfg.HybridSystem {
 				account = "LocalSystem"
 			}
-			s, err = m.CreateService(WindowsServiceName(config), binary, mgr.Config{
+			s, err = m.CreateService(WindowsServiceName(config), runtime, mgr.Config{
 				DisplayName:      "Control node: " + cfg.Name,
 				Description:      "Control peer execution node",
 				StartType:        mgr.StartAutomatic,
@@ -172,7 +196,7 @@ func platformService(ctx context.Context, operation, binary, config, mode string
 				return true, err
 			}
 		}
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 		serviceConfig, err := s.Config()
 		if err != nil {
 			return true, err
@@ -180,9 +204,11 @@ func platformService(ctx context.Context, operation, binary, config, mode string
 		if cfg.HybridSystem && serviceConfig.ServiceStartName != "LocalSystem" {
 			return true, errors.New("hybrid system service must use LocalSystem; refusing to reuse another service account")
 		}
-		if serviceConfig.StartType != mgr.StartAutomatic || serviceConfig.SidType != windows.SERVICE_SID_TYPE_UNRESTRICTED {
+		command := windows.ComposeCommandLine([]string{runtime, "__service", config})
+		if serviceConfig.StartType != mgr.StartAutomatic || serviceConfig.SidType != windows.SERVICE_SID_TYPE_UNRESTRICTED || serviceConfig.BinaryPathName != command {
 			serviceConfig.StartType = mgr.StartAutomatic
 			serviceConfig.SidType = windows.SERVICE_SID_TYPE_UNRESTRICTED
+			serviceConfig.BinaryPathName = command
 			if err = s.UpdateConfig(serviceConfig); err != nil {
 				return true, err
 			}
@@ -226,7 +252,7 @@ func platformService(ctx context.Context, operation, binary, config, mode string
 		}
 		return true, store.Write(config+".startup.json", startupProfile{Mode: "auto"})
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err = stopWindowsService(ctx, s); err != nil {
 		return true, err
 	}
@@ -259,7 +285,7 @@ func stopWindowsService(ctx context.Context, s *mgr.Service) error {
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("Windows service did not stop: %w", ctx.Err())
+			return fmt.Errorf("stopping Windows service: %w", ctx.Err())
 		case <-ticker.C:
 		}
 	}
@@ -283,7 +309,7 @@ func stopLegacyNode(ctx context.Context, cfg node.Config) error {
 	if err != nil {
 		return fmt.Errorf("stop existing node before service migration: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("stop existing node: %s", resp.Status)
 	}
@@ -299,7 +325,7 @@ func prepareServiceFiles(ctx context.Context, binary, config string, cfg node.Co
 		for _, protected := range []string{config, admin} {
 			rel, err := filepath.Rel(path, protected)
 			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				return errors.New("Windows service state and work directories must not contain node or administration profiles")
+				return errors.New("state and work directories for Windows services must not contain node or administration profiles")
 			}
 		}
 		if err := os.MkdirAll(path, 0700); err != nil {

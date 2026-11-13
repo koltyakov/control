@@ -241,7 +241,7 @@ func waitStopped(ctx context.Context, cfg node.Config) error {
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("node supervisor did not stop: %w", ctx.Err())
+			return fmt.Errorf("node runtime did not stop: %w", ctx.Err())
 		case <-ticker.C:
 		}
 	}

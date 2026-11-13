@@ -14,7 +14,7 @@ import (
 )
 
 // prune runs on the updater's command loop, so its staged download cannot race
-// cleanup. Runtime requests remain protected until the supervisor consumes them.
+// cleanup. Runtime requests remain protected until the restart handoff consumes them.
 func (a *Updater) prune(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err

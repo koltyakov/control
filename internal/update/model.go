@@ -134,11 +134,18 @@ func Matches(info buildinfo.Info, asset Asset) bool {
 	return info.OS == asset.OS && info.Arch == asset.Arch && info.SHA256 == asset.SHA256
 }
 
-// IsCurrent skips replacement of an already running version, even when a rebuild
-// changes its timestamp or checksum. Matches remains strict for binary validation.
-func IsCurrent(info buildinfo.Info, version string, asset Asset) bool {
+// IsSoftwareCurrent checks the selected release independently of process
+// topology. A running version still matches after a rebuild changes its checksum;
+// Matches remains strict for binary validation.
+func IsSoftwareCurrent(info buildinfo.Info, version string, asset Asset) bool {
 	return info.OS == asset.OS && info.Arch == asset.Arch &&
 		((version != "" && info.Version == version) || Matches(info, asset))
+}
+
+// IsCurrent also requires retirement of a reported legacy supervisor. Runtime
+// migration must not be used to gate software/protocol compatibility.
+func IsCurrent(info buildinfo.Info, version string, asset Asset) bool {
+	return info.Runtime != "supervised" && IsSoftwareCurrent(info, version, asset)
 }
 
 func ShortError(err error) string {

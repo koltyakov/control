@@ -124,6 +124,8 @@ These metrics describe host-visible capacity and usage. They do not implement ta
 
 ## D014: Superuser-authorized gateway updates and idle reservations
 
+The resident supervisor is superseded by [D132](#d132-single-process-services-and-temporary-update-handoffs). Update authority, verification and idle admission remain unchanged.
+
 The nodes-first order and indefinite disconnected-participant wait are superseded by [D096](#d096-gateway-first-updates-with-deferred-offline-participants). Idle admission and binary verification remain mandatory.
 
 Indefinite node-local binary and previous-selection retention is superseded by [D065](#d065-remove-obsolete-node-binaries-after-successful-startup). Gateway recovery retention remains unchanged.
@@ -207,6 +209,8 @@ Default invitations select an OS and pin its amd64 and arm64 assets from one pub
 This removes architecture and lifetime questions from the dashboard wizard while retaining reproducible downloads and platform-bound registration. It requires both architecture binaries in the published bundle and compatible gateway/installer versions. The wizard uses the shared invitation client and native clipboard tools, displays the command on copy failure, and never retries an uncertain invitation request automatically. See [installation](installation.md) and [dashboard](dashboard.md).
 
 ## D021: Automatic Windows node service
+
+The SCM-hosted supervisor is superseded by [D132](#d132-single-process-services-and-temporary-update-handoffs), which directly hosts the stable runtime.
 
 The Windows `user`-mode alias and exclusive system-service startup choice are superseded by [D033](#d033-explicit-windows-user-login-startup). Automatic mode retains this decision.
 
@@ -319,6 +323,8 @@ Use orchestrator for the caller coordinating work, worker for a node executing r
 This clarifies D001 and D029/D030 without changing their contracts. Orchestrator and worker remain operation roles, not separate runtimes or fixed machine categories. A node can perform both roles; a standalone client can coordinate without enrolling a machine. Keep existing command, configuration, protocol, authentication-role, and session-backend identifiers. Rename internal non-AI helpers such as the node updater rather than calling them agents. Historical decision wording remains readable under the current glossary.
 
 ## D033: Explicit Windows user-login startup
+
+The persistent startup wrapper is superseded by [D132](#d132-single-process-services-and-temporary-update-handoffs). User-token and profile-ownership rules remain unchanged.
 
 The invitation-script default and its reuse of saved startup mode are superseded by [D038](#d038-user-login-startup-by-default-in-windows-invitation-scripts). Direct setup and service commands retain this decision.
 
@@ -449,6 +455,8 @@ Keep grant records in bounded destination-owned memory. Expire them after an hou
 Negotiate support and refuse older targets rather than silently using their old trust rules. Upgrade the gateway and every node before relying on worker isolation. Keep account credentials off workers; unrestricted providers and fully compromised hosts remain outside an execution sandbox. This supersedes unrestricted peer initiation in D001/D004, default local-node routing in D002/D028, and D008's stateless artifact-grant revocation limitation. See [delegation](delegation.md).
 
 ## D046: Windows firewall rules and a stable verified runtime path
+
+Supervisor-owned runtime publication is superseded by [D132](#d132-single-process-services-and-temporary-update-handoffs). The stable firewall path remains unchanged.
 
 Retention of obsolete node source binaries and rollback records is superseded by [D065](#d065-remove-obsolete-node-binaries-after-successful-startup). The stable execution path and current versioned source remain unchanged.
 
@@ -591,6 +599,8 @@ Do not open execution before policy validation. Check cached retirement immediat
 Apply this in the shared node/transport implementation on all three platforms, not in a Windows launcher. Existing managed installations can receive the fix through a child update without replacing their startup registration. Command-scoped CLI/MCP clients retain fail-fast startup, and installation/service readiness commands retain their 30-second bound. A readiness timeout does not stop a background node's connectivity recovery or report installation success. This extends D003/D023/D033 while preserving retirement, fleet isolation, and task-recovery semantics. See [startup behavior](installation.md#files-and-startup).
 
 ## D063: Console-free Windows node login bootstrap
+
+The persistent bootstrap is superseded by [D132](#d132-single-process-services-and-temporary-update-handoffs), which directly runs a verified GUI-derived runtime.
 
 `powershell.exe -WindowStyle Hidden` does not prevent console allocation and can leave a blank Windows Terminal window at login. Make the node login task start a native GUI-subsystem bootstrap directly. Derive it locally from the installed Go CLI by changing only the PE Subsystem field, then publish a checksum-verified, content-addressed copy under the profile's state directory. No separate release asset, compiler, scripting host, or account password is required.
 
@@ -1149,3 +1159,45 @@ After authorization and maintenance admission, wait cancellably for pending leas
 Do not preempt in-flight operations to grant a lease. Existing cancellation, authority expiry, deadlines, shutdown and uncertain-effect reconciliation remain unchanged. Inactive upload partials do not reserve execution capacity, but resume attempts require fresh admission. Status and owner-authorized abort remain available during a lease. All upload-open requests pass the gate, even retained-receipt requests; use status to reconcile during a lease.
 
 Keep stream framing and request schemas unchanged, with no streaming `leaseId` or owner bypass. Return `node_leased` on a lease rejection without authorizing automatic retry. Upload before acquiring the lease and use clipboard operations before acquiring or after releasing it. Older workers do not enforce this restriction; upgrade every relevant worker before relying on it. Leases are node/profile-wide, not host-wide locks across Hybrid contexts, humans or unrelated OS processes. See [lease policy](protocol.md#shared-pool-leases), [uploads](uploads.md) and [clipboard permissions](clipboard.md#permissions).
+
+## D132: Single-process services and temporary update handoffs
+
+Its retain-the-legacy-wrapper migration policy is superseded by [D133](#d133-retire-legacy-windows-supervisors-and-observe-migration). The single-process and temporary-helper contract remains unchanged.
+
+Run gateway and node services in their entry-point process rather than keeping a Control supervisor and child alive. Preserve existing update authority, executable verification, idle reservations, gateway relay drain, persisted selection, state locks and no-replay rules. There is still a brief service interruption; memory and live connections are not migrated.
+
+After graceful cleanup, Unix services revalidate and persist the selection and use `exec`, retaining the PID, including container PID 1, execution account, arguments, environment, working directory and standard streams. Release the old runtime lock immediately before exec; the new image reacquires it before opening state. A competing startup can win the lock but cannot overlap service ownership. Exec/startup failures are explicit and retain manual recovery rather than retrying application effects or automatically rolling back state.
+
+Windows uses a temporary updater launched from a verified versioned source. Before shutdown it opens the original process handle and checks the exact profile's restart registration and permissions. It requires explicit commit after clean shutdown and waits for process exit and the runtime lock before rechecking request/current selection, persisting the switch and replacing the stopped stable runtime. Start SCM, Task Scheduler or a process once, wait for a unique selected-checksum readiness marker after startup checks/listener binding, then exit. Preparation and readiness waits are bounded. EOF without commit and explicit stops do not authorize restart. Failure to escape an enclosing process job rejects preparation before service shutdown.
+
+Install SCM and User tasks against the stable runtime directly. Grant each restricted SCM service SID start/query rights only to its own service, in addition to its existing retirement rights. User tasks directly run a GUI-derived copy with only the PE Subsystem field changed. Full-image comparison proves that derivation before software identity reports the original release checksum; ordinary executable inspection remains byte-accurate. Keep original verified sources private and versioned, including the initial selection, independently of CLI self-updates. Firewall paths and installation ownership stay unchanged.
+
+This supersedes the resident supervisor in D014/D021, the persistent User wrapper in D033/D063, and D046's supervisor-owned publication, not their admission, account or firewall boundaries. Existing `__managed` children retain the old request/EOF behavior until a current installed entry point and startup registration are explicitly refreshed. This requires one local restart, or a current container image, rather than silently detaching from an older service manager. See [update handoff and migration](updates.md#single-process-runtime-and-update-handoff).
+
+## D133: Retire legacy Windows supervisors and observe migration
+
+Do not acknowledge a new runtime as fully updated while a reported legacy supervisor remains. Add optional software `runtime` observation, distinguishing `supervised` from `single`, and require migration before current-version acknowledgement. Exact byte validation remains independent of this runtime observation. Omit it from reconstructed legacy registration signatures. Software predating the observation retains compatibility, not a false assertion about its process topology.
+
+User handoffs use a separate triggerless, time-bounded Limited task under the same interactive user. A current-user-only local named pipe rejects remote clients and authenticates a random token before carrying preparation and explicit commit. Remove the temporary definition before committing; its running instance exits after runtime readiness. Do not depend on Task Scheduler permitting process-job breakaway. SCM and standalone helpers retain their enclosing job containment.
+
+At Windows legacy-child startup, before opening work admission, bind the remembered installation/identity, selected executable, parent process handle/image and exact startup definition. Preflight existing OS authority. Exit without creating the old supervisor's restart request, allowing that parent to finish naturally. The temporary helper waits for parent exit and takes installation/runtime locks, rechecks identity and selection, publishes the stable copy, changes only the owned startup action and starts once. The migration record is separate from the old child-restart request. A known User logon task preserves principal, triggers, settings and ACL; an unchanged-definition write tests modification authority without executing or changing its action, and registration triggers are rejected.
+
+Automatically migrate User tasks and already-authorized SCM contexts such as LocalSystem companions. Do not self-elevate or grant LocalService `SERVICE_CHANGE_CONFIG`, which could change the service account to LocalSystem. Older restricted SCM registrations report an actionable privileged refresh requirement while remaining available, not rollout completion. Foreign or unsupported registrations are never repurposed. Old Unix/container parents still need their own entry point refreshed; a child cannot exec its parent or replace an old PID 1 without container shutdown. This supersedes only D132's legacy-wrapper retention policy. See [migration](updates.md#migrate-an-existing-supervisor).
+
+## D134: Separate software compatibility from runtime migration
+
+Use the running selected release to decide whether the gateway can coordinate node updates without separate staged compatibility metadata. Use both the selected release and runtime topology to decide whether installation is complete. A reported legacy supervisor must not make already-selected gateway code appear unavailable for protocol coordination. Combining those checks leaves supervised nodes occupying both commit slots while they wait for a supervised gateway that itself waits for those commits.
+
+Keep D133's refusal to acknowledge retained supervisors, strict executable validation, idle reservations, and durable commit-intent reconciliation. Allow migration preflight to finish or report an explicit unpaused error through the existing commit protocol, so blocked migrations do not starve other nodes. Do not infer success or discard uncertain intents from a version match alone. This clarifies D133's current-version observation and supersedes its use as a compatibility gate. See [migration](updates.md#migrate-an-existing-supervisor).
+
+## D135: Settle software switches separately from startup blockers
+
+A fresh report of the exact selected executable version and checksum, released maintenance, a non-restarting state, and `runtime: "supervised"` proves the software switch settled while explicitly denying startup-migration completion. Clear only that software commit intent and stop re-offering/recommitting the same bytes. Never infer this from a version match alone, stale status, paused maintenance, an in-progress restart, or another deployment. Keep unresolved intent and gateway-switch publication barriers unchanged.
+
+Show `startup-refresh-required` per node. When all available software switches and the gateway have settled but these startup blockers remain, persist deployment phase `blocked`, not `complete`, and retain recovery binaries. This allows other nodes and later superuser-published fixes to proceed without restarting blocked profiles or falsely claiming their supervisors disappeared. It refines D133/D134's migration acknowledgement and avoids retrying permanent startup limitations as binary updates. Dirty `make update` builds receive a timestamped version shared by the native CLI and bundle, so fixes do not silently reuse pinned dirty bytes.
+
+## D136: Preserve Limited User task maintenance authority
+
+After registering an owned Windows User login task, preserve its ACL and ensure the installing SID has file-generic read/write/execute access on that task. An elevated creator otherwise leaves Administrators as owner with only a read grant for the Limited principal, preventing the unchanged-definition preflight and startup migration despite a correctly bound installation. Do not grant ownership, ACL-change rights, another principal, a broader task-folder ACL, an elevated execution token, or SCM change-config authority.
+
+Already-installed read-only tasks require an explicitly authorized privileged repair bound to that exact profile, SID, Limited principal, action, and logon trigger. Preserve other permissions and startup definitions and do not start or stop the profile as part of that repair. A subsequent ordinary managed update can perform the existing committed migration. This clarifies the existing-authority requirement in D133 without allowing a Limited worker to elevate itself.

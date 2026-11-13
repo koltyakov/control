@@ -37,10 +37,9 @@ func encodedPowerShell(script string) string {
 	return base64.StdEncoding.EncodeToString(data)
 }
 
-func userTaskArguments(binary, config string) string {
-	// Both arguments are absolute file paths. Windows file names cannot contain
-	// double quotes, and these paths cannot end in a directory separator.
-	return `__user-launch "` + config + `" "` + binary + `"`
+func userTaskArguments(config string) string {
+	// Absolute file paths cannot contain double quotes or end in a separator.
+	return `__user-direct "` + config + `"`
 }
 
 // The protected Hybrid parent may remove a matching legacy login task that its
@@ -67,12 +66,29 @@ func userTaskRemovalScript(config string) string {
 	return userTaskScript(config, "if ($task) { Unregister-ScheduledTask -InputObject $task -Confirm:$false }")
 }
 
-func userTaskRegistration(launcher, binary, config string) string {
+func userTaskRegistration(launcher, config string) string {
 	return fmt.Sprintf(`$action = New-ScheduledTaskAction -Execute %s -Argument %s
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $sid
 $principal = New-ScheduledTaskPrincipal -UserId $sid -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName $name -TaskPath '\' -Description $description -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null`, powershellLiteral(launcher), powershellLiteral(userTaskArguments(binary, config)))
+Register-ScheduledTask -TaskName $name -TaskPath '\' -Description $description -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+# An elevated installer otherwise leaves only a read grant for the Limited user.
+# Preserve every existing ACE and grant maintenance only on this user's task.
+$scheduler = New-Object -ComObject 'Schedule.Service'
+$scheduler.Connect()
+$registered = $scheduler.GetFolder('\').GetTask($name)
+$security = [Security.AccessControl.RawSecurityDescriptor]::new($registered.GetSecurityDescriptor(7))
+$maintenance = 0x1201bf # FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE.
+$granted = 0
+foreach ($ace in $security.DiscretionaryAcl) {
+  if ($ace.SecurityIdentifier.Value -eq $sid -and $ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed) { $granted = $granted -bor $ace.AccessMask }
+}
+if (($granted -band $maintenance) -ne $maintenance) {
+  if ($null -eq $security.DiscretionaryAcl) { throw 'Control login task has no supported DACL' }
+  $grant = [Security.AccessControl.CommonAce]::new([Security.AccessControl.AceFlags]::None, [Security.AccessControl.AceQualifier]::AccessAllowed, $maintenance, [Security.Principal.SecurityIdentifier]::new($sid), $false, $null)
+  $security.DiscretionaryAcl.InsertAce(0, $grant)
+  $registered.SetSecurityDescriptor($security.GetSddlForm([Security.AccessControl.AccessControlSections]::All), 0)
+}`, powershellLiteral(launcher), powershellLiteral(userTaskArguments(config)))
 }
 
 func userTaskScript(config, operation string) string {
