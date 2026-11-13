@@ -149,6 +149,54 @@ async function refreshPage(page) {
   });
 }
 
+async function assertOverviewFullFleet(page, snapshot) {
+  const online = Array.from({ length: 12 }, (_, i) => ({
+    ...snapshot.nodes[0],
+    id: `full-fleet-${i}`,
+    name: `online-host-${String(i + 1).padStart(2, "0")}`,
+    online: true,
+    disabled: false,
+    status: "summary",
+    runAs: "user",
+    hybridId: i === 11 ? "full-fleet-pair" : undefined,
+    hybridRole: i === 11 ? "user" : undefined,
+  }));
+  const nodes = [
+    ...online,
+    { ...online[11], id: "full-fleet-system", name: "paired-system", hybridRole: "system", runAs: "system" },
+    { ...online[0], id: "full-fleet-offline", name: "offline-host", online: false, status: "offline" },
+    { ...online[0], id: "full-fleet-disabled", name: "disabled-host", disabled: true },
+  ];
+  await page.route("**/console/api/status", (route) => route.fulfill({ json: { ...snapshot, nodes } }));
+  try {
+    await pageLink(page, "machines");
+    await refreshPage(page);
+    await page.locator("#machine-search").fill("no-matches");
+    await page.locator('[data-action="filter-state"][data-filter="offline"]').click();
+    await page.locator('.brand[href="#overview"]').click();
+    await page.getByRole("button", { name: "online-host-12", exact: true }).waitFor();
+    const names = page.locator(".machine-table .machine-name");
+    const expected = online.map((node) => node.name);
+    assert.deepEqual((await names.allTextContents()).sort(), expected, "Overview must show every online enabled host, even beyond eight and after Machines filters");
+    assert.equal(await page.locator("#nav-count").textContent(), "14", "Hybrid contexts must count as one host");
+    await page.locator('[data-action="sort"][data-sort="name"]').click();
+    assert.deepEqual((await names.allTextContents()).sort(), expected, "Sorting must not hide hosts");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: "online-host-12", exact: true }).scrollIntoViewIfNeeded();
+    assert.equal(await names.count(), 12, "Narrow layouts must retain every online enabled host");
+    await page.locator('.panel-heading [data-action="filter-machines"][data-filter="all"]').click();
+    await page.locator("#machine-search").waitFor();
+    assert.equal(await page.locator("#machine-search").inputValue(), "");
+    assert.equal(await names.count(), 14, "All machines must retain offline and disabled hosts without duplicating Hybrid contexts");
+    assert.equal(await page.locator('[data-action="filter-state"][aria-pressed="true"]').getAttribute("data-filter"), "all");
+  } finally {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.unroute("**/console/api/status");
+    await page.locator('.brand[href="#overview"]').click();
+    await refreshPage(page);
+  }
+}
+
 async function assertContextChips(page) {
   assert.equal(await page.locator(".context-presence").count(), 0, "Context chips must not contain status dots");
   const chips = await page.locator(".machine-table .context-tag").evaluateAll(
@@ -1421,6 +1469,7 @@ try {
   // Exercise table density with explicitly synthetic records, including long
   // names and missing metrics. Only this browser's read response is replaced.
   const snapshot = await api("/v1/status", "GET", undefined, account.token);
+  await assertOverviewFullFleet(page, snapshot);
   const fixtureNames = [
     "build-linux-01",
     "design-mac",

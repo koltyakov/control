@@ -1218,8 +1218,7 @@ function machinePanel(overview) {
   const nodes = overview
     ? all.filter((node) => node.contexts.some((context) => context.online && !context.disabled))
     : all.filter(machineMatches);
-  const sorted = sortedMachines(nodes);
-  const rows = overview ? sorted.slice(0, 8) : sorted;
+  const rows = sortedMachines(nodes);
   const showGPUs = all.some((node) => (node.contexts || [node]).some((context) => visibleGPUs(context.system?.gpus).length));
   const body = rows.length
     ? machineTable(machineRows(rows, showGPUs), showGPUs)
