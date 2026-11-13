@@ -73,6 +73,7 @@ type Node struct {
 	notifiers           map[string]*taskNotifier
 	accepting           map[string]*acceptance
 	tombstones          map[string]taskTombstone
+	taskIDs             map[string]string // ASCII case-folded retained and pending IDs, protected by mu.
 	pruneMu             sync.Mutex
 	executionPool       *providerPool
 	operationsPool      *providerPool
@@ -162,6 +163,7 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 	n.notifiers = map[string]*taskNotifier{}
 	n.accepting = map[string]*acceptance{}
 	n.tombstones = map[string]taskTombstone{}
+	n.taskIDs = map[string]string{}
 	n.work = workgate.New()
 	n.tcpListeners = make(chan struct{}, 32)
 	n.readClipboard, n.copyClipboard = clipboard.Read, clipboard.Copy

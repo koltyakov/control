@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -77,6 +78,7 @@ func (n *Node) loadTasks() error {
 	if err != nil {
 		return err
 	}
+	taskPaths := make(map[string]string, len(paths))
 	for _, path := range paths {
 		var task model.Task
 		if err = store.Read(path, &task); err != nil {
@@ -85,20 +87,47 @@ func (n *Node) loadTasks() error {
 		if !safeID.MatchString(task.ID) {
 			return errors.New("invalid persisted task ID")
 		}
-		if !task.Terminal() {
-			task.State, task.Error, task.Updated = "interrupted", "node restarted before completion; inspect external effects before retrying", time.Now().UTC()
-			if err = store.Write(path, task); err != nil {
-				return err
-			}
+		if err := n.reserveTaskIDLocked(task.ID); err != nil {
+			return fmt.Errorf("load task %s; preserve task records and tombstones and recover conflicting IDs before starting: %w", path, err)
 		}
 		n.tasks[task.ID] = &task
-		n.recordRecentTaskLocked(&task)
+		taskPaths[task.ID] = path
 	}
 	if err := n.loadTombstones(); err != nil {
 		return err
 	}
+	// Validate the complete retained ID set before rewriting interrupted tasks
+	// or allowing cleanup to touch paths belonging to a conflicting spelling.
+	for _, task := range n.tasks {
+		if !task.Terminal() {
+			task.State, task.Error, task.Updated = "interrupted", "node restarted before completion; inspect external effects before retrying", time.Now().UTC()
+			if err = store.Write(taskPaths[task.ID], task); err != nil {
+				return err
+			}
+		}
+	}
 	n.rebuildRecentTasksLocked()
 	return nil
+}
+
+// Caller holds mu or is loading state before Start. IDs remain case-sensitive
+// publicly, but their metadata, logs and workspaces must not alias on disk.
+func (n *Node) reserveTaskIDLocked(id string) error {
+	key := strings.ToLower(id) // safeID restricts IDs to ASCII.
+	if prior := n.taskIDs[key]; prior != "" && prior != id {
+		return errors.New("task ID has a case-fold conflict with a retained or pending task ID")
+	}
+	n.taskIDs[key] = id
+	return nil
+}
+
+func (n *Node) releaseTaskIDLocked(id string) {
+	if n.tasks[id] != nil || n.accepting[id] != nil {
+		return
+	}
+	if _, retained := n.tombstones[id]; !retained && n.taskIDs[strings.ToLower(id)] == id {
+		delete(n.taskIDs, strings.ToLower(id))
+	}
 }
 
 // cloneTask copies a task so callers never share mutable slices with n.tasks.
@@ -195,6 +224,10 @@ func (n *Node) startTaskContext(parent context.Context, owner string, spec model
 	reservation := &acceptance{done: make(chan struct{}), leaseID: spec.LeaseID}
 	for {
 		n.mu.Lock()
+		if err := n.reserveTaskIDLocked(spec.ID); err != nil {
+			n.mu.Unlock()
+			return model.Task{}, err
+		}
 		if task, found, err := n.submittedLocked(spec.ID, owner, digest); found {
 			n.mu.Unlock()
 			return task, err
@@ -215,6 +248,7 @@ func (n *Node) startTaskContext(parent context.Context, owner string, spec model
 	defer func() {
 		n.mu.Lock()
 		delete(n.accepting, spec.ID)
+		n.releaseTaskIDLocked(spec.ID)
 		n.mu.Unlock()
 		close(reservation.done)
 	}()

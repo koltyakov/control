@@ -3,6 +3,7 @@ package node
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,6 +36,52 @@ func TestCorruptInteriorTombstoneFailsClosed(t *testing.T) {
 	}
 }
 
+func TestTaskCleanupPersistenceFailureStopsNewPruning(t *testing.T) {
+	n := localNode(t, func(c *Config) { c.TaskRetentionHours = 1 })
+	task := recentTask("pending-cleanup", time.Now().Add(-2*time.Hour))
+	stone := taskTombstone{ID: task.ID, Owner: task.Owner, Spec: specDigest(task.Spec), State: task.State, Pruned: time.Now(), CleanupPending: true}
+	stone.Checksum = stone.checksum()
+	n.tombstones[stone.ID] = stone
+	journal := append(model.JSON(stone), '\n')
+	if err := store.Bytes(n.tombstonePath(), journal, 0600); err != nil {
+		t.Fatal(err)
+	}
+	independent := recentTask("independent", task.Updated)
+	n.tasks[independent.ID] = independent
+	if err := store.Write(n.taskPath(independent.ID), independent); err != nil {
+		t.Fatal(err)
+	}
+	// Replacing the journal with a directory forces atomic replacement to
+	// fail independently of user privileges and platform permission models.
+	if err := os.Remove(n.tombstonePath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(n.tombstonePath(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.pruneTasks(time.Now()); !errors.Is(err, errTaskCleanupPersistence) {
+		t.Fatal("cleanup persistence failure was not distinguished", err)
+	}
+	if !n.tombstones[stone.ID].CleanupPending || n.tasks[independent.ID] == nil {
+		t.Fatal("journal failure discarded intent or allowed further pruning")
+	}
+	if _, err := os.Stat(n.taskPath(independent.ID)); err != nil {
+		t.Fatal("journal failure removed an independent task", err)
+	}
+	if err := os.Remove(n.tombstonePath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Bytes(n.tombstonePath(), journal, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.pruneTasks(time.Now()); err != nil {
+		t.Fatal("pruning did not recover after journal repair", err)
+	}
+	if n.tasks[independent.ID] != nil || n.tombstones[stone.ID].CleanupPending || n.tombstones[independent.ID].CleanupPending {
+		t.Fatal("recovered pruning left pending state")
+	}
+}
+
 func TestTaskCleanupRetriesAcrossRestart(t *testing.T) {
 	n := localNode(t, func(c *Config) { c.TaskRetentionHours = 1 })
 	task := recentTask("cleanup", time.Now().Add(-2*time.Hour))
@@ -61,6 +108,24 @@ func TestTaskCleanupRetriesAcrossRestart(t *testing.T) {
 	n = openLocalNode(t, cfg)
 	if !n.tombstones[task.ID].CleanupPending {
 		t.Fatal("restart lost cleanup intent")
+	}
+	// An unrelated expired task must still be pruned while the first cleanup
+	// remains blocked. Both outcomes and ID protections must survive restart.
+	independent := recentTask("independent", time.Now().Add(-2*time.Hour))
+	n.tasks[independent.ID] = independent
+	if err := store.Write(n.taskPath(independent.ID), independent); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.pruneTasks(time.Now()); err == nil {
+		t.Fatal("cleanup failure hidden while pruning an independent task")
+	}
+	if n.tasks[independent.ID] != nil || n.tombstones[independent.ID].ID == "" || n.tombstones[independent.ID].CleanupPending {
+		t.Fatal("blocked cleanup prevented independent pruning")
+	}
+	_ = n.Close()
+	n = openLocalNode(t, cfg)
+	if !n.tombstones[task.ID].CleanupPending || n.tombstones[independent.ID].ID == "" {
+		t.Fatal("restart lost independent cleanup outcomes")
 	}
 	if err := os.Remove(blocker); err != nil {
 		t.Fatal(err)

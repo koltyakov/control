@@ -27,6 +27,10 @@ const (
 	tombstoneTTL  = 180 * 24 * time.Hour
 )
 
+// File-removal failures are independent. A journal failure must stop pruning
+// before further tombstones are appended or more task records are removed.
+var errTaskCleanupPersistence = errors.New("persist task cleanup")
+
 // taskTombstone is the durable remainder of a pruned task: enough to answer a
 // reconciliation query and to reject or deduplicate a resubmitted ID.
 type taskTombstone struct {
@@ -117,6 +121,9 @@ func (n *Node) loadTombstones() error {
 			}
 			stale = true
 		}
+		if err := n.reserveTaskIDLocked(t.ID); err != nil {
+			return fmt.Errorf("task tombstone at line %d; preserve task records and the journal and recover conflicting IDs before starting: %w", line, err)
+		}
 		n.tombstones[t.ID] = t
 		if !bytes.HasSuffix(raw, []byte{'\n'}) {
 			stale = true
@@ -159,9 +166,13 @@ func (n *Node) compactTombstones() error {
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	old := n.tombstones
 	n.tombstones = make(map[string]taskTombstone, len(entries))
 	for _, t := range entries {
 		n.tombstones[t.ID] = t
+	}
+	for id := range old {
+		n.releaseTaskIDLocked(id)
 	}
 	return nil
 }
@@ -172,8 +183,9 @@ func (n *Node) compactTombstones() error {
 func (n *Node) pruneTasks(now time.Time) error {
 	n.pruneMu.Lock()
 	defer n.pruneMu.Unlock()
-	if err := n.retryTaskCleanup(); err != nil {
-		return err
+	cleanupErr := n.retryTaskCleanup()
+	if errors.Is(cleanupErr, errTaskCleanupPersistence) {
+		return cleanupErr
 	}
 	retention := time.Duration(n.Config.TaskRetentionHours) * time.Hour
 	protected := map[string]bool{}
@@ -204,7 +216,7 @@ func (n *Node) pruneTasks(now time.Time) error {
 	}
 	n.mu.Unlock()
 	if len(victims) == 0 {
-		return nil
+		return cleanupErr
 	}
 	// Make the tombstones durable before removing any record they replace.
 	var b bytes.Buffer
@@ -218,7 +230,7 @@ func (n *Node) pruneTasks(now time.Time) error {
 		b.WriteByte('\n')
 	}
 	if err := store.Append(n.tombstonePath(), b.Bytes()); err != nil {
-		return err
+		return errors.Join(cleanupErr, err)
 	}
 	removed := make([]string, 0, len(victims))
 	n.mu.Lock()
@@ -277,7 +289,7 @@ func (n *Node) retryTaskCleanup() error {
 				n.tombstones[t.ID] = t
 			}
 			n.mu.Unlock()
-			failures = append(failures, err)
+			failures = append(failures, fmt.Errorf("%w: %w", errTaskCleanupPersistence, err))
 		}
 	}
 	return errors.Join(failures...)

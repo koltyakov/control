@@ -39,9 +39,9 @@ func (n *Node) registerProviders() error {
 		{model.Capability{Name: "exec.run", Description: "Run an executable with arguments and environment. A relative dir resolves against the invocation workspace, workDir/tasks/ID for a tracked task, not the files.* workDir root. An absolute dir is used unchanged. Declared task outputs still resolve against the original task workspace. Use a task for long-running work.", InputSchema: schema(map[string]any{"command": text, "args": map[string]any{"type": "array", "items": text}, "env": object, "dir": map[string]any{"type": "string", "description": "Absolute working directory or path relative to the invocation workspace; tracked tasks use workDir/tasks/ID. Unlike files.* paths, this is not relative to workDir."}, "stdin": text}, "command")}, n.execRun},
 		{model.Capability{Name: "agent.run", Description: "Run a configured AI CLI with a prompt on stdin; collect its output.", InputSchema: schema(map[string]any{"agent": text, "prompt": text}, "agent", "prompt")}, n.agentRun},
 		{model.Capability{Name: "http.request", Description: "Make an HTTP request using this machine's network and DNS. headerSecrets maps header names to {secret, prefix}; references resolve only on this worker. Secret-bearing requests never follow redirects. Returned text masks configured secret values.", InputSchema: schema(map[string]any{"url": text, "method": text, "headers": object, "headerSecrets": map[string]any{"type": "object", "maxProperties": 32, "additionalProperties": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"secret"}, "properties": map[string]any{"secret": map[string]any{"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"}, "prefix": text}}}, "body": text}, "url")}, n.httpRequest},
-		{model.Capability{Name: "files.list", Description: "List a directory relative to the configured filesystem root.", InputSchema: schema(map[string]any{"path": text})}, n.filesList},
+		{model.Capability{Name: "files.list", Description: "List a directory relative to the configured filesystem root. Rejects non-directory targets, including special files.", InputSchema: schema(map[string]any{"path": text})}, n.filesList},
 		{model.Capability{Name: "files.read", Description: "Read up to 1 MiB at an offset; returns base64 bytes.", InputSchema: schema(map[string]any{"path": text, "offset": map[string]any{"type": "integer"}, "limit": map[string]any{"type": "integer"}}, "path")}, n.filesRead},
-		{model.Capability{Name: "files.write", Description: "Write base64 bytes at an offset. Set truncate for replacement.", InputSchema: schema(map[string]any{"path": text, "data": text, "offset": map[string]any{"type": "integer"}, "truncate": map[string]any{"type": "boolean"}}, "path", "data")}, n.filesWrite},
+		{model.Capability{Name: "files.write", Description: "Write base64 bytes at an offset to a regular file. Creates missing files and rejects special files. Set truncate for replacement.", InputSchema: schema(map[string]any{"path": text, "data": text, "offset": map[string]any{"type": "integer"}, "truncate": map[string]any{"type": "boolean"}}, "path", "data")}, n.filesWrite},
 		{model.Capability{Name: "mcp.call", Description: "Invoke a tool on a configured local MCP server. Tool-reported isError fails execution; tracked tasks retain the original result, including partial output. Failure does not authorize replay.", InputSchema: schema(map[string]any{"server": text, "tool": text, "arguments": object}, "server", "tool")}, n.mcpCall},
 		{model.Capability{Name: "mcp.request", Description: "Read MCP resources or prompts on a configured server.", InputSchema: schema(map[string]any{"server": text, "method": text, "params": object}, "server", "method")}, n.mcpRequest},
 		{model.Capability{Name: "workflow.run", Description: "Execute dependency-ordered tasks across peers and transfer their artifact inputs. maxParallel runs up to that many ready steps at once (default 1, sequential). Parallel ready ordering uses bounded destination-capacity discovery; targets and accepted tasks never move or replay.", InputSchema: schema(map[string]any{"steps": map[string]any{"type": "array", "items": object}, "maxParallel": map[string]any{"type": "integer", "minimum": 1, "maximum": maxWorkflowParallel}}, "steps")}, n.workflowRun},
@@ -276,7 +276,7 @@ func (n *Node) filesList(ctx context.Context, args json.RawMessage, e Execution)
 	if err := n.uploads.CheckPath(q.Path); err != nil {
 		return nil, err
 	}
-	f, err := n.root.Open(q.Path)
+	f, err := openDirectory(n.root, q.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -358,11 +358,7 @@ func (n *Node) filesWrite(ctx context.Context, args json.RawMessage, e Execution
 	if err = n.root.MkdirAll(filepath.Dir(q.Path), 0700); err != nil {
 		return nil, err
 	}
-	flags := os.O_CREATE | os.O_WRONLY
-	if q.Truncate {
-		flags |= os.O_TRUNC
-	}
-	f, err := n.root.OpenFile(q.Path, flags, 0600)
+	f, err := openRegularFileForWrite(n.root, q.Path, q.Truncate)
 	if err != nil {
 		return nil, err
 	}
