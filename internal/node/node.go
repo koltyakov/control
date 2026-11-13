@@ -442,12 +442,17 @@ func (n *Node) handle(caller string, conn net.Conn) {
 	// A normal RPC has no client payload after the frame. EOF cancels its
 	// synchronous provider without affecting separately accepted durable tasks.
 	go func() { var b [1]byte; _, _ = conn.Read(b[:]); cancel() }()
-	result, err := n.dispatch(ctx, caller, request.Method, request.Params)
+	result, receipt, err := n.dispatchWithReceipt(ctx, caller, request.Method, request.Params)
 	response := model.Response{}
 	if err != nil {
 		response = model.ErrorResponse(err)
 	} else {
 		response.Result = model.JSON(result)
+	}
+	if receipt != nil && len(request.SubmissionID) == 32 {
+		copy := *receipt
+		copy.ID = request.SubmissionID
+		response.Submission = &copy
 	}
 	if writeErr := writeFrame(conn, wire.BoundResponse(response)); writeErr != nil {
 		slog.Debug("peer response", "method", request.Method, "error", writeErr)
@@ -460,11 +465,16 @@ func (n *Node) open(ctx context.Context, target, method string, params any) (net
 }
 
 func (n *Node) Call(ctx context.Context, target, method string, params any, result any) error {
+	_, err := n.callWithReceipt(ctx, target, method, params, result)
+	return err
+}
+
+func (n *Node) callWithReceipt(ctx context.Context, target, method string, params any, result any) (*model.TaskSubmissionReceipt, error) {
 	local := target == "" || target == n.Config.Name || target == n.Identity.ID
 	if requiresAdmission(method) && (!local || method != "tasks.start") {
 		workCtx, release, err := n.enterWork(ctx)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		defer release()
 		ctx = workCtx
@@ -473,7 +483,7 @@ func (n *Node) Call(ctx context.Context, target, method string, params any, resu
 		n.mu.Lock()
 		if n.closed {
 			n.mu.Unlock()
-			return errors.New("node is closed")
+			return nil, errors.New("node is closed")
 		}
 		n.wg.Add(1)
 		n.mu.Unlock()
@@ -491,7 +501,7 @@ func (n *Node) Call(ctx context.Context, target, method string, params any, resu
 				var err error
 				ctx, release, err = n.acceptAuthority(ctx, n.Identity.ID, model.Request{Method: method, Params: paramsJSON, Delegation: grant.ID, Delegations: model.Delegations(ctx)})
 				if err != nil {
-					return err
+					return nil, err
 				}
 				defer release()
 				delegated = true
@@ -502,28 +512,28 @@ func (n *Node) Call(ctx context.Context, target, method string, params any, resu
 		// destination is this node. Only the trusted local API has ambient local
 		// execution permission.
 		if coordinated && !delegated {
-			return errors.New("local coordinated work requires an instruction-bound delegation")
+			return nil, errors.New("local coordinated work requires an instruction-bound delegation")
 		}
-		value, err := n.dispatch(ctx, n.Identity.ID, method, paramsJSON)
+		value, receipt, err := n.dispatchWithReceipt(ctx, n.Identity.ID, method, paramsJSON)
 		if err != nil {
-			return err
+			return receipt, err
 		}
 		if result == nil {
-			return nil
+			return receipt, nil
 		}
 		// Preserve JSON conversion and independent ownership even for structs
 		// containing maps, slices, or pointers into node-owned state.
-		return json.Unmarshal(model.JSON(value), result)
+		return receipt, json.Unmarshal(model.JSON(value), result)
 	}
-	conn, data, err := n.open(ctx, target, method, params)
+	conn, data, receipt, err := n.Peer.OpenRPCWithReceipt(ctx, target, method, params)
 	if err != nil {
-		return err
+		return receipt, err
 	}
 	defer func() { _ = conn.Close() }()
 	if result == nil {
-		return nil
+		return receipt, nil
 	}
-	return json.Unmarshal(data, result)
+	return receipt, json.Unmarshal(data, result)
 }
 
 func (n *Node) dispatch(ctx context.Context, caller, method string, args json.RawMessage) (_ any, err error) {

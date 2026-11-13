@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/gateway"
+	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/upload"
 	"github.com/koltyakov/control/internal/wire"
@@ -21,10 +22,17 @@ import (
 // OpenRPC sends one request. The returned stream may contain a bulk payload.
 // It never replays a request after writing application bytes.
 func (p *Peer) OpenRPC(ctx context.Context, target, method string, params any) (net.Conn, json.RawMessage, error) {
+	conn, result, _, err := p.OpenRPCWithReceipt(ctx, target, method, params)
+	return conn, result, err
+}
+
+// OpenRPCWithReceipt also returns a stream-bound task acceptance receipt, when
+// supported. Lost or legacy replies never imply that authority was unused.
+func (p *Peer) OpenRPCWithReceipt(ctx context.Context, target, method string, params any) (net.Conn, json.RawMessage, *model.TaskSubmissionReceipt, error) {
 	if len(model.Delegations(ctx)) != 0 {
 		peer, err := p.Lookup(ctx, target)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		target = peer.ID
 	}
@@ -47,7 +55,7 @@ func (p *Peer) OpenRPC(ctx context.Context, target, method string, params any) (
 	}
 	conn, err := p.OpenLane(ctx, target, lane)
 	if err != nil {
-		return nil, nil, model.OperationError(err, "not_sent")
+		return nil, nil, nil, model.OperationError(err, "not_sent")
 	}
 	stop := context.AfterFunc(ctx, func() {
 		// yamux Close sends FIN but can leave reads waiting for the peer.
@@ -57,6 +65,9 @@ func (p *Peer) OpenRPC(ctx context.Context, target, method string, params any) (
 	defer stop()
 	deadline, _ := ctx.Deadline()
 	request := model.Request{Version: model.Version, Method: method, Params: model.JSON(params), Deadline: deadline, Delegations: model.Delegations(ctx)}
+	if method == "tasks.start" || method == "peers.call" {
+		request.SubmissionID = identity.NewID()
+	}
 	for _, grant := range request.Delegations {
 		if (grant.Target == target || grant.Alias == target) && grant.Matches(method, request.Params) {
 			request.Delegation = grant.ID
@@ -69,18 +80,23 @@ func (p *Peer) OpenRPC(ctx context.Context, target, method string, params any) (
 		if errors.Is(err, wire.ErrFrameTooLarge) {
 			outcome = "not_sent"
 		}
-		return nil, nil, model.OperationError(err, outcome)
+		return nil, nil, nil, model.OperationError(err, outcome)
 	}
 	var response model.Response
 	if err = wire.ReadFrame(conn, &response); err != nil {
 		_ = conn.Close()
-		return nil, nil, model.OperationError(err, "unknown")
+		return nil, nil, nil, model.OperationError(err, "unknown")
+	}
+	receipt := response.Submission
+	if receipt != nil && (request.SubmissionID == "" || receipt.ID != request.SubmissionID ||
+		(receipt.Status != "accepted" && receipt.Status != "existing" && receipt.Status != "rejected")) {
+		receipt = nil
 	}
 	if response.Error != "" {
 		_ = conn.Close()
-		return nil, nil, response.Err()
+		return nil, nil, receipt, response.Err()
 	}
-	return conn, response.Result, nil
+	return conn, response.Result, receipt, nil
 }
 
 // OpenTCP negotiates duplex records. Older receivers return a raw stream.

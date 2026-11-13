@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/koltyakov/control/internal/identity"
@@ -34,11 +35,7 @@ func prepareDelegations(ctx context.Context, peer *transport.Peer, target, metho
 	}
 	defer func() {
 		if err != nil {
-			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			defer cancel()
-			for _, grant := range grants {
-				_ = peerCall(cleanup, peer, grant.Target, "access.revoke", map[string]any{"id": grant.ID}, nil)
-			}
+			cleanupDelegations(ctx, peer, grants)
 		}
 	}()
 	issue := func(destination string, q model.Delegation) error {
@@ -188,4 +185,62 @@ func prepareDelegations(ctx context.Context, peer *transport.Peer, target, metho
 		params = args
 	}
 	return params, grants, nil
+}
+
+// A receipt is evidence only about this submission, not about an earlier
+// uncertain attempt with the same task ID. Grants are never shared by attempts.
+func unusedSubmission(receipt *model.TaskSubmissionReceipt, method string, params json.RawMessage) bool {
+	if receipt == nil || (receipt.Status != "existing" && receipt.Status != "rejected") {
+		return false
+	}
+	var spec model.TaskSpec
+	if method == "peers.call" {
+		var q struct {
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		if json.Unmarshal(params, &q) != nil || q.Method != "tasks.start" {
+			return false
+		}
+		method, params = q.Method, q.Params
+	}
+	return method == "tasks.start" && json.Unmarshal(params, &spec) == nil &&
+		spec.ID != "" && receipt.TaskID == spec.ID
+}
+
+func releasableDelegations(method string, params json.RawMessage, grants []model.Delegation, receipt *model.TaskSubmissionReceipt) []model.Delegation {
+	if unusedSubmission(receipt, method, params) {
+		return grants
+	}
+	// All outgoing authority can be needed later by a queued durable parent,
+	// even when the destination instruction is a single-use synchronous call.
+	if method == "tasks.start" {
+		return nil
+	}
+	var temporary []model.Delegation
+	for _, grant := range grants {
+		// Synchronous workflows and forwarded tasks can accept durable children.
+		// Keep task authority and its derived workflow-output access after return.
+		if grant.Method != "tasks.start" {
+			temporary = append(temporary, grant)
+		}
+	}
+	return temporary
+}
+
+func cleanupDelegations(ctx context.Context, peer *transport.Peer, grants []model.Delegation) {
+	if len(grants) == 0 {
+		return
+	}
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	for i, grant := range grants {
+		if cleanup.Err() != nil {
+			slog.Warn("delegation cleanup deadline reached; reconcile access without replaying work", "remaining", len(grants)-i)
+			break
+		}
+		if err := peerCall(cleanup, peer, grant.Target, "access.revoke", map[string]string{"id": grant.ID}, nil); err != nil {
+			slog.Warn("delegation cleanup failed; reconcile access without replaying work", "target", grant.Target, "grant", grant.ID, "error", err)
+		}
+	}
 }

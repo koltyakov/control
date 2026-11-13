@@ -169,6 +169,8 @@ func (n *Node) submittedLocked(id, owner, digest string) (model.Task, bool, erro
 }
 
 func (n *Node) startTaskContext(parent context.Context, owner string, spec model.TaskSpec) (model.Task, error) {
+	status := "rejected"
+	defer func() { recordSubmission(parent, spec.ID, status) }()
 	if n.ctx == nil {
 		return model.Task{}, errors.New("node is not running")
 	}
@@ -230,6 +232,9 @@ func (n *Node) startTaskContext(parent context.Context, owner string, spec model
 		}
 		if task, found, err := n.submittedLocked(spec.ID, owner, digest); found {
 			n.mu.Unlock()
+			if err == nil {
+				status = "existing"
+			}
 			return task, err
 		}
 		pending := n.accepting[spec.ID]
@@ -325,6 +330,7 @@ func (n *Node) startTaskContext(parent context.Context, owner string, spec model
 	n.cancels[task.ID] = cancel
 	n.wg.Add(1)
 	accepted = true
+	status = "accepted"
 	retainAuthority = true
 	go func() {
 		defer n.wg.Done()

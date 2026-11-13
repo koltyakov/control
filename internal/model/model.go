@@ -160,13 +160,24 @@ type Request struct {
 	Deadline    time.Time    `json:"deadline,omitempty"`
 	Delegation  string       `json:"delegation,omitempty"`
 	Delegations []Delegation `json:"delegations,omitempty"`
+	// SubmissionID is a fresh RPC nonce, never a durable task ID.
+	SubmissionID string `json:"submissionId,omitempty"`
+}
+
+// TaskSubmissionReceipt describes only this RPC's acceptance decision. It is
+// never persisted in a Task or restored by tasks.get.
+type TaskSubmissionReceipt struct {
+	ID     string `json:"id"`
+	TaskID string `json:"taskId"`
+	Status string `json:"status"` // accepted, existing, or rejected before adoption
 }
 
 type Response struct {
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   string          `json:"error,omitempty"`
-	Code    string          `json:"code,omitempty"`
-	Outcome string          `json:"outcome,omitempty"`
+	Result     json.RawMessage        `json:"result,omitempty"`
+	Error      string                 `json:"error,omitempty"`
+	Code       string                 `json:"code,omitempty"`
+	Outcome    string                 `json:"outcome,omitempty"`
+	Submission *TaskSubmissionReceipt `json:"submission,omitempty"`
 }
 
 func JSON(v any) json.RawMessage {

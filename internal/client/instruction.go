@@ -7,7 +7,6 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
@@ -17,8 +16,13 @@ import (
 // openPeerRPC explicitly authorizes an instruction-only destination before
 // sending work. It never retries an uncertain instruction or changes targets.
 func openPeerRPC(ctx context.Context, peer *transport.Peer, target, method string, params any) (net.Conn, json.RawMessage, error) {
+	conn, result, _, err := openPeerRPCWithReceipt(ctx, peer, target, method, params)
+	return conn, result, err
+}
+
+func openPeerRPCWithReceipt(ctx context.Context, peer *transport.Peer, target, method string, params any) (net.Conn, json.RawMessage, *model.TaskSubmissionReceipt, error) {
 	if instructionDiscovery(method) || strings.HasPrefix(method, "access.") {
-		return peer.OpenRPC(ctx, target, method, params)
+		return peer.OpenRPCWithReceipt(ctx, target, method, params)
 	}
 	if method == "artifacts.open" {
 		var q struct {
@@ -27,25 +31,25 @@ func openPeerRPC(ctx context.Context, peer *transport.Peer, target, method strin
 		if json.Unmarshal(model.JSON(params), &q) == nil && q.Grant != "" {
 			// Preserve the supplied artifact grant's absolute expiry and revocation
 			// context. Never replace it with fresh account-client authority.
-			return peer.OpenRPC(ctx, target, method, params)
+			return peer.OpenRPCWithReceipt(ctx, target, method, params)
 		}
 	}
 	destination, err := peer.Lookup(ctx, target)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if !destination.InstructionOnly {
-		return peer.OpenRPC(ctx, destination.ID, method, params)
+		return peer.OpenRPCWithReceipt(ctx, destination.ID, method, params)
 	}
 	for _, grant := range model.Delegations(ctx) {
 		if grant.Target == destination.ID && grant.Matches(method, model.JSON(params)) {
-			return peer.OpenRPC(ctx, destination.ID, method, params)
+			return peer.OpenRPCWithReceipt(ctx, destination.ID, method, params)
 		}
 	}
 	if method == "tasks.start" {
 		var spec model.TaskSpec
 		if err = json.Unmarshal(model.JSON(params), &spec); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if spec.ID == "" {
 			spec.ID = identity.NewID()
@@ -54,26 +58,27 @@ func openPeerRPC(ctx context.Context, peer *transport.Peer, target, method strin
 	}
 	var grant model.Delegation
 	if err = peerCall(ctx, peer, destination.ID, "access.grant", model.Delegation{Subject: peer.IdentityID(), Method: method, Params: model.JSON(params)}, &grant); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	grants := append([]model.Delegation{}, model.Delegations(ctx)...)
 	grants = append(grants, grant)
-	conn, result, err := peer.OpenRPC(model.WithDelegations(ctx, grants), destination.ID, method, params)
+	conn, result, receipt, err := peer.OpenRPCWithReceipt(model.WithDelegations(ctx, grants), destination.ID, method, params)
 	// Retain task grants for durable execution, including uncertain acceptance.
 	// All other grants follow the returned stream's lifetime.
 	if method == "tasks.start" {
-		return conn, result, err
+		if unusedSubmission(receipt, method, model.JSON(params)) {
+			cleanupDelegations(ctx, peer, []model.Delegation{grant})
+		}
+		return conn, result, receipt, err
 	}
 	cleanup := func() {
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		_ = peerCall(cleanupCtx, peer, destination.ID, "access.revoke", map[string]string{"id": grant.ID}, nil)
+		cleanupDelegations(ctx, peer, []model.Delegation{grant})
 	}
 	if err != nil {
 		cleanup()
-		return nil, nil, err
+		return nil, nil, receipt, err
 	}
-	return &instructionConn{Conn: conn, cleanup: cleanup}, result, nil
+	return &instructionConn{Conn: conn, cleanup: cleanup}, result, receipt, nil
 }
 
 func instructionDiscovery(method string) bool {

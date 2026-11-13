@@ -189,7 +189,13 @@ func (c Client) Close() error {
 }
 
 func peerCall(ctx context.Context, peer *transport.Peer, target, method string, params, result any) error {
+	_, err := peerCallWithReceipt(ctx, peer, target, method, params, result)
+	return err
+}
+
+func peerCallWithReceipt(ctx context.Context, peer *transport.Peer, target, method string, params, result any) (*model.TaskSubmissionReceipt, error) {
 	var data json.RawMessage
+	var receipt *model.TaskSubmissionReceipt
 	if target == "" {
 		var value any
 		var err error
@@ -201,24 +207,25 @@ func peerCall(ctx context.Context, peer *transport.Peer, target, method string, 
 		case "activities.pool":
 			value, err = peerActivities(ctx, peer, model.JSON(params))
 		default:
-			return errors.New("standalone calls require a target machine; only nodes.list, nodes.select, and activities.pool accept an empty target")
+			return nil, errors.New("standalone calls require a target machine; only nodes.list, nodes.select, and activities.pool accept an empty target")
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
 		data = model.JSON(value)
 	} else {
-		conn, response, err := openPeerRPC(ctx, peer, target, method, params)
+		conn, response, submission, err := openPeerRPCWithReceipt(ctx, peer, target, method, params)
 		if err != nil {
-			return err
+			return submission, err
 		}
 		_ = conn.Close()
 		data = response
+		receipt = submission
 	}
 	if result == nil {
-		return nil
+		return receipt, nil
 	}
-	return json.Unmarshal(data, result)
+	return receipt, json.Unmarshal(data, result)
 }
 
 func peerDownload(ctx context.Context, peer *transport.Peer, a model.Artifact, offset int64, w io.Writer) error {

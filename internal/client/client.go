@@ -96,17 +96,9 @@ func (c Client) call(ctx context.Context, target, method string, params any, res
 			return err
 		}
 		ctx = model.WithDelegations(ctx, grants)
-		if method == model.ConnectionTestMethod {
-			// Diagnostic grants have no durable work to retain after the call.
-			defer func() {
-				cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-				defer cancel()
-				for _, grant := range grants {
-					_ = peerCall(cleanup, peer, grant.Target, "access.revoke", map[string]any{"id": grant.ID}, nil)
-				}
-			}()
-		}
-		return peerCall(ctx, peer, target, method, prepared, result)
+		receipt, err := peerCallWithReceipt(ctx, peer, target, method, prepared, result)
+		cleanupDelegations(ctx, peer, releasableDelegations(method, prepared, grants, receipt))
+		return err
 	}
 	resp, err := c.request(ctx, "/v1/call", model.APICall{Target: target, Method: method, Params: model.JSON(params)})
 	if err != nil {

@@ -16,6 +16,7 @@ import (
 )
 
 const delegationIdleTimeout = time.Hour
+const maxDelegations = 4096
 
 type delegationState struct {
 	grant        model.Delegation
@@ -158,15 +159,13 @@ func (n *Node) acceptAuthority(ctx context.Context, caller string, request model
 
 func (n *Node) delegationLiveLocked(s *delegationState, now time.Time) bool {
 	if s.ctx.Err() != nil || (!s.expiresAt.IsZero() && !now.Before(s.expiresAt)) {
-		s.cancel()
-		delete(n.delegations, s.grant.ID)
+		n.removeDelegationLocked(s.grant.ID)
 		return false
 	}
 	if s.activeTasks != 0 || now.Before(s.lastActivity.Add(delegationIdleTimeout)) {
 		return true
 	}
-	s.cancel()
-	delete(n.delegations, s.grant.ID)
+	n.removeDelegationLocked(s.grant.ID)
 	return false
 }
 
@@ -264,13 +263,9 @@ func (n *Node) delegationMethod(ctx context.Context, caller, method string, para
 		q.Expires = time.Now().Add(delegationIdleTimeout).UTC()
 		grantCtx, cancel := context.WithCancel(n.ctx)
 		s := &delegationState{grant: q, ctx: grantCtx, cancel: cancel, lastActivity: time.Now()}
-		n.delegationMu.Lock()
-		defer n.delegationMu.Unlock()
-		if len(n.delegations) >= 4096 {
-			cancel()
-			return nil, errors.New("delegation limit reached")
+		if err := n.addDelegation(s); err != nil {
+			return nil, err
 		}
-		n.delegations[q.ID] = s
 		return q, nil
 	}
 	n.delegationMu.Lock()
@@ -301,10 +296,46 @@ func (n *Node) delegationMethod(ctx context.Context, caller, method string, para
 		return nil, errors.New("delegation belongs to another orchestrator")
 	}
 	if s != nil {
-		s.cancel()
-		delete(n.delegations, q.ID)
+		n.removeDelegationLocked(q.ID)
 	}
 	return map[string]bool{"revoked": true}, nil
+}
+
+// All instruction, task and artifact access records share these bounds. Scan the
+// bounded table instead of maintaining a second owner index that could drift.
+// Admission never evicts live authority, including accepted or uncertain tasks.
+func (n *Node) addDelegation(s *delegationState) error {
+	n.delegationMu.Lock()
+	defer n.delegationMu.Unlock()
+	owned := 0
+	now := time.Now()
+	for _, existing := range n.delegations {
+		if n.delegationLiveLocked(existing, now) && existing.grant.Owner == s.grant.Owner {
+			owned++
+		}
+	}
+	limit := n.Config.MaxDelegationsPerOwner
+	if limit == 0 {
+		limit = 1024
+	}
+	if len(n.delegations) >= maxDelegations || owned >= limit {
+		s.cancel()
+		return errors.New("delegation limit reached for destination or owner")
+	}
+	if n.delegations[s.grant.ID] != nil {
+		s.cancel()
+		return errors.New("delegation ID already exists")
+	}
+	n.delegations[s.grant.ID] = s
+	return nil
+}
+
+// Caller holds delegationMu. Cancellation also withdraws derived artifact access.
+func (n *Node) removeDelegationLocked(id string) {
+	if s := n.delegations[id]; s != nil {
+		s.cancel()
+		delete(n.delegations, id)
+	}
 }
 
 // Grant activity is driven by real stream IO, not discovery or keepalives.
@@ -351,6 +382,9 @@ func (n *Node) peerCall(ctx context.Context, args json.RawMessage, _ Execution) 
 		return nil, errors.New("peers.call supports JSON instructions, not raw streaming methods")
 	}
 	var result json.RawMessage
-	err := n.Call(ctx, q.Target, q.Method, q.Params, &result)
+	receipt, err := n.callWithReceipt(ctx, q.Target, q.Method, q.Params, &result)
+	if q.Method == "tasks.start" && receipt != nil {
+		recordSubmission(ctx, receipt.TaskID, receipt.Status)
+	}
 	return result, err
 }

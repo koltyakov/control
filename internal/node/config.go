@@ -55,6 +55,7 @@ type Config struct {
 	MaxOperations          int                `json:"maxOperations,omitempty"`
 	MaxTaskStaging         int                `json:"maxTaskStaging,omitempty"`
 	MaxTaskPublications    int                `json:"maxTaskPublications,omitempty"`
+	MaxDelegationsPerOwner int                `json:"maxDelegationsPerOwner,omitempty"`
 	MetricsIntervalSeconds int                `json:"metricsIntervalSeconds,omitempty"`
 	// TaskRetentionHours keeps terminal task records, logs, and workspaces for
 	// reconciliation. Zero selects 168 hours; -1 disables age-based pruning.
@@ -173,6 +174,12 @@ func (c *Config) defaults() error {
 	}
 	if c.MaxTaskStaging < 1 || c.MaxTaskStaging > 256 || c.MaxTaskPublications < 1 || c.MaxTaskPublications > 256 {
 		return errors.New("maxTaskStaging and maxTaskPublications must be 1..256; zero selects the four-task default")
+	}
+	if c.MaxDelegationsPerOwner == 0 {
+		c.MaxDelegationsPerOwner = 1024
+	}
+	if c.MaxDelegationsPerOwner < 1 || c.MaxDelegationsPerOwner > maxDelegations {
+		return errors.New("maxDelegationsPerOwner must be 1..4096; zero selects the 1024-grant default")
 	}
 	if c.MetricsIntervalSeconds == 0 {
 		c.MetricsIntervalSeconds = 15

@@ -24,6 +24,10 @@ The same checks apply when the destination is `first` itself: local workflow ste
 
 For durable work, submit `peers.call` as a task, or use a `workflow.run` task. A forwarded `tasks.start` returns its child task handle rather than waiting. Workflow preparation assigns stable child IDs and grants each step's task lifecycle. Child tasks belong to the original orchestrator owner, not the forwarding worker. Repeating a parent submission with the same explicit ID retains its child IDs and idempotent acceptance.
 
+The client releases temporary grants after synchronous-only work returns, including failure or cancellation. It retains all outgoing grants for an accepted or uncertain durable parent, even single-use grants needed by a queued `peers.call`. A synchronous workflow or forwarded `tasks.start` also retains task grants backing durable children and their output access.
+
+New peer replies include a response-only, submission-bound acceptance receipt. An acknowledged existing task or rejection before adoption permits cleanup of only that attempt's fresh grants. The original task's authority is unchanged. Concurrent attempts never share grants. Lost, legacy or invalid receipts retain potentially adopted authority for normal expiry and explicit reconciliation; neither an error nor an idle grant proves abandonment. Cleanup is bounded and best effort, reports failures without changing a successful operation's result, and never replays work.
+
 Workflow grants permit only the planned task specification. Dynamic inputs must carry a source-signed artifact grant naming the planned upstream task, output index, and recipient. Output grants can name only artifacts produced by that step and recipients selected in the workflow. Artifact bytes still flow between their producers and consumers.
 
 Grants travel in invocation contexts, including the contexts of durable tasks. They are not stored as worker-wide permissions or inserted into provider environments. An arbitrary script or AI CLI invoking `control` on a worker does not inherit permission to invent peer commands. Use `peers.call` or a planned workflow for that work. Nested delegated workflows and delegated grant-management operations are rejected. `peers.call` accepts JSON instructions, not raw streaming methods.
@@ -53,7 +57,7 @@ Every destination owns its grant records. A grant expires after one hour without
 
 Synchronous instructions are single-use, so a worker cannot replay a command during that hour. Task grants permit idempotent submission and owner-scoped status, logs, and cancellation for one explicit task ID. Artifact downloads permit offset-based resumption. Artifact tokens and their backing access IDs share the separately requested absolute TTL in addition to the idle access check. Direct use of an access ID, omission of the token, and ongoing traffic cannot extend that deadline; it cancels admitted transfers. `access.list` reports the earlier idle or absolute expiry.
 
-At most 4,096 grants are retained per destination. Records are in memory and disappear on node restart. Unfinished tasks retain the existing interrupted-on-restart behavior; restart never restores a grant or replays a command. Accepted tasks can outlive the submitting client disconnecting.
+At most 4,096 grants are retained per destination. `maxDelegationsPerOwner` defaults to 1,024 and accepts 1..4096; zero selects the default. Instruction, task and artifact-access grants share both limits. Admission reclaims expired records, but never evicts live authority to make room. Owners can still list and revoke their grants at capacity. These are count limits, not memory quotas or a guarantee of capacity for every owner. Records are in memory and disappear on node restart. Unfinished tasks retain the existing interrupted-on-restart behavior; restart never restores a grant or replays a command. Accepted tasks can outlive the submitting client disconnecting.
 
 ## Upload authority
 

@@ -549,14 +549,9 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 		if expiresAt.Before(g.Expires) {
 			g.Expires = expiresAt
 		}
-		n.delegationMu.Lock()
-		if len(n.delegations) >= 4096 {
-			n.delegationMu.Unlock()
-			cancel()
-			return nil, errors.New("delegation limit reached")
+		if err := n.addDelegation(&delegationState{grant: g, ctx: grantCtx, cancel: cancel, lastActivity: time.Now(), expiresAt: expiresAt}); err != nil {
+			return nil, err
 		}
-		n.delegations[g.ID] = &delegationState{grant: g, ctx: grantCtx, cancel: cancel, lastActivity: time.Now(), expiresAt: expiresAt}
-		n.delegationMu.Unlock()
 		proof := artifactGrant{Subject: peer.ID, Artifact: a.ID, Expires: expiresAt.Unix(), Access: g.ID}
 		if auth, ok := ctx.Value(authorityContextKey{}).(authority); ok && auth.grant != nil && auth.grant.grant.TaskID() != "" {
 			proof.TaskID = auth.grant.grant.TaskID()
