@@ -2,10 +2,10 @@
 package buildinfo
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"runtime"
@@ -89,32 +89,26 @@ func UseWindowsGUISource(source string) error {
 	if err != nil {
 		return err
 	}
-	read := func(path string) ([]byte, error) {
-		f, err := os.Open(path)
-		if err != nil {
-			return nil, err
-		}
-		defer func() { _ = f.Close() }()
-		data, err := io.ReadAll(io.LimitReader(f, (128<<20)+1))
-		if err == nil && len(data) > 128<<20 {
-			err = errors.New("GUI runtime exceeds the executable size limit")
-		}
-		return data, err
-	}
-	image, err := read(source)
+	image, err := os.Open(source)
 	if err != nil {
 		return err
 	}
-	sum := sha256.Sum256(image)
-	if err = peimage.SetGUI(image); err != nil {
-		return err
-	}
-	running, err := read(path)
+	defer func() { _ = image.Close() }()
+	info, err := image.Stat()
 	if err != nil {
 		return err
 	}
-	if !bytes.Equal(image, running) {
-		return errors.New("GUI runtime does not match its original executable")
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > 128<<20 {
+		return errors.New("GUI runtime exceeds the executable size limit")
+	}
+	running, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = running.Close() }()
+	sum, err := peimage.VerifyGUI(image, info.Size(), running)
+	if err != nil {
+		return fmt.Errorf("GUI runtime does not match its original executable: %w", err)
 	}
 	digest := hex.EncodeToString(sum[:])
 	once.Do(func() {

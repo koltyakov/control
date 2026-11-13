@@ -37,14 +37,17 @@ func installService(ctx context.Context, binary, config string) error {
 	if err != nil {
 		return err
 	}
-	content := fmt.Sprintf("# Managed by control\n[Unit]\nDescription=Control peer node\nAfter=network-online.target\n[Service]\nExecStart=%s node --config %s\nEnvironment=CONTROL_TOKEN=\nRestart=on-failure\nRestartSec=3\n[Install]\nWantedBy=default.target\n", systemdQuote(binary), systemdQuote(config))
-	if err = writeManaged(path, []byte(content)); err != nil {
+	if err = writeManaged(path, []byte(userSystemdUnit(binary, config))); err != nil {
 		return err
 	}
 	if err = run(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
 		return err
 	}
 	return run(ctx, "systemctl", "--user", "enable", "--now", "control-node.service")
+}
+
+func userSystemdUnit(binary, config string) string {
+	return fmt.Sprintf("# Managed by control\n[Unit]\nDescription=Control peer node\nAfter=network-online.target\n[Service]\nExecStart=%s node --config %s\nEnvironment=CONTROL_TOKEN=\nRestart=on-failure\nRestartSec=3\n[Install]\nWantedBy=default.target\n", systemdQuote(binary), systemdQuote(config))
 }
 func uninstallService(ctx context.Context, config string) error {
 	path, err := servicePath()

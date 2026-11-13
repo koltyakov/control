@@ -96,11 +96,16 @@ func TestWindowsGUIRuntimeReportsOnlyVerifiedSource(t *testing.T) {
 	}
 	var info struct {
 		buildinfo.Info
-		ActualSHA256 string
+		ActualSHA256             string
+		ValidationAllocatedBytes uint64
 	}
 	if err = json.Unmarshal(output, &info); err != nil || info.SHA256 != selected.Asset.SHA256 {
 		t.Fatalf("GUI runtime did not retain source identity: %s, %v", output, err)
 	}
+	if info.ValidationAllocatedBytes > 1<<20 {
+		t.Fatalf("GUI startup allocated %d bytes to validate a %d-byte executable; verification must stream", info.ValidationAllocatedBytes, len(image))
+	}
+	t.Logf("GUI startup validated %d bytes with %d allocated bytes", len(image), info.ValidationAllocatedBytes)
 	_, derived, err := update.WindowsRuntimeImage(selected, true)
 	if err != nil || info.ActualSHA256 != derived.SHA256 || info.ActualSHA256 == info.SHA256 {
 		t.Fatalf("actual GUI bytes cannot be identified for helper copies: %+v, %v", info, err)

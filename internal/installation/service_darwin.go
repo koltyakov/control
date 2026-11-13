@@ -44,8 +44,19 @@ func installService(ctx context.Context, binary, config string) error {
 	if err != nil {
 		return err
 	}
+	if err = writeManaged(path, []byte(userLaunchPlist(binary, config))); err != nil {
+		return err
+	}
+	domain := fmt.Sprintf("gui/%d", os.Getuid())
+	if exec.CommandContext(ctx, "launchctl", "print", domain+"/com.koltyakov.control").Run() == nil {
+		return run(ctx, "launchctl", "kickstart", domain+"/com.koltyakov.control")
+	}
+	return run(ctx, "launchctl", "bootstrap", domain, path)
+}
+
+func userLaunchPlist(binary, config string) string {
 	log := xmlText(filepath.Join(filepath.Dir(config), "node.log"))
-	content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!-- Managed by control -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>Label</key><string>com.koltyakov.control</string>
@@ -54,14 +65,6 @@ func installService(ctx context.Context, binary, config string) error {
 <key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 <key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>
 `, xmlText(binary), xmlText(config), log, log)
-	if err = writeManaged(path, []byte(content)); err != nil {
-		return err
-	}
-	domain := fmt.Sprintf("gui/%d", os.Getuid())
-	if exec.CommandContext(ctx, "launchctl", "print", domain+"/com.koltyakov.control").Run() == nil {
-		return run(ctx, "launchctl", "kickstart", domain+"/com.koltyakov.control")
-	}
-	return run(ctx, "launchctl", "bootstrap", domain, path)
 }
 func uninstallService(ctx context.Context, config string) error {
 	path, err := servicePath()

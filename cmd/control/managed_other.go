@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -14,9 +13,6 @@ import (
 
 func withManagedNodeProfile(ctx context.Context, _ string) context.Context { return ctx }
 func legacyManagedRuntime(context.Context) bool                            { return managedChild }
-func migrateLegacyManaged(context.Context, string, []string) (bool, error) {
-	return false, errors.New("single-process startup migration requires refreshing the installed Unix entry point and restarting its service or container")
-}
 
 type unixManagedHandoff struct {
 	ctx               context.Context
