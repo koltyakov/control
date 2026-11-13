@@ -13,17 +13,17 @@ import (
 func TestLegacySystemdBindingRequiresExactLoadedJob(t *testing.T) {
 	properties := map[string]string{"MainPID": "123", "ActiveState": "active", "FragmentPath": "/etc/systemd/system/control.service", "DropInPaths": "", "NeedDaemonReload": "no", "Restart": "on-failure", "ControlGroup": "/system.slice/control.service"}
 	group := "0::/system.slice/control.service\n"
-	if !matchesLegacySystemd(properties, properties["FragmentPath"], 123, group) {
+	if !matchesLegacySystemd(properties, properties["FragmentPath"], 123, group, nil) {
 		t.Fatal("matching loaded systemd job rejected")
 	}
 	for key, value := range map[string]string{"MainPID": "1234", "ActiveState": "inactive", "FragmentPath": "/other/unit", "DropInPaths": "/override.conf", "NeedDaemonReload": "yes", "Restart": "no", "ControlGroup": "/other/group"} {
 		changed := maps.Clone(properties)
 		changed[key] = value
-		if matchesLegacySystemd(changed, properties["FragmentPath"], 123, group) {
+		if matchesLegacySystemd(changed, properties["FragmentPath"], 123, group, nil) {
 			t.Fatalf("foreign systemd %s accepted", key)
 		}
 	}
-	if matchesLegacySystemd(properties, properties["FragmentPath"], 123, "0::/other/group\n") {
+	if matchesLegacySystemd(properties, properties["FragmentPath"], 123, "0::/other/group\n", nil) {
 		t.Fatal("foreign process cgroup accepted")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,6 +49,7 @@ func legacyUnixBinding(ctx context.Context, profile UpdateStartup) (func() error
 	if err != nil {
 		return nil, err
 	}
+	var dropInSnapshot map[string][32]byte
 	check := func() error {
 		current, err := linuxProcessStart(proc)
 		if err != nil || current != before {
@@ -97,11 +99,24 @@ func legacyUnixBinding(ctx context.Context, profile UpdateStartup) (func() error
 				properties[key] = value
 			}
 		}
+		scope := "user"
+		if profile.Mode == "system" {
+			scope = "system"
+		}
+		dropIns, err := legacySystemdDropIns(properties["DropInPaths"], scope)
+		if err != nil {
+			return err
+		}
+		if dropInSnapshot == nil {
+			dropInSnapshot = dropIns
+		} else if !maps.Equal(dropInSnapshot, dropIns) {
+			return errors.New("vendor systemd drop-ins changed during startup migration")
+		}
 		cgroup, err := os.ReadFile(filepath.Join(proc, "cgroup"))
 		if err != nil {
 			return err
 		}
-		if !matchesLegacySystemd(properties, path, parent, string(cgroup)) {
+		if !matchesLegacySystemd(properties, path, parent, string(cgroup), dropIns) {
 			return errors.New("loaded systemd job does not match the installed supervisor")
 		}
 		return ctx.Err()
@@ -125,11 +140,20 @@ func linuxProcessStart(proc string) (string, error) {
 	return fields[19], nil
 }
 
-func matchesLegacySystemd(properties map[string]string, path string, parent int, cgroup string) bool {
+func matchesLegacySystemd(properties map[string]string, path string, parent int, cgroup string, dropIns map[string][32]byte) bool {
 	if properties["MainPID"] != strconv.Itoa(parent) || properties["ActiveState"] != "active" ||
-		properties["FragmentPath"] != path || properties["DropInPaths"] != "" ||
+		properties["FragmentPath"] != path ||
 		properties["NeedDaemonReload"] != "no" || properties["Restart"] != "on-failure" || properties["ControlGroup"] == "" {
 		return false
+	}
+	paths := strings.Fields(properties["DropInPaths"])
+	if len(paths) != len(dropIns) {
+		return false
+	}
+	for _, path := range paths {
+		if _, ok := dropIns[path]; !ok {
+			return false
+		}
 	}
 	for _, line := range strings.Split(cgroup, "\n") {
 		fields := strings.SplitN(line, ":", 3)
