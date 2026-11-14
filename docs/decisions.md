@@ -1192,6 +1192,8 @@ Keep D133's refusal to acknowledge retained supervisors, strict executable valid
 
 ## D135: Settle software switches separately from startup blockers
 
+Its timestamped dirty-version suffix is superseded by [D143](#d143-keep-development-version-labels-free-of-build-timestamps). The startup-blocker behavior is unchanged.
+
 A fresh report of the exact selected executable version and checksum, released maintenance, a non-restarting state, and `runtime: "supervised"` proves the software switch settled while explicitly denying startup-migration completion. Clear only that software commit intent and stop re-offering/recommitting the same bytes. Never infer this from a version match alone, stale status, paused maintenance, an in-progress restart, or another deployment. Keep unresolved intent and gateway-switch publication barriers unchanged.
 
 Show `startup-refresh-required` per node. When all available software switches and the gateway have settled but these startup blockers remain, persist deployment phase `blocked`, not `complete`, and retain recovery binaries. This allows other nodes and later superuser-published fixes to proceed without restarting blocked profiles or falsely claiming their supervisors disappeared. It refines D133/D134's migration acknowledgement and avoids retrying permanent startup limitations as binary updates. Dirty `make update` builds receive a timestamped version shared by the native CLI and bundle, so fixes do not silently reuse pinned dirty bytes.
@@ -1251,3 +1253,7 @@ Re-execute a temporary helper from the running binary. Its private status channe
 In Control the helper entry point runs before profile and account initialization; the private dispatch also supports test executables. Gate/status handles do not pass to the requested program. Output-copy goroutines are bounded and joined; incomplete output remains a failure. The helper exists only for its invocation, not as a resident node supervisor or updater.
 
 This refines D006's subprocess lifetime rather than introducing a sandbox. Unix programs can escape the group with `setsid`; externally managed processes have independent lifetimes. Arbitrary programs retain the node account's OS authority. Preserve exit status, cancellation, no-replay rules and CGO-free builds. Native Linux, macOS and Windows tests must exercise descendant cleanup, parent exit and Windows enclosing-job compatibility.
+
+## D143: Keep development version labels free of build timestamps
+
+Preserve Git-derived and explicit version labels unchanged in `make update`, including `-dirty`. Build time remains separate metadata rather than a long suffix in CLI, dashboard and machine versions. This supersedes only D135's automatic dirty-version timestamp and retains D017's source-based labels and D047's same-version update boundary. Commit changed source or select a new explicit `VERSION` for another development rollout.

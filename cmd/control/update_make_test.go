@@ -88,7 +88,7 @@ fi
 	}
 }
 
-func TestMakeUpdateUsesOneFreshDirtyVersion(t *testing.T) {
+func TestMakeUpdatePreservesVersionWithoutTimestamp(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Make recipes require a POSIX shell")
 	}
@@ -96,14 +96,18 @@ func TestMakeUpdateUsesOneFreshDirtyVersion(t *testing.T) {
 	if err != nil {
 		t.Skip("make is not installed")
 	}
-	cmd := exec.CommandContext(t.Context(), makePath, "-n", "update", "GO=true", "VERSION=v0.8.3-dirty")
-	cmd.Dir = filepath.Join("..", "..")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("make dry run: %v: %s", err, output)
-	}
-	versions := regexp.MustCompile(`--version "(v0\.8\.3-dirty-[0-9]{8}T[0-9]{6}Z)"`).FindAllStringSubmatch(string(output), -1)
-	if len(versions) != 2 || versions[0][1] != versions[1][1] {
-		t.Fatalf("native CLI and bundle did not share a fresh dirty rollout version: %s", output)
+	for _, version := range []string{"v0.8.3-dirty", "v0.8.3-2-gabc1234-dirty", "v0.8.3", "dev", "dev-my-change"} {
+		t.Run(version, func(t *testing.T) {
+			cmd := exec.CommandContext(t.Context(), makePath, "-n", "update", "GO=true", "VERSION="+version)
+			cmd.Dir = filepath.Join("..", "..")
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("make dry run: %v: %s", err, output)
+			}
+			versions := regexp.MustCompile(`--version "([^"]+)"`).FindAllStringSubmatch(string(output), -1)
+			if len(versions) != 2 || versions[0][1] != version || versions[1][1] != version {
+				t.Fatalf("native CLI and bundle did not preserve version %q without a timestamp: %s", version, output)
+			}
+		})
 	}
 }

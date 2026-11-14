@@ -90,7 +90,7 @@ The bundle must include the gateway platform and every registered node's platfor
 
 Publishing the currently selected version returns the existing deployment without starting another rollout or changing its pinned assets, timestamps, phase, or participants. Single-process nodes and the gateway also skip binary staging and restart when their running version matches the selected version, regardless of checksum differences. A reported supervised runtime still requires migration. Older nodes still receive the selected bundle. To deploy changed code under a reused `-dirty` or `dev` label, select a new version explicitly. Build and upload steps can still run for an unchanged version; installation and restart are skipped.
 
-`make update` appends a UTC timestamp to a `-dirty` checkout version and uses that same label for its native CLI and bundle. This prevents repeated dirty pushes from silently selecting old bytes. Explicit non-dirty version overrides and tagged builds keep their chosen labels.
+`make update` preserves the version label unchanged for both its native CLI and bundle, including `-dirty` and explicit `VERSION` overrides. It never appends a timestamp. Commit changed code or choose a new short label such as `make update VERSION=dev-fix-2` when another development rollout is needed; reusing the selected label still retains the existing deployment.
 
 The equivalent commands are:
 

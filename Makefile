@@ -96,8 +96,6 @@ release-local: bundle
 release-check:
 	$(GO) run ./cmd/control-bundle --out "$(DIST_DIR)" --check
 
-# A dirty checkout needs a fresh rollout identity; reusing its label pins old bytes.
-update: override VERSION := $(if $(filter %-dirty,$(VERSION)),$(VERSION)-$(shell date -u +%Y%m%dT%H%M%SZ),$(VERSION))
 update: build
 	"$(BIN_DIR)/control$(EXE)" update authorize --check
 	$(MAKE) bundle VERSION="$(VERSION)"
