@@ -17,6 +17,7 @@ import (
 
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/store"
+	"github.com/koltyakov/control/internal/testutil"
 )
 
 type nodeRuntime struct {
@@ -341,13 +342,9 @@ func TestNodePruneCannotFollowLinksOutsideUpdateStorage(t *testing.T) {
 	if err := os.WriteFile(path, []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(external, filepath.Join(filepath.Dir(old.Path), "external")); err != nil {
-		t.Skip("symlinks unavailable", err)
-	}
+	testutil.Symlink(t, external, filepath.Join(filepath.Dir(old.Path), "external"))
 	linked := filepath.Join(dir, "updates", strings.Repeat("a", 64))
-	if err := os.Symlink(external, linked); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Symlink(t, external, linked)
 	a := &Updater{options: UpdaterOptions{Dir: dir}}
 	if err := a.prune(t.Context()); err != nil {
 		t.Fatal(err)

@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/koltyakov/control/internal/testutil"
 )
 
 func writeBook(t *testing.T, root, file, text string) {
@@ -137,9 +138,6 @@ func TestRunbookPathsCancellationAndSymlinks(t *testing.T) {
 	if _, err := Discover(ctx, roots, Selector{}, Query{}); err == nil {
 		t.Fatal("cancellation ignored")
 	}
-	if runtime.GOOS == "windows" {
-		return
-	}
 	for _, target := range []string{"root", "parent", "file", "directory"} {
 		t.Run(target, func(t *testing.T) {
 			base := t.TempDir()
@@ -163,9 +161,7 @@ func TestRunbookPathsCancellationAndSymlinks(t *testing.T) {
 			if err := os.Rename(link, link+"-original"); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Symlink(outside, link); err != nil {
-				t.Fatal(err)
-			}
+			testutil.Symlink(t, outside, link)
 			catalog, err := Discover(context.Background(), []Root{{Source: "project", Path: root}}, Selector{}, Query{})
 			if err != nil || catalog.Sources[0].Error == "" || len(catalog.Runbooks) != 0 {
 				t.Fatalf("symlink followed: %+v, %v", catalog, err)

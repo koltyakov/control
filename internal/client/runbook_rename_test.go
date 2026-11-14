@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/gofrs/flock"
+	"github.com/koltyakov/control/internal/testutil"
 )
 
 func scenarioRenameServer(t *testing.T, old string, status int, during func()) (Admin, *atomic.Int32) {
@@ -195,9 +196,7 @@ func TestScenarioRenameRejectsSymlinks(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := os.Symlink(outside, p); err != nil {
-				t.Skip("symlinks unavailable", err)
-			}
+			testutil.Symlink(t, outside, p)
 			c, calls := scenarioRenameServer(t, "old", http.StatusNoContent, nil)
 			if err := c.renameMachine(context.Background(), "stable-id", "trader", root); err == nil || calls.Load() != 0 {
 				t.Fatal("symlink did not block remote rename", err, calls.Load())

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/koltyakov/control/internal/testutil"
 )
 
 func TestStore(t *testing.T) {
@@ -273,13 +275,14 @@ func TestWorkspaceRejected(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(s.Dir, "values.json")); !os.IsNotExist(err) {
 		t.Fatal("wrote rejected value")
 	}
-	link := filepath.Join(t.TempDir(), "workspace-link")
-	if err := os.Symlink(work, link); err == nil {
+	t.Run("symlink", func(t *testing.T) {
+		link := filepath.Join(t.TempDir(), "workspace-link")
+		testutil.Symlink(t, work, link)
 		s.Dir = filepath.Join(link, "state", "secrets")
 		if err := s.Set(context.Background(), "password", "sensitive"); err == nil {
 			t.Fatal("stored credentials through a workspace symlink")
 		}
-	}
+	})
 }
 
 func TestRedaction(t *testing.T) {

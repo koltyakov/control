@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/testutil"
 	"github.com/koltyakov/control/internal/wire"
 )
 
@@ -475,15 +476,11 @@ func TestUploadPrivateAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 	alias := filepath.Join(m.workDir, "alias")
-	if err := os.Symlink(StagingDir, alias); err != nil {
-		t.Skip("symlinks unavailable", err)
-	}
+	testutil.Symlink(t, StagingDir, alias)
 	if m.CheckPath("alias/file") == nil {
 		t.Fatal("symlink exposed staging")
 	}
-	if err := os.Symlink(m.dir, filepath.Join(m.workDir, "metadata")); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Symlink(t, m.dir, filepath.Join(m.workDir, "metadata"))
 	if m.CheckPath("metadata/file") == nil {
 		t.Fatal("symlink exposed upload metadata")
 	}

@@ -5,10 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/koltyakov/control/internal/pathutil"
 )
 
 // CheckPath keeps upload metadata and staging out of ordinary filesystem RPCs,
-// including existing symlink aliases. This is not a sandbox against programs
+// including existing symlink and junction aliases. This is not a sandbox against programs
 // running with the node user's unrestricted filesystem permissions.
 func (m *Manager) CheckPath(name string) error {
 	full := filepath.Join(m.workDir, name)
@@ -29,7 +31,7 @@ func (m *Manager) CheckPath(name string) error {
 }
 
 func resolveExisting(name string) string {
-	resolved, err := filepath.EvalSymlinks(name)
+	resolved, err := pathutil.Resolve(name)
 	if err == nil {
 		return resolved
 	}

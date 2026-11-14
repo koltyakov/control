@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gofrs/flock"
+	"github.com/koltyakov/control/internal/pathutil"
 	"github.com/koltyakov/control/internal/store"
 )
 
@@ -45,11 +46,11 @@ type record struct {
 }
 
 func (s Store) check() error {
-	dir, err := filepath.EvalSymlinks(s.Dir)
+	dir, err := pathutil.Resolve(s.Dir)
 	if err != nil {
 		return err
 	}
-	work, err := filepath.EvalSymlinks(s.WorkDir)
+	work, err := pathutil.Resolve(s.WorkDir)
 	if err != nil {
 		return err
 	}

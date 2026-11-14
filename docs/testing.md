@@ -143,6 +143,70 @@ CONTROL_TEST_SUITE=e2e make test-compose-webrtc
 
 The equivalent shell entry point is `sh tests/compose/test.sh`, with optional `webrtc` or `relay` arguments.
 
+## Native symlink fixtures
+
+Portable symlink fixtures use [`testutil.Symlink`](../internal/testutil/symlink.go) for desktop state, runbook discovery and rename, secret-store workspace confinement, clipboard destinations, private upload aliases, and update-cache/retention checks.
+
+On an already-provisioned runner, set `CONTROL_TEST_REQUIRE_SYMLINKS=1` for the test process. Every symlink creation error then fails the current test, including missing privileges or unsupported filesystems. The helper accepts Go boolean values such as `true`, `false`, `1`, and `0`; an unset or empty value selects optional mode, and an invalid nonempty value fails before creating a link. Neither `CI` nor administrator status implies provisioning.
+
+Without the opt-in, only recognized capability errors skip:
+
+- Windows: `ERROR_PRIVILEGE_NOT_HELD`, `ERROR_NOT_SUPPORTED`, `ERROR_INVALID_FUNCTION`, and `ERROR_CALL_NOT_IMPLEMENTED`.
+- Linux/macOS: `EPERM`, `ENOSYS`, and `EOPNOTSUPP`.
+
+Other errors fail even in optional mode. In particular, Windows `ERROR_ACCESS_DENIED`, Unix `EACCES`, path collisions, and missing or invalid parent paths are not capability skips. Skip and failure messages retain the underlying error.
+
+For Windows, the test account needs usable symbolic-link creation privilege or an already-enabled Developer Mode supported by Go's unprivileged creation flag. Its temporary filesystem must support file and directory symbolic links. The helper never elevates, enables privileges or Developer Mode, or changes filesystem settings. Existing CI jobs do not declare this capability automatically.
+
+Run the policy/reporting tests without symlink privileges:
+
+```sh
+go test ./internal/testutil -run 'Policy|Reporting|Unavailable' -count=1 -v
+```
+
+On a provisioned Windows runner, use PowerShell to require the file/directory smoke fixtures and affected tests:
+
+```powershell
+$env:CONTROL_TEST_REQUIRE_SYMLINKS = '1'
+go test ./internal/testutil ./internal/node ./internal/client ./internal/runbooks ./internal/secrets ./internal/clipboard ./internal/upload ./internal/update -run 'Symlink|TestWorkspaceRejected|TestClipboardReceiveFailureCleanup|TestUploadPrivateAliases|TestMachineCache|TestNodePruneCannotFollowLinksOutsideUpdateStorage|TestPruneCancellationSupersessionAndConfinedRemoval' -count=1 -v
+```
+
+The policy tests inject creation errors and verify real test skip/failure reporting in subprocesses. They do not prove native Windows link creation works. The separate case-sensitive task-history fixture still needs a case-sensitive temporary tree; this flag does not change its skip policy.
+
+## Windows junction and reparse fixtures
+
+The Windows-only fixtures in [`internal/testutil/reparse_windows.go`](../internal/testutil/reparse_windows.go) create two real entry types:
+
+- Directory junctions with `IO_REPARSE_TAG_MOUNT_POINT`, using `FSCTL_SET_REPARSE_POINT`. These target scratch directories, not volume mounts.
+- Non-symlink files with `IO_REPARSE_TAG_AF_UNIX`, using a temporary local Unix-domain listener that is closed before the path guard runs. The endpoint is moved without overwrite to the fixture path.
+
+Both helpers query `FSCTL_GET_REPARSE_POINT` to verify the actual tag. They also require `Lstat` to report a special entry rather than a regular file or directory. Modern Go reports junctions as `ModeIrregular`, so symlink-only tests do not establish junction coverage.
+
+| Protection | Native fixture coverage |
+| --- | --- |
+| Desktop state | Direct junction, junction ancestor into `workDir`, and non-directory reparse entry |
+| Runbook rename | Root, source, nested entry, destination, and lock; no gateway mutation and unchanged protected contents |
+| Runbook discovery | Parent/root/nested junctions and reparse file; listing and exact reads cannot return outside content |
+| Secret-store confinement | Junction at the store, a store ancestor, or the workspace alias; no value or lock file written in the workspace |
+| Clipboard | Reparse sources rejected; destination collisions rejected before reading payload bytes |
+| Upload-private paths | Junction aliases to staging and metadata, including missing descendants |
+| Update cache and pruning | Cache root/lock/blob rejection with verified private fallback; nested cleanup cannot traverse junctions; top-level special entries and outside files survive |
+
+These fixtures require an existing writable **fixed local NTFS** temporary directory with `FILE_SUPPORTS_REPARSE_POINTS`. AF_UNIX additionally requires Windows 10 build 17063 or newer and the native socket provider. The helpers check filesystem/version prerequisites before creation. Unsupported prerequisites skip by default; `CONTROL_TEST_REQUIRE_REPARSE_POINTS=1` turns those skips into failures. Any creation error after preflight fails, rather than silently skipping. This declaration is separate from `CONTROL_TEST_REQUIRE_SYMLINKS`.
+
+Neither reparse helper enables Developer Mode, adjusts token privileges or ACLs, installs drivers, mounts volumes, or changes case sensitivity. Junction cleanup removes only the entry, never its target. Tests use only temporary state and synthetic values. Cache fixtures exercise the normal cache DACL at creation inside temporary storage, not on an installed cache.
+
+On a runner that already meets these prerequisites:
+
+```powershell
+$env:CONTROL_TEST_REQUIRE_REPARSE_POINTS = '1'
+go test ./internal/testutil ./internal/pathutil ./internal/node ./internal/client ./internal/runbooks ./internal/secrets ./internal/clipboard ./internal/upload ./internal/update -run 'Windows.*(Junction|Reparse)' -count=1 -v
+```
+
+The native fixtures exposed terminal-junction gaps in secret-store workspace checks and upload-private aliases. Those two guards now use [`pathutil.Resolve`](../internal/pathutil/resolve_windows.go), which asks Windows for the final path of an opened handle. `filepath.EvalSymlinks` alone does not resolve junction entries reported as irregular by modern Go.
+
+This coverage does not establish behavior for every reparse tag, cloud/OneDrive recall, deduplication filters, WSL links, volume-GUID mounts, network shares, concurrent hostile path replacement, or power loss. It also does not replace the separate privileged symlink or case-sensitive-history checks. Cross-compilation alone does not verify any native fixture.
+
 ## Test topology
 
 The [Compose file](../compose.yaml) defines five services:

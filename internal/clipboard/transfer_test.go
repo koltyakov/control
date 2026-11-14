@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/koltyakov/control/internal/testutil"
 )
 
 func TestClipboardFileStreaming(t *testing.T) {
@@ -78,9 +80,7 @@ func TestClipboardReceiveFailureCleanup(t *testing.T) {
 			case "cancelled":
 				cancel()
 			case "symlink":
-				if err := os.Symlink(filepath.Join(t.TempDir(), "outside"), filepath.Join(dest, "output.txt")); err != nil {
-					t.Skip("symlinks unavailable", err)
-				}
+				testutil.Symlink(t, filepath.Join(t.TempDir(), "outside"), filepath.Join(dest, "output.txt"))
 			}
 			if _, err := Receive(ctx, content, root, bytes.NewReader(payload)); err == nil {
 				t.Fatal("invalid transfer succeeded")

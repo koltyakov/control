@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/koltyakov/control/internal/testutil"
 )
 
 func retentionAsset(t *testing.T, repo *Repository, content string, age time.Duration) Asset {
@@ -162,12 +164,8 @@ func TestPruneCancellationSupersessionAndConfinedRemoval(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("unrelated"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Dir(outside), filepath.Join(repo.dir, "staged", old.SHA256, "link")); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
-	}
-	if err := os.Symlink(filepath.Dir(outside), filepath.Join(repo.dir, "staged", strings.Repeat("f", 64))); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Symlink(t, filepath.Dir(outside), filepath.Join(repo.dir, "staged", old.SHA256, "link"))
+	testutil.Symlink(t, filepath.Dir(outside), filepath.Join(repo.dir, "staged", strings.Repeat("f", 64)))
 	if _, err := repo.Prune(t.Context(), d.ID, nil); err != nil {
 		t.Fatal(err)
 	}

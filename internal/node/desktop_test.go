@@ -16,6 +16,7 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/testutil"
 	"github.com/koltyakov/control/internal/transport/transporttest"
 )
 
@@ -188,9 +189,7 @@ func TestDesktopRejectsSymlinkState(t *testing.T) {
 	if err := os.Remove(home); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(n.Config.WorkDir, home); err != nil {
-		t.Skip("directory symlink unavailable on this host")
-	}
+	testutil.Symlink(t, n.Config.WorkDir, home)
 	if _, err := n.desktopStateDir(); err == nil {
 		t.Fatal("native state was allowed to expose the workspace")
 	}

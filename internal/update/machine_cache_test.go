@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/buildinfo"
+	"github.com/koltyakov/control/internal/testutil"
 )
 
 func cacheFixture(data []byte) Asset {
@@ -194,18 +195,12 @@ func TestMachineCacheRejectsCorruptAndLinkedBytes(t *testing.T) {
 			case "truncated":
 				err = os.WriteFile(name, data[:2], 0644)
 			case "symlink":
-				err = os.Symlink(outside, name)
-				if err != nil {
-					t.Skip("symlink creation unavailable", err)
-				}
+				testutil.Symlink(t, outside, name)
 			case "relative-symlink":
 				if err := os.WriteFile(filepath.Join(cache, "unrelated"), data, 0644); err != nil {
 					t.Fatal(err)
 				}
-				err = os.Symlink("unrelated", name)
-				if err != nil {
-					t.Skip("symlink creation unavailable", err)
-				}
+				testutil.Symlink(t, "unrelated", name)
 			case "directory":
 				err = os.Mkdir(name, 0700)
 			}
@@ -293,17 +288,17 @@ func TestMachineCacheUnavailableFallsBack(t *testing.T) {
 			case "file":
 				err = os.WriteFile(cache, nil, 0600)
 			case "directory-symlink":
-				err = os.Symlink(filepath.Dir(outside), cache)
+				testutil.Symlink(t, filepath.Dir(outside), cache)
 			case "lock-symlink":
 				var root *os.Root
 				root, err = openMachineCache(cache)
 				if err == nil {
 					_ = root.Close()
-					err = os.Symlink(outside, filepath.Join(cache, "download.lock"))
+					testutil.Symlink(t, outside, filepath.Join(cache, "download.lock"))
 				}
 			}
 			if err != nil {
-				t.Skip("cache fixture unavailable", err)
+				t.Fatal("cache fixture failed", err)
 			}
 			path := filepath.Join(t.TempDir(), "binary")
 			calls := 0
@@ -367,9 +362,7 @@ func TestMachineCachePrunePreservesUnrelatedFilesAndLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := strings.Repeat("b", 64) + ".blob"
-	if err := os.Symlink("notes", filepath.Join(cache, link)); err != nil {
-		t.Skip("symlink creation unavailable", err)
-	}
+	testutil.Symlink(t, "notes", filepath.Join(cache, link))
 	pruneMachineCache(t.Context(), root, "")
 	for _, name := range []string{"notes", directory, link} {
 		if _, err := root.Lstat(name); err != nil {
