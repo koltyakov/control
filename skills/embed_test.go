@@ -113,3 +113,44 @@ func TestControlSkillReferences(t *testing.T) {
 		})
 	}
 }
+
+func TestDesktopSkillMacOSPermissionSetup(t *testing.T) {
+	content, err := ControlFiles.ReadFile("control/references/desktop.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := strings.ReplaceAll(string(content), "`", "")
+	for name, required := range map[string][]string{
+		"installation_readiness": {
+			"part of an approved desktop installation", "Installation approval alone does not authorize OS grants",
+			"ask for approval", "full desktop setup", "Request Automation only when",
+		},
+		"service_attribution": {
+			"actual running User node executable", "standalone launchd service",
+			"grant may belong to the control binary", "no ancestor .app bundle",
+			"Do not use a Terminal or SSH check as evidence", "TCC attribution logs",
+		},
+		"consented_automation_and_manual_fallback": {
+			"Automate supported Settings steps after approval", "focused sheet/dialog",
+			"separate explicit approval before physical --headed input", "manual bootstrap",
+			"Leave passwords, Touch ID", "Never retrieve credentials, write the TCC database",
+			"delivery is uncertain", "short manual handoff",
+		},
+		"verification_after_approval": {
+			"every configured desktop backend in fresh invocations",
+			"no grant exists", "does not by itself prove the user refused consent",
+			"recheck rather than asking them to grant the same permission again",
+			"reconciling active work and releasing the lease", "until required grants are verified",
+			"Do not take screenshots or collect screenshot traces merely to test permissions",
+			"does not prevent Accessibility-only inspection",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, fragment := range required {
+				if !strings.Contains(plain, fragment) {
+					t.Errorf("desktop skill omits permission setup guidance %q", fragment)
+				}
+			}
+		})
+	}
+}

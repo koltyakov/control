@@ -99,6 +99,25 @@ Control releases, enrollment, startup, and managed updates do not download, bund
 
 Run as the logged-in desktop user, not a Hybrid System companion or Windows Session 0 service. Native platform permissions and dependencies still apply. No operation unlocks a desktop or bypasses OS access checks. Trust the helper and library with the worker's credentials and normal OS authority.
 
+### macOS permissions after installation
+
+An approved desktop installation includes checking permission readiness through the running User node. Ask separately for permission to help enable missing OS grants. Accessibility is required for tree inspection and actions. Screen Recording is required for OS screenshots and screenshot-backed workflows; discuss both when setting up full desktop access. Request Automation only for an operation that needs it, not simply because its state is `unknown`.
+
+Check native status and CLI permissions when those backends are configured:
+
+```sh
+control call worker desktop.run '{"command":"status"}'
+control call worker desktop.run '{"command":"cli","args":["permissions"]}'
+```
+
+These checks must run through the node service. Permission granted to a terminal-launched CLI does not prove that a launchd service has the same access. While holding a lease, use [leased tasks](#observe-fill-by-reference-verify) instead of direct calls.
+
+Identify the actual running User node executable from its process or startup definition without exposing configuration secrets. macOS can charge the helper's permission check to that launching executable. A standalone Control launchd service may therefore need its `control` binary added to **System Settings > Privacy & Security > Accessibility** or **Screen Recording**, rather than the upstream CLI or library. Do not assume a fixed binary path. Some upstream guides select `agent-desktop` when no parent `.app` bundle exists; an enabled entry for that helper is not proof of access for Control. If needed, targeted TCC attribution logs can identify the executable macOS evaluates.
+
+After approval, help add the verified executable and enable its entry through supported Settings UI automation. Inspect focused file-picker dialogs and obtain fresh masked observations after changes. Physical `--headed` input still needs explicit approval. The user completes local authentication. If Accessibility is unavailable or UI targeting is unreliable, provide the exact executable path and a short manual handoff; never retrieve passwords, edit the TCC database, or reset unrelated grants.
+
+Recheck every configured backend in fresh invocations after approval. Some upstream versions report any failed Screen Recording preflight as `denied`; that alone does not distinguish a missing grant from a user's explicit refusal. Do not repeatedly ask for an already approved grant without checking the responsible executable. Restart only when needed, after reconciling active work and releasing any lease. Report setup as permission-ready only when the requested workflow's required grants are verified. Screen Recording is not needed for Accessibility-only inspection, and its absence does not diagnose a browser-bridge connection failure.
+
 ## Observe, fill by reference, verify
 
 Discover `desktop.run` with `node.describe`, then:

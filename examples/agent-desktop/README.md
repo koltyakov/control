@@ -10,6 +10,8 @@ Extract the full package, keeping upstream companion executables and licenses be
 
 Merge [node-config.json](node-config.json) into the worker profile, replacing `desktop.library` with an absolute path. Use `lib/libagent_desktop_ffi.dylib` on macOS, `lib/libagent_desktop_ffi.so` on Linux, or `lib/agent_desktop_ffi.dll` on Windows with JSON-escaped backslashes. Preserve other profile settings, restart while idle, and check `desktop.run` status. The serving node never loads this library; each request launches `control __desktop LIBRARY` in a separate process.
 
+On macOS, finish with the [permission readiness workflow](../../docs/desktop.md#macos-permissions-after-installation). Ask separately before helping enable Accessibility and, for screenshot workflows, Screen Recording. Verify through the User node, not a terminal session: a standalone launchd installation may need the actual `control` executable authorized rather than `agent-desktop`. Automate supported Settings steps after approval, leave authentication to the user, and confirm required grants through every configured backend before declaring setup ready.
+
 `make update` ships the helper code, but does not install libraries, enable desktop access, or grant OS permissions. Reuse the installed compatible library across Control updates. Existing external `desktop.command` configurations still work; they cannot be combined with `library`. If building upstream yourself, use `cargo build --profile release-ffi -p agent-desktop-ffi` to retain its panic boundary.
 
 ## Tests
