@@ -10,6 +10,7 @@ import (
 
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/transport"
 )
 
 type WorkflowStep = model.WorkflowStep
@@ -198,17 +199,92 @@ func (n *Node) runWorkflowStep(ctx context.Context, step WorkflowStep, upstream 
 	_, _ = fmt.Fprintf(log, "step %s: target=%s task=%s\n", step.Name, step.Target, step.Task.ID)
 	var task model.Task
 	if err := n.Call(ctx, step.Target, "tasks.start", step.Task, &task); err != nil {
-		return model.Task{}, fmt.Errorf("submit %s: %w", step.Name, err)
+		// Never resubmit: the outcome may be uncertain. The stable ID lets the
+		// orchestrator reconcile it.
+		return model.Task{}, fmt.Errorf("submit %s (task %s on %s): %w", step.Name, step.Task.ID, step.Target, err)
 	}
-	task, err := n.WaitTask(ctx, step.Target, task.ID)
+	if task.ID == "" {
+		task.ID = step.Task.ID
+	}
+	observed, err := n.observeWorkflowChild(ctx, step, task, log)
 	if err != nil {
-		cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		_ = n.Call(cancelCtx, step.Target, "tasks.cancel", map[string]any{"id": step.Task.ID}, nil)
-		cancel()
-		return model.Task{}, err
+		if ctx.Err() != nil {
+			// Workflow cancellation, timeout or grant revocation stops its
+			// children. Report the last observation with the child's identity.
+			cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			_ = n.Call(cancelCtx, step.Target, "tasks.cancel", map[string]any{"id": task.ID}, nil)
+			cancel()
+			return observed, err
+		}
+		// A permanent observation failure says nothing about the child. Keep
+		// its last observed (non-terminal) record in the result and do not
+		// cancel healthy accepted work. The workflow stops scheduling new steps.
+		_, _ = fmt.Fprintf(log, "step %s: task %s on %s is unresolved: %v\n", step.Name, task.ID, step.Target, err)
+		return observed, fmt.Errorf("step %s: task %s on %s is unresolved and was not cancelled; reconcile it before retrying: %w", step.Name, task.ID, step.Target, err)
 	}
-	if task.State != "succeeded" {
-		return task, fmt.Errorf("step %s: %s", step.Name, task.Error)
+	if observed.State != "succeeded" {
+		return observed, fmt.Errorf("step %s: %s", step.Name, observed.Error)
 	}
-	return task, nil
+	return observed, nil
+}
+
+// observeWorkflowChild waits for an accepted child to become terminal. Only
+// tasks.get is repeated, and only after a locally detected stream or network
+// failure; tasks.start and grants are never replayed. The workflow's own
+// context and deadlines bound the wait. On error it returns the last
+// successful observation, which keeps the child's identity.
+func (n *Node) observeWorkflowChild(ctx context.Context, step WorkflowStep, last model.Task, log io.Writer) (model.Task, error) {
+	target := step.Target
+	const interval = 100 * time.Millisecond
+	backoff := interval
+	for {
+		started := time.Now()
+		var task model.Task
+		err := n.Call(ctx, target, "tasks.get", map[string]any{"id": last.ID, "waitSeconds": int(maxTaskWait/time.Second) / 2}, &task)
+		delay := interval - time.Since(started)
+		switch {
+		case err == nil && task.ID != last.ID:
+			return last, fmt.Errorf("status for task %s returned task %q", last.ID, task.ID)
+		case err == nil:
+			last, backoff = task, interval
+			if task.Terminal() {
+				return task, nil
+			}
+		case transientObservation(ctx, err):
+			_, _ = fmt.Fprintf(log, "step %s: status read for task %s on %s failed; retrying: %v\n", step.Name, last.ID, target, err)
+			delay = backoff
+			backoff = min(2*backoff, 5*time.Second)
+		default:
+			return last, err
+		}
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return last, ctx.Err()
+			case <-timer.C:
+			}
+		} else if err := ctx.Err(); err != nil {
+			return last, err
+		}
+	}
+}
+
+// transientObservation reports whether a status read failed locally in a way
+// that may clear on reconnect, so repeating the read-only request is
+// meaningful. Delivery outcome alone is not enough. Errors decoded from a
+// remote reply (auth, ownership, validation, protocol or missing-task errors)
+// carry no local cause and are permanent. The caller's own cancellation or
+// deadline is permanent too. Connection-specific classification of the local
+// cause belongs to the transport.
+func transientObservation(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil {
+		return false
+	}
+	var rpc *model.RPCError
+	if !errors.As(err, &rpc) || rpc.Cause == nil {
+		return false
+	}
+	return transport.RetryableDelivery(rpc.Cause)
 }

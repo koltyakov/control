@@ -12,6 +12,8 @@ Prefer an installed CSV reader over a hand-written parser or line/comma splittin
 
 ## Run independent work in parallel
 
+`exec.run`, `agent.run` and configured subprocess providers are one-shot invocations. Current nodes terminate ordinary child processes before completion, so do not use shell backgrounding or `nohup` to retain a service. Use an authorized OS service-manager operation or an explicit persistent adapter. Browser/desktop adapters and configured MCP sessions retain their documented lifecycles. This is cleanup, not a sandbox; Unix processes can escape their process group.
+
 A busy worker is not unavailable. Run independent work on the same worker in parallel when resources permit. Do not wait for unrelated tasks or cancel them to free the machine. Inspect `node.describe.concurrency` or peer activity snapshots through `control_activities` for execution, operations and desktop pool `limit`, `inUse` and `queued` counts. These are advisory snapshots, not reservations. Missing fields on older workers mean unknown capacity, not zero.
 
 Commands, AI CLIs, custom providers and MCP tools share `maxTasks` execution slots, four by default. Built-in file, HTTP and Wake-on-LAN operations share separate `maxOperations` slots, eight by default. Built-in desktop invocations use one separate desktop slot per node and retain the per-user file lock across profiles. Desktop waiters do not consume general I/O slots. These limits apply to synchronous calls and tasks alike. `queued` counts local pool waiters; desktop `inUse` can include an invocation waiting for another profile's file lock. Transfers, tunnels and observation have their own admission. Saturated pools queue work with cancellation and task timeouts still enforced.

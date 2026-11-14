@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/koltyakov/control/internal/commandexec"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/secrets"
 )
@@ -36,15 +37,15 @@ func (n *Node) registerProviders() error {
 	object := map[string]any{"type": "object"}
 	builtins := []provider{
 		{model.Capability{Name: "network.wake", Description: "Send Wake-on-LAN magic packets to an offline registered machine using an automatically verified LAN relationship and live interfaces. Success means sent, not awake. Never retries.", InputSchema: schema(map[string]any{"target": text}, "target")}, n.wake},
-		{model.Capability{Name: "exec.run", Description: "Run an executable with arguments and environment. A relative dir resolves against the invocation workspace, workDir/tasks/ID for a tracked task, not the files.* workDir root. An absolute dir is used unchanged. Declared task outputs still resolve against the original task workspace. Use a task for long-running work.", InputSchema: schema(map[string]any{"command": text, "args": map[string]any{"type": "array", "items": text}, "env": object, "dir": map[string]any{"type": "string", "description": "Absolute working directory or path relative to the invocation workspace; tracked tasks use workDir/tasks/ID. Unlike files.* paths, this is not relative to workDir."}, "stdin": text}, "command")}, n.execRun},
-		{model.Capability{Name: "agent.run", Description: "Run a configured AI CLI with a prompt on stdin; collect its output.", InputSchema: schema(map[string]any{"agent": text, "prompt": text}, "agent", "prompt")}, n.agentRun},
+		{model.Capability{Name: "exec.run", Description: "Run an executable with arguments and environment. Ordinary descendants are terminated before completion; use an OS service manager for persistent services. A relative dir resolves against the invocation workspace, workDir/tasks/ID for a tracked task, not the files.* workDir root. An absolute dir is used unchanged. Declared task outputs still resolve against the original task workspace. Use a task for long-running work.", InputSchema: schema(map[string]any{"command": text, "args": map[string]any{"type": "array", "items": text}, "env": object, "dir": map[string]any{"type": "string", "description": "Absolute working directory or path relative to the invocation workspace; tracked tasks use workDir/tasks/ID. Unlike files.* paths, this is not relative to workDir."}, "stdin": text}, "command")}, n.execRun},
+		{model.Capability{Name: "agent.run", Description: "Run a configured AI CLI with a prompt on stdin; collect its output and terminate ordinary descendants before completion.", InputSchema: schema(map[string]any{"agent": text, "prompt": text}, "agent", "prompt")}, n.agentRun},
 		{model.Capability{Name: "http.request", Description: "Make an HTTP request using this machine's network and DNS. headerSecrets maps header names to {secret, prefix}; references resolve only on this worker. Secret-bearing requests never follow redirects. Returned text masks configured secret values.", InputSchema: schema(map[string]any{"url": text, "method": text, "headers": object, "headerSecrets": map[string]any{"type": "object", "maxProperties": 32, "additionalProperties": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"secret"}, "properties": map[string]any{"secret": map[string]any{"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"}, "prefix": text}}}, "body": text}, "url")}, n.httpRequest},
 		{model.Capability{Name: "files.list", Description: "List a directory relative to the configured filesystem root. Rejects non-directory targets, including special files.", InputSchema: schema(map[string]any{"path": text})}, n.filesList},
 		{model.Capability{Name: "files.read", Description: "Read up to 1 MiB at an offset; returns base64 bytes.", InputSchema: schema(map[string]any{"path": text, "offset": map[string]any{"type": "integer"}, "limit": map[string]any{"type": "integer"}}, "path")}, n.filesRead},
 		{model.Capability{Name: "files.write", Description: "Write base64 bytes at an offset to a regular file. Creates missing files and rejects special files. Set truncate for replacement.", InputSchema: schema(map[string]any{"path": text, "data": text, "offset": map[string]any{"type": "integer"}, "truncate": map[string]any{"type": "boolean"}}, "path", "data")}, n.filesWrite},
 		{model.Capability{Name: "mcp.call", Description: "Invoke a tool on a configured local MCP server. Tool-reported isError fails execution; tracked tasks retain the original result, including partial output. Failure does not authorize replay.", InputSchema: schema(map[string]any{"server": text, "tool": text, "arguments": object}, "server", "tool")}, n.mcpCall},
 		{model.Capability{Name: "mcp.request", Description: "Read MCP resources or prompts on a configured server.", InputSchema: schema(map[string]any{"server": text, "method": text, "params": object}, "server", "method")}, n.mcpRequest},
-		{model.Capability{Name: "workflow.run", Description: "Execute dependency-ordered tasks across peers and transfer their artifact inputs. maxParallel runs up to that many ready steps at once (default 1, sequential). Parallel ready ordering uses bounded destination-capacity discovery; targets and accepted tasks never move or replay.", InputSchema: schema(map[string]any{"steps": map[string]any{"type": "array", "items": object}, "maxParallel": map[string]any{"type": "integer", "minimum": 1, "maximum": maxWorkflowParallel}}, "steps")}, n.workflowRun},
+		{model.Capability{Name: "workflow.run", Description: "Execute dependency-ordered tasks across peers and transfer their artifact inputs. maxParallel runs up to that many ready steps at once (default 1, sequential). Parallel ready ordering uses bounded destination-capacity discovery; targets and accepted tasks never move or replay. Transient status reads retry; unresolved observations retain child IDs without cancelling healthy work.", InputSchema: schema(map[string]any{"steps": map[string]any{"type": "array", "items": object}, "maxParallel": map[string]any{"type": "integer", "minimum": 1, "maximum": maxWorkflowParallel}}, "steps")}, n.workflowRun},
 		{model.Capability{Name: "peers.call", Description: "Carry out an orchestrator-authorized instruction on another worker. Worker credentials alone permit discovery, not peer execution. CLI/MCP prepares an instruction-bound delegation.", InputSchema: schema(map[string]any{"target": text, "method": text, "params": object}, "target", "method", "params")}, n.peerCall},
 	}
 	for _, p := range builtins {
@@ -141,11 +142,7 @@ func runCommand(ctx context.Context, cfg Command, e Execution, input string) (co
 	stdout, stderr := &capture{}, &capture{}
 	cmd.Stdout = io.MultiWriter(stdout, e.Log)
 	cmd.Stderr = io.MultiWriter(stderr, e.Log)
-	err := cmd.Run()
-	exit := -1
-	if cmd.ProcessState != nil {
-		exit = cmd.ProcessState.ExitCode()
-	}
+	exit, err := commandexec.Run(ctx, cmd)
 	result := commandResult{ExitCode: exit, Stdout: stdout.b.String(), Stderr: stderr.b.String(), Truncated: stdout.truncated || stderr.truncated}
 	if err != nil {
 		return result, fmt.Errorf("execute %s: %w", cfg.Command, err)

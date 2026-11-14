@@ -187,7 +187,7 @@ func (p *Peer) session(ctx context.Context, target string, lane Lane) (*peerSess
 		d = p.beginDialLocked(target, key)
 		if d == nil {
 			p.mu.Unlock()
-			return nil, errors.New("peer setup limit reached")
+			return nil, transientSetup("peer setup limit reached")
 		}
 	}
 	d.waiters++
@@ -203,7 +203,14 @@ func (p *Peer) session(ctx context.Context, target string, lane Lane) (*peerSess
 	case <-p.ctx.Done():
 		return nil, p.ctx.Err()
 	case <-d.done:
-		return d.session, d.err
+		err := d.err
+		// The shared setup has its own deadline. If it expired or was stopped
+		// while this caller and the peer are still running, the request was
+		// never sent and a later setup can succeed.
+		if (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) && ctx.Err() == nil && p.ctx.Err() == nil {
+			err = transientSetupCause(err)
+		}
+		return d.session, err
 	}
 }
 
@@ -285,7 +292,7 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 	p.mu.Lock()
 	if ctx.Err() != nil || networkGeneration != p.networkGeneration {
 		p.mu.Unlock()
-		err = errors.New("network changed during peer lookup")
+		err = transientSetup("network changed during peer lookup")
 		return
 	}
 	other := p.pending[actualKey]
@@ -359,7 +366,7 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 		if usable {
 			s, err = d.refresh, nil
 		} else if err == nil {
-			err = errors.New("relay unavailable after direct probe")
+			err = transientSetup("relay unavailable after direct probe")
 		}
 		return
 	}
@@ -379,7 +386,7 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 	if changed || ctx.Err() != nil {
 		_ = s.mux.Close()
 		s = nil
-		err = errors.New("peer setup interrupted by cancellation or network change")
+		err = transientSetup("peer setup interrupted by cancellation or network change")
 		return
 	}
 	if s.mode == "relay" {
@@ -398,7 +405,7 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 		p.mu.Unlock()
 		_ = s.mux.Close()
 		s = nil
-		err = errors.New("network changed during peer setup")
+		err = transientSetup("network changed during peer setup")
 		return
 	}
 	p.sessions[actualKey] = s
@@ -441,7 +448,7 @@ func (p *Peer) openStream(ctx context.Context, s *peerSession) (net.Conn, error)
 	if draining {
 		<-s.outgoing
 		if replacement == nil || replacement == s {
-			return nil, errors.New("peer session retired")
+			return nil, transientSetup("peer session retired")
 		}
 		return p.openStream(ctx, replacement)
 	}

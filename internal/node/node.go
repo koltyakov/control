@@ -25,6 +25,7 @@ import (
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/processutil"
 	"github.com/koltyakov/control/internal/runbooks"
+	"github.com/koltyakov/control/internal/store"
 	"github.com/koltyakov/control/internal/system"
 	"github.com/koltyakov/control/internal/transport"
 	"github.com/koltyakov/control/internal/update"
@@ -123,6 +124,14 @@ type Node struct {
 	delegations         map[string]*delegationState
 	runbookRoots        []runbooks.Root
 	uploads             *upload.Manager
+	// journalDirty records that a tombstone journal write failed and the file
+	// may hold uncommitted or torn bytes. Protected by pruneMu. No append may
+	// follow until a complete, directory-synced compaction succeeds.
+	journalDirty bool
+	// journalAppend and journalReplace default to the store functions. Tests
+	// inject per-node faults here; production never changes them after New.
+	journalAppend  func(path string, data []byte) error
+	journalReplace func(path string, data []byte, mode os.FileMode) error
 }
 
 func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
@@ -164,6 +173,7 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 	n.accepting = map[string]*acceptance{}
 	n.tombstones = map[string]taskTombstone{}
 	n.taskIDs = map[string]string{}
+	n.journalAppend, n.journalReplace = store.Append, store.Bytes
 	n.work = workgate.New()
 	n.tcpListeners = make(chan struct{}, 32)
 	n.readClipboard, n.copyClipboard = clipboard.Read, clipboard.Copy

@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,7 +41,7 @@ func TestFileReadersRejectFIFOWithoutWaitingForWriter(t *testing.T) {
 				case "artifacts.export":
 					_, err = n.artifactMethod(ctx, n.Identity.ID, method, model.JSON(map[string]string{"path": relative}))
 				case "task output":
-					_, err = n.publishTaskOutputs(ctx, "fifo-output", []string{"pipe"})
+					_, _, err = n.publishTaskOutputs(ctx, "fifo-output", []string{"pipe"})
 				}
 				done <- err
 			}()
@@ -60,6 +61,71 @@ func TestFileReadersRejectFIFOWithoutWaitingForWriter(t *testing.T) {
 				t.Fatal("FIFO read waited for a writer instead of rejecting it")
 			}
 		})
+	}
+}
+
+// A special file planted at an input destination must fail staging promptly.
+// A blocking open would ignore cancellation, retain the staging slot and work
+// admission, and stall node shutdown waiting for the task goroutine.
+func TestInputStagingRejectsFIFOWithoutRetainingWork(t *testing.T) {
+	n, calls := pipelineNode(t)
+	input := pipelineInput(t, n)
+	name := filepath.Join(n.Config.WorkDir, "tasks", "fifo-input", input.Path)
+	if err := os.MkdirAll(filepath.Dir(name), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Mkfifo(name, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Keep a recovery endpoint so a regressed blocking open cannot strand cleanup.
+	recoverFIFO := func() {
+		fd, err := unix.Open(name, unix.O_RDWR|unix.O_NONBLOCK, 0)
+		if err == nil {
+			t.Cleanup(func() { _ = unix.Close(fd) })
+		}
+	}
+	spec := pipelineSpec("fifo-input", pipelineArgs{})
+	spec.Inputs = []model.Input{input}
+	task, err := n.startTaskContext(t.Context(), n.Identity.ID, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan model.Task, 1)
+	go func() {
+		result, _ := n.waitTask(t.Context(), task.Owner, task.ID, 5*time.Second)
+		done <- result
+	}()
+	select {
+	case result := <-done:
+		// Without a reader the nonblocking open fails (ENXIO); with one, the
+		// handle check rejects it. Either way the FIFO is never written.
+		if result.State != "failed" || !strings.Contains(result.Error, "input "+input.Path) {
+			recoverFIFO()
+			t.Fatal("staging onto a FIFO did not fail", result.State, result.Error)
+		}
+	case <-time.After(2 * time.Second):
+		recoverFIFO()
+		<-done
+		t.Fatal("staging blocked on a FIFO")
+	}
+	if calls.Load() != 0 {
+		t.Fatal("provider ran without its input")
+	}
+	assertPool(t, n.inputStagingPool.snapshot(), 1, 0, 0)
+	info, err := os.Lstat(name)
+	if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+		t.Fatal("rejected FIFO was replaced or modified", err)
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- n.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		recoverFIFO()
+		t.Fatal("node shutdown waited for a blocked staging open")
 	}
 }
 

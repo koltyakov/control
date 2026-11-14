@@ -1,6 +1,7 @@
 package node
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -36,6 +38,48 @@ type lifetimeFixture struct {
 	entered chan struct{}
 	release func()
 	mode    string
+	// gateway records hijacked gateway WebSocket connections so a test can
+	// drop them and force a real reconnect. It is test-only server plumbing.
+	gateway *hijackTracker
+}
+
+type hijackTracker struct {
+	mu    sync.Mutex
+	conns []net.Conn
+}
+
+type trackedWriter struct {
+	http.ResponseWriter
+	tracker *hijackTracker
+}
+
+func (w trackedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err == nil {
+		w.tracker.mu.Lock()
+		w.tracker.conns = append(w.tracker.conns, conn)
+		w.tracker.mu.Unlock()
+	}
+	return conn, rw, err
+}
+
+func (h *hijackTracker) wrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(trackedWriter{ResponseWriter: w, tracker: h}, r)
+	})
+}
+
+// drop closes every gateway WebSocket accepted so far. Peers see a gateway
+// outage, lose relay carriers, and reconnect through their normal path.
+func (h *hijackTracker) drop() int {
+	h.mu.Lock()
+	conns := h.conns
+	h.conns = nil
+	h.mu.Unlock()
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+	return len(conns)
 }
 
 // Reply faults affect only the test stream after real destination admission.
@@ -88,7 +132,8 @@ func newLifetimeFixture(t *testing.T, relay, system bool, filter func(*model.Res
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = g.Close() })
-	server := httptest.NewServer(g.Handler())
+	f.gateway = &hijackTracker{}
+	server := httptest.NewServer(f.gateway.wrap(g.Handler()))
 	t.Cleanup(server.Close)
 	options := transporttest.Loopback()
 	for i, name := range []string{"first", "second"} {

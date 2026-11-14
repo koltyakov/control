@@ -380,6 +380,15 @@ func (n *Node) runTask(ctx context.Context, id string, notifier *taskNotifier) {
 }
 
 func (n *Node) finishTask(id string, ctx context.Context, result any, artifacts []model.Artifact, err error) {
+	// Published outputs and result artifacts stay pinned until the terminal
+	// record below references them in n.tasks, on both the durable and the
+	// persistence-failure path. Deferred release runs after that publication.
+	var pins []func()
+	defer func() {
+		for _, unpin := range pins {
+			unpin()
+		}
+	}()
 	n.mu.Lock()
 	outputs := n.tasks[id].Spec.Outputs
 	n.mu.Unlock()
@@ -406,19 +415,21 @@ func (n *Node) finishTask(id string, ctx context.Context, result any, artifacts 
 			defer release()
 			n.taskPhase(id, "publishing outputs")
 			if err == nil {
-				published, publishErr := n.publishTaskOutputs(ctx, id, outputs)
+				published, publishPins, publishErr := n.publishTaskOutputs(ctx, id, outputs)
 				artifacts = append(artifacts, published...)
+				pins = append(pins, publishPins...)
 				err = publishErr
 			}
 		}
 	}
 	var resultArtifact *model.Artifact
 	if len(resultJSON) > 1<<20 {
-		a, e := n.importArtifact(ctx, bytes.NewReader(resultJSON), "result.json")
+		a, unpin, e := n.importArtifactPinned(ctx, bytes.NewReader(resultJSON), "result.json")
 		if e != nil {
 			err = errors.Join(err, fmt.Errorf("store task result: %w", e))
 		} else {
 			resultArtifact = &a
+			pins = append(pins, unpin)
 		}
 		resultJSON = nil
 	}

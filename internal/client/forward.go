@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -39,6 +40,7 @@ type resources struct {
 	mu       sync.Mutex
 	closed   bool
 	forwards map[string]*Forward
+	finished []string
 	starting int
 	starts   sync.WaitGroup
 	done     chan struct{}
@@ -82,6 +84,7 @@ type Forward struct {
 	wg          sync.WaitGroup
 	done        chan struct{}
 	once        sync.Once
+	retire      func()
 }
 
 func (f *Forward) Info() ForwardInfo {
@@ -115,6 +118,9 @@ func (f *Forward) Close() {
 		f.cancel()
 		f.closeConnections()
 		f.wg.Wait()
+		if f.retire != nil {
+			f.retire()
+		}
 		close(f.done)
 	})
 }
@@ -182,6 +188,17 @@ func (c Client) StartForward(ctx context.Context, spec ForwardSpec) (*Forward, e
 	f := &Forward{ctx: forwardCtx, cancel: cancel, listener: listener, connections: map[net.Conn]net.Conn{}, done: make(chan struct{}),
 		info: ForwardInfo{ID: identity.NewID(), Node: spec.Node, Address: spec.Address, Listen: listener.Addr().String(), Reverse: spec.Reverse}}
 	r.forwards[f.info.ID] = f
+	f.retire = func() {
+		r.mu.Lock()
+		delete(r.forwards, f.info.ID)
+		if !r.closed {
+			if len(r.finished) == maxForwards {
+				r.finished = r.finished[1:]
+			}
+			r.finished = append(r.finished, f.info.ID)
+		}
+		r.mu.Unlock()
+	}
 	f.wg.Add(1)
 	go f.serve(c)
 	return f, nil
@@ -270,6 +287,13 @@ func (c Client) StopForward(id string) error {
 	r := c.resources
 	r.mu.Lock()
 	f := r.forwards[id]
+	if f == nil {
+		if index := slices.Index(r.finished, id); index >= 0 {
+			r.finished = slices.Delete(r.finished, index, index+1)
+			r.mu.Unlock()
+			return nil
+		}
+	}
 	r.mu.Unlock()
 	if f == nil {
 		return errors.New("port forward not found in this process")
@@ -277,6 +301,9 @@ func (c Client) StopForward(id string) error {
 	f.Close()
 	r.mu.Lock()
 	delete(r.forwards, id)
+	if index := slices.Index(r.finished, id); index >= 0 {
+		r.finished = slices.Delete(r.finished, index, index+1)
+	}
 	r.mu.Unlock()
 	return nil
 }

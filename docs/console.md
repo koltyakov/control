@@ -112,6 +112,10 @@ Clear log removes all events, or only those older than 7 or 30 days, after confi
 
 ## Verification
 
+Asynchronous form completions are scoped to their original session and form. Key, account and installation-command issuance block ordinary dialog dismissal while pending, so a one-time response is not silently discarded by Cancel. Session expiry still clears the dialog; responses from the previous session cannot display credentials or mutate a replacement form. A lost mutation response remains uncertain, never confirmed success or permission to replay.
+
+Activity refreshes and older-page requests share a query generation. Navigation, filter changes and session changes invalidate older responses. If more new events arrive than fit in the latest page, the console resets to that continuous page and its pagination cursor instead of retaining an unreachable gap.
+
 All shipped browser JavaScript uses JSDoc declarations and strict TypeScript `checkJs`. The local check includes every JavaScript file under `internal/gateway/consoleweb/`. Types cover API payloads, state, DOM controls/events, rendering, geometry, and encryption. Optional readings remain distinct from zero. The JSON API implementation returns `unknown` internally; typed route overloads describe the gateway's responses to callers. Required DOM lookups fail with the selector in their error; optional lookups use `find()`.
 
 Run the mandatory frontend type checks with Node.js 22+:

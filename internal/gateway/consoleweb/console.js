@@ -372,6 +372,7 @@ new ResizeObserver(fitNav).observe($(".topbar"));
  * @returns {Promise<unknown>}
  */
 async function api(path, method = "GET", body) {
+  const session = state.session;
   /** @type {Record<string, string>} */
   const headers = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -398,7 +399,7 @@ async function api(path, method = "GET", body) {
   }
   if (!response.ok) {
     const message = (await response.text()).slice(0, 4096).trim();
-    if (response.status === 401 && path !== "login" && state.session)
+    if (response.status === 401 && path !== "login" && session && session === state.session)
       showLogin();
     const error = /** @type {Error & {status?: number}} */ (new Error(message || "Request failed."));
     error.status = response.status;
@@ -410,6 +411,10 @@ async function api(path, method = "GET", body) {
 
 /** @returns {void} */
 function showLogin() {
+  auditGeneration++;
+  clearTimeout(toastTimer);
+  $("#toast").hidden = true;
+  $("#toast").textContent = "";
   closeMachineMenu();
   state.session = null;
   state.snapshot = null;
@@ -421,7 +426,7 @@ function showLogin() {
   state.stale = false;
   state.updatedAt = null;
   banner("");
-  closeDialog();
+  closeDialog(true);
   $("#page-content").replaceChildren();
   $("#app").hidden = true;
   $("#login").hidden = false;
@@ -1457,12 +1462,18 @@ function auditPath(before = 0) {
   if (before) query.set("before", String(before));
   return `audit?${query}`;
 }
+let auditGeneration = 0;
 // Polling adds newer events above the pages already loaded.
 /** @param {AuditPage} data @returns {AuditPage} */
 function mergeAudit(data) {
   const current = state.auxiliary?.page === "activity" ? state.auxiliary.data : null;
   if (!current?.events?.length) return data;
   const newest = current.events[0].id;
+  // No overlap: keep a continuous page with its own cursor, not a hidden gap.
+  if (data.next && data.next > newest) {
+    auditGeneration++;
+    return data;
+  }
   return {
     events: [...data.events.filter((e) => e.id > newest), ...current.events],
     next: current.next,
@@ -1624,6 +1635,7 @@ async function refresh(manual = false) {
   state.busy = true;
   const page = state.page,
     session = state.session,
+    generation = auditGeneration,
     button = $(".heading-actions [data-action=refresh]");
   if (manual) button.classList.add("spinning");
   try {
@@ -1639,10 +1651,13 @@ async function refresh(manual = false) {
       case "keys": auxiliary = {page, data: await api("fleet/keys")}; break;
       case "users": auxiliary = {page, data: await api("admin/users")}; break;
       case "updates": auxiliary = {page, data: await api("admin/updates")}; break;
-      case "activity": auxiliary = {page, data: await api(auditPath())}; break;
+      case "activity":
+        if (generation !== auditGeneration) return;
+        auxiliary = {page, data: await api(auditPath())};
+        break;
     }
     if (session !== state.session) return;
-    if (auxiliary && page === state.page)
+    if (auxiliary && page === state.page && generation === auditGeneration)
       state.auxiliary = auxiliary.page === "activity"
         ? {page: "activity", data: mergeAudit(auxiliary.data)} : auxiliary;
     if (state.invitation && $("#dialog").open) await updateInvitation();
@@ -1659,7 +1674,7 @@ async function refresh(manual = false) {
     // Resource refreshes preserve focus. Never replace an in-progress password form.
     if (page === state.page && state.page !== "account") render();
   } catch (error) {
-    if (state.session) banner(errorMessage(error));
+    if (session === state.session && generation === auditGeneration) banner(errorMessage(error));
   } finally {
     state.busy = false;
     // Keep fast manual refreshes visible as one short turn of the icon.
@@ -1681,6 +1696,7 @@ function navigate() {
   )
     page = "overview";
   state.page = page;
+  auditGeneration++;
   state.auxiliary = null;
   const info = pages[page];
   $("#page-title").textContent = info[0];
@@ -1885,6 +1901,7 @@ document.addEventListener("input", (event) => {
 document.addEventListener("change", (event) => {
   if (event.target instanceof HTMLSelectElement && event.target.id === "audit-category") {
     state.auditCategory = event.target.value;
+    auditGeneration++;
     state.auxiliary = null;
     render();
     if (state.busy) pendingRefresh = true;
@@ -2051,8 +2068,12 @@ function toast(message) {
     $("#toast").hidden = true;
   }, 5000);
 }
-/** @returns {void} */
-function closeDialog() {
+/** @type {HTMLFormElement | null} */
+let pendingIssuance = null;
+/** @param {boolean} [force] @returns {void} */
+function closeDialog(force = false) {
+  if (!force && pendingIssuance?.isConnected) return;
+  pendingIssuance = null;
   closeMachineMenu();
   state.invitation = null;
   state.startupChange = null;
@@ -2076,8 +2097,8 @@ function dialog(title, html, className = "") {
   );
   (first || $("#dialog-title")).focus({ preventScroll: true });
 }
-/** @param {string} title @param {string} html @param {(fields: Record<string, string>) => Promise<boolean | void>} handler @param {string} [label] @param {boolean} [danger] @param {string} [className] @returns {void} */
-function formDialog(title, html, handler, label = "Save", danger = false, className = "") {
+/** @param {string} title @param {string} html @param {(fields: Record<string, string>, current: () => boolean) => Promise<boolean | void>} handler @param {string} [label] @param {boolean} [danger] @param {string} [className] @param {boolean} [issuance] @returns {void} */
+function formDialog(title, html, handler, label = "Save", danger = false, className = "", issuance = false) {
   dialog(
     title,
     `<form id="modal-form">${html}<p class="form-error" role="alert"></p><div class="form-actions"><button type="button" data-action="close" class="secondary">Cancel</button><button type="submit" class="${danger ? "danger" : "primary"}">${esc(label)}</button></div></form>`,
@@ -2088,14 +2109,25 @@ function formDialog(title, html, handler, label = "Save", danger = false, classN
     const form = $("#modal-form"),
       button = $("button[type=submit]", form),
       errorBox = $(".form-error", form);
+    const session = state.session,
+      current = () => session === state.session && form.isConnected;
+    if (button.disabled) return;
     const fields = formFields(form);
     button.disabled = true;
+    if (issuance) {
+      pendingIssuance = form;
+      $("button[data-action=close]", form).disabled = true;
+    }
     errorBox.textContent = "";
     try {
-      const keep = await handler(fields);
-      if (keep !== false) closeDialog();
-      refresh();
+      const keep = await handler(fields, current);
+      if (current()) {
+        if (pendingIssuance === form) pendingIssuance = null;
+        if (keep !== false) closeDialog();
+      }
+      if (session === state.session) refresh();
     } catch (error) {
+      if (!current()) return;
       errorBox.textContent = errorMessage(error);
       if (
         error instanceof Error && "status" in error && error.status === 409 &&
@@ -2109,6 +2141,8 @@ function formDialog(title, html, handler, label = "Save", danger = false, classN
         errorBox.before(confirmation);
       }
     } finally {
+      if (pendingIssuance === form) pendingIssuance = null;
+      if (issuance) $("button[data-action=close]", form).disabled = false;
       button.disabled = false;
     }
   });
@@ -2262,9 +2296,9 @@ function confirmAction(title, message, handler, label = "Confirm", className = "
   formDialog(
     title,
     `<p>${esc(message)}</p>`,
-    async () => {
+    async (_fields, current) => {
       await handler();
-      toast("Action completed");
+      if (current()) toast("Action completed");
     },
     label,
     true,
@@ -2291,7 +2325,7 @@ function changeStartup(node) {
   formDialog(
     "Change startup context for " + node.name,
     `<p>Request a startup change on ${esc(node.name)} while it is idle. If the node lacks permission or needs a local installer, the console shows a command to run on that machine. No UAC or sudo prompt is opened remotely.</p><label>Startup context<select name="serviceMode"><option value="system">System context</option><option value="hybrid">Hybrid</option></select></label><div id="startup-guidance" class="notice"></div><label id="system-name-field"${windows ? " hidden" : ""}>New System routing name<input name="systemName" value="${esc(node.name.slice(0, 56) + "-system")}" maxlength="63" pattern="[a-zA-Z0-9]([a-zA-Z0-9._]|-){0,62}"></label><label>Existing node configuration, optional<input name="config" placeholder="Absolute path on the target machine" autocomplete="off"></label><p class="field-help">The remote attempt always uses the running node's profile. This path applies only to the local fallback command. Leave blank for the installing user's default profile. System startup has no interactive desktop access.</p>`,
-    async (fields) => {
+    async (fields, currentDialog) => {
       const current = state.snapshot?.nodes.find((n) => n.id === node.id);
       if (
         !current ||
@@ -2318,6 +2352,7 @@ function changeStartup(node) {
           attempts.set(mode, { status: "unknown", reason: errorMessage(error) });
         }
       }
+      if (!currentDialog()) return false;
       const attempt = attempts.get(mode);
       if (!attempt) throw new Error("Startup request has no recorded outcome.");
       const outcome = attempt.status === "accepted"
@@ -2346,6 +2381,7 @@ function changeStartup(node) {
         gateway: location.origin,
         force: fields.force === "on",
       });
+      if (!currentDialog()) return false;
       if (link.serviceMode !== mode)
         throw new Error("The gateway did not confirm the requested startup context. Inspect Invitations before creating another command.");
       let command = link.command;
@@ -2365,6 +2401,7 @@ function changeStartup(node) {
       return false;
     },
     "Apply startup context",
+    false, "", true,
   );
   const sync = () => {
     const hybrid = $('#modal-form select[name="serviceMode"]').value === "hybrid";
@@ -2401,7 +2438,7 @@ function addMachine() {
   formDialog(
     "Add a machine",
     `<p>Create a one-time installation command for the target machine.</p><label>Machine name<input name="name" placeholder="Use target hostname" maxlength="63" pattern="[a-zA-Z0-9]([a-zA-Z0-9._]|-){0,62}"></label><p class="field-help">Leave blank to use the target's hostname. Existing names create a replacement enrollment.</p><div class="form-grid"><label>Platform<select name="os"><option value="linux">Linux</option><option value="darwin">macOS</option><option value="windows">Windows</option></select></label><label>Startup context<select name="serviceMode"><option value="user">User context</option><option value="system">System context</option><option value="hybrid">Hybrid</option></select></label></div><p class="field-help">User uses your files and desktop session and may stop at logout. System starts at boot as root on Unix or LocalService on Windows. Hybrid installs both as isolated profiles, with a NAME-system companion running as root or Windows LocalSystem. Explicit System work requires an instruction grant; failures never trigger elevation. Hybrid names allow 56 characters. Run Hybrid as your user on Unix, or in Administrator PowerShell on Windows.</p><div class="notice">The gateway needs published amd64 and arm64 installers for the selected platform. This invitation expires after 15 minutes.</div>`,
-    async (fields) => {
+    async (fields, current) => {
       const name = fields.name.trim(),
         automatic = !name || name === "auto";
       const link = await api("fleet/installations", "POST", {
@@ -2413,10 +2450,12 @@ function addMachine() {
         gateway: location.origin,
         force: fields.force === "on",
       });
+      if (!current()) return false;
       showInstallationCommand(link);
       return false;
     },
     "Create installation command",
+    false, "", true,
   );
 }
 /** @returns {Promise<void>} */
@@ -2507,6 +2546,7 @@ document.addEventListener("submit", async (event) => {
     fields = formFields(form),
     button = $("button[type=submit]", form),
     errorBox = $(".form-error", form);
+  const session = state.session;
   errorBox.textContent = "";
   if (fields.password !== fields.confirm) {
     errorBox.textContent = "Passwords do not match.";
@@ -2518,10 +2558,11 @@ document.addEventListener("submit", async (event) => {
       currentPassword: fields.currentPassword,
       password: fields.password,
     });
+    if (session !== state.session || !form.isConnected) return;
     showLogin();
     toast("Password changed. Sign in with your new password.");
   } catch (error) {
-    errorBox.textContent = errorMessage(error);
+    if (session === state.session && form.isConnected) errorBox.textContent = errorMessage(error);
   } finally {
     button.disabled = false;
   }
@@ -2542,6 +2583,8 @@ document.addEventListener("click", async (event) => {
     id = button.dataset.id || "",
     name = button.dataset.name || "";
   const node = state.snapshot?.nodes.find((n) => n.id === id);
+  const session = state.session;
+  const generation = auditGeneration;
   try {
     if (action === "machine-menu") {
       if (
@@ -2593,13 +2636,20 @@ document.addEventListener("click", async (event) => {
     if (action === "refresh") await refresh(true);
     if (action === "audit-more" && button instanceof HTMLButtonElement && state.auxiliary?.page === "activity" && state.auxiliary.data.next) {
       button.disabled = true;
-      const older = await api(auditPath(state.auxiliary.data.next));
-      if (state.page === "activity" && state.auxiliary?.page === "activity") {
-        state.auxiliary = {
-          page: "activity",
-          data: {events: [...state.auxiliary.data.events, ...older.events], next: older.next},
-        };
-        render();
+      const before = state.auxiliary.data.next;
+      try {
+        const older = await api(auditPath(before));
+        if (session === state.session && generation === auditGeneration && state.page === "activity" && state.auxiliary?.page === "activity" && state.auxiliary.data.next === before) {
+          const events = state.auxiliary.data.events,
+            seen = new Set(events.map((e) => e.id));
+          state.auxiliary = {
+            page: "activity",
+            data: {events: [...events, ...older.events.filter((e) => !seen.has(e.id))], next: older.next},
+          };
+          render();
+        }
+      } finally {
+        button.disabled = false;
       }
     }
     if (action === "logout") {
@@ -2607,9 +2657,9 @@ document.addEventListener("click", async (event) => {
       formDialog(
         "Sign out?",
         "<p>You will need your browser password to sign in again. CLI keys and sessions on other browsers are not affected.</p>",
-        async () => {
+        async (_fields, current) => {
           await api("logout", "POST");
-          showLogin();
+          if (current()) showLogin();
         },
         "Sign out",
       );
@@ -2620,9 +2670,10 @@ document.addEventListener("click", async (event) => {
         await navigator.clipboard.writeText(
           $(button.dataset.copy || "#secret-value").textContent || "",
         );
+        if (session !== state.session) return;
         toast("Copied to clipboard");
       } catch {
-        toast("Clipboard unavailable. Select and copy the displayed value.");
+        if (session === state.session) toast("Clipboard unavailable. Select and copy the displayed value.");
       }
     }
     if (action === "details") machineDetails(id);
@@ -2641,7 +2692,6 @@ document.addEventListener("click", async (event) => {
         "Delete " + name + ". Future operations using this reference will fail until it is defined again.",
         async () => {
           await api(`fleet/nodes/${encodeURIComponent(node.id)}/secrets/${encodeURIComponent(name)}`, "DELETE");
-          toast("Secret deleted");
         },
         "Delete secret",
         "machine-drawer secrets-drawer",
@@ -2653,6 +2703,7 @@ document.addEventListener("click", async (event) => {
           `fleet/nodes/${encodeURIComponent(id)}/wake`,
           "POST",
         );
+        if (session !== state.session || !button.isConnected) return;
         toast(
           `Wake packet sent from ${result.source}. ${node.name} appears online once it starts.`,
         );
@@ -2664,11 +2715,12 @@ document.addEventListener("click", async (event) => {
       formDialog(
         "Rename " + node.name,
         `<p>This changes its routing name without restarting the node. Project-local scenario files on CLI hosts are not updated.</p><label>New name<input name="name" value="${esc(node.name)}" required maxlength="63" pattern="[a-zA-Z0-9]([a-zA-Z0-9._]|-){0,62}"></label>`,
-        async (fields) => {
+        async (fields, current) => {
           await api(`fleet/nodes/${encodeURIComponent(id)}`, "PATCH", {
             name: fields.name,
             force: fields.force === "on",
           });
+          if (!current()) return;
           toast("Machine renamed");
         },
       );
@@ -2694,13 +2746,14 @@ document.addEventListener("click", async (event) => {
       formDialog(
         "Unregister " + node.name,
         `<p>This permanently retires this identity. Current installations cancel work and uninstall startup and their unshared launcher when they receive the policy. Local data is retained. Older nodes may need local cleanup.</p>${companionField}<label>Type ${esc(node.name)} to confirm<input name="confirmation" required autocomplete="off"></label>`,
-        async (fields) => {
+        async (fields, current) => {
           if (fields.confirmation !== node.name)
             throw new Error("The machine name does not match.");
           await api(
             `fleet/nodes/${encodeURIComponent(id)}?stop=true`,
             "DELETE",
           );
+          if (!current()) return;
           if (companion && fields.companion) {
             try {
               await api(
@@ -2711,6 +2764,7 @@ document.addEventListener("click", async (event) => {
               throw new Error(`${node.name} was unregistered, but ${companion.name} was not: ${errorMessage(error)}`);
             }
           }
+          if (!current()) return;
           toast(companion && fields.companion ? "Both contexts unregistered" : "Machine unregistered");
         },
         "Unregister machine",
@@ -2722,7 +2776,7 @@ document.addEventListener("click", async (event) => {
       formDialog(
         "Clear activity log",
         `<p>Remove events from ${operator ? "every fleet" : "this fleet"}. A record of the clearing stays in each fleet it affects.</p><label>Remove<select name="keep"><option value="">All events</option><option value="7">Events older than 7 days</option><option value="30">Events older than 30 days</option></select></label>`,
-        async (fields) => {
+        async (fields, current) => {
           const days = Number(fields.keep);
           const result = await api(
             `audit${days
@@ -2733,6 +2787,8 @@ document.addEventListener("click", async (event) => {
                 : ""}`,
             "DELETE",
           );
+          if (!current()) return;
+          auditGeneration++;
           state.auxiliary = null;
           toast("Removed " + plural(result.removed, "event"));
         },
@@ -2745,9 +2801,9 @@ document.addEventListener("click", async (event) => {
       formDialog(
         "Clear invitation history",
         `<p>Clear ${esc(plural(count, "invitation"))} from this list. Enrolled machines keep working; manage them from Machines. Records needed for machine credentials or incomplete Hybrid cleanup are retained internally. Pending invitations stay.</p>`,
-        async () => {
+        async (_fields, current) => {
           await api("fleet/installations", "DELETE");
-          toast("Cleared invitation history");
+          if (current()) toast("Cleared invitation history");
         },
         "Clear history",
         true,
@@ -2764,8 +2820,9 @@ document.addEventListener("click", async (event) => {
       formDialog(
         "Create fleet key",
         '<p>Common keys permit enrollment and discovery only. The new secret is shown once.</p><label>Name<input name="name" required maxlength="128"></label>',
-        async (fields) => {
+        async (fields, current) => {
           const issued = await api("fleet/keys", "POST", { name: fields.name });
+          if (!current()) return false;
           showSecret(
             "Save your new key",
             issued.token,
@@ -2774,16 +2831,17 @@ document.addEventListener("click", async (event) => {
           return false;
         },
         "Create key",
+        false, "", true,
       );
     if (action === "rename-key")
       formDialog(
         "Rename key",
         `<p>The name only labels this key. Its secret and access are unchanged.</p><label>Name<input name="name" value="${esc(name)}" required maxlength="128"></label>`,
-        async (fields) => {
+        async (fields, current) => {
           await api(`fleet/keys/${encodeURIComponent(id)}`, "PATCH", {
             name: fields.name,
           });
-          toast("Key renamed");
+          if (current()) toast("Key renamed");
         },
         "Rename key",
       );
@@ -2798,10 +2856,11 @@ document.addEventListener("click", async (event) => {
       formDialog(
         "Create private fleet",
         '<p>Provision an account with its own isolated fleet. Its CLI account key is shown once. Set a separate browser password from the accounts table.</p><label>Account name<input name="name" required maxlength="63" pattern="[a-zA-Z0-9]([a-zA-Z0-9._]|-){0,62}"></label>',
-        async (fields) => {
+        async (fields, current) => {
           const issued = await api("admin/users", "POST", {
             name: fields.name,
           });
+          if (!current()) return false;
           showSecret(
             "Save " + fields.name + "'s account key",
             issued.token,
@@ -2810,6 +2869,7 @@ document.addEventListener("click", async (event) => {
           return false;
         },
         "Create account",
+        false, "", true,
       );
     if (action === "disable-user")
       confirmAction(
@@ -2822,14 +2882,14 @@ document.addEventListener("click", async (event) => {
       formDialog(
         "Browser password for " + name,
         '<p>Setting a password revokes all existing browser sessions for this account. The CLI key stays unchanged.</p><label>New password<input name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="1024"></label><label>Confirm password<input name="confirm" type="password" autocomplete="new-password" required minlength="12" maxlength="1024"></label>',
-        async (fields) => {
+        async (fields, current) => {
           if (fields.password !== fields.confirm)
             throw new Error("Passwords do not match.");
           await api("console/password", "PUT", {
             username: name,
             password: fields.password,
           });
-          toast("Browser password saved");
+          if (current()) toast("Browser password saved");
         },
         "Set password",
       );
@@ -2841,7 +2901,7 @@ document.addEventListener("click", async (event) => {
         "Check and apply release",
       );
   } catch (error) {
-    toast(errorMessage(error));
+    if (session === state.session && (action !== "audit-more" || generation === auditGeneration)) toast(errorMessage(error));
   }
 });
 setInterval(() => {

@@ -105,3 +105,15 @@ func waitForGateway(ctx context.Context, log *slog.Logger, operation string, cal
 		}
 	}
 }
+
+// directoryStatusError keeps the directory's status text and marks gateway
+// overload or restart responses as transient. Authentication, authorization
+// and other client errors remain permanent.
+func directoryStatusError(operation string, resp *http.Response) error {
+	err := fmt.Errorf("%s: %s", operation, resp.Status)
+	code := resp.StatusCode
+	if code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= 500 && code <= 599 {
+		return transientGatewayError{err}
+	}
+	return err
+}

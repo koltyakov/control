@@ -45,7 +45,14 @@ type routing struct {
 	peer        *transport.Peer
 	ownerID     string
 	cancel      context.CancelFunc
-	err         error
+	attempt     *routingAttempt
+}
+
+type routingAttempt struct {
+	done   chan struct{}
+	cancel context.CancelFunc
+	peer   *transport.Peer
+	err    error
 }
 
 // WithStandalone configures command-scoped peer routing. AccountRouting uses an
@@ -66,30 +73,73 @@ func (c Client) backend(ctx context.Context) (*transport.Peer, error) {
 		return nil, nil
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.closed {
+		r.mu.Unlock()
 		return nil, errors.New("client is closed")
 	}
-	if !r.initialized {
-		r.initialized = true
-		if r.cfg.AccountRouting {
-			r.err = r.start(ctx)
-			return r.peer, r.err
-		}
-		local := c
-		local.routing = nil
-		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		err := local.Call(probeCtx, "", "node.describe", map[string]any{}, nil)
-		cancel()
-		if err != nil {
-			if !connectionRefused(err) {
-				r.err = err
-			} else {
-				r.err = r.start(ctx)
-			}
+	if r.initialized {
+		peer := r.peer
+		r.mu.Unlock()
+		return peer, nil
+	}
+	if a := r.attempt; a != nil {
+		r.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-a.done:
+			return a.peer, a.err
 		}
 	}
-	return r.peer, r.err
+	// The initiating request owns setup cancellation; other callers only wait.
+	// A failed attempt is shared by its waiters, never retried within that call.
+	setup, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(r.ctx, cancel)
+	a := &routingAttempt{done: make(chan struct{}), cancel: cancel}
+	r.attempt = a
+	r.mu.Unlock()
+	candidate := &routing{ctx: r.ctx, cfg: r.cfg}
+	localSelected := false
+	var err error
+	if r.cfg.AccountRouting {
+		err = candidate.start(setup)
+	} else {
+		local := c
+		local.routing = nil
+		probeCtx, probeCancel := context.WithTimeout(setup, 2*time.Second)
+		err = local.Call(probeCtx, "", "node.describe", map[string]any{}, nil)
+		probeCancel()
+		if connectionRefused(err) {
+			err = candidate.start(setup)
+		} else {
+			// An answering local backend remains selected after an application
+			// error. Later calls may try it again, but cannot switch authority.
+			localSelected = setup.Err() == nil
+		}
+	}
+	stop()
+	cancel()
+	r.mu.Lock()
+	if err == nil {
+		err = ctx.Err()
+	}
+	if r.closed || r.ctx.Err() != nil {
+		err = errors.New("client is closed")
+	}
+	if err == nil || localSelected && !r.closed && r.ctx.Err() == nil {
+		r.initialized = true
+		r.peer, r.ownerID, r.cancel = candidate.peer, candidate.ownerID, candidate.cancel
+	} else if candidate.peer != nil {
+		r.mu.Unlock()
+		candidate.cancel()
+		_ = candidate.peer.Close()
+		r.mu.Lock()
+	}
+	a.peer, a.err = r.peer, err
+	r.attempt = nil
+	close(a.done)
+	r.mu.Unlock()
+	return a.peer, a.err
 }
 
 func (r *routing) start(ctx context.Context) error {
@@ -166,24 +216,27 @@ func (r *routing) start(ctx context.Context) error {
 }
 
 func (c Client) Close() error {
+	if r := c.routing; r != nil {
+		r.mu.Lock()
+		r.closed = true
+		attempt := r.attempt
+		if attempt != nil {
+			attempt.cancel()
+		}
+		cancel, peer := r.cancel, r.peer
+		r.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		if peer != nil {
+			_ = peer.Close()
+		}
+		if attempt != nil {
+			<-attempt.done
+		}
+	}
 	if c.resources != nil {
 		c.resources.close()
-	}
-	if c.routing == nil {
-		return nil
-	}
-	r := c.routing
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.closed {
-		return nil
-	}
-	r.closed = true
-	if r.cancel != nil {
-		r.cancel()
-	}
-	if r.peer != nil {
-		_ = r.peer.Close()
 	}
 	return nil
 }

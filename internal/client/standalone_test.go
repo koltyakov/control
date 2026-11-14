@@ -348,10 +348,7 @@ func TestStandaloneNeverSwitchesAfterLocalErrors(t *testing.T) {
 			if gatewayCalls.Load() != 0 {
 				t.Fatal("error caused gateway fallback")
 			}
-			want := int32(1)
-			if status == http.StatusOK {
-				want = 2
-			}
+			want := int32(2)
 			if calls.Load() != want {
 				t.Fatal("unexpected replay", calls.Load())
 			}

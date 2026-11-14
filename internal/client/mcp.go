@@ -274,10 +274,10 @@ func (c Client) MCPServer() *mcp.Server {
 		}
 		return f.Info(), nil
 	})
-	local("control_forward_list", "List local and reverse port forwards owned by this MCP process, including active connection counts and last connection errors.", map[string]any{}, nil, func(context.Context, json.RawMessage) (any, error) {
+	local("control_forward_list", "List active local and reverse port forwards owned by this MCP process, including connection counts and last connection errors. Completed forwards are removed automatically and release listener capacity.", map[string]any{}, nil, func(context.Context, json.RawMessage) (any, error) {
 		return c.Forwards(), nil
 	})
-	local("control_forward_stop", "Close this process's port forward by ID, including its listener and active sockets. Does not stop the remote service or durable tasks.", map[string]any{"id": text}, []string{"id"}, func(_ context.Context, args json.RawMessage) (any, error) {
+	local("control_forward_stop", "Close this process's port forward by ID, including its listener and active sockets. Acknowledges and forgets a recently completed ID among the latest 32 completions; unknown or forgotten IDs fail. Does not stop the remote service or durable tasks.", map[string]any{"id": text}, []string{"id"}, func(_ context.Context, args json.RawMessage) (any, error) {
 		var q struct {
 			ID string `json:"id"`
 		}

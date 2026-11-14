@@ -136,7 +136,22 @@ func (r contextReader) Read(b []byte) (int, error) {
 	return r.r.Read(b)
 }
 
-func (n *Node) importArtifact(ctx context.Context, reader io.Reader, name string) (_ model.Artifact, err error) {
+// importArtifact stores content without retaining a pin. Use
+// importArtifactPinned when the caller must reference the result elsewhere
+// before deletion is permitted.
+func (n *Node) importArtifact(ctx context.Context, reader io.Reader, name string) (model.Artifact, error) {
+	a, unpin, err := n.importArtifactPinned(ctx, reader, name)
+	if unpin != nil {
+		unpin()
+	}
+	return a, err
+}
+
+// importArtifactPinned returns a reader pin taken under the same transfer lock
+// that publishes or holds the content. Deletion therefore cannot remove a new
+// or deduplicated artifact before the caller records its reference. On error
+// the returned release is nil.
+func (n *Node) importArtifactPinned(ctx context.Context, reader io.Reader, name string) (_ model.Artifact, _ func(), err error) {
 	activity := n.beginActivity(ctx, "transfer", "artifacts.import", "", "")
 	defer func() { activity.finish(err) }()
 	activity.phase("storing")
@@ -147,11 +162,11 @@ func (n *Node) importArtifact(ctx context.Context, reader io.Reader, name string
 	}
 	dir := filepath.Join(n.Config.DataDir, "artifacts")
 	if err := os.MkdirAll(dir, 0700); err != nil {
-		return model.Artifact{}, err
+		return model.Artifact{}, nil, err
 	}
 	f, err := os.CreateTemp(dir, ".import-*")
 	if err != nil {
-		return model.Artifact{}, err
+		return model.Artifact{}, nil, err
 	}
 	n.artifactBudgetMu.Lock()
 	n.artifactStaging[filepath.Base(f.Name())] = true
@@ -167,13 +182,13 @@ func (n *Node) importArtifact(ctx context.Context, reader io.Reader, name string
 	budget := &artifactBudgetWriter{node: n, writer: f}
 	size, err := io.Copy(activityWriter{writer: io.MultiWriter(budget, hash), counter: &activity.bytes}, contextReader{ctx, reader})
 	if err != nil {
-		return model.Artifact{}, err
+		return model.Artifact{}, nil, err
 	}
 	if err = f.Sync(); err != nil {
-		return model.Artifact{}, err
+		return model.Artifact{}, nil, err
 	}
 	if err = f.Close(); err != nil {
-		return model.Artifact{}, err
+		return model.Artifact{}, nil, err
 	}
 	id := hex.EncodeToString(hash.Sum(nil))
 	owner := n.artifactOwner(ctx)
@@ -182,22 +197,28 @@ func (n *Node) importArtifact(ctx context.Context, reader io.Reader, name string
 	// transfers or imports of unrelated artifacts.
 	unlock, err := n.lockTransfer(ctx, id)
 	if err != nil {
-		return model.Artifact{}, err
+		return model.Artifact{}, nil, err
 	}
 	defer unlock()
 	if existing, e := n.storedArtifact(id); e == nil {
-		return existing.Artifact, n.holdArtifactLocked(existing, owner)
+		if err = n.holdArtifactLocked(existing, owner); err != nil {
+			return model.Artifact{}, nil, err
+		}
+		return existing.Artifact, n.pinArtifactLocked(id), nil
 	} else if !errors.Is(e, os.ErrNotExist) {
-		return model.Artifact{}, e
+		return model.Artifact{}, nil, e
 	}
 	if err = n.removeArtifactData(n.artifactPath(id)); err != nil {
-		return model.Artifact{}, err
+		return model.Artifact{}, nil, err
 	}
 	if err = os.Rename(f.Name(), n.artifactPath(id)); err != nil {
-		return model.Artifact{}, err
+		return model.Artifact{}, nil, err
 	}
 	a := model.Artifact{Node: n.Identity.ID, ID: id, Name: name, Size: size, SHA256: id, Created: time.Now().UTC()}
-	return a, store.Write(n.artifactPath(id)+".json", storedArtifact{Artifact: a, Owners: []string{owner}})
+	if err = store.Write(n.artifactPath(id)+".json", storedArtifact{Artifact: a, Owners: []string{owner}}); err != nil {
+		return model.Artifact{}, nil, err
+	}
+	return a, n.pinArtifactLocked(id), nil
 }
 
 type artifactGrant struct {

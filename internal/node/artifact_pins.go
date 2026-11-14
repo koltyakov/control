@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"sync"
 )
 
 func (n *Node) pinArtifact(ctx context.Context, id string) (func(), error) {
@@ -11,20 +12,28 @@ func (n *Node) pinArtifact(ctx context.Context, id string) (func(), error) {
 		return nil, err
 	}
 	defer unlock()
+	return n.pinArtifactLocked(id), nil
+}
+
+// pinArtifactLocked registers a reader while the caller holds id's transfer
+// lock, so deletion and GC (which check readers under that lock) cannot run
+// between the caller's last check and the pin. It never takes the transfer
+// lock itself. The returned release is idempotent.
+func (n *Node) pinArtifactLocked(id string) func() {
 	n.artifactMu.Lock()
 	if n.artifactReaders == nil {
 		n.artifactReaders = make(map[string]int)
 	}
 	n.artifactReaders[id]++
 	n.artifactMu.Unlock()
-	return func() {
+	return sync.OnceFunc(func() {
 		n.artifactMu.Lock()
 		n.artifactReaders[id]--
 		if n.artifactReaders[id] == 0 {
 			delete(n.artifactReaders, id)
 		}
 		n.artifactMu.Unlock()
-	}, nil
+	})
 }
 
 func (n *Node) artifactReading(id string) bool {

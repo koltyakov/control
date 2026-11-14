@@ -485,8 +485,12 @@ func (p *Peer) send(ctx context.Context, msg *protocol.Packet) error {
 	// behind session setup or directory work; the live socket is mirrored
 	// in gatewayWS and lifecycle state comes from the peer context.
 	ws := p.gatewayWS.Load()
-	if ws == nil || p.ctx == nil || p.ctx.Err() != nil {
+	if p.ctx == nil || p.ctx.Err() != nil {
 		return errors.New("gateway disconnected")
+	}
+	if ws == nil {
+		// The running peer is reconnecting to its gateway.
+		return transientSetup("gateway disconnected")
 	}
 	pooled := getWriteBuffer()
 	b, err := proto.MarshalOptions{}.MarshalAppend((*pooled)[:0], msg)
@@ -977,11 +981,11 @@ func (p *Peer) Nodes(ctx context.Context) ([]model.Node, error) {
 	req.Header.Set("Authorization", "Bearer "+p.cfg.Token)
 	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
-		return nil, err
+		return nil, gatewayNetworkError(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("directory: %s", resp.Status)
+		return nil, directoryStatusError("directory", resp)
 	}
 	var nodes []model.Node
 	err = json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&nodes)
@@ -1030,7 +1034,7 @@ func (p *Peer) lookup(ctx context.Context, name string, clientSessions bool, use
 		req.Header.Set("Authorization", "Bearer "+p.cfg.Token)
 		resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 		if err != nil {
-			return model.Node{}, err
+			return model.Node{}, gatewayNetworkError(err)
 		}
 		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode == http.StatusOK {
@@ -1044,7 +1048,7 @@ func (p *Peer) lookup(ctx context.Context, name string, clientSessions bool, use
 			return peer, nil
 		}
 		if resp.StatusCode != http.StatusNotFound {
-			return model.Node{}, fmt.Errorf("peer directory: %s", resp.Status)
+			return model.Node{}, directoryStatusError("peer directory", resp)
 		}
 		return model.Node{}, fmt.Errorf("unknown node %q", name)
 	}
@@ -1075,7 +1079,9 @@ func (p *Peer) Resolve(ctx context.Context, name string) (model.Node, error) {
 		return peer, err
 	}
 	if !peer.Online {
-		return peer, fmt.Errorf("node %s is offline", name)
+		// Targets reappear after their gateway connection or the gateway
+		// itself reconnects.
+		return peer, transientSetup(fmt.Sprintf("node %s is offline", name))
 	}
 	now := time.Now()
 	p.mu.Lock()
@@ -1123,7 +1129,7 @@ func (p *Peer) dial(ctx context.Context, remote, mode string, lane Lane) (_ *pee
 		draining := time.Now().Before(p.relayDrainUntil)
 		p.mu.Unlock()
 		if draining {
-			return nil, errors.New("gateway relay is draining for maintenance")
+			return nil, transientSetup("gateway relay is draining for maintenance")
 		}
 	}
 	if mode == "webrtc" {
@@ -1201,7 +1207,9 @@ func (p *Peer) dial(ctx context.Context, remote, mode string, lane Lane) (_ *pee
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-l.conn.ctx.Done():
-		return nil, errors.New("peer closed session")
+		// The remote side or the gateway closed this setup (peer offline,
+		// relay limit or maintenance). The request was never sent.
+		return nil, transientSetup("peer closed session")
 	}
 	secure := tls.Client(l.conn, p.cfg.Identity.TLS(remote))
 	if err = secure.HandshakeContext(ctx); err != nil {

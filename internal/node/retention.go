@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/model"
-	"github.com/koltyakov/control/internal/store"
 )
 
 const (
@@ -133,13 +132,21 @@ func (n *Node) loadTombstones() error {
 		return err
 	}
 	if stale || len(n.tombstones) > maxTombstones {
+		// Windows refuses replacement while the read handle is open. Finish
+		// reading and close it before atomically rewriting the same journal.
+		if err := f.Close(); err != nil {
+			return err
+		}
 		return n.compactTombstones()
 	}
 	return nil
 }
 
 // compactTombstones rewrites the file with the newest retained entries.
-// Caller serializes it with pruneMu or runs before Start.
+// Caller serializes it with pruneMu or runs before Start. It is also the only
+// recovery from a dirty journal: the rewrite contains exactly the adopted
+// tombstones, including pending cleanup intent, and discards torn or
+// unadopted appended bytes. Unadopted victims still have their task records.
 func (n *Node) compactTombstones() error {
 	n.mu.Lock()
 	entries := make([]taskTombstone, 0, len(n.tombstones))
@@ -161,9 +168,14 @@ func (n *Node) compactTombstones() error {
 		b.Write(model.JSON(entries[i]))
 		b.WriteByte('\n')
 	}
-	if err := store.Bytes(n.tombstonePath(), b.Bytes(), 0600); err != nil {
+	// A failed replacement may already have renamed the new journal without a
+	// durable directory entry, so the on-disk version is uncertain. Keep the
+	// journal dirty: no append may follow until a complete rewrite succeeds.
+	if err := n.journalReplace(n.tombstonePath(), b.Bytes(), 0600); err != nil {
+		n.journalDirty = true
 		return err
 	}
+	n.journalDirty = false
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	old := n.tombstones
@@ -183,6 +195,14 @@ func (n *Node) compactTombstones() error {
 func (n *Node) pruneTasks(now time.Time) error {
 	n.pruneMu.Lock()
 	defer n.pruneMu.Unlock()
+	// Recover a dirty journal before anything else, even when nothing new is
+	// eligible. Appending after torn or uncommitted bytes could turn them into
+	// a corrupt interior record that blocks startup.
+	if n.journalDirty {
+		if err := n.compactTombstones(); err != nil {
+			return fmt.Errorf("%w: recover tombstone journal: %w", errTaskCleanupPersistence, err)
+		}
+	}
 	cleanupErr := n.retryTaskCleanup()
 	if errors.Is(cleanupErr, errTaskCleanupPersistence) {
 		return cleanupErr
@@ -229,8 +249,12 @@ func (n *Node) pruneTasks(now time.Time) error {
 		b.Write(model.JSON(t))
 		b.WriteByte('\n')
 	}
-	if err := store.Append(n.tombstonePath(), b.Bytes()); err != nil {
-		return errors.Join(cleanupErr, err)
+	// Any append error leaves the journal state unknown: none, some, or all of
+	// the bytes may be durable. Do not adopt these victims or remove their
+	// records; recovery rewrites the journal from adopted state first.
+	if err := n.journalAppend(n.tombstonePath(), b.Bytes()); err != nil {
+		n.journalDirty = true
+		return errors.Join(cleanupErr, fmt.Errorf("%w: append task tombstones: %w", errTaskCleanupPersistence, err))
 	}
 	removed := make([]string, 0, len(victims))
 	n.mu.Lock()

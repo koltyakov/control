@@ -120,6 +120,158 @@ async function login(page, username, pw = password) {
   await page.getByRole("button", { name: "Sign in", exact: false }).click();
   await page.locator("#app").waitFor({ state: "visible" });
 }
+
+// Hold a real browser request until the test chooses its response order.
+async function holdRequest(page, pattern, method) {
+  let received;
+  const pending = new Promise((resolve) => { received = resolve; });
+  const handler = (route) => {
+    if (route.request().method() === method) received(route);
+    else return route.fallback();
+  };
+  await page.route(pattern, handler);
+  return {
+    pending,
+    remove: () => page.unroute(pattern, handler),
+  };
+}
+
+async function assertAsyncConsoleOwnership(browser) {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const keys = [{ id: "async-key", name: "Async fixture key", role: "common", createdAt: new Date().toISOString() }];
+  await page.route("**/console/api/fleet/keys", (route) =>
+    route.request().method() === "GET" ? route.fulfill({ json: keys }) : route.fallback());
+  try {
+    await login(page, "browser-owner");
+    await pageLink(page, "keys");
+    await page.getByText("Async fixture key", { exact: true }).waitFor();
+    for (const status of [204, 409]) {
+      const held = await holdRequest(page, "**/console/api/fleet/keys/async-key", "PATCH");
+      await page.getByRole("button", { name: "Rename", exact: true }).click();
+      const submitted = await page.locator("#modal-form button[type=submit]").elementHandle();
+      await submitted.click();
+      const request = await held.pending;
+      await page.locator("#modal-form [data-action=close]").click();
+      await page.getByRole("button", { name: "Create key", exact: false }).click();
+      await request.fulfill({ status, body: status === 409 ? "name has an existing invitation" : undefined });
+      await page.waitForFunction((button) => !button.disabled, submitted);
+      assert.equal(await page.locator("#dialog-title").textContent(), "Create fleet key");
+      assert.equal(await page.locator("#modal-form .form-error").textContent(), "");
+      assert.equal(await page.locator("#force-confirm").count(), 0);
+      await page.locator("#modal-form [data-action=close]").click();
+      await held.remove();
+    }
+
+    for (const outcome of ["success", "expiry", "logout", "uncertain"]) {
+      if (outcome === "logout" || outcome === "uncertain") {
+        if (outcome === "uncertain") await login(page, "browser-owner");
+        await pageLink(page, "keys");
+      }
+      const held = await holdRequest(page, "**/console/api/fleet/keys", "POST");
+      await page.getByRole("button", { name: "Create key", exact: false }).click();
+      await page.locator("#modal-form input[name=name]").fill("Private pending name");
+      const submitted = await page.locator("#modal-form button[type=submit]").elementHandle();
+      await submitted.click();
+      const request = await held.pending;
+      assert.equal(await page.locator("#modal-form [data-action=close]").isDisabled(), true);
+      await page.keyboard.press("Escape");
+      await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+      assert.equal(await page.locator("#dialog").isVisible(), true, "Pending issuance must resist dismissal");
+      if (outcome === "expiry") {
+        await page.waitForFunction(() => !state.busy);
+        await page.route("**/console/api/status", (route) => route.fulfill({ status: 401, body: "session expired" }));
+        await page.evaluate(() => refresh(true));
+        await page.locator("#login").waitFor({ state: "visible" });
+        await page.unroute("**/console/api/status");
+        // Sign in without navigation so the old response still reaches its callback.
+        await page.locator("#login-form input[name=username]").fill("browser-owner");
+        await page.locator("#login-form input[name=password]").fill(password);
+        await page.getByRole("button", { name: "Sign in", exact: false }).click();
+        await page.locator("#app").waitFor({ state: "visible" });
+      } else if (outcome === "logout") {
+        // Another session transition may occur while a credential reply is in flight.
+        await page.evaluate(async () => { await api("logout", "POST"); showLogin(); });
+      }
+      if (outcome === "uncertain") await request.abort("failed");
+      else await request.fulfill({ json: { token: "ctl_async_private_token" } });
+      await page.waitForFunction((button) => !button.disabled, submitted);
+      if (outcome === "success") {
+        assert.equal(await page.locator("#secret-value").textContent(), "ctl_async_private_token");
+        await page.getByRole("button", { name: "Done", exact: true }).click();
+      } else if (outcome === "uncertain") {
+        assert.match(await page.locator("#modal-form .form-error").textContent(), /may have completed/);
+        assert.equal(await page.locator("#secret-value").count(), 0);
+        await page.locator("#modal-form [data-action=close]").click();
+      } else {
+        assert.equal(await page.locator("#dialog").isVisible(), false);
+        assert.equal(await page.locator("#secret-value").count(), 0);
+        assert.ok(!(await page.locator("body").textContent()).includes("Private pending name"));
+      }
+      await held.remove();
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await context.close();
+  }
+}
+
+async function assertAuditRequestOwnership(browser) {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  let newest = 100;
+  const event = (id, category = "key") => ({
+    id, at: new Date().toISOString(), userId: "fixture", actor: "fixture",
+    via: "browser", action: `${category}.create`, target: `${category}-${id}`,
+  });
+  await page.route("**/console/api/audit?*", (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    const category = query.get("category") || "key";
+    const top = query.has("before") ? Number(query.get("before")) - 1 : newest;
+    const count = Math.min(100, top);
+    return route.fulfill({ json: {
+      events: Array.from({ length: count }, (_, i) => event(top - i, category)),
+      next: top > 100 ? top - 99 : 0,
+    } });
+  });
+  try {
+    await login(page, "browser-owner");
+    await pageLink(page, "activity");
+    await page.getByText("key-100", { exact: true }).waitFor();
+    newest = 250;
+    await page.evaluate(() => refresh(true));
+    assert.equal(await page.locator("tbody tr").count(), 100);
+    await page.getByRole("button", { name: "Load older", exact: true }).click();
+    await page.getByText("key-150", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Load older", exact: true }).click();
+    await page.getByText("key-1", { exact: true }).waitFor();
+    assert.equal(await page.locator("tbody tr").count(), 250, "Burst reset must leave every event reachable");
+
+    const held = await holdRequest(page, "**/console/api/audit?*", "GET");
+    await page.evaluate(() => { void refresh(true); });
+    const stale = await held.pending;
+    await page.locator("#audit-category").selectOption("machine");
+    await held.remove();
+    await stale.fulfill({ json: { events: [event(999)], next: 0 } });
+    await page.getByText("machine-250", { exact: true }).waitFor();
+    assert.equal(await page.getByText("key-999", { exact: true }).count(), 0);
+
+    const olderHeld = await holdRequest(page, "**/console/api/audit?*", "GET");
+    const olderButton = await page.getByRole("button", { name: "Load older", exact: true }).elementHandle();
+    await olderButton.click();
+    const older = await olderHeld.pending;
+    await olderHeld.remove();
+    await page.locator("#audit-category").selectOption("key");
+    await page.getByText("key-250", { exact: true }).waitFor();
+    await older.fulfill({ json: { events: [event(149, "machine")], next: 149 } });
+    await page.waitForFunction((button) => !button.disabled, olderButton);
+    assert.equal(await page.getByText("machine-149", { exact: true }).count(), 0);
+  } finally {
+    await context.close();
+  }
+}
 async function pageLink(page, hash) {
   await page.locator(`nav a[href="#${hash}"]`).click();
   await page.waitForFunction(
@@ -1088,6 +1240,8 @@ try {
       errors.push(message.text());
   });
   await login(page, "browser-owner");
+  await assertAsyncConsoleOwnership(browser);
+  await assertAuditRequestOwnership(browser);
   await assertBrandAssets(page);
   await page
     .getByRole("button", { name: "browser-worker", exact: true })

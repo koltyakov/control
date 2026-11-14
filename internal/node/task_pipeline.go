@@ -43,9 +43,12 @@ func (n *Node) stageTaskInputs(ctx context.Context, id, dir string, inputs []mod
 		if err := root.MkdirAll(filepath.Dir(input.Path), 0700); err != nil {
 			return err
 		}
-		dest, err := root.OpenFile(input.Path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+		// Validate the opened handle before truncating: an existing FIFO or
+		// device must neither block staging (uncancellable in open) nor be
+		// written. Root-confined symlinks to regular files keep their semantics.
+		dest, err := openRegularFileForWrite(root, input.Path, true)
 		if err != nil {
-			return err
+			return fmt.Errorf("input %s: %w", input.Path, err)
 		}
 		source, err := os.Open(n.artifactPath(artifact.ID))
 		if err != nil {
@@ -104,30 +107,35 @@ func (n *Node) runTaskProvider(ctx context.Context, task model.Task, dir string,
 }
 
 // The caller holds output-publication admission, never a provider slot.
-func (n *Node) publishTaskOutputs(ctx context.Context, id string, outputs []string) ([]model.Artifact, error) {
+// Every returned artifact, including those published before an error, carries
+// a pin in the returned releases. The caller must keep them until the task's
+// terminal record references those artifacts in memory, then release them.
+func (n *Node) publishTaskOutputs(ctx context.Context, id string, outputs []string) ([]model.Artifact, []func(), error) {
 	if len(outputs) == 0 {
-		return nil, ctx.Err()
+		return nil, nil, ctx.Err()
 	}
 	root, err := os.OpenRoot(filepath.Join(n.Config.WorkDir, "tasks", id))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = root.Close() }()
 	var artifacts []model.Artifact
+	var pins []func()
 	for _, path := range outputs {
 		if err := ctx.Err(); err != nil {
-			return artifacts, err
+			return artifacts, pins, err
 		}
 		file, _, err := openRegularFile(root, path)
 		if err != nil {
-			return artifacts, fmt.Errorf("output %s: %w", path, err)
+			return artifacts, pins, fmt.Errorf("output %s: %w", path, err)
 		}
-		artifact, err := n.importArtifact(ctx, file, filepath.Base(path))
+		artifact, unpin, err := n.importArtifactPinned(ctx, file, filepath.Base(path))
 		_ = file.Close()
 		if err != nil {
-			return artifacts, err
+			return artifacts, pins, err
 		}
 		artifacts = append(artifacts, artifact)
+		pins = append(pins, unpin)
 	}
-	return artifacts, nil
+	return artifacts, pins, nil
 }
