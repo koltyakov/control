@@ -4,11 +4,15 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
+	"io"
 	"net"
+	"net/http"
 	"net/netip"
 	"slices"
 	"time"
 
+	"github.com/koltyakov/control/internal/gateway"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/protocol"
@@ -32,6 +36,7 @@ func (p *Peer) watchLAN() {
 	defer ticker.Stop()
 	var candidates []lanCandidate
 	var refreshed time.Time
+	directory := lanDirectory{}
 	attempted := map[string]time.Time{}
 	for {
 		p.mu.Lock()
@@ -47,7 +52,7 @@ func (p *Peer) watchLAN() {
 				candidates = nil
 			} else {
 				ctx, cancel := context.WithTimeout(p.ctx, 3*time.Second)
-				nodes, err := p.Nodes(ctx)
+				nodes, err := directory.poll(ctx, p)
 				cancel()
 				if err == nil {
 					candidates = lanCandidates(p.IdentityID(), local, nodes, time.Now())
@@ -81,6 +86,75 @@ func (p *Peer) watchLAN() {
 		case <-ticker.C:
 		}
 	}
+}
+
+// lanDirectory belongs to one watchLAN goroutine. Its decoded records are never
+// shared with Nodes, Lookup, or membership checks. Even a 304 must recompute
+// candidates so the fifteen-minute proof freshness window continues to age.
+type lanDirectory struct {
+	nodes      []model.Node
+	etag       string
+	userID     string
+	generation uint64
+}
+
+func (d *lanDirectory) poll(ctx context.Context, p *Peer) ([]model.Node, error) {
+	p.mu.Lock()
+	userID, generation := p.userID, p.directoryGeneration
+	p.mu.Unlock()
+	if d.userID != userID || d.generation != generation {
+		*d = lanDirectory{userID: userID, generation: generation}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, gateway.URL(p.cfg.Gateway, "/v1/nodes"), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+p.cfg.Token)
+	if d.etag != "" {
+		req.Header.Set("If-None-Match", d.etag)
+	}
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return nil, gatewayNetworkError(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotModified {
+		return nil, directoryStatusError("directory", resp)
+	}
+	var nodes []model.Node
+	if resp.StatusCode == http.StatusNotModified {
+		if d.etag == "" || resp.Header.Get("ETag") != d.etag {
+			return nil, errors.New("directory returned an unexpected validator")
+		}
+		nodes = d.nodes
+	} else {
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&nodes); err != nil {
+			return nil, err
+		}
+		for _, node := range nodes {
+			if userID == "" || node.UserID != userID {
+				return nil, errors.New("directory returned a node outside the authenticated fleet")
+			}
+		}
+		// Retain only LAN inputs after validating the entire response. Capability
+		// schemas and system metadata can dominate a fleet's directory size.
+		for i, node := range nodes {
+			nodes[i] = model.Node{
+				ID: node.ID, UserID: node.UserID, PublicKey: node.PublicKey,
+				Online: node.Online, LANDiscovery: node.LANDiscovery,
+				WakeInterfaces: node.WakeInterfaces, LANPeers: node.LANPeers,
+			}
+		}
+	}
+	p.mu.Lock()
+	current := userID == p.userID && generation == p.directoryGeneration
+	p.mu.Unlock()
+	if !current {
+		*d = lanDirectory{}
+		return nil, errors.New("directory changed during LAN refresh")
+	}
+	d.nodes, d.etag = nodes, resp.Header.Get("ETag")
+	return nodes, nil
 }
 
 func lanCandidates(id string, local []model.WakeInterface, nodes []model.Node, now time.Time) []lanCandidate {

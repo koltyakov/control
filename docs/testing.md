@@ -338,6 +338,34 @@ Linux legacy-startup tests accept the known service-wide vendor timeout-abort se
 
 ## Performance benchmarks
 
+`BenchmarkDirectoryPoll` compares ordinary directory responses with unchanged conditional requests for synthetic fleets whose nodes each advertise 24 capability schemas. On November 14, 2026, macOS arm64 and Apple M4 Pro, three 300 ms runs gave these approximate medians:
+
+| Nodes | Ordinary response | Unchanged conditional response |
+| --- | --- | --- |
+| 32 | 202 µs, 187 KB allocated | 0.47 µs, 1,008 bytes allocated |
+| 256 | 1.60 ms, 2.21 MB allocated | 0.44 µs, 1,008 bytes allocated |
+
+The fixture includes authentication, directory copying, JSON encoding and the recorder's response-body buffer, but not network I/O or directory publication. Changed directories still take the ordinary path. `BenchmarkDirectoryTelemetryPublication` separately compares full directory publication with telemetry-only publication; the latter allocates no storage and does not serialize or hash node metadata. That comparison is between two current paths, not a before/after production CPU measurement.
+
+`BenchmarkRelaySchedulerEmptyPushPop` and `BenchmarkRelaySchedulerQueuedPushPop` reuse 64 KiB packets to isolate scheduler bookkeeping. The previous alternating empty-queue path allocated 160 bytes and three objects per operation. The current empty-queue and queued paths allocate zero bytes after warm-up, with one or sixteen sessions. They do not measure protobuf payload allocation, encryption, network throughput or peak RSS. Ring storage remains bounded, with at most one small drained session retained per destination.
+
+```sh
+go test ./internal/gateway -run '^$' -bench '^Benchmark(DirectoryPoll|DirectoryTelemetryPublication|RelaySchedulerEmptyPushPop|RelaySchedulerQueuedPushPop)$' -benchmem -benchtime=300ms -count=3
+```
+
+`BenchmarkAppliedRolloutReconciliation` isolates the recurring completed-rollout work with 20 or 1,000 current nodes. It includes deployment snapshots, deferral reconciliation, peer snapshots and applied-node checks, but not sockets, telemetry collection, filesystem cleanup or the entire timer loop. On November 14, 2026, macOS arm64 and Apple M4 Pro, three 300 ms runs per variant compared the previous implementation through a temporary Go overlay with the current implementation:
+
+| Nodes | Allocated bytes before | Allocated bytes after | Median time before | Median time after |
+| --- | ---: | ---: | ---: | ---: |
+| 20 | 68,416 | 21,336 | 21.4 µs | 11.5 µs |
+| 1,000 | 3,194,009 | 997,697 | 1.23 ms | 0.86 ms |
+
+The change preallocates peer snapshots and skips scans of historical participants that cannot gain new deferrals outside installation. The one-second coordination interval and all update safety checks remain unchanged. These allocation measurements are per reconciliation, not retained heap or production CPU savings.
+
+```sh
+go test ./internal/gateway -run '^$' -bench '^BenchmarkAppliedRolloutReconciliation$' -benchmem -benchtime=300ms -count=3
+```
+
 `go test ./internal/peimage -run '^$' -bench '^BenchmarkGUIValidation$' -benchmem -benchtime=1x` compares the former whole-image Windows GUI startup validation with bounded streaming for a 38 MiB synthetic PE. On November 13, 2026, macOS arm64 and Apple M4 Pro, the former path allocated 167,083,832 bytes per validation versus 65,896 bytes for streaming. These are total allocations in one benchmark iteration, not peak RSS or a Windows memory measurement. The native Windows GUI fixture separately enforces a one-MiB allocation ceiling while verifying a real executable's complete source identity, and rejects a changed source. Streaming tests cover chunk-boundary Subsystem fields, changed bytes throughout the image, truncation, extra bytes and invalid headers.
 
 Gateway admission tests cover atomic global/account/class reservations, pre-upgrade handshake rejection and recovery, configurable positive limits, new-identity rate refusal before persistence, known-identity reconnects, and operator-only diagnostics. Packet-budget tests include shared-account and cross-account pressure, control headroom, spare data capacity, non-data and unknown protobuf bytes, queue rejection rollback, failed writes and concurrent disconnect cleanup. The failed-write test closes the WebSocket synchronously before writing; a canceled context alone can race with a ready write and is not a deterministic failure trigger. It checks that destination, account and global reservations remain held until the write and are released on failure. Existing relay tests retain ordering, offline barriers, fairness, overflow isolation and legal 4 MiB bulk-window coverage.

@@ -118,6 +118,52 @@ func TestDeferredPersistenceFailureStillBlocksRollout(t *testing.T) {
 	}
 }
 
+func TestSettledRolloutOnlyReconcilesExistingDeferrals(t *testing.T) {
+	for _, phase := range []string{"complete", "blocked", "staging", "error"} {
+		t.Run(phase, func(t *testing.T) {
+			g, d, info := deferralFixture(t)
+			if err := g.updates.SetPhase(d.ID, phase, nil); err != nil {
+				t.Fatal(err)
+			}
+			d = g.updates.Current()
+			now := time.Now()
+			current, err := g.reconcileDeferred(d, now)
+			if err != nil || current != d || len(current.Deferred) != 0 {
+				t.Fatal("settled rollout added a deferral or copied unchanged state", current, err)
+			}
+			if err := g.updates.SetDeferred(d.ID, []string{"offline"}); err != nil {
+				t.Fatal(err)
+			}
+			d = g.updates.Current()
+			current, err = g.reconcileDeferred(d, now)
+			if err != nil || current != d || !slices.Equal(current.Deferred, []string{"offline"}) {
+				t.Fatal("offline deferral was removed without confirmation", current, err)
+			}
+			g.peers["offline"] = &connection{}
+			for _, status := range []update.Status{
+				{ID: d.ID, Software: info, State: "applied", SeenAt: now.Add(-time.Minute)},
+				{ID: "old", Software: info, State: "applied", SeenAt: now},
+				{ID: d.ID, Software: info, State: "applied", Paused: true, SeenAt: now},
+			} {
+				g.updateStatus["offline"] = status
+				current, err = g.reconcileDeferred(d, now)
+				if err != nil || len(current.Deferred) != 1 {
+					t.Fatal("unconfirmed return erased settled deferral", status, current, err)
+				}
+			}
+			g.updateStatus["offline"] = update.Status{ID: d.ID, Software: info, State: "applied", SeenAt: now}
+			current, err = g.reconcileDeferred(d, now)
+			if err != nil || len(current.Deferred) != 0 {
+				t.Fatal("confirmed return did not clear settled deferral", current, err)
+			}
+			reloaded, err := update.OpenRepository(filepath.Join(filepath.Dir(g.path), "updates"))
+			if err != nil || len(reloaded.Current().Deferred) != 0 {
+				t.Fatal("settled deferral removal was not durable", err)
+			}
+		})
+	}
+}
+
 func TestRolloutCompletesWithDeferredNodesAndUpdatesThemOnReturn(t *testing.T) {
 	g, d, info := deferralFixture(t)
 	ctx, cancel := context.WithCancel(t.Context())

@@ -334,7 +334,24 @@ func (g *Gateway) auth(next http.HandlerFunc) http.HandlerFunc {
 
 func (g *Gateway) list(w http.ResponseWriter, r *http.Request) {
 	p := g.requestPrincipal(r)
-	nodes := g.directory(p.UserID)
+	// Revalidate even conditional requests. A retained validator is not authority.
+	if p.Role == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	nodes, etag, unchanged := g.conditionalDirectory(p.UserID, r.Header.Get("If-None-Match"))
+	// Console routes already set no-store; keep their stricter cache policy.
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "private, no-cache")
+	}
+	w.Header().Set("Vary", "Authorization, Cookie")
+	if etag != "" {
+		w.Header().Set("ETag", etag)
+	}
+	if unchanged {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(nodes)
 }

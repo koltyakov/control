@@ -105,16 +105,23 @@ func (c *connection) writePackets(ctx context.Context) {
 	}
 }
 
+// maxRetainedWriteBytes matches wsio's ordinary relay packet storage.
+const maxRetainedWriteBytes = 128 << 10
+
+// writePacket reuses ordinary marshal storage. Write completes synchronously,
+// so oversized storage is released here instead of waiting for the next packet.
 func (c *connection) writePacket(ctx context.Context, packet *protocol.Packet) error {
-	if cap(c.writeBuffer) > 128<<10 {
-		c.writeBuffer = nil
-	}
 	data, err := proto.MarshalOptions{}.MarshalAppend(c.writeBuffer[:0], packet)
 	if err != nil {
 		return err
 	}
-	c.writeBuffer = data
 	write, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	return c.ws.Write(write, websocket.MessageBinary, data)
+	err = c.ws.Write(write, websocket.MessageBinary, data)
+	if cap(data) <= maxRetainedWriteBytes {
+		c.writeBuffer = data
+	} else {
+		c.writeBuffer = nil
+	}
+	return err
 }

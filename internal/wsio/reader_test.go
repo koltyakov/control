@@ -37,7 +37,8 @@ func TestReaderReuseAndMessageLimit(t *testing.T) {
 				ws.SetReadLimit(1024)
 			}
 			var reader Reader
-			for _, want := range messages {
+			var ordinary []byte
+			for i, want := range messages {
 				kind, got, err := reader.Read(t.Context(), ws)
 				if limited {
 					if err == nil {
@@ -48,9 +49,18 @@ func TestReaderReuseAndMessageLimit(t *testing.T) {
 				if err != nil || kind != websocket.MessageBinary || !bytes.Equal(got, want) {
 					t.Fatalf("message length=%d, want=%d: %v", len(got), len(want), err)
 				}
-			}
-			if reader.buffer.Cap() > maxRetainedBytes {
-				t.Fatal("large signaling buffer retained after next message")
+				// Large storage must not stay retained while the next Read blocks.
+				if reader.buffer.Cap() > maxRetainedBytes {
+					t.Fatal("large signaling buffer retained before the next read")
+				}
+				switch i {
+				case 0:
+					ordinary = got
+				case 1:
+					if &got[0] != &ordinary[0] {
+						t.Fatal("ordinary relay storage not reused")
+					}
+				}
 			}
 		})
 	}

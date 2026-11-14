@@ -71,7 +71,7 @@ func (g *Gateway) receiveUpdateStatus(n model.Node, c *connection, data []byte) 
 		}
 	}
 	g.updateStatus[n.ID] = status
-	g.publishObservations(n.ID)
+	g.publishTelemetry(n.ID)
 	return true
 }
 
@@ -335,24 +335,26 @@ type rolloutPeer struct {
 func (g *Gateway) rolloutPeers(d *update.Deployment) []rolloutPeer {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	peers := []rolloutPeer{}
-	ids := map[string]bool{}
-	deferred := make(map[string]bool, len(d.Deferred))
-	for _, id := range d.Deferred {
-		deferred[id] = true
-	}
+	ids := make(map[string]bool, len(g.peers))
 	for id, c := range g.peers {
 		if !c.client {
 			ids[id] = true
 		}
 	}
 	if d.Phase == "installing" {
+		deferred := make(map[string]bool, len(d.Deferred))
+		for _, id := range d.Deferred {
+			deferred[id] = true
+		}
 		for _, id := range d.Participants {
 			if !deferred[id] {
 				ids[id] = true
 			}
 		}
 	}
+	// Each snapshot includes full node and update metadata. Growing this slice
+	// repeatedly copies and abandons much more storage than the ID index.
+	peers := make([]rolloutPeer, 0, len(ids))
 	for id := range ids {
 		if g.clientOwners[id] {
 			continue
@@ -367,14 +369,25 @@ func (g *Gateway) rolloutPeers(d *update.Deployment) []rolloutPeer {
 // Called under rolloutMu. Offline participants remain pending, never applied.
 // Live connections always join rolloutPeers, even while marked deferred.
 func (g *Gateway) reconcileDeferred(d *update.Deployment, now time.Time) (*update.Deployment, error) {
+	// Only an installing deployment can gain deferred participants. Other
+	// phases just reconcile existing deferrals when those nodes return.
+	if d.Phase != "installing" && len(d.Deferred) == 0 {
+		return d, nil
+	}
 	deferred := make(map[string]bool, len(d.Deferred))
-	tracked := make(map[string]bool, len(d.Participants)+len(d.Deferred))
+	count := len(d.Deferred)
+	if d.Phase == "installing" {
+		count += len(d.Participants)
+	}
+	tracked := make(map[string]bool, count)
 	for _, id := range d.Deferred {
 		deferred[id] = true
 		tracked[id] = true
 	}
-	for _, id := range d.Participants {
-		tracked[id] = true
+	if d.Phase == "installing" {
+		for _, id := range d.Participants {
+			tracked[id] = true
+		}
 	}
 	g.mu.Lock()
 	for id := range tracked {
@@ -502,13 +515,15 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 				return
 			}
 			peers := g.rolloutPeers(d)
-			retained := make(map[string]bool, len(peers))
-			for _, peer := range peers {
-				retained[peer.node.ID] = true
-			}
-			for key := range lastSent {
-				if !retained[key.id] {
-					delete(lastSent, key)
+			if len(lastSent) != 0 {
+				retained := make(map[string]bool, len(peers))
+				for _, peer := range peers {
+					retained[peer.node.ID] = true
+				}
+				for key := range lastSent {
+					if !retained[key.id] {
+						delete(lastSent, key)
+					}
 				}
 			}
 			if requestedRestart {

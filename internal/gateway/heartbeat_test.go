@@ -1,10 +1,12 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -126,5 +128,67 @@ func TestApplicationHeartbeatRetiresEndpointDespiteWebSocketPongs(t *testing.T) 
 	waitSessionClosed(t, g, id.ID)
 	if replacement := rawPeer(t, server.URL, admin.Key, "worker", user.ID, id); replacement == nil {
 		t.Fatal("stale identity blocked reconnection after heartbeat expiry")
+	}
+}
+
+func TestWriterReleasesOversizedMarshalStorageAfterWrite(t *testing.T) {
+	received := make(chan []byte, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = ws.CloseNow() }()
+		ws.SetReadLimit(1 << 20)
+		for {
+			_, data, err := ws.Read(r.Context())
+			if err != nil {
+				return
+			}
+			received <- data
+		}
+	}))
+	defer server.Close()
+	ws, _, err := websocket.Dial(t.Context(), "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ws.CloseNow() }()
+	c := &connection{ws: ws}
+	write := func(size int) {
+		t.Helper()
+		packet := &protocol.Packet{Kind: "data", From: "a", Session: "s", Data: bytes.Repeat([]byte{byte(size)}, size)}
+		if err := c.writePacket(t.Context(), packet); err != nil {
+			t.Fatal(err)
+		}
+		var got protocol.Packet
+		if err := proto.Unmarshal(<-received, &got); err != nil || !bytes.Equal(got.Data, packet.Data) {
+			t.Fatal("written packet corrupted", err)
+		}
+	}
+	write(64 << 10)
+	ordinary := c.writeBuffer
+	if cap(ordinary) == 0 || cap(ordinary) > maxRetainedWriteBytes {
+		t.Fatal("ordinary marshal storage not retained", cap(ordinary))
+	}
+	write(16)
+	if cap(c.writeBuffer) == 0 || &c.writeBuffer[:1][0] != &ordinary[:1][0] {
+		t.Fatal("ordinary marshal storage not reused")
+	}
+	write(512 << 10)
+	if cap(c.writeBuffer) > maxRetainedWriteBytes {
+		t.Fatal("oversized marshal storage retained after write completed", cap(c.writeBuffer))
+	}
+	write(16)
+	// A failed write must release oversized storage too. Closing the socket
+	// makes the outcome deterministic rather than racing cancellation.
+	if err := ws.CloseNow(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.writePacket(t.Context(), &protocol.Packet{Kind: "data", Data: make([]byte, 512<<10)}); err == nil {
+		t.Fatal("closed socket accepted a write")
+	}
+	if c.writeBuffer != nil {
+		t.Fatal("failed write retained oversized marshal storage")
 	}
 }

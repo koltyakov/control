@@ -61,6 +61,8 @@ A detected local network switch retires all old-network sessions, cancels setup,
 
 Setup cancellation does not cancel another waiter or close an established sibling lane. When the last setup waiter leaves, setup is cancelled. Peer shutdown closes channels, multiplexers, and streams and waits for owned setup and handler goroutines. Forwarding waits for both copy directions, uses reusable copy buffers, and aborts both sides on errors or cancellation. A graceful EOF preserves the response direction only when the destination supports it. Older raw peers and WebSocket clients retain full-close semantics.
 
+Gateway relay sessions use FIFO rings with at most 768 slots and no concatenated session-key allocation. Popped slots are cleared immediately. Each destination keeps at most one drained ring of eight slots or fewer for reuse; larger rings are released rather than pooled. WebSocket readers detach scratch storage above 128 KiB when returning it, and the gateway writer releases oversized marshal storage after the write completes or fails. Ordinary buffer reuse and all packet/byte limits remain unchanged. See [D144](decisions.md#d144-conditional-directory-reads-and-bounded-relay-reuse).
+
 Compatible peers trickle ICE through a negotiated gateway packet kind. SDP is sent immediately, candidate queues are bounded, and early candidates wait for remote SDP rather than being dropped. A failed WebRTC attempt shares 30 seconds of backoff across lanes. Subsequent relay operations can trigger a background direct probe without blocking those operations or replacing their existing streams. Successful replacements drain the old relay. See [ICE configuration and signaling](protocol.md#node-configuration).
 
 ## Upload local files

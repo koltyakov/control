@@ -42,6 +42,6 @@ func (g *Gateway) receiveHealth(n model.Node, c *connection, data []byte) bool {
 		return false
 	}
 	c.health, c.healthAt = &health, time.Now().UTC()
-	g.publishObservations(n.ID)
+	g.publishTelemetry(n.ID)
 	return true
 }
