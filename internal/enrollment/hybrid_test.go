@@ -146,6 +146,16 @@ func TestHybridBashReusesSystemBinary(t *testing.T) {
 			t.Run(platform+"/"+scenario, func(t *testing.T) {
 				t.Parallel()
 				root := t.TempDir()
+				stubs := filepath.Join(root, "stubs")
+				if err := os.MkdirAll(stubs, 0700); err != nil {
+					t.Fatal(err)
+				}
+				// Real sudo resolves an external command, not Bash's test builtin.
+				// A different program named test must never inspect privileged paths.
+				shadowTest := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FIXTURE_SHADOW_TEST\"\necho 'flag provided but not defined' >&2\nexit 99\n"
+				if err := os.WriteFile(filepath.Join(stubs, "test"), []byte(shadowTest), 0700); err != nil {
+					t.Fatal(err)
+				}
 				binary := `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$FIXTURE_CALLS"
@@ -209,7 +219,7 @@ fi
 uname() { if [ "$1" = -s ]; then echo %s; else echo arm64; fi; }
 sysctl() { echo 1; }
 id() { echo "${FIXTURE_ROOT:-1000}"; }
-sudo() { if [ "$1" = bash ]; then FIXTURE_ROOT=0 bash; else "$@"; fi; }
+sudo() { if [ "$1" = bash ]; then FIXTURE_ROOT=0 bash; else env "$@"; fi; }
 curl() {
   if [[ "$2" == *'/binary?arch=arm64' ]]; then
     printf '%%s\n' "$2" >> "$FIXTURE_DOWNLOADS"
@@ -222,8 +232,12 @@ export -f uname sysctl id sudo curl
 `, map[string]string{"linux": "Linux", "darwin": "Darwin"}[platform])
 				cmd := exec.CommandContext(t.Context(), "bash", "-c", harness+replace.Replace(userScript))
 				calls, downloads := filepath.Join(root, "calls"), filepath.Join(root, "downloads")
-				cmd.Env = append(os.Environ(), "CONTROL_HOME="+filepath.Join(root, "user"), "CONTROL_INSTALL_DIR="+filepath.Join(root, "user-bin"), "FIXTURE_CALLS="+calls, "FIXTURE_DOWNLOADS="+downloads, "FIXTURE_ASSET="+asset, "FIXTURE_SYSTEM_SCRIPT="+systemScriptPath, "FIXTURE_SCENARIO="+scenario)
+				shadowCalls := filepath.Join(root, "shadow-test")
+				cmd.Env = append(os.Environ(), "PATH="+stubs+string(os.PathListSeparator)+os.Getenv("PATH"), "CONTROL_HOME="+filepath.Join(root, "user"), "CONTROL_INSTALL_DIR="+filepath.Join(root, "user-bin"), "FIXTURE_CALLS="+calls, "FIXTURE_DOWNLOADS="+downloads, "FIXTURE_ASSET="+asset, "FIXTURE_SYSTEM_SCRIPT="+systemScriptPath, "FIXTURE_SCENARIO="+scenario, "FIXTURE_SHADOW_TEST="+shadowCalls)
 				output, runErr := cmd.CombinedOutput()
+				if got, err := os.ReadFile(shadowCalls); !os.IsNotExist(err) {
+					t.Fatalf("installer invoked a PATH-selected test command: %s %v\n%s", got, err, output)
+				}
 				switch scenario {
 				case "corrupt-download":
 					if runErr == nil || !strings.Contains(string(output), "Binary checksum mismatch") {
@@ -275,6 +289,14 @@ export -f uname sysctl id sudo curl
 					t.Fatalf("System installed before the User preflight: %s", gotCalls)
 				}
 				if scenario != "preflight-rejected" {
+					if scenario == "installed" || scenario == "different" {
+						if strings.Count(string(gotCalls), "--config "+systemHome+"/node.json service start") != 1 || strings.Contains(string(gotCalls), "--hybrid-system") {
+							t.Fatalf("installed companion must start without re-enrollment: %s", gotCalls)
+						}
+					}
+					if scenario == "pending" && strings.Count(string(gotCalls), "--config "+systemHome+"/node.json enroll --url https://gateway.example/install/"+SystemTicket("ticket")+" --service system --hybrid-system") != 1 {
+						t.Fatalf("pending companion must resume its enrollment once: %s", gotCalls)
+					}
 					gotBinary, err := os.ReadFile(filepath.Join(root, "user-bin", "control"))
 					if err != nil || string(gotBinary) != binary {
 						t.Fatalf("User binary does not match invitation: %v", err)

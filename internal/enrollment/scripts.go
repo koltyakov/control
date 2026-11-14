@@ -56,7 +56,7 @@ else
   system_bin='/Library/PrivilegedHelperTools/Control/{{.HybridID}}/control'
 fi
 system_installed=false
-if sudo test -x "$system_bin" && sudo test -f "$system_home/node.json"; then system_installed=true; fi
+if sudo /bin/test -x "$system_bin" && sudo /bin/test -f "$system_home/node.json"; then system_installed=true; fi
 service_mode=user
 {{end}}set --
 if [ -n "$service_mode" ]; then set -- --service "$service_mode"; fi
@@ -101,7 +101,7 @@ chmod 700 "$tmp/control"
 {{if eq .ServiceMode "hybrid"}}# Find User problems before any privileged change or consumed ticket.
 "$tmp/control" enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}} --preflight "$@"
 if [ "$system_installed" = true ]; then
-  if sudo test -f "$system_home/pending-enrollment.json"; then
+  if sudo /bin/test -f "$system_home/pending-enrollment.json"; then
     sudo env CONTROL_HOME="$system_home" CONTROL_INSTALL_DIR="$(dirname "$system_bin")" "$system_bin" --config "$system_home/node.json" enroll --url {{q .SystemLink}} --service system --hybrid-system
   else
     sudo "$system_bin" --config "$system_home/node.json" service start
