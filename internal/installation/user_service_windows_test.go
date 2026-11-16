@@ -73,22 +73,30 @@ func TestUserPowerShellOutput(t *testing.T) {
 
 func TestUserTaskLookup(t *testing.T) {
 	config := filepath.Join(t.TempDir(), "node.json")
+	cimError := func(id, category string) string {
+		return "$record = [System.Management.Automation.ErrorRecord]::new([InvalidOperationException]::new('fixture scheduler query failed'), " +
+			powershellLiteral(id) + ", [System.Management.Automation.ErrorCategory]::" + category + ", '\\'); $PSCmdlet.WriteError($record)"
+	}
 	for _, tc := range []struct {
 		name, lookup, want, failure string
 	}{
 		{"empty scheduler", "", "missing", ""},
+		{"Windows 10 empty root", cimError("CmdletizationQuery_NotFound_TaskPath", "ObjectNotFound"), "missing", ""},
 		{"unrelated task", "[PSCustomObject]@{ TaskPath = '\\'; TaskName = 'Other' }", "missing", ""},
 		{"other folder", "[PSCustomObject]@{ TaskPath = '\\Other\\'; TaskName = " + powershellLiteral(userTaskName(config)) + " }", "missing", ""},
 		{"owned task", "[PSCustomObject]@{ TaskPath = '\\'; TaskName = $name; Description = $description; Principal = [PSCustomObject]@{ UserId = $sid } }", "owned", ""},
 		{"foreign profile", "[PSCustomObject]@{ TaskPath = '\\'; TaskName = $name; Description = 'Other'; Principal = [PSCustomObject]@{ UserId = $sid } }", "", "belongs to another profile or user"},
 		{"foreign user", "[PSCustomObject]@{ TaskPath = '\\'; TaskName = $name; Description = $description; Principal = [PSCustomObject]@{ UserId = 'S-1-0-0' } }", "", "belongs to another profile or user"},
 		{"scheduler error", "throw 'Scheduler access denied'", "", "Scheduler access denied"},
+		{"access denied with matching identifier", cimError("CmdletizationQuery_NotFound_TaskPath", "PermissionDenied"), "", "fixture scheduler query failed"},
+		{"unrelated object not found", cimError("Other_NotFound_TaskPath", "ObjectNotFound"), "", "fixture scheduler query failed"},
+		{"missing named task is not empty root", cimError("CmdletizationQuery_NotFound_TaskName", "ObjectNotFound"), "", "fixture scheduler query failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			// Exercise PowerShell filtering and exit status without touching tasks.
-			script := "function Get-ScheduledTask { param($TaskPath, $ErrorAction) if ($TaskPath -cne '\\') { throw 'Access denied enumerating protected Windows task folders' }; " + tc.lookup + " }\n" + userTaskScript(config, "if ($task) { Write-Output 'owned' } else { Write-Output 'missing' }")
+			script := "function Get-ScheduledTask { [CmdletBinding()] param($TaskPath) if ($TaskPath -cne '\\') { throw 'Access denied enumerating protected Windows task folders' }; " + tc.lookup + " }\n" + userTaskScript(config, "if ($task) { Write-Output 'owned' } else { Write-Output 'missing' }")
 			output, err := userPowerShellOutput(ctx, script)
 			if tc.failure != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.failure) || strings.Contains(err.Error(), "CLIXML") {
@@ -103,16 +111,20 @@ func TestUserTaskLookup(t *testing.T) {
 
 func TestUserTaskRemovalValidatesOwnershipBeforeMutation(t *testing.T) {
 	config := filepath.Join(t.TempDir(), "node.json")
-	for _, scenario := range []string{"missing", "owned", "foreign-profile", "foreign-user", "lookup-denied", "removal-denied"} {
+	for _, scenario := range []string{"missing", "empty-root", "owned", "foreign-profile", "foreign-user", "lookup-denied", "removal-denied"} {
 		t.Run(scenario, func(t *testing.T) {
 			// Mock task enumeration and removal. Never mutate the real scheduler,
 			// run a task action, change ACLs, or require an elevated test runner.
 			script := `$scenario = ` + powershellLiteral(scenario) + `
 $script:removals = 0
 function Get-ScheduledTask {
-  param($TaskPath, $ErrorAction)
+  [CmdletBinding()] param($TaskPath)
   if ($TaskPath -cne '\') { throw 'Unexpected task folder' }
   if ($scenario -eq 'lookup-denied') { throw 'fixture lookup denied' }
+  if ($scenario -eq 'empty-root') {
+    $record = [System.Management.Automation.ErrorRecord]::new([InvalidOperationException]::new('No MSFT_ScheduledTask objects found with property TaskPath equal to root'), 'CmdletizationQuery_NotFound_TaskPath', [System.Management.Automation.ErrorCategory]::ObjectNotFound, '\')
+    $PSCmdlet.WriteError($record)
+  }
   if ($scenario -eq 'missing') { return }
   $owner = if ($scenario -eq 'foreign-user') { 'S-1-0-0' } else { $sid }
   $profile = if ($scenario -eq 'foreign-profile') { 'Another profile' } else { $description }
@@ -152,11 +164,17 @@ func TestMissingUserTaskNoOp(t *testing.T) {
 		"if ($task) { Unregister-ScheduledTask -InputObject $task -Confirm:$false }",
 		"if ($task) { Stop-ScheduledTask -InputObject $task }",
 	} {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		output, err := userPowerShellOutput(ctx, "function Get-ScheduledTask { param($TaskPath, $ErrorAction) if ($TaskPath -cne '\\') { throw 'Access denied enumerating protected Windows task folders' } }\n"+userTaskScript(config, operation))
-		cancel()
-		if err != nil || output != "" {
-			t.Fatalf("missing task must be a successful no-op: %q, %v", output, err)
+		for _, emptyRoot := range []bool{false, true} {
+			lookup := ""
+			if emptyRoot {
+				lookup = "$record = [System.Management.Automation.ErrorRecord]::new([InvalidOperationException]::new('Empty root task folder'), 'CmdletizationQuery_NotFound_TaskPath', [System.Management.Automation.ErrorCategory]::ObjectNotFound, '\\'); $PSCmdlet.WriteError($record)"
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			output, err := userPowerShellOutput(ctx, "function Get-ScheduledTask { [CmdletBinding()] param($TaskPath) if ($TaskPath -cne '\\') { throw 'Access denied enumerating protected Windows task folders' }; "+lookup+" }\n"+userTaskScript(config, operation))
+			cancel()
+			if err != nil || output != "" {
+				t.Fatalf("missing task must be a successful no-op, empty root=%t: %q, %v", emptyRoot, output, err)
+			}
 		}
 	}
 }
@@ -170,6 +188,26 @@ func TestMissingUserTaskInScheduler(t *testing.T) {
 	output, err := userPowerShellOutput(ctx, userTaskScript(config, "if ($task) { throw 'unexpected login task' }"))
 	if err != nil || output != "" {
 		t.Fatalf("missing login task must be a successful no-op: %q, %v", output, err)
+	}
+}
+
+func TestScheduledTaskMissingPathErrorIdentity(t *testing.T) {
+	// A nonexistent folder produces the same CDXML query absence as an empty
+	// root folder on Windows 10, without removing tasks or changing the scheduler.
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	script := `
+$path = '\ControlMissingFixture-' + [Guid]::NewGuid().ToString('N') + '\'
+try {
+  Get-ScheduledTask -TaskPath $path -ErrorAction Stop | Out-Null
+  throw 'Expected a missing task-folder query'
+} catch {
+  if ($_.FullyQualifiedErrorId -ne 'CmdletizationQuery_NotFound_TaskPath,Get-ScheduledTask' -or $_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::ObjectNotFound) { throw }
+  Write-Output 'missing'
+}
+`
+	if output, err := userPowerShellOutput(ctx, script); err != nil || output != "missing" {
+		t.Fatalf("unexpected native scheduler absence classification: %q, %v", output, err)
 	}
 }
 

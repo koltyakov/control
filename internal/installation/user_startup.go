@@ -96,11 +96,17 @@ func userTaskScript(config, operation string) string {
 $name = %s
 $description = %s
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-# A missing named task is a CIM error even with SilentlyContinue, and can leave
-# powershell.exe exiting with status 1. Filter a successful enumeration instead.
+# A missing named task is a CIM error even with SilentlyContinue. Enumerate the
+# root folder instead, but Windows 10 also reports a not-found CIM error when
+# no root tasks are visible to this account. Only that exact absence succeeds.
 # Control tasks live in the root folder. Do not enumerate protected Windows
 # subfolders that the limited installing user may not be allowed to inspect.
-$task = Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object { $_.TaskPath -eq '\' -and $_.TaskName -eq $name }
+try {
+  $task = Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object { $_.TaskPath -eq '\' -and $_.TaskName -eq $name }
+} catch {
+  if ($_.FullyQualifiedErrorId -ne 'CmdletizationQuery_NotFound_TaskPath,Get-ScheduledTask' -or $_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::ObjectNotFound) { throw }
+  $task = $null
+}
 if ($task) {
   $taskSid = $task.Principal.UserId
   if ($taskSid -notlike 'S-1-*') { $taskSid = (New-Object Security.Principal.NTAccount($taskSid)).Translate([Security.Principal.SecurityIdentifier]).Value }

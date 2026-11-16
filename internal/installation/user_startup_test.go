@@ -143,6 +143,15 @@ func TestUserTaskOwnershipAndProfileScope(t *testing.T) {
 	if strings.Contains(script, "-ErrorAction SilentlyContinue") {
 		t.Fatal("missing tasks must not leave a suppressed CIM error")
 	}
+	for _, want := range []string{
+		"$_.FullyQualifiedErrorId -ne 'CmdletizationQuery_NotFound_TaskPath,Get-ScheduledTask'",
+		"$_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::ObjectNotFound) { throw }",
+		"$task = $null",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("empty-root handling must distinguish absence from lookup failure: missing %q", want)
+		}
+	}
 }
 
 func TestUserTaskRunsAtLoginWithoutElevationOrPassword(t *testing.T) {
