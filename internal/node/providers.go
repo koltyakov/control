@@ -37,7 +37,7 @@ func (n *Node) registerProviders() error {
 	object := map[string]any{"type": "object"}
 	builtins := []provider{
 		{model.Capability{Name: "network.wake", Description: "Send Wake-on-LAN magic packets to an offline registered machine using an automatically verified LAN relationship and live interfaces. Success means sent, not awake. Never retries.", InputSchema: schema(map[string]any{"target": text}, "target")}, n.wake},
-		{model.Capability{Name: "exec.run", Description: "Run an executable with arguments and environment. Ordinary descendants are terminated before completion; use an OS service manager for persistent services. A relative dir resolves against the invocation workspace, workDir/tasks/ID for a tracked task, not the files.* workDir root. An absolute dir is used unchanged. Declared task outputs still resolve against the original task workspace. Use a task for long-running work.", InputSchema: schema(map[string]any{"command": text, "args": map[string]any{"type": "array", "items": text}, "env": object, "dir": map[string]any{"type": "string", "description": "Absolute working directory or path relative to the invocation workspace; tracked tasks use workDir/tasks/ID. Unlike files.* paths, this is not relative to workDir."}, "stdin": text}, "command")}, n.execRun},
+		{model.Capability{Name: "exec.run", Description: "Run an executable with arguments and environment. envSecrets maps environment variable names to worker-local secret names; stdinSecret supplies one secret as exact stdin bytes instead of stdin. References resolve at execution, never into task specs or argv. Secret-bearing output and errors are masked; logs are delayed until complete output can be masked. Files and arbitrary transformations are not masked. Ordinary descendants are terminated before completion; use an OS service manager for persistent services. A relative dir resolves against the invocation workspace, workDir/tasks/ID for a tracked task, not the files.* workDir root. An absolute dir is used unchanged. Declared task outputs still resolve against the original task workspace. Use a task for long-running work.", InputSchema: schema(map[string]any{"command": text, "args": map[string]any{"type": "array", "items": text}, "env": object, "envSecrets": map[string]any{"type": "object", "maxProperties": 32, "propertyNames": map[string]any{"pattern": "^[a-zA-Z_][a-zA-Z0-9_]{0,127}$"}, "additionalProperties": map[string]any{"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"}, "description": "Environment variable to worker-local secret name. Names must be unique and cannot overlap env, ignoring case. Overrides inherited environment only for this invocation."}, "dir": map[string]any{"type": "string", "description": "Absolute working directory or path relative to the invocation workspace; tracked tasks use workDir/tasks/ID. Unlike files.* paths, this is not relative to workDir."}, "stdin": text, "stdinSecret": map[string]any{"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$", "description": "Worker-local secret supplying exact stdin bytes, without an added newline. Mutually exclusive with stdin, including an empty stdin."}}, "command")}, n.execRun},
 		{model.Capability{Name: "agent.run", Description: "Run a configured AI CLI with a prompt on stdin; collect its output and terminate ordinary descendants before completion.", InputSchema: schema(map[string]any{"agent": text, "prompt": text}, "agent", "prompt")}, n.agentRun},
 		{model.Capability{Name: "http.request", Description: "Make an HTTP request using this machine's network and DNS. headerSecrets maps header names to {secret, prefix}; references resolve only on this worker. Secret-bearing requests never follow redirects. Returned text masks configured secret values.", InputSchema: schema(map[string]any{"url": text, "method": text, "headers": object, "headerSecrets": map[string]any{"type": "object", "maxProperties": 32, "additionalProperties": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"secret"}, "properties": map[string]any{"secret": map[string]any{"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"}, "prefix": text}}}, "body": text}, "url")}, n.httpRequest},
 		{model.Capability{Name: "files.list", Description: "List a directory relative to the configured filesystem root. Rejects non-directory targets, including special files.", InputSchema: schema(map[string]any{"path": text})}, n.filesList},
@@ -148,17 +148,6 @@ func runCommand(ctx context.Context, cfg Command, e Execution, input string) (co
 		return result, fmt.Errorf("execute %s: %w", cfg.Command, err)
 	}
 	return result, nil
-}
-
-func (n *Node) execRun(ctx context.Context, args json.RawMessage, e Execution) (any, error) {
-	var input struct {
-		Command
-		Stdin string `json:"stdin"`
-	}
-	if err := json.Unmarshal(args, &input); err != nil {
-		return nil, err
-	}
-	return runCommand(ctx, input.Command, e, input.Stdin)
 }
 
 func (n *Node) agentRun(ctx context.Context, args json.RawMessage, e Execution) (any, error) {

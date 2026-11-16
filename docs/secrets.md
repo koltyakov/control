@@ -2,7 +2,7 @@
 
 [README](../README.md) · [Protocol](protocol.md) · [Native desktop](desktop.md) · [Installation](installation.md)
 
-Secrets let an orchestrator request credential use without putting the credential value in prompts, tool arguments, or task specifications. The worker resolves a name immediately before GUI input or an HTTP request. Control has no secret-value read command, RPC method, MCP tool, or resource. Values stay in the worker's local store. Fleet owners can manage them locally, through encrypted CLI writes, or through the web console. The gateway relays ciphertext without storing values or synchronizing them between nodes.
+Secrets let an orchestrator request credential use without putting the credential value in prompts, tool arguments, or task specifications. The worker resolves a name immediately before command execution, GUI input or an HTTP request. Control has no secret-value read command, RPC method, MCP tool, or resource. Values are stored only on the worker and supplied to the requested application. Fleet owners can manage them locally, through encrypted CLI writes, or through the web console. The gateway relays ciphertext without storing values or synchronizing them between nodes.
 
 ## Enter credentials outside chat
 
@@ -72,7 +72,47 @@ For an [agent-desktop workflow](desktop.md#use-agent-desktop-on-a-worker), use t
 
 Native status, snapshots, action results, and error envelopes mask currently configured values, even on later calls without a `secret` input. Raw native-helper logs are always suppressed, successful status omits private state metadata, and native state paths are masked. Persisted task arguments remain reference-only. The native helper has no screenshot, clipboard, tracing, or headed-input operations. Native refmaps can contain private observed text and live outside `workDir`; protect that state and its backups.
 
-Ordinary agent-desktop CLI text commands do not understand Control secret names, and `exec.run` does not mask output. If protected input is not configured or headless input is unsupported, ask for manual login or approved setup. Never retrieve stored values through a shell, environment, clipboard, script, or filesystem call to bridge that gap. Use masked observations during credential entry and verify non-sensitive application state. Masking remains best-effort, not isolation from an unrestricted process. The removed RPA adapter has no automatic fallback; see [migration differences](desktop.md#migrate-from-rpa).
+Ordinary agent-desktop CLI text commands do not understand Control secret names. `exec.run` without secret references does not mask output or share desktop locking. If protected GUI input is not configured or headless input is unsupported, ask for manual login or approved setup. Never retrieve stored values through a shell, environment, clipboard, script, or filesystem call to bridge that gap. The command injection below is for applications and SDKs that consume credentials directly, not a substitute for the native GUI input path. Use masked observations during credential entry and verify non-sensitive application state. Masking remains best-effort, not isolation from an unrestricted process. The removed RPA adapter has no automatic fallback; see [migration differences](desktop.md#migrate-from-rpa).
+
+## Authenticate commands and SDKs by reference
+
+`exec.run` supports the same pattern as job runners that inject secrets into an application's environment. Map the environment variable the application expects to a worker-local secret name:
+
+```json
+{
+  "command": "python3",
+  "args": ["approved-domain-audit.py"],
+  "env": { "DOMAIN_USER": "ARVO\\andrew.koltyakov" },
+  "envSecrets": { "DOMAIN_PASSWORD": "domain.admin.password" }
+}
+```
+
+The approved program reads `DOMAIN_PASSWORD` from its own process environment and passes it to its LDAP/RPC client. It must not print the value, put it in a subprocess argument, or save it to a file. This removes the need to re-enter a stored password over SSH. It does not install an audit program or authorize new domain operations.
+
+Cloud CLIs and SDKs work the same way, using their documented environment variables:
+
+```json
+{
+  "command": "aws",
+  "args": ["sts", "get-caller-identity"],
+  "envSecrets": {
+    "AWS_ACCESS_KEY_ID": "aws.access-key-id",
+    "AWS_SECRET_ACCESS_KEY": "aws.secret-access-key"
+  }
+}
+```
+
+For Azure service-principal SDK authentication, map `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_CLIENT_SECRET` to the corresponding stored names. Control does not create cloud identities, grant permissions or choose an authentication flow.
+
+If an installed command explicitly supports a password on stdin, use `"stdinSecret": "domain.admin.password"` instead. This sends the exact stored UTF-8 bytes through the command's stdin pipe, without adding a newline. `stdinSecret` and literal `stdin` are mutually exclusive, including an empty `stdin`. Environment references can accompany ordinary non-secret stdin or `stdinSecret`. There is no argv substitution, template expansion, temporary credential file or secret-value read operation.
+
+Pass these objects through `control call WORKER exec.run`, MCP `control_call` with method `exec.run`, or the `args` of a tracked `exec.run` task. Use explicit task IDs for operations needing reconciliation, and keep `leaseId` when leased. Check the worker's advertised `exec.run` schema for `envSecrets` and `stdinSecret` before use; older workers ignore unsupported JSON fields and must be upgraded first.
+
+At most 32 environment references are allowed. Variable names match `[A-Za-z_][A-Za-z0-9_]{0,127}` and must be unique ignoring case on every OS. A variable cannot also appear in literal `env`, ignoring case. References override inherited variables for this invocation only, not the node's environment or unrelated work. Invalid or missing references fail before launching the command. Values resolve after queueing, when execution starts; task specifications, delegation checks and idempotent comparisons retain only names.
+
+For commands with references, Control captures each output stream up to 2 MiB without publishing raw chunks. Complete UTF-8 stdout, stderr and errors mask all secrets from the invocation's snapshot, including common encoded forms and decoded JSON strings. Sanitized stdout and stderr are then written to task logs in that order, only after the command ends. Live log following therefore has no output until completion. Oversized or non-UTF-8 output is suppressed in both streams and fails execution, even if the program exited successfully. This failure may follow completed effects and never authorizes replay. Commands without references keep their existing raw output and live-log behavior.
+
+Injected environment values are visible to the program, its descendants, and other processes or administrators with sufficient OS access. Stdin recipients can also retain or expose input. Do not dump environments, enable credential-bearing debug traces, publish credential files or pass values onward in argv. Files, artifacts, arbitrary encodings, subprocess-managed logs and later calls without references are not scrubbed. Prefer stdin when the application supports it and the environment's wider visibility is unnecessary.
 
 ## Authenticate HTTP requests by reference
 
@@ -91,6 +131,6 @@ Control masks configured secret values in response headers, response body bytes 
 
 ## What this protects
 
-This prevents accidental exposure through the supported credential-entry operations. It is not protection against an AI or application trying to extract a credential. Existing fleet membership, capability access rules, task ownership, leases, and maintenance admission still apply. Permission to invoke `desktop.run` or `http.request` includes permission to use the worker's stored secrets through that capability.
+This prevents accidental exposure through the supported credential-use operations. It is not protection against an AI or application trying to extract a credential. Existing fleet membership, capability access rules, task ownership, leases, and maintenance admission still apply. Permission to invoke `exec.run`, `desktop.run` or `http.request` includes permission to use the worker's stored secrets through that capability. Command injection adds no secret-management or peer authority.
 
 Unrestricted commands, filesystem access outside the filesystem API, custom helpers, malicious HTTP destinations, screenshots, application-managed files, and arbitrary value transformations can expose credentials. Masking covers configured values from the invocation's snapshot, not historical values deleted or rotated before a later inspection. Existing transcripts and retained outputs are not scrubbed retroactively. Do not use these secrets for gateway administration keys or assume they create an execution sandbox.

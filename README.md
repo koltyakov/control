@@ -14,6 +14,7 @@ Orchestrators coordinate work; worker nodes execute it and exchange files direct
 - Direct WebRTC connections with WebSocket relay fallback and mutually authenticated TLS on both paths.
 - Durable tasks with idempotent submission, cancellation, streamed logs, and restart reconciliation.
 - Commands, scripts, AI CLIs, MCP servers, and opt-in [full agent-desktop control](docs/desktop.md) with protected worker-local secret-reference input.
+- [Worker-local command secrets](docs/secrets.md#authenticate-commands-and-sdks-by-reference) injected by name into application/SDK environments or stdin, with masked text results and logs.
 - Opt-in [agent-browser automation and remote browser viewing](docs/browser.md), with a worker's headless Chrome dashboard forwarded to a local browser.
 - SHA-256 artifacts, resumable downloads, and direct worker-to-worker delivery.
 - Streaming local-to-worker uploads with verified resume and atomic no-overwrite publication.

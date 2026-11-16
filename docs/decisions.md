@@ -394,6 +394,8 @@ GUI batches are not atomic transactions. Earlier actions and even a failed actio
 
 ## D041: Worker-local secret references for credential entry
 
+The GUI/HTTP-only resolution restriction is superseded by [D145](#d145-worker-local-command-secret-injection), adding invocation-local command environment and stdin references without value reads.
+
 The RPA `setValue`/`type` path is removed by [D126](#d126-retire-the-rpa-adapter-in-favor-of-agent-desktop). Native desktop value setting and HTTP references remain supported.
 
 The local-only management restriction is superseded by [D116](#d116-encrypted-owner-managed-worker-secrets). Value-read prohibitions, local storage and reference-only execution remain unchanged.
@@ -1267,3 +1269,13 @@ Give each committed fleet directory an opaque ETag. Compare serialized node dige
 Only the node's LAN watcher retains a conditional discovery snapshot, projected to the fields LAN discovery uses after validating every record's fleet. It revalidates every ten seconds, clears its snapshot when the fleet or directory generation changes, and recomputes candidates after 304 so proof expiry is unchanged. General directory reads, lookup/membership checks and execution authority do not consume this snapshot. Old gateways may continue returning full arrays without validators.
 
 Use comparable relay-session keys and FIFO rings that grow only to the existing 768-packet session bound. Keep at most one drained ring of eight slots or fewer per destination, with no packet references or identity key retained in that spare. Release larger drained rings. Preserve D077/D101's packet/byte admission, fairness, offline barriers and write-lifetime accounting. Ordinary WebSocket scratch buffers still reuse up to 128 KiB; readers detach larger storage on return, and the gateway writer releases oversized marshal storage after synchronous write completion, including failure. These changes reduce allocation churn without promising lower idle RSS or different bandwidth guarantees.
+
+## D145: Worker-local command secret injection
+
+Extend `exec.run` with `envSecrets`, mapping up to 32 portable environment variable names to local secret names, and `stdinSecret`, supplying one secret's exact bytes instead of literal stdin. LDAP/RPC programs and cloud SDKs can consume stored credentials without returning their values to an orchestrator or requiring another interactive password entry. Validate references before launch and resolve from one snapshot at execution, after queueing. Never mutate persisted task arguments, delegation instructions or idempotency comparisons. No argv substitution, temporary credential files or value-read API is added.
+
+Keep resolution in the worker provider and reuse command process ownership, cancellation, admission, leases, task ownership and authorization. Environment injection overrides inherited values only for that invocation. Reject literal/reference overlaps and case-folded duplicate variable names on every OS. Programs and their descendants receive plaintext through the selected process channel; this is ordinary application credential use, not isolation from that program or the OS account.
+
+Capture secret-bearing stdout/stderr completely within the existing 2 MiB per-stream bound, without raw task logging. Mask all snapshot values and common encodings before returning results, errors or completion-delayed logs. Decode JSON strings before masking when the stream is JSON. Suppress both streams and report failure for truncated or non-UTF-8 output rather than leaking a boundary fragment. Such failure cannot undo effects or authorize replay. Commands without references retain their existing live raw logs. Files, artifacts, arbitrary transformations and application-managed logs remain outside text masking.
+
+This supersedes only D041's GUI/HTTP-only resolution restriction. Secret administration remains a separate owner-management operation; command use confers no management or peer authority. Callers must discover the added schema fields and upgrade older workers before use, since old receivers ignore unknown fields. See [command secrets](secrets.md#authenticate-commands-and-sdks-by-reference).
