@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/buildinfo"
+	"github.com/koltyakov/control/internal/gatewayroute"
 	"github.com/koltyakov/control/internal/testutil"
 )
 
@@ -387,7 +388,7 @@ func TestMachineCacheProcessHelper(t *testing.T) {
 	}
 	fmt.Println("machine-cache-ready")
 	if err := downloadCached(t.Context(), p.Cache, p.Path, p.Asset, func() error {
-		return DownloadPreferred(t.Context(), "", "v1", p.URL, "", p.Path, p.Asset)
+		return DownloadPreferred(t.Context(), gatewayroute.Route{}, "", "v1", p.URL, "", p.Path, p.Asset)
 	}); err != nil {
 		t.Fatal(err)
 	}

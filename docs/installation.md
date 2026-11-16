@@ -191,6 +191,18 @@ For an explicitly pinned `OS/ARCH` invitation, the gateway can serve its own mat
 
 Set `CONTROL_PUBLIC_URL` on the gateway if installation links must use a different public address, such as a reverse-proxy URL. Otherwise, links use the gateway address supplied by the host. Use HTTPS for a public gateway. Scripts contain neither the superuser key nor a shared pool token.
 
+### Install through a worker proxy
+
+When the target cannot reach the gateway, select a ready worker that advertises a separately managed CONNECT proxy the target can reach:
+
+```sh
+control machines proxies
+control machines add render-01 --platform windows --via office-bridge
+control machines add render-01 --platform linux --via office-bridge --proxy-url http://10.20.0.5:3128
+```
+
+The dashboard and web console offer the same **Connection → Through worker** step. The printed command fetches the gateway's HTTPS URL through that endpoint, and every later installer stage, enrollment request, and the installed node's gateway traffic uses it explicitly. The route is saved in the profile as `gatewayProxy`. Proxied invitations require an HTTPS gateway and compatible installers. See [install through a worker proxy](gateway-proxy.md) for advertising endpoints, readiness, recovery, and rollout.
+
 ### Choose a startup context
 
 The dashboard wizard defaults to User context. User, System, and Hybrid are available through the CLI and web console too:

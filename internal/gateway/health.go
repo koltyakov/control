@@ -25,6 +25,10 @@ func (g *Gateway) receiveHealth(n model.Node, c *connection, data []byte) bool {
 	if decoder.Decode(&health) != nil || decoder.Decode(new(any)) != io.EOF || !health.Valid() || health.System.OS != n.OS || health.System.Arch != arch || len(health.System.Disks) > 2 {
 		return false
 	}
+	if !model.ValidProxyReadiness(health.Proxies) {
+		return false
+	}
+	health.Proxies = advertisedReadiness(n, health.Proxies)
 	if cpu := health.System.CPUUsagePercent; cpu != nil && (*cpu < 0 || *cpu > 100) {
 		return false
 	}

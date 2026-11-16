@@ -191,7 +191,7 @@ func (p *Peer) placementHealth(ctx context.Context) map[string]model.NodeActivit
 		return nil
 	}
 	req.Header.Set("Authorization", "Bearer "+p.cfg.Token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := p.cfg.Route.Do(req)
 	if err != nil {
 		return nil
 	}

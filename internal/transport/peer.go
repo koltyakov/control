@@ -24,6 +24,7 @@ import (
 	"github.com/hashicorp/yamux"
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/gateway"
+	"github.com/koltyakov/control/internal/gatewayroute"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/protocol"
@@ -44,6 +45,9 @@ type Config struct {
 	ICEServers        []webrtc.ICEServer
 	DirectTimeout     time.Duration
 	RequireDelegation bool
+	// Route carries every gateway request: authentication, WebSocket,
+	// directory, policy, and placement reads. The zero value is direct.
+	Route gatewayroute.Route
 }
 
 type link struct {
@@ -245,7 +249,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+p.cfg.Token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := p.cfg.Route.Do(req)
 	if err != nil {
 		return nil, gatewayNetworkError(err)
 	}
@@ -339,7 +343,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		u = gateway.URL(p.cfg.Gateway, "/v1/client/connect")
 	}
 	u = strings.Replace(strings.Replace(u, "https://", "wss://", 1), "http://", "ws://", 1)
-	ws, response, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + p.cfg.Token}}})
+	ws, response, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPClient: p.cfg.Route.Client(0, true), HTTPHeader: http.Header{"Authorization": {"Bearer " + p.cfg.Token}}})
 	if err != nil {
 		if response != nil && response.StatusCode != http.StatusSwitchingProtocols {
 			return nil, gatewayResponseError(response.StatusCode, "connect gateway")
@@ -369,6 +373,8 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 			hello.Node.Software.Runtime = ""
 			hello.Node.Software.GatewayProtocol = 0
 			hello.Node.Software.NodeGatewayMin, hello.Node.Software.NodeGatewayMax = 0, 0
+			// Legacy gateways re-encode known fields only; never sign this one.
+			hello.Node.ProxyEndpoints = nil
 		}
 		hello.Signature = ed25519.Sign(p.cfg.Identity.Private, hello.Message(challenge))
 		if p.cfg.ClientOwner != nil {
@@ -979,7 +985,7 @@ func (p *Peer) Nodes(ctx context.Context) ([]model.Node, error) {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+p.cfg.Token)
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	resp, err := p.cfg.Route.Client(15*time.Second, true).Do(req)
 	if err != nil {
 		return nil, gatewayNetworkError(err)
 	}
@@ -1032,7 +1038,7 @@ func (p *Peer) lookup(ctx context.Context, name string, clientSessions bool, use
 			return model.Node{}, err
 		}
 		req.Header.Set("Authorization", "Bearer "+p.cfg.Token)
-		resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+		resp, err := p.cfg.Route.Client(15*time.Second, true).Do(req)
 		if err != nil {
 			return model.Node{}, gatewayNetworkError(err)
 		}

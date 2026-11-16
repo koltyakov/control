@@ -132,7 +132,7 @@ func hybridTokenValue(token windows.Token, class uint32) (uint32, error) {
 // RunHybridUser starts only the fixed enrollment helper, using the verified,
 // read-only staging executable and a validated same-user desktop parent. It
 // never runs a per-user installed executable with its own elevated token.
-func RunHybridUser(ctx context.Context, config, link string, preflight, autoName bool) error {
+func RunHybridUser(ctx context.Context, config, link, gatewayProxy string, preflight, autoName bool) error {
 	binary, err := os.Executable()
 	if err != nil {
 		return err
@@ -146,6 +146,9 @@ func RunHybridUser(ctx context.Context, config, link string, preflight, autoName
 	}
 	defer func() { _ = windows.CloseHandle(parent) }()
 	args := []string{"__hybrid-user", "--limited", "--config", config, "--url", link}
+	if gatewayProxy != "" {
+		args = append(args, "--gateway-proxy", gatewayProxy)
+	}
 	if preflight {
 		args = append(args, "--preflight")
 	}

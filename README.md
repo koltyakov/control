@@ -180,7 +180,7 @@ Managed rollouts update idle nodes independently when their verified executables
 
 - [Linux VPS gateway](docs/gateway.md), [gateway behind expose](docs/expose.md), [installation and enrollment](docs/installation.md), [users and private fleets](docs/users.md), [authority and delegation](docs/delegation.md).
 - [Configuration and protocol](docs/protocol.md), [web console](docs/console.md), [dashboard and metrics](docs/dashboard.md), [managed updates](docs/updates.md).
-- [TCP tunnels](docs/tunnels.md), [connection tests](docs/connections.md), [fleet streaming](docs/streaming.md).
+- [TCP tunnels](docs/tunnels.md), [connection tests](docs/connections.md), [fleet streaming](docs/streaming.md), [installing through a worker proxy](docs/gateway-proxy.md).
 - [Streaming file uploads](docs/uploads.md), including local CLI/MCP sources and interrupted-transfer recovery.
 - [Native agent-desktop and GUI workflows](docs/desktop.md), [RPA migration differences](docs/desktop.md#migrate-from-rpa), [worker-local secrets](docs/secrets.md), [clipboard pastes](docs/clipboard.md), [runbooks](docs/runbooks.md).
 - [agent-browser and remote browser viewing](docs/browser.md), including manual login/2FA and browser-session cleanup.

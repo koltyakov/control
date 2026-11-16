@@ -6,18 +6,42 @@ import (
 	"text/template"
 )
 
-func InstallCommand(link string, windows bool, mode string) string {
+// InstallCommand fetches the gateway's HTTPS installation URL, through the
+// selected proxy endpoint when one is given. The proxy is explicit, so inherited
+// NO_PROXY settings cannot bypass it and no environment must survive elevation.
+func InstallCommand(link string, windows bool, mode, proxy string) string {
 	if windows {
 		// Invoke-RestMethod returns a plain-text response as one string, preserving
 		// multi-line scripts when piped to Invoke-Expression.
 		script := "irm " + PowerShellQuote(link) + "|iex"
+		if proxy != "" {
+			script = "irm -Proxy " + PowerShellQuote(proxy) + " -MaximumRedirection 0 -ErrorAction Stop " + PowerShellQuote(link) + "|iex"
+		}
 		// Run in the caller's PowerShell, including its existing elevation.
 		return script
 	}
-	if mode == "system" {
-		return "curl -fsSL " + ShellQuote(link) + " | sudo bash"
+	fetch := "curl -fsSL " + ShellQuote(link)
+	if proxy != "" {
+		fetch = "curl -fsSL" + curlProxy(proxy) + " " + ShellQuote(link)
 	}
-	return "curl -fsSL " + ShellQuote(link) + " | bash"
+	if mode == "system" {
+		return fetch + " | sudo bash"
+	}
+	return fetch + " | bash"
+}
+
+// curlProxy pins curl to the proxy; an empty --noproxy overrides NO_PROXY.
+func curlProxy(proxy string) string {
+	if proxy == "" {
+		return ""
+	}
+	return " --proxy " + ShellQuote(proxy) + " --noproxy '' --proto '=https' --proto-redir '=https'"
+}
+
+// InstallerFeatures is printed by the hidden installer-features command. The
+// generated script checks it after checksum verification, before any change.
+type InstallerFeatures struct {
+	GatewayProxy bool `json:"gatewayProxy"`
 }
 
 func Script(invitation Invitation, link string) (string, error) {
@@ -30,10 +54,17 @@ func Script(invitation Invitation, link string) (string, error) {
 		return "", err
 	}
 	var b bytes.Buffer
+	proxy := invitation.ProxyURL()
+	enrollProxy := ""
+	if proxy != "" {
+		enrollProxy = " --gateway-proxy " + quote(proxy)
+	}
 	err = t.Execute(&b, struct {
 		Invitation
 		Link, Binary, SystemLink string
-	}{invitation, link, link + "/binary", link[:strings.LastIndex(link, "/")+1] + SystemTicket(link[strings.LastIndex(link, "/")+1:])})
+		Proxy, CurlProxy         string
+		EnrollProxy              string
+	}{invitation, link, link + "/binary", link[:strings.LastIndex(link, "/")+1] + SystemTicket(link[strings.LastIndex(link, "/")+1:]), proxy, curlProxy(proxy), enrollProxy})
 	return b.String(), err
 }
 
@@ -44,7 +75,9 @@ case "$(uname -s)" in Linux) os=linux;; Darwin) os=darwin;; *) echo 'Unsupported
 case "$(uname -m)" in x86_64|amd64) arch=amd64;; arm64|aarch64) arch=arm64;; *) echo 'Unsupported architecture' >&2; exit 1;; esac
 if [ "$os" = darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then arch=arm64; fi
 if [ "$os" != {{q .Asset.OS}} ]; then echo 'Invitation OS does not match this machine' >&2; exit 1; fi
-{{if .ServiceMode}}service_mode={{q .ServiceMode}}
+{{if .Proxy}}# Every gateway request uses this explicit proxy endpoint, never a direct route.
+echo 'Reaching the gateway through proxy '{{q .Proxy}} >&2
+{{end}}{{if .ServiceMode}}service_mode={{q .ServiceMode}}
 {{else}}service_mode="${CONTROL_SERVICE_MODE:-}"
 {{end}}{{if eq .ServiceMode "hybrid"}}
 if [ "$(id -u)" = 0 ]; then echo 'Hybrid installation must run as the intended user, not root. Only its System installer uses sudo.' >&2; exit 1; fi
@@ -93,30 +126,34 @@ fi
   done
 fi
 if [ "$reused" = false ]; then
-  curl -fsSL {{q .Binary}}"?arch=$arch" -o "$tmp/control"
+  curl -fsSL{{.CurlProxy}} {{q .Binary}}"?arch=$arch" -o "$tmp/control"
 fi
 if command -v sha256sum >/dev/null; then actual="$(sha256sum "$tmp/control" | awk '{print $1}')"; else actual="$(shasum -a 256 "$tmp/control" | awk '{print $1}')"; fi
 if [ "$actual" != "$checksum" ]; then echo 'Binary checksum mismatch' >&2; exit 1; fi
 chmod 700 "$tmp/control"
-{{if eq .ServiceMode "hybrid"}}# Find User problems before any privileged change or consumed ticket.
-"$tmp/control" enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}} --preflight "$@"
+{{if .Proxy}}# Use the declared capability, not a version guess, before any change or redemption.
+if ! "$tmp/control" __installer-features 2>/dev/null | grep -q '"gatewayProxy":true'; then echo 'The pinned installer does not support gateway proxies; publish a compatible release, then create a new invitation' >&2; exit 1; fi
+{{end}}{{if eq .ServiceMode "hybrid"}}# Find User problems before any privileged change or consumed ticket.
+"$tmp/control" enroll --url {{q .Link}}{{.EnrollProxy}}{{if .AutoName}} --auto-name{{end}} --preflight "$@"
 if [ "$system_installed" = true ]; then
   if sudo /bin/test -f "$system_home/pending-enrollment.json"; then
-    sudo env CONTROL_HOME="$system_home" CONTROL_INSTALL_DIR="$(dirname "$system_bin")" "$system_bin" --config "$system_home/node.json" enroll --url {{q .SystemLink}} --service system --hybrid-system
+    sudo env CONTROL_HOME="$system_home" CONTROL_INSTALL_DIR="$(dirname "$system_bin")" "$system_bin" --config "$system_home/node.json" enroll --url {{q .SystemLink}}{{.EnrollProxy}} --service system --hybrid-system
   else
     sudo "$system_bin" --config "$system_home/node.json" service start
   fi
 else
   # The System installer verifies ./control against the same pinned checksum.
-  (cd "$tmp" && curl -fsSL {{q .SystemLink}} | sudo bash)
+  (cd "$tmp" && curl -fsSL{{.CurlProxy}} {{q .SystemLink}} | sudo bash)
 fi
 {{if .Linger}}if [ "$os" = linux ] && ! sudo loginctl enable-linger "$(id -un)"; then echo 'Warning: could not enable linger; the User context stops at logout.' >&2; fi
-{{end}}{{end}}"$tmp/control" enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}}{{if eq .HybridRole "system"}} --hybrid-system{{end}} "$@"
+{{end}}{{end}}"$tmp/control" enroll --url {{q .Link}}{{.EnrollProxy}}{{if .AutoName}} --auto-name{{end}}{{if eq .HybridRole "system"}} --hybrid-system{{end}} "$@"
 `
 
 const powershellScript = `#Requires -Version 5.1
 $ErrorActionPreference = 'Stop'
-{{if .ServiceMode}}$serviceMode = {{q .ServiceMode}}
+{{if .Proxy}}# Every gateway request uses this explicit proxy endpoint, never a direct route.
+Write-Host ('Reaching the gateway through proxy ' + {{q .Proxy}})
+{{end}}{{if .ServiceMode}}$serviceMode = {{q .ServiceMode}}
 {{else}}$serviceMode = if ($env:CONTROL_SERVICE_MODE) { $env:CONTROL_SERVICE_MODE } else { 'user' }
 {{end}}if ($serviceMode -eq 'system') { $serviceMode = 'auto' }
 if ($serviceMode -ne 'process' -and $serviceMode -ne 'user') {
@@ -199,12 +236,15 @@ try {
     # A child scope suppresses slow PowerShell 5.1 progress without changing the caller.
     & {
       $ProgressPreference = 'SilentlyContinue'
-      Invoke-WebRequest -UseBasicParsing -Uri ({{q .Binary}} + '?arch=' + $arch) -OutFile $exe
+      Invoke-WebRequest -UseBasicParsing{{if .Proxy}} -Proxy {{q .Proxy}} -MaximumRedirection 0{{end}} -Uri ({{q .Binary}} + '?arch=' + $arch) -OutFile $exe
     }
   }
   if ((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -ne $checksum) { throw 'Binary checksum mismatch' }
-{{if eq .ServiceMode "hybrid"}}  # Run User preflight with the same user's limited token, never Administrator.
-  & $exe __hybrid-user --url {{q .Link}}{{if .AutoName}} --auto-name{{end}} --preflight
+{{if .Proxy}}  # Use the declared capability, not a version guess, before any change or redemption.
+  $features = & $exe __installer-features 2>$null
+  if ($LASTEXITCODE -ne 0 -or -not (($features -join '') -match '"gatewayProxy":true')) { throw 'The pinned installer does not support gateway proxies; publish a compatible release, then create a new invitation' }
+{{end}}{{if eq .ServiceMode "hybrid"}}  # Run User preflight with the same user's limited token, never Administrator.
+  & $exe __hybrid-user --url {{q .Link}}{{.EnrollProxy}}{{if .AutoName}} --auto-name{{end}} --preflight
   if ($LASTEXITCODE -ne 0) { throw 'Hybrid preflight failed; nothing was installed' }
   $savedHome, $savedConfig, $savedInstallDir = $env:CONTROL_HOME, $env:CONTROL_CONFIG, $env:CONTROL_INSTALL_DIR
   try {
@@ -215,7 +255,7 @@ try {
       if (Test-Path -LiteralPath (Join-Path $protectedHome 'pending-enrollment.json')) {
         $env:CONTROL_HOME = $protectedHome
         $env:CONTROL_INSTALL_DIR = Join-Path $protectedHome 'bin'
-        & $systemExe --config $systemConfig enroll --url {{q .SystemLink}} --service system --hybrid-system --firewall
+        & $systemExe --config $systemConfig enroll --url {{q .SystemLink}}{{.EnrollProxy}} --service system --hybrid-system --firewall
       } else {
         & $systemExe --config $systemConfig service start
       }
@@ -226,7 +266,7 @@ try {
       try {
         $systemScript = & {
           $ProgressPreference = 'SilentlyContinue'
-          Invoke-RestMethod -Uri {{q .SystemLink}}
+          Invoke-RestMethod{{if .Proxy}} -Proxy {{q .Proxy}} -MaximumRedirection 0{{end}} -Uri {{q .SystemLink}}
         }
         & ([ScriptBlock]::Create($systemScript))
       } finally { Pop-Location }
@@ -235,8 +275,8 @@ try {
     $env:CONTROL_HOME, $env:CONTROL_CONFIG, $env:CONTROL_INSTALL_DIR = $savedHome, $savedConfig, $savedInstallDir
   }
   # The protected parent configures User firewall rules without elevating its CLI.
-  & $exe __hybrid-user --url {{q .Link}}{{if .AutoName}} --auto-name{{end}}
-{{else}}  & $exe enroll --url {{q .Link}}{{if .AutoName}} --auto-name{{end}}{{if eq .HybridRole "system"}} --hybrid-system{{end}} --service $serviceMode --firewall
+  & $exe __hybrid-user --url {{q .Link}}{{.EnrollProxy}}{{if .AutoName}} --auto-name{{end}}
+{{else}}  & $exe enroll --url {{q .Link}}{{.EnrollProxy}}{{if .AutoName}} --auto-name{{end}}{{if eq .HybridRole "system"}} --hybrid-system{{end}} --service $serviceMode --firewall
 {{end}}
   if ($LASTEXITCODE -ne 0) { throw 'Control enrollment failed' }
 } finally {

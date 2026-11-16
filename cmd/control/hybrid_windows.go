@@ -17,6 +17,7 @@ func hybridUserCLI(ctx context.Context, args []string) error {
 	preflight := f.Bool("preflight", false, "check User enrollment only")
 	autoName := f.Bool("auto-name", false, "require automatic naming")
 	limited := f.Bool("limited", false, "limited-token child")
+	gatewayProxy := f.String("gateway-proxy", "", "explicit gateway proxy passed to the limited child")
 	if err := f.Parse(args); err != nil {
 		return err
 	}
@@ -28,12 +29,16 @@ func hybridUserCLI(ctx context.Context, args []string) error {
 		return err
 	}
 	if !*limited {
-		return installation.RunHybridUser(ctx, path, *link, *preflight, *autoName)
+		return installation.RunHybridUser(ctx, path, *link, *gatewayProxy, *preflight, *autoName)
 	}
 	if err = installation.CheckHybridUser(); err != nil {
 		return err
 	}
 	enroll := []string{"--url", *link, "--service", "user"}
+	// Pass the route as an argument: environment does not survive the token switch.
+	if *gatewayProxy != "" {
+		enroll = append(enroll, "--gateway-proxy", *gatewayProxy)
+	}
 	if *preflight {
 		enroll = append(enroll, "--preflight")
 	}

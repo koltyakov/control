@@ -160,6 +160,24 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ttlSeconds must be 60..86400", 400)
 		return
 	}
+	// Only a same-fleet worker's advertised endpoint can be selected; this API
+	// never accepts an arbitrary proxy URL on its own.
+	if q.ProxyURL != "" && q.ProxyWorker == "" {
+		http.Error(w, "proxyUrl requires proxyWorker", http.StatusBadRequest)
+		return
+	}
+	if q.ProxyWorker != "" && len(q.ProxyWorker) != 64 {
+		http.Error(w, "proxyWorker must be a stable machine ID", http.StatusBadRequest)
+		return
+	}
+	if q.ProxyURL != "" {
+		normalized, err := model.NormalizeProxyURL(q.ProxyURL)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		q.ProxyURL = normalized
+	}
 	base := g.options.PublicURL
 	if base == "" {
 		base = q.Gateway
@@ -167,6 +185,10 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	base, err := enrollment.GatewayURL(base)
 	if err != nil {
 		http.Error(w, err.Error(), 400)
+		return
+	}
+	if q.ProxyWorker != "" && !strings.HasPrefix(base, "https://") {
+		http.Error(w, "proxied invitations require an https:// gateway URL; TLS verification is mandatory", http.StatusBadRequest)
 		return
 	}
 	var asset update.Asset
@@ -209,13 +231,22 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	var proxy *model.GatewayProxy
+	if q.ProxyWorker != "" {
+		var text string
+		var status int
+		if proxy, text, status = g.proxySelectionLocked(p.UserID, q.ProxyWorker, q.ProxyURL, time.Now()); proxy == nil {
+			http.Error(w, text, status)
+			return
+		}
+	}
 	ticket, err := g.newInstallationTicket(rand.Reader, q.ServiceMode == "hybrid")
 	if err != nil {
 		http.Error(w, "could not create ticket", 500)
 		return
 	}
 	now := time.Now().UTC()
-	i := installation{Invitation: enrollment.Invitation{UserID: p.UserID, ID: identity.NewID(), Name: q.Name, AutoName: q.AutoName, ServiceMode: q.ServiceMode, Linger: q.Linger, Gateway: base, Asset: asset, Assets: assets, Version: version, CreatedAt: now, ExpiresAt: now.Add(time.Duration(q.TTLSeconds) * time.Second)}}
+	i := installation{Invitation: enrollment.Invitation{UserID: p.UserID, ID: identity.NewID(), Name: q.Name, AutoName: q.AutoName, ServiceMode: q.ServiceMode, Linger: q.Linger, Gateway: base, Asset: asset, Assets: assets, Version: version, CreatedAt: now, ExpiresAt: now.Add(time.Duration(q.TTLSeconds) * time.Second), GatewayProxy: proxy}}
 	var companion installation
 	companionHash := ""
 	if q.ServiceMode == "hybrid" {
@@ -309,6 +340,9 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	if len(retracted) > 0 {
 		detail += ", replaced a pending invitation"
 	}
+	if proxy != nil {
+		detail += ", via " + g.nodes[proxy.Worker].Name + " " + proxy.URL
+	}
 	persisted := change{invitations: []string{hash}, audit: []AuditEvent{g.auditEventLocked(r, "", "invitation.create", target, i.ID, detail)}}
 	if companionHash != "" {
 		persisted.invitations = append(persisted.invitations, companionHash)
@@ -333,7 +367,7 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	link := base + "/install/" + ticket
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(enrollment.Link{Invitation: i.Invitation, URL: link, Command: enrollment.InstallCommand(link, q.OS == "windows", q.ServiceMode)})
+	_ = json.NewEncoder(w).Encode(enrollment.Link{Invitation: i.Invitation, URL: link, Command: enrollment.InstallCommand(link, q.OS == "windows", q.ServiceMode, i.ProxyURL())})
 }
 
 func (g *Gateway) pendingInstallation(w http.ResponseWriter, r *http.Request) (installation, bool) {
@@ -489,6 +523,10 @@ func (g *Gateway) redemptionConflict(i installation, id string, q enrollment.Red
 	}
 	if i.ReplaceID != "" && i.ReplaceID != id {
 		return "invitation requires an eligible local identity", http.StatusConflict
+	}
+	// An older installer cannot persist the route and would enroll directly.
+	if i.ProxyURL() != q.GatewayProxy {
+		return "invitation requires an installer that supports its selected gateway proxy; use the generated installation command", http.StatusConflict
 	}
 	name := i.Name
 	if i.AutoName {

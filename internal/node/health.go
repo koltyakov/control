@@ -50,6 +50,9 @@ func (n *Node) healthSnapshot() model.NodeHealth {
 		health.LeaseExpires = n.lease.Expires
 	}
 	n.mu.Unlock()
+	if n.proxyChecks != nil {
+		health.Proxies = n.proxyChecks.snapshot(time.Now())
+	}
 	routes := n.Peer.ConnectionRoutes()
 	health.Work, health.Tunnels, health.ConnectionRoutes = &work, model.ActiveTunnelCounts(active), &routes
 	for i := range health.System.Disks {

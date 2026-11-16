@@ -14,8 +14,17 @@ func (c Admin) Invite(ctx context.Context, q enrollment.Request) (enrollment.Lin
 	if q.Gateway == "" {
 		q.Gateway = c.URL
 	}
+	if err := c.checkProxySupport(ctx, q); err != nil {
+		return enrollment.Link{}, err
+	}
 	var link enrollment.Link
 	err := c.JSON(ctx, "POST", "/v1/fleet/installations", q, &link)
+	if err == nil {
+		// An uncertain or unconfirmed response never triggers a retry here.
+		if proxyErr := confirmProxy(q, link); proxyErr != nil {
+			return link, proxyErr
+		}
+	}
 	if err == nil && q.ServiceMode != "" && link.ServiceMode != q.ServiceMode {
 		return link, errors.New("gateway did not confirm the requested startup context; upgrade the gateway and check control machines invites before creating another invitation")
 	}

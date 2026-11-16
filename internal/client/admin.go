@@ -13,10 +13,16 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/enrollment"
+	"github.com/koltyakov/control/internal/gatewayroute"
 	"github.com/koltyakov/control/internal/update"
 )
 
-type Admin struct{ URL, Key string }
+// Admin calls gateway management and enrollment APIs. Route selects a direct
+// connection or the profile's explicit gateway proxy.
+type Admin struct {
+	URL, Key string
+	Route    gatewayroute.Route
+}
 
 func (c Admin) request(ctx context.Context, method, path string, body io.Reader, size int64, contentType string, result any) error {
 	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.URL, "/")+path, body)
@@ -28,8 +34,7 @@ func (c Admin) request(ctx context.Context, method, path string, body io.Reader,
 	}
 	req.Header.Set("Authorization", "Bearer "+c.Key)
 	req.Header.Set("Content-Type", contentType)
-	client := &http.Client{Timeout: 3 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := client.Do(req)
+	resp, err := c.Route.Client(3*time.Minute, false).Do(req)
 	if err != nil {
 		return err
 	}

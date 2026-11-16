@@ -3,10 +3,13 @@ package node
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/koltyakov/control/internal/gatewayroute"
+	"github.com/koltyakov/control/internal/model"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -41,6 +44,13 @@ type Config struct {
 	Name    string `json:"name"`
 	Gateway string `json:"gateway"`
 	Token   string `json:"token,omitempty"`
+	// GatewayProxy sends every gateway request through one explicit CONNECT
+	// proxy, ignoring inherited proxy variables and never falling back directly.
+	// Peer WebRTC traffic and provider environments are unaffected.
+	GatewayProxy *model.GatewayProxy `json:"gatewayProxy,omitempty"`
+	// ProxyEndpoints advertises separately managed CONNECT proxies on this host
+	// that other fleet machines may use to reach the gateway.
+	ProxyEndpoints []model.ProxyEndpoint `json:"proxyEndpoints,omitempty"`
 	// InstructionOnly requires an exact grant even from account clients.
 	// Hybrid system profiles enable it and retain a private local API.
 	InstructionOnly        bool               `json:"instructionOnly,omitempty"`
@@ -139,6 +149,9 @@ func (c *Config) defaults() error {
 	if c.Name == "" || c.Gateway == "" || c.Token == "" {
 		return errors.New("name, gateway, and token are required")
 	}
+	if err := c.proxyDefaults(); err != nil {
+		return err
+	}
 	if c.DataDir == "" {
 		c.DataDir = ".control"
 	}
@@ -218,4 +231,43 @@ func (c *Config) defaults() error {
 		return err
 	}
 	return os.MkdirAll(c.WorkDir, 0700)
+}
+
+// Route returns this profile's gateway route.
+func (c *Config) Route() (gatewayroute.Route, error) {
+	route, err := gatewayroute.FromConfig(c.GatewayProxy)
+	if err != nil {
+		return route, fmt.Errorf("gatewayProxy: %w", err)
+	}
+	if err = route.CheckGateway(c.Gateway); err != nil {
+		return route, err
+	}
+	return route, nil
+}
+
+func (c *Config) proxyDefaults() error {
+	route, err := c.Route()
+	if err != nil {
+		return err
+	}
+	if route.Proxied() {
+		c.GatewayProxy.URL = route.Proxy()
+		if len(c.ProxyEndpoints) != 0 {
+			return errors.New("a proxied node cannot advertise proxyEndpoints; proxy chains are not supported")
+		}
+	}
+	for i := range c.ProxyEndpoints {
+		normalized, err := model.NormalizeProxyURL(c.ProxyEndpoints[i].URL)
+		if err != nil {
+			return fmt.Errorf("proxyEndpoints[%d]: %w", i, err)
+		}
+		c.ProxyEndpoints[i].URL = normalized
+	}
+	if err = model.ValidateProxyEndpoints(c.ProxyEndpoints); err != nil {
+		return fmt.Errorf("proxyEndpoints: %w", err)
+	}
+	if len(c.ProxyEndpoints) != 0 && !strings.HasPrefix(c.Gateway, "https://") {
+		return errors.New("proxyEndpoints require an https:// gateway; children verify gateway TLS through the proxy")
+	}
+	return nil
 }

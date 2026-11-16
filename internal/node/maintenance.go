@@ -94,7 +94,7 @@ func (n *Node) resumeAfterUpdate() {
 func (n *Node) ConfigureUpdates(info buildinfo.Info, apply func(string) error) error {
 	n.Peer.SetSoftware(info)
 	updater, err := update.NewUpdater(update.UpdaterOptions{
-		Gateway: n.Config.Gateway, Token: n.Config.Token, Dir: n.Config.DataDir, Software: info,
+		Gateway: n.Config.Gateway, Token: n.Config.Token, Dir: n.Config.DataDir, Software: info, Route: n.route,
 		Busy: n.updateBusy, Pause: n.pauseForUpdate, Resume: n.resumeAfterUpdate, Apply: apply,
 		Report: func(ctx context.Context, status update.Status) error {
 			return n.Peer.SendControl(ctx, "update.status", model.JSON(status))

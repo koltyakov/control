@@ -51,7 +51,14 @@ func gatewayClient(profile string, tokenOverride *string) (client.Admin, error) 
 			key = cfg.Token
 		}
 	}
-	return client.Admin{URL: base, Key: key}, nil
+	admin := client.Admin{URL: base, Key: key}
+	// A proxied machine reaches its own gateway only through the saved route.
+	if cfg.GatewayProxy != nil && base == strings.TrimRight(cfg.Gateway, "/") {
+		if admin.Route, err = cfg.Route(); err != nil {
+			return client.Admin{}, err
+		}
+	}
+	return admin, nil
 }
 
 func updateAdminClient(profile string, tokenOverride *string) (client.Admin, error) {
@@ -107,6 +114,8 @@ Your fleet:
     --service user|system|hybrid         Choose User, System, or paired contexts
     --linger                             Linux Hybrid: keep User running without a login
     --force                              Retract a pending invitation for that name
+  machines add ... --via WORKER [--proxy-url URL]  Install a machine that reaches the gateway through a worker's proxy
+  machines proxies                     List workers advertising gateway proxy endpoints and their readiness
   machines invites [clear]             List installation status, or remove revoked and expired ones
   machines revoke ID                   Revoke an invitation and its machine key
   machines enable|disable NAME          Enable or disable new work on a machine
@@ -245,6 +254,14 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 		printJSON(list)
 		return nil
 	}
+	if args[0] == "proxies" && len(args) == 1 {
+		workers, err := c.ProxyWorkers(ctx)
+		if err != nil {
+			return err
+		}
+		printJSON(workers)
+		return nil
+	}
 	if args[0] == "revoke" && len(args) == 2 {
 		return c.JSON(ctx, "DELETE", "/v1/fleet/installations/"+url.PathEscape(args[1]), nil, nil)
 	}
@@ -294,8 +311,13 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 	ttl := f.Duration("ttl", 15*time.Minute, "installation link lifetime")
 	asJSON := f.Bool("json", false, "print installation JSON")
 	force := f.Bool("force", false, "retract pending invitations for this name immediately")
+	via := f.String("via", "", "reach the gateway through this worker's advertised proxy endpoint")
+	proxyURL := f.String("proxy-url", "", "select one of the --via worker's advertised endpoints")
 	if err := f.Parse(options); err != nil {
 		return err
+	}
+	if *proxyURL != "" && *via == "" {
+		return errors.New("--proxy-url requires --via WORKER")
 	}
 	if f.NArg() != 0 {
 		return errors.New("usage: control machines add [NAME|auto] --platform macos|windows|linux")
@@ -323,7 +345,28 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 	if len(parts) == 2 {
 		arch = parts[1]
 	}
-	link, err := c.Invite(ctx, enrollment.Request{Name: name, OS: parts[0], Arch: arch, ServiceMode: *service, Linger: *linger, TTLSeconds: int(ttl.Seconds()), Force: *force})
+	request := enrollment.Request{Name: name, OS: parts[0], Arch: arch, ServiceMode: *service, Linger: *linger, TTLSeconds: int(ttl.Seconds()), Force: *force}
+	var proxyName string
+	if *via != "" {
+		supported, err := c.SupportsGatewayProxy(ctx)
+		if err != nil {
+			return err
+		}
+		if !supported {
+			return client.ErrProxyUnsupported
+		}
+		workers, err := c.ProxyWorkers(ctx)
+		if err != nil {
+			return err
+		}
+		worker, endpoint, err := client.SelectProxy(workers, *via, *proxyURL)
+		if err != nil {
+			return err
+		}
+		// Send the stable ID: a later rename must not change the selection.
+		request.ProxyWorker, request.ProxyURL, proxyName = worker.ID, endpoint, worker.Name
+	}
+	link, err := c.Invite(ctx, request)
 	if err != nil {
 		return err
 	}
@@ -335,6 +378,9 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 			displayName = "using the target machine's hostname"
 		}
 		fmt.Fprintf(os.Stderr, "Install %s. Link expires %s; redeemable by one machine.\n", displayName, link.ExpiresAt.Local().Format(time.RFC3339))
+		if link.GatewayProxy != nil {
+			fmt.Fprintf(os.Stderr, "Reaches the gateway through %s at %s. The target must be able to reach that address.\n", proxyName, link.GatewayProxy.URL)
+		}
 		fmt.Println(link.Command)
 	}
 	return nil

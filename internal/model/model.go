@@ -61,6 +61,9 @@ type Node struct {
 	InstructionDelegation bool `json:"instructionDelegation,omitempty"`
 	// UpdateUntil is gateway-owned display grace, not connection presence.
 	UpdateUntil time.Time `json:"updateUntil,omitzero"`
+	// ProxyEndpoints are explicitly configured CONNECT proxies on this worker.
+	// Readiness is reported separately in health; advertisement is not proof.
+	ProxyEndpoints []ProxyEndpoint `json:"proxyEndpoints,omitempty"`
 }
 
 type Artifact struct {

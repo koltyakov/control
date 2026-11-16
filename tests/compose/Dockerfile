@@ -31,3 +31,21 @@ RUN apt-get update \
     && chmod 0440 /etc/sudoers.d/fixture
 STOPSIGNAL SIGRTMIN+3
 ENTRYPOINT ["/lib/systemd/systemd"]
+
+# Gateway proxy fixture: a Control node plus a separately managed CONNECT
+# proxy (tinyproxy). openssl issues the test CA; certificates stay verified.
+FROM node AS proxy-host
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends jq openssl procps tinyproxy \
+    && rm -rf /var/lib/apt/lists/*
+COPY tests/compose/proxy-entry.sh /usr/local/bin/control-proxy-entry
+ENTRYPOINT ["/bin/sh", "/usr/local/bin/control-proxy-entry"]
+
+# A restricted target without Control installed. Its installer must download
+# the pinned binary through the proxy.
+FROM debian:bookworm-slim AS restricted-child
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl procps \
+    && rm -rf /var/lib/apt/lists/*
+COPY tests/compose/proxy-entry.sh /usr/local/bin/control-proxy-entry
+ENTRYPOINT ["/bin/sh", "/usr/local/bin/control-proxy-entry"]

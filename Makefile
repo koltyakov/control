@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help tidy deps deps-update deps-check go-update fmt fmt-check lint lint-hint lint-hint-all typecheck-console vet test test-race check cov test-coverage test-cov-check bench build build-all bundle install uninstall release-local release-check ci ci-compose vuln clean proto test-compose test-compose-webrtc test-compose-relay test-compose-hybrid update update-status
+.PHONY: help tidy deps deps-update deps-check go-update fmt fmt-check lint lint-hint lint-hint-all typecheck-console vet test test-race check cov test-coverage test-cov-check bench build build-all bundle install uninstall release-local release-check ci ci-compose vuln clean proto test-compose test-compose-webrtc test-compose-relay test-compose-hybrid test-compose-proxy update update-status
 
 GO ?= go
 TEST_TIMEOUT ?= 300s
@@ -38,6 +38,7 @@ help:
 	@echo "  make ci / ci-compose    - Local CI checks / CI plus Compose integration"
 	@echo "  make test-compose       - Test WebRTC and relay deployments"
 	@echo "  make test-compose-hybrid - Install a Hybrid pair under real systemd"
+	@echo "  make test-compose-proxy - Install an isolated machine through a worker proxy"
 	@echo "  make update             - Push local build to gateway and all enrolled nodes"
 	@echo "  make update-status      - Show managed rollout status"
 	@echo "  make uninstall          - Run the per-user uninstaller"
@@ -167,6 +168,9 @@ test-compose-relay:
 
 test-compose-hybrid:
 	sh tests/compose/test-hybrid.sh
+
+test-compose-proxy:
+	sh tests/compose/test-proxy.sh
 
 # Install protoc and protoc-gen-go before regenerating the checked-in bindings.
 proto:

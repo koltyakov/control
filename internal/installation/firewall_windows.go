@@ -14,7 +14,7 @@ func configureFirewall(ctx context.Context, binary, config string, cfg node.Conf
 	if windows.GetCurrentProcessToken().IsElevated() {
 		return configureElevatedFirewall(ctx, binary, config, cfg)
 	}
-	if _, err := gatewayPort(cfg.Gateway); err != nil {
+	if _, err := firewallPort(cfg); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -34,7 +34,7 @@ if ($p.ExitCode -ne 0) { throw ('Control firewall setup failed with exit code ' 
 // This fixed operation never launches the installed CLI or requests UAC. Hybrid
 // calls it only from its protected parent, without an executable fallback.
 func configureElevatedFirewall(ctx context.Context, binary, config string, cfg node.Config) error {
-	port, err := gatewayPort(cfg.Gateway)
+	port, err := firewallPort(cfg)
 	if err != nil {
 		return err
 	}

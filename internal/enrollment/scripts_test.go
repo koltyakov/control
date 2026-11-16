@@ -11,14 +11,14 @@ func TestInstallCommand(t *testing.T) {
 	link := "https://gateway.example/a'b/install/token"
 	for _, mode := range []string{"", "user", "system"} {
 		want := `irm 'https://gateway.example/a''b/install/token'|iex`
-		if got := InstallCommand(link, true, mode); got != want {
+		if got := InstallCommand(link, true, mode, ""); got != want {
 			t.Fatalf("Windows command for %q: got %q, want %q", mode, got, want)
 		}
 		want = "curl -fsSL " + ShellQuote(link) + " | bash"
 		if mode == "system" {
 			want = "curl -fsSL " + ShellQuote(link) + " | sudo bash"
 		}
-		if got := InstallCommand(link, false, mode); got != want {
+		if got := InstallCommand(link, false, mode, ""); got != want {
 			t.Fatalf("Unix command for %q: got %q, want %q", mode, got, want)
 		}
 	}
@@ -27,7 +27,7 @@ func TestInstallCommand(t *testing.T) {
 func TestWindowsInstallCommandPreservesShellMetacharacters(t *testing.T) {
 	for _, char := range []string{`"`, "$", "`", `\`, "%", "!", "\r", "\n"} {
 		link := "https://gateway.example/日本" + char + "'path/install/token"
-		command := InstallCommand(link, true, "user")
+		command := InstallCommand(link, true, "user", "")
 		if want := "irm " + PowerShellQuote(link) + "|iex"; command != want {
 			t.Fatalf("PowerShell command: got %q, want %q", command, want)
 		}
@@ -86,7 +86,7 @@ func TestInstallerExplicitStartupContext(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			command := InstallCommand("https://gateway.example/install/token", platform == "windows", mode)
+			command := InstallCommand("https://gateway.example/install/token", platform == "windows", mode, "")
 			if strings.Contains(command, "sudo bash") != (platform != "windows" && mode == "system") {
 				t.Fatalf("wrong elevation: %s", command)
 			}

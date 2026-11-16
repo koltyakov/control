@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/koltyakov/control/internal/node"
 )
 
 // WindowsRuntimePath is the stable executable path covered by the node's
@@ -38,6 +40,18 @@ func gatewayPort(gateway string) (string, error) {
 		return "", fmt.Errorf("invalid firewall gateway port")
 	}
 	return strconv.Itoa(n), nil
+}
+
+// firewallPort selects the actual TCP next hop for ordinary and Hybrid profiles.
+func firewallPort(cfg node.Config) (string, error) {
+	route, err := cfg.Route()
+	if err != nil {
+		return "", err
+	}
+	if route.Proxied() {
+		return gatewayPort(route.Proxy())
+	}
+	return gatewayPort(cfg.Gateway)
 }
 
 func windowsFirewallScript(binary, config, runtime, port string) string {

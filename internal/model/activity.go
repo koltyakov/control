@@ -66,12 +66,14 @@ type NodeActivitySnapshot struct {
 	DirectSessions   int                    `json:"directSessions"`
 	RelaySessions    int                    `json:"relaySessions"`
 	ConnectionRoutes *ConnectionRouteCounts `json:"connectionRoutes,omitempty"`
-	Tunnels          *TunnelCounts          `json:"tunnels,omitempty"`
-	RetainedTunnels  *TunnelCounts          `json:"retainedTunnels,omitempty"`
-	LeaseOwner       string                 `json:"leaseOwner,omitempty"`
-	LeaseExpires     time.Time              `json:"leaseExpires,omitempty"`
-	Leased           bool                   `json:"leased,omitempty"`
-	System           *SystemInfo            `json:"system,omitempty"`
+	// ProxyEndpoints are owner-visible advertised gateway proxies and readiness.
+	ProxyEndpoints  []ProxyEndpointStatus `json:"proxyEndpoints,omitempty"`
+	Tunnels         *TunnelCounts         `json:"tunnels,omitempty"`
+	RetainedTunnels *TunnelCounts         `json:"retainedTunnels,omitempty"`
+	LeaseOwner      string                `json:"leaseOwner,omitempty"`
+	LeaseExpires    time.Time             `json:"leaseExpires,omitempty"`
+	Leased          bool                  `json:"leased,omitempty"`
+	System          *SystemInfo           `json:"system,omitempty"`
 	// Work and LastActive come from owner health reports, not peer activity.
 	Work       *WorkCounts `json:"work,omitempty"`
 	LastActive time.Time   `json:"lastActive,omitzero"`

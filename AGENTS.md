@@ -23,7 +23,7 @@ Follow [Terminology](docs/terminology.md) in documentation, code, CLI/dashboard 
 - [Users and private fleets](docs/users.md): account provisioning, isolation, SQLite ownership, and migration.
 - [Authority and delegation](docs/delegation.md): account-client execution, instruction-bound worker grants, expiry, and revocation.
 
-For feature-specific work, also read [gateway deployment](docs/gateway.md), [expose deployment](docs/expose.md), [peer streaming](docs/streaming.md), [connection tests](docs/connections.md), [persistent tunnels](docs/tunnels.md), [clipboard pastes](docs/clipboard.md), [native desktop automation](docs/desktop.md), [worker-local secrets](docs/secrets.md), or [runbooks](docs/runbooks.md).
+For feature-specific work, also read [gateway deployment](docs/gateway.md), [expose deployment](docs/expose.md), [peer streaming](docs/streaming.md), [connection tests](docs/connections.md), [persistent tunnels](docs/tunnels.md), [gateway proxies](docs/gateway-proxy.md), [clipboard pastes](docs/clipboard.md), [native desktop automation](docs/desktop.md), [worker-local secrets](docs/secrets.md), or [runbooks](docs/runbooks.md).
 
 ## Fleet operations
 

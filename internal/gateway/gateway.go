@@ -445,7 +445,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		return
 	}
 	// Sign both the fresh challenge and registration metadata.
-	if wol.Validate(n.WakeInterfaces) != nil || (client && (len(n.WakeInterfaces) != 0 || n.LANDiscovery || len(n.LANPeers) != 0)) || (n.RunAs != "" && n.RunAs != "system" && n.RunAs != "user") {
+	if wol.Validate(n.WakeInterfaces) != nil || (client && (len(n.WakeInterfaces) != 0 || n.LANDiscovery || len(n.LANPeers) != 0 || len(n.ProxyEndpoints) != 0)) || (n.RunAs != "" && n.RunAs != "system" && n.RunAs != "user") || model.ValidateProxyEndpoints(n.ProxyEndpoints) != nil {
 		return
 	}
 	if !ed25519.Verify(n.PublicKey, hello.Message(challenge), hello.Signature) {

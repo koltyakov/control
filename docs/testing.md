@@ -209,6 +209,22 @@ The native fixtures exposed terminal-junction gaps in secret-store workspace che
 
 This coverage does not establish behavior for every reparse tag, cloud/OneDrive recall, deduplication filters, WSL links, volume-GUID mounts, network shares, concurrent hostile path replacement, or power loss. It also does not replace the separate privileged symlink or case-sensitive-history checks. Cross-compilation alone does not verify any native fixture.
 
+## Gateway proxy isolation
+
+```sh
+make test-compose-proxy
+```
+
+[`compose.proxy.yaml`](../compose.proxy.yaml) builds a separate topology on two internal networks:
+
+```text
+child ── restricted ── bridge ── gateway-net ── gateway
+```
+
+The `child` image has no Control binary and shares no network with the gateway, so it can neither resolve nor reach it; the script asserts both. `bridge` runs a Control node advertising `proxyEndpoints` and a separately managed tinyproxy that only joins the networks. A one-shot service issues a test CA and the gateway's certificate; every container trusts that CA through the system store, and the script confirms an untrusted store fails through the proxy. The script waits for the bridge's `ready` check, rejects an unadvertised endpoint, creates `machines add child-01 --via bridge`, and runs the exact generated command in the child with `NO_PROXY='*'`. It then requires the saved `gatewayProxy`, authorized work through the relayed connection, offline status after stopping the proxy and reconnection after restarting it, a service restart through the saved route, and signed retirement after unregistration.
+
+Go tests cover the same contracts without containers: `internal/gatewayroute` checks bypass-variable overrides, no direct fallback, CONNECT refusal, mandatory certificate verification, and sanitized errors; `internal/node` registers, reads policy, and executes relayed work through a CONNECT fixture while provider HTTP stays direct; `internal/gateway` covers fleet-scoped selection, readiness states, legacy installer refusal, and persistence across restart; `internal/update` streams a managed binary only from the gateway; `cmd/control` covers pending-route persistence and retry; enrollment tests require the proxy on every generated download and enrollment line. Native Windows, macOS, and Linux installation, elevation, and service startup still need platform checks.
+
 ## Test topology
 
 The [Compose file](../compose.yaml) defines five services:

@@ -18,6 +18,8 @@ type NodeHealth struct {
 	ConnectionRoutes *ConnectionRouteCounts `json:"connectionRoutes,omitempty"`
 	LeaseExpires     time.Time              `json:"leaseExpires,omitzero"`
 	LastActive       time.Time              `json:"lastActive,omitzero"`
+	// Proxies reports this worker's own proxy-to-gateway checks.
+	Proxies []ProxyReadiness `json:"proxies,omitempty"`
 }
 
 // WorkCounts splits a machine's active operations by kind. Tunnels are

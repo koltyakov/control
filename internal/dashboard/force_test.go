@@ -65,7 +65,7 @@ func TestForceAddRequiresExplicitConfirmation(t *testing.T) {
 		m := view{ctx: context.Background(), width: 90, height: 24,
 			wizard: &registration{id: 1, step: "creating", name: "reserved", platform: 2, context: 1}}
 		calls := 0
-		m.options.ForceInvite = func(_ context.Context, name, platform, mode string) (enrollment.Link, error) {
+		m.options.ForceInvite = func(_ context.Context, name, platform, mode string, _ model.GatewayProxy) (enrollment.Link, error) {
 			calls++
 			if name != "reserved" || platform != "linux" || mode != "system" {
 				t.Fatal("force changed invitation settings", name, platform, mode)

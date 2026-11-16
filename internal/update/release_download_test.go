@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/koltyakov/control/internal/gatewayroute"
 )
 
 func TestManagedDownloadPrefersExactSignedReleaseWithGatewayFallback(t *testing.T) {
@@ -153,7 +155,7 @@ func TestManagedGatewayFallbackNeverFollowsRedirects(t *testing.T) {
 		w.WriteHeader(http.StatusFound)
 	}))
 	defer server.Close()
-	err := DownloadPreferred(t.Context(), "../untrusted", "v1", server.URL+"/gateway", "key", filepath.Join(t.TempDir(), "binary"), Asset{Size: 1})
+	err := DownloadPreferred(t.Context(), gatewayroute.Route{}, "../untrusted", "v1", server.URL+"/gateway", "key", filepath.Join(t.TempDir(), "binary"), Asset{Size: 1})
 	if err == nil {
 		t.Fatal("redirected fallback succeeded")
 	}

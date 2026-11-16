@@ -12,19 +12,23 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/koltyakov/control/internal/gatewayroute"
 )
 
 var repositoryPattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`)
 
 // DownloadPreferred uses GitHub only for the exact authenticated gateway asset.
 // Gateway storage remains a complete fallback, including for development builds.
-func DownloadPreferred(ctx context.Context, repository, version, gateway, token, path string, asset Asset) error {
+// A proxied node streams from the gateway only, through its route: it has no
+// direct internet path, and its proxy is not a general egress.
+func DownloadPreferred(ctx context.Context, route gatewayroute.Route, repository, version, gateway, token, path string, asset Asset) error {
 	releases := ""
 	parts := strings.Split(repository, "/")
-	if repositoryPattern.MatchString(repository) && parts[0] != "." && parts[0] != ".." && parts[1] != "." && parts[1] != ".." {
+	if !route.Proxied() && repositoryPattern.MatchString(repository) && parts[0] != "." && parts[0] != ".." && parts[1] != "." && parts[1] != ".." {
 		releases = "https://github.com/" + repository + "/releases/download/" + url.PathEscape(version)
 	}
-	return downloadPreferred(ctx, &http.Client{Timeout: 2 * time.Minute}, repository, version, releases, gateway, token, path, asset, VerifyReleaseManifest)
+	return downloadPreferred(ctx, route.Client(2*time.Minute, true), repository, version, releases, gateway, token, path, asset, VerifyReleaseManifest)
 }
 
 func downloadPreferred(ctx context.Context, client *http.Client, repository, version, releases, gateway, token, path string, asset Asset, verify func(context.Context, string, string, []byte, []byte) error) error {

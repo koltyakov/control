@@ -27,11 +27,13 @@ type Options struct {
 	Invite           Invite
 	ForceInvite      Invite
 	InvitationStatus InvitationStatus
-	Copy             Copy
-	Manage           ManageMachine
-	Rename           RenameMachine
-	ForceRename      RenameMachine
-	Refresh          Fetch // Optional uncached fetch for the user's refresh key.
+	// ProxyWorkers enables the Direct / Through worker connection step.
+	ProxyWorkers ProxyWorkers
+	Copy         Copy
+	Manage       ManageMachine
+	Rename       RenameMachine
+	ForceRename  RenameMachine
+	Refresh      Fetch // Optional uncached fetch for the user's refresh key.
 }
 
 type result struct {

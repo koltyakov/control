@@ -146,6 +146,17 @@ func setupCLI(ctx context.Context, args []string, config string) error {
 var machineName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
 
 func createNodeConfig(path, name, gateway, token, listen string, host bool) error {
+	return writeNodeConfig(path, name, gateway, token, listen, host, nil)
+}
+
+func sameGatewayProxy(a, b *model.GatewayProxy) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.URL == b.URL
+}
+
+func writeNodeConfig(path, name, gateway, token, listen string, host bool, proxy *model.GatewayProxy) error {
 	if !machineName.MatchString(name) {
 		return errors.New("invalid machine name")
 	}
@@ -156,7 +167,7 @@ func createNodeConfig(path, name, gateway, token, listen string, host bool) erro
 	if listen == "" {
 		listen = "127.0.0.1:7331"
 	}
-	cfg := node.Config{Name: name, Gateway: gateway, Token: token, DataDir: filepath.Join(base, "state"), WorkDir: filepath.Join(base, "work"), Listen: listen}
+	cfg := node.Config{Name: name, Gateway: gateway, Token: token, DataDir: filepath.Join(base, "state"), WorkDir: filepath.Join(base, "work"), Listen: listen, GatewayProxy: proxy}
 	// Keep the orchestrator's administrative account inaccessible to remote
 	// execution, filesystem reads, and loopback proxying from common workers.
 	if host {
@@ -182,6 +193,9 @@ type pendingEnrollment struct {
 	IdentityID         string                `json:"identityId,omitempty"`
 	PreviousIdentityID string                `json:"previousIdentityId,omitempty"`
 	DataDir            string                `json:"dataDir,omitempty"`
+	// GatewayProxy is the route this enrollment and its profile use. A retry of
+	// the same pending enrollment always reuses it.
+	GatewayProxy *model.GatewayProxy `json:"gatewayProxy,omitempty"`
 }
 
 func enrollCLI(ctx context.Context, args []string, config string) error {
@@ -191,6 +205,7 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 	firewall := f.Bool("firewall", false, "configure Windows firewall rules, requesting UAC elevation if needed")
 	hybridSystem := f.Bool("hybrid-system", false, "require a protected Hybrid System companion invitation")
 	preflight := f.Bool("preflight", false, "validate this invitation and machine without changing the installation or using the invitation")
+	gatewayProxy := f.String("gateway-proxy", "", "reach the gateway through this http://HOST:PORT CONNECT proxy and save it in the profile; direct removes a saved proxy")
 	mode := f.String("service", os.Getenv("CONTROL_SERVICE_MODE"), "auto, user (at login), system (at boot), or process; defaults to saved mode")
 	if err := f.Parse(args); err != nil {
 		return err
@@ -199,6 +214,12 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 		return errors.New("installation URL is required")
 	}
 	*link = strings.TrimRight(*link, "/")
+	var requested *string
+	f.Visit(func(set *flag.Flag) {
+		if set.Name == "gateway-proxy" {
+			requested = gatewayProxy
+		}
+	})
 	selectedMode, err := installation.ServiceMode(config, *mode)
 	if err != nil {
 		return err
@@ -211,7 +232,7 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 		return err
 	}
 	if *preflight {
-		return preflightEnrollment(ctx, config, *link, *mode, *requireAutoName)
+		return preflightRoutedEnrollment(ctx, config, *link, *mode, *requireAutoName, requested)
 	}
 	if err := os.MkdirAll(filepath.Dir(config), 0700); err != nil {
 		return err
@@ -226,7 +247,7 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 	}
 	defer func() { _ = lock.Close() }()
 	pendingPath := filepath.Join(filepath.Dir(config), "pending-enrollment.json")
-	pending, err := prepareEnrollment(ctx, config, *link, *requireAutoName)
+	pending, err := prepareRoutedEnrollment(ctx, config, *link, *requireAutoName, requested)
 	if err != nil {
 		return err
 	}
@@ -236,9 +257,13 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 	if *hybridSystem && *mode != "system" && (runtime.GOOS != "windows" || *mode != "auto") {
 		return errors.New("hybrid system enrollment requires system startup")
 	}
-	c := client.Admin{URL: strings.TrimRight(*link, "/")}
+	route, err := pending.route()
+	if err != nil {
+		return err
+	}
+	c := client.Admin{URL: strings.TrimRight(*link, "/"), Route: route}
 	if _, err := os.Stat(config); os.IsNotExist(err) {
-		if err = createNodeConfig(config, pending.Invitation.Name, pending.Invitation.Gateway, pending.Credential, "", false); err != nil {
+		if err = writeNodeConfig(config, pending.Invitation.Name, pending.Invitation.Gateway, pending.Credential, "", false, pending.GatewayProxy); err != nil {
 			return err
 		}
 	} else if err != nil {
@@ -248,7 +273,7 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 	if err != nil {
 		return err
 	}
-	if len(pending.Config) == 0 && (cfg.Name != pending.Invitation.Name || cfg.Gateway != pending.Invitation.Gateway || cfg.Token != pending.Credential) {
+	if len(pending.Config) == 0 && (cfg.Name != pending.Invitation.Name || cfg.Gateway != pending.Invitation.Gateway || cfg.Token != pending.Credential || !sameGatewayProxy(cfg.GatewayProxy, pending.GatewayProxy)) {
 		return errors.New("pending enrollment does not match local configuration")
 	}
 	id, err := identity.Load(cfg.DataDir)
@@ -272,7 +297,7 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 		}
 	}
 	ticket := (*link)[strings.LastIndex(*link, "/")+1:]
-	q := enrollment.Redemption{PublicKey: id.Public, CredentialHash: enrollment.Hash(pending.Credential)}
+	q := enrollment.Redemption{PublicKey: id.Public, CredentialHash: enrollment.Hash(pending.Credential), GatewayProxy: pending.Invitation.ProxyURL()}
 	if pending.Invitation.AutoName {
 		q.Name = pending.Invitation.Name
 	}
@@ -433,6 +458,17 @@ func prepareReenrollment(config string, pending *pendingEnrollment) error {
 	for key, value := range map[string]string{"name": pending.Invitation.Name, "gateway": pending.Invitation.Gateway, "token": pending.Credential} {
 		fields[key], _ = json.Marshal(value)
 	}
+	// The route is enrollment-owned: the invitation, an explicit flag, or the
+	// preserved profile route selected it. Commit it with the profile, before
+	// service startup, so runtime never depends on the invitation ticket.
+	if pending.GatewayProxy != nil {
+		if len(cfg.ProxyEndpoints) != 0 {
+			return errors.New("this machine advertises proxyEndpoints and cannot itself use a gateway proxy; proxy chains are not supported")
+		}
+		fields["gatewayProxy"] = model.JSON(pending.GatewayProxy)
+	} else {
+		delete(fields, "gatewayProxy")
+	}
 	if pending.DataDir != "" {
 		fields["dataDir"], _ = json.Marshal(pending.DataDir)
 	}
@@ -475,7 +511,11 @@ func refreshEnrollmentIdentity(ctx context.Context, config string, pending *pend
 	if id.ID != pending.IdentityID {
 		return errors.New("pending enrollment does not match local identity")
 	}
-	state, _, err := (client.Admin{URL: pending.Invitation.Gateway}).InspectMachineState(ctx, id)
+	route, err := pending.route()
+	if err != nil {
+		return err
+	}
+	state, _, err := (client.Admin{URL: pending.Invitation.Gateway, Route: route}).InspectMachineState(ctx, id)
 	if err != nil {
 		return err
 	}

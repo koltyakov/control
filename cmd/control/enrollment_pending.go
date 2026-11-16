@@ -13,8 +13,10 @@ import (
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/client"
 	"github.com/koltyakov/control/internal/enrollment"
+	"github.com/koltyakov/control/internal/gatewayroute"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/installation"
+	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/node"
 	"github.com/koltyakov/control/internal/store"
 	"github.com/koltyakov/control/internal/update"
@@ -23,6 +25,12 @@ import (
 // The caller holds the profile's installation lock. Validate a new invitation
 // before atomically replacing pending recovery state or stopping the node.
 func prepareEnrollment(ctx context.Context, config, link string, requireAutoName bool) (pendingEnrollment, error) {
+	return prepareRoutedEnrollment(ctx, config, link, requireAutoName, nil)
+}
+
+// prepareRoutedEnrollment applies an explicit --gateway-proxy selection. nil
+// keeps a pending enrollment's saved route or the existing profile's route.
+func prepareRoutedEnrollment(ctx context.Context, config, link string, requireAutoName bool, requested *string) (pendingEnrollment, error) {
 	link = strings.TrimRight(link, "/")
 	path := filepath.Join(filepath.Dir(config), "pending-enrollment.json")
 	var previous pendingEnrollment
@@ -31,6 +39,10 @@ func prepareEnrollment(ctx context.Context, config, link string, requireAutoName
 		return pendingEnrollment{}, err
 	}
 	if err == nil && strings.TrimRight(previous.URL, "/") == link {
+		// A retry keeps the saved route and identity, even if the network changed.
+		if err = sameRequestedRoute(previous.GatewayProxy, requested); err != nil {
+			return pendingEnrollment{}, err
+		}
 		if err = checkHybridUserInvitation(previous.Invitation); err != nil {
 			return pendingEnrollment{}, err
 		}
@@ -42,7 +54,11 @@ func prepareEnrollment(ctx context.Context, config, link string, requireAutoName
 		}
 		return previous, store.Write(path, previous)
 	}
-	pending, err := inspectInvitation(ctx, config, link, requireAutoName, previous)
+	selected, err := enrollmentRoute(config, requested)
+	if err != nil {
+		return pendingEnrollment{}, err
+	}
+	pending, err := inspectInvitation(ctx, config, link, requireAutoName, previous, selected)
 	if err != nil {
 		return pending, err
 	}
@@ -54,11 +70,21 @@ func prepareEnrollment(ctx context.Context, config, link string, requireAutoName
 
 // inspectInvitation validates a new invitation against this machine and profile
 // without writing recovery state or a new identity.
-func inspectInvitation(ctx context.Context, config, link string, requireAutoName bool, previous pendingEnrollment) (pendingEnrollment, error) {
+func inspectInvitation(ctx context.Context, config, link string, requireAutoName bool, previous pendingEnrollment, selected *model.GatewayProxy) (pendingEnrollment, error) {
 	var pending pendingEnrollment
-	c := client.Admin{URL: link}
-	err := c.JSON(ctx, "GET", "/info?arch="+runtime.GOARCH, nil, &pending.Invitation)
+	route, err := gatewayroute.FromConfig(selected)
 	if err != nil {
+		return pending, err
+	}
+	if err = route.CheckGateway(link); err != nil {
+		return pending, err
+	}
+	c := client.Admin{URL: link, Route: route}
+	err = c.JSON(ctx, "GET", "/info?arch="+runtime.GOARCH, nil, &pending.Invitation)
+	if err != nil {
+		return pending, err
+	}
+	if pending.GatewayProxy, err = invitationRoute(pending.Invitation, selected); err != nil {
 		return pending, err
 	}
 	if err = checkHybridUserInvitation(pending.Invitation); err != nil {
@@ -112,6 +138,10 @@ func inspectInvitation(ctx context.Context, config, link string, requireAutoName
 // preflightEnrollment finds problems that would otherwise surface only after a
 // Hybrid System companion is installed. It writes nothing and keeps the ticket.
 func preflightEnrollment(ctx context.Context, config, link, mode string, requireAutoName bool) error {
+	return preflightRoutedEnrollment(ctx, config, link, mode, requireAutoName, nil)
+}
+
+func preflightRoutedEnrollment(ctx context.Context, config, link, mode string, requireAutoName bool, requested *string) error {
 	path := filepath.Join(filepath.Dir(config), "pending-enrollment.json")
 	var previous pendingEnrollment
 	err := store.Read(path, &previous)
@@ -120,9 +150,15 @@ func preflightEnrollment(ctx context.Context, config, link, mode string, require
 	}
 	pending := previous
 	if err != nil || strings.TrimRight(previous.URL, "/") != link {
-		if pending, err = inspectInvitation(ctx, config, link, requireAutoName, previous); err != nil {
+		selected, err := enrollmentRoute(config, requested)
+		if err != nil {
 			return err
 		}
+		if pending, err = inspectInvitation(ctx, config, link, requireAutoName, previous, selected); err != nil {
+			return err
+		}
+	} else if err = sameRequestedRoute(previous.GatewayProxy, requested); err != nil {
+		return err
 	} else if requireAutoName && !previous.Invitation.AutoName {
 		return errors.New("pending enrollment does not use automatic naming")
 	}
@@ -169,7 +205,11 @@ func preflightIdentity(ctx context.Context, cfg node.Config, pending pendingEnro
 	if err != nil {
 		return nil, err
 	}
-	state, _, err := (client.Admin{URL: pending.Invitation.Gateway}).InspectMachineState(ctx, id)
+	route, err := pending.route()
+	if err != nil {
+		return nil, err
+	}
+	state, _, err := (client.Admin{URL: pending.Invitation.Gateway, Route: route}).InspectMachineState(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +224,7 @@ func preflightIdentity(ctx context.Context, cfg node.Config, pending pendingEnro
 
 func checkRedemption(ctx context.Context, link string, pending pendingEnrollment, id *identity.Identity) error {
 	ticket := link[strings.LastIndex(link, "/")+1:]
-	q := enrollment.Redemption{}
+	q := enrollment.Redemption{GatewayProxy: pending.Invitation.ProxyURL()}
 	if pending.Invitation.AutoName {
 		q.Name = pending.Invitation.Name
 	}
@@ -192,10 +232,91 @@ func checkRedemption(ctx context.Context, link string, pending pendingEnrollment
 		q.PublicKey = id.Public
 		q.Signature = ed25519.Sign(id.Private, enrollment.CheckMessage(ticket, q))
 	}
-	err := (client.Admin{URL: link}).JSON(ctx, "POST", "/check", q, nil)
+	route, err := pending.route()
+	if err != nil {
+		return err
+	}
+	err = (client.Admin{URL: link, Route: route}).JSON(ctx, "POST", "/check", q, nil)
 	// Older gateways have no check route; redemption still enforces the rules.
 	if err != nil && strings.HasPrefix(err.Error(), "gateway 404 ") {
 		return nil
 	}
 	return err
+}
+
+// route returns the gateway route saved with this pending enrollment.
+func (p pendingEnrollment) route() (gatewayroute.Route, error) {
+	return gatewayroute.FromConfig(p.GatewayProxy)
+}
+
+// enrollmentRoute selects the route for a new invitation: an explicit flag
+// ("direct" removes a saved proxy), otherwise the existing profile's route.
+// Inherited proxy environment variables are never consulted.
+func enrollmentRoute(config string, requested *string) (*model.GatewayProxy, error) {
+	if requested != nil {
+		if *requested == "direct" {
+			return nil, nil
+		}
+		route, err := gatewayroute.New(*requested)
+		if err != nil {
+			return nil, fmt.Errorf("--gateway-proxy: %w", err)
+		}
+		if !route.Proxied() {
+			return nil, errors.New("--gateway-proxy requires http://HOST:PORT or direct")
+		}
+		return &model.GatewayProxy{URL: route.Proxy()}, nil
+	}
+	cfg, err := installation.ReadConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.GatewayProxy == nil {
+		return nil, nil
+	}
+	route, err := gatewayroute.FromConfig(cfg.GatewayProxy)
+	if err != nil {
+		return nil, fmt.Errorf("saved gatewayProxy: %w", err)
+	}
+	return &model.GatewayProxy{URL: route.Proxy(), Worker: cfg.GatewayProxy.Worker}, nil
+}
+
+// invitationRoute requires a proxied invitation's exact endpoint, so a stale or
+// edited command cannot silently enroll directly or through another proxy.
+func invitationRoute(invitation enrollment.Invitation, selected *model.GatewayProxy) (*model.GatewayProxy, error) {
+	if invitation.GatewayProxy == nil {
+		return selected, nil
+	}
+	want, err := gatewayroute.New(invitation.GatewayProxy.URL)
+	if err != nil || !want.Proxied() {
+		return nil, errors.New("invitation contains an invalid gateway proxy")
+	}
+	if selected == nil || selected.URL != want.Proxy() {
+		return nil, fmt.Errorf("this invitation reaches the gateway through %s; rerun with --gateway-proxy %s", want.Proxy(), want.Proxy())
+	}
+	return &model.GatewayProxy{URL: want.Proxy(), Worker: invitation.GatewayProxy.Worker}, nil
+}
+
+func sameRequestedRoute(saved *model.GatewayProxy, requested *string) error {
+	if requested == nil {
+		return nil
+	}
+	want := ""
+	if *requested != "direct" {
+		route, err := gatewayroute.New(*requested)
+		if err != nil {
+			return fmt.Errorf("--gateway-proxy: %w", err)
+		}
+		want = route.Proxy()
+	}
+	have := ""
+	if saved != nil {
+		have = saved.URL
+	}
+	if want != have {
+		if have == "" {
+			have = "direct"
+		}
+		return fmt.Errorf("pending enrollment uses gateway route %s; finish it with the same route or remove pending-enrollment.json after revoking the invitation", have)
+	}
+	return nil
 }

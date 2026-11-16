@@ -11,8 +11,41 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/update"
 )
+
+func TestProxiedPowerShellDownloadsRefuseRedirects(t *testing.T) {
+	proxy := "http://10.20.0.5:3128"
+	command := InstallCommand("https://gateway.example/install/ticket", true, "", proxy)
+	verify := `
+$script:executed = $false
+function Invoke-RestMethod {
+  [CmdletBinding()]
+  param([string]$Uri, [string]$Proxy, [int]$MaximumRedirection = -1)
+  if ($Proxy -ne 'http://10.20.0.5:3128' -or $MaximumRedirection -ne 0) { throw 'Redirect policy is missing' }
+  Write-Error 'redirect refused'
+  return '$script:executed = $true'
+}
+$failure = $null
+try { ` + command + ` } catch { $failure = $_.Exception.Message }
+if ($failure -ne 'redirect refused' -or $script:executed) { throw 'Bootstrap did not stop before executing a redirected response' }
+`
+	if output, err := windowsPowerShellFileCommand(t, verify).CombinedOutput(); err != nil {
+		t.Fatalf("PowerShell bootstrap redirect: %v\n%s", err, output)
+	}
+	// Binary and Hybrid companion downloads use the same no-redirect policy.
+	i := Invitation{ServiceMode: "hybrid", HybridRole: "user", GatewayProxy: &model.GatewayProxy{URL: proxy}, Asset: update.Asset{OS: "windows", Arch: "amd64"}}
+	script, err := Script(i, "https://gateway.example/install/ticket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for line := range strings.SplitSeq(script, "\n") {
+		if (strings.Contains(line, "Invoke-WebRequest") || strings.Contains(line, "Invoke-RestMethod")) && !strings.Contains(line, "-MaximumRedirection 0") {
+			t.Fatalf("redirects permitted: %s", line)
+		}
+	}
+}
 
 func windowsPowerShellCommand(t *testing.T, script string) *exec.Cmd {
 	t.Helper()
@@ -135,7 +168,7 @@ func TestWindowsInstallerParsesAndLoadsWholeResponse(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				command := InstallCommand(link, true, mode)
+				command := InstallCommand(link, true, mode, "")
 				// Parse the real installer without running it. Execute only a harmless
 				// multi-line response through a mocked web request, with no network,
 				// enrollment, filesystem changes, or privilege changes.
@@ -174,7 +207,7 @@ func TestWindowsInstallCommandRunsInPowerShell(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	for _, path := range []string{"/install/token", "/a'b/install/token", "/$path/install/token"} {
-		command := InstallCommand(server.URL+path, true, "user")
+		command := InstallCommand(server.URL+path, true, "user", "")
 		t.Run(path, func(t *testing.T) {
 			cmd := windowsPowerShellFileCommand(t, command)
 			var stderr bytes.Buffer

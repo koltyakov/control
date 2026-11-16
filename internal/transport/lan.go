@@ -113,7 +113,7 @@ func (d *lanDirectory) poll(ctx context.Context, p *Peer) ([]model.Node, error) 
 	if d.etag != "" {
 		req.Header.Set("If-None-Match", d.etag)
 	}
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	resp, err := p.cfg.Route.Client(15*time.Second, true).Do(req)
 	if err != nil {
 		return nil, gatewayNetworkError(err)
 	}

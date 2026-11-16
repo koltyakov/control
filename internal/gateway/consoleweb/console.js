@@ -45,11 +45,14 @@
  * @property {string} [hybridId]
  * @property {string} [hybridRole]
  * @property {string} [wakeVia]
+ * @property {ProxyEndpointStatus[]} [proxyEndpoints] Owner-visible advertised gateway proxies.
  * @property {Machine[]} [contexts] Presentation-only grouping, never sent to the API.
  * @property {string} [targetName]
  * @typedef {Machine & {contexts: Machine[]}} MachineGroup
  * @typedef {{observedAt: string, nodes: Machine[], gateway?: {url: string, startedAt: string, software: Software, system?: SystemInfo}}} FleetSnapshot
- * @typedef {{id: string, name: string, autoName?: boolean, expiresAt: string, revoked?: boolean, redeemedId?: string, serviceMode?: string, hybridId?: string, hybridRole?: string, asset?: {os: string}}} Invitation
+ * @typedef {{url: string, interface?: string, state: string, checkedAt?: string, error?: string}} ProxyEndpointStatus
+ * @typedef {{url: string, worker?: string}} GatewayProxy
+ * @typedef {{id: string, name: string, autoName?: boolean, expiresAt: string, revoked?: boolean, redeemedId?: string, serviceMode?: string, hybridId?: string, hybridRole?: string, asset?: {os: string}, gatewayProxy?: GatewayProxy}} Invitation
  * @typedef {Invitation & {command: string}} InstallationLink
  * @typedef {{id: string, name: string, role: string, createdAt: string, revoked?: boolean}} FleetKey
  * @typedef {{id: string, name: string, createdAt: string, disabled?: boolean}} FleetUser
@@ -62,7 +65,7 @@
  * @typedef {{id: string, expiresAt: number, key: string, nonce: string, ciphertext: string}} SecretEnvelope
  * @typedef {{removed: number, hidden?: number}} ClearResult
  * @typedef {{token: string}} IssuedKey
- * @typedef {{name: string, autoName?: boolean, os: string, serviceMode: string, ttlSeconds: number, gateway: string, force: boolean}} InstallationRequest
+ * @typedef {{name: string, autoName?: boolean, os: string, serviceMode: string, ttlSeconds: number, gateway: string, force: boolean, proxyWorker?: string, proxyUrl?: string}} InstallationRequest
  * @typedef {{login: {username: string, password: string}, logout: never, 'fleet/installations': InstallationRequest, 'fleet/keys': {name: string}, 'admin/users': {name: string}, 'admin/updates/check': never} & Record<`fleet/nodes/${string}/startup`, {mode: string}> & Record<`fleet/nodes/${string}/wake`, never>} PostBody
  * @typedef {{'console/password': {username?: string, currentPassword?: string, password: string}} & Record<`fleet/nodes/${string}/secrets/${string}`, SecretEnvelope>} PutBody
  * @typedef {Record<`fleet/nodes/${string}`, {name?: string, force?: boolean, disabled?: boolean}> & Record<`fleet/keys/${string}`, {name: string}>} PatchBody
@@ -1343,7 +1346,7 @@ function renderInvitations(items) {
         : Date.now() > new Date(i.expiresAt).getTime()
           ? "Expired"
           : "Pending";
-    return `<tr><td><strong>${esc(i.name || "Target hostname")}</strong>${i.autoName ? '<small class="muted"> · Automatic name</small>' : ""}</td><td>${esc(osName(i.asset?.os))}</td><td>${badge(status)}</td><td>${esc(startup[i.serviceMode] || i.serviceMode || "Platform default")}</td><td class="muted">${esc(date(i.expiresAt))}</td><td class="action-column">${inviteAction(i, status)}</td></tr>`;
+    return `<tr><td><strong>${esc(i.name || "Target hostname")}</strong>${i.autoName ? '<small class="muted"> · Automatic name</small>' : ""}${i.gatewayProxy ? `<small class="muted"> · Via ${esc(proxyWorkerName(i.gatewayProxy))} at ${esc(i.gatewayProxy.url)}</small>` : ""}</td><td>${esc(osName(i.asset?.os))}</td><td>${badge(status)}</td><td>${esc(startup[i.serviceMode] || i.serviceMode || "Platform default")}</td><td class="muted">${esc(date(i.expiresAt))}</td><td class="action-column">${inviteAction(i, status)}</td></tr>`;
   });
   return panel(
     "Installation invitations",
@@ -2424,6 +2427,8 @@ function showInstallationCommand(
   description = "Run this command on the intended machine. Treat it as a temporary credential. It is shown only here and cannot be retrieved later.",
 ) {
   state.invitation = link;
+  if (link.gatewayProxy)
+    description += ` The target reaches the gateway through ${proxyWorkerName(link.gatewayProxy)} at ${link.gatewayProxy.url}, and must be able to reach that address.`;
   showSecret("Install on the target machine", command, description);
   const note = document.createElement("p");
   note.id = "enrollment-progress";
@@ -2435,13 +2440,21 @@ function showInstallationCommand(
 /** @returns {void} */
 function addMachine() {
   state.invitation = null;
+  const workers = proxyWorkers(),
+    ready = workers.filter((n) => readyEndpoints(n).length);
   formDialog(
     "Add a machine",
-    `<p>Create a one-time installation command for the target machine.</p><label>Machine name<input name="name" placeholder="Use target hostname" maxlength="63" pattern="[a-zA-Z0-9]([a-zA-Z0-9._]|-){0,62}"></label><p class="field-help">Leave blank to use the target's hostname. Existing names create a replacement enrollment.</p><div class="form-grid"><label>Platform<select name="os"><option value="linux">Linux</option><option value="darwin">macOS</option><option value="windows">Windows</option></select></label><label>Startup context<select name="serviceMode"><option value="user">User context</option><option value="system">System context</option><option value="hybrid">Hybrid</option></select></label></div><p class="field-help">User uses your files and desktop session and may stop at logout. System starts at boot as root on Unix or LocalService on Windows. Hybrid installs both as isolated profiles, with a NAME-system companion running as root or Windows LocalSystem. Explicit System work requires an instruction grant; failures never trigger elevation. Hybrid names allow 56 characters. Run Hybrid as your user on Unix, or in Administrator PowerShell on Windows.</p><div class="notice">The gateway needs published amd64 and arm64 installers for the selected platform. This invitation expires after 15 minutes.</div>`,
+    `<p>Create a one-time installation command for the target machine.</p><label>Machine name<input name="name" placeholder="Use target hostname" maxlength="63" pattern="[a-zA-Z0-9]([a-zA-Z0-9._]|-){0,62}"></label><p class="field-help">Leave blank to use the target's hostname. Existing names create a replacement enrollment.</p><div class="form-grid"><label>Platform<select name="os"><option value="linux">Linux</option><option value="darwin">macOS</option><option value="windows">Windows</option></select></label><label>Startup context<select name="serviceMode"><option value="user">User context</option><option value="system">System context</option><option value="hybrid">Hybrid</option></select></label></div><p class="field-help">User uses your files and desktop session and may stop at logout. System starts at boot as root on Unix or LocalService on Windows. Hybrid installs both as isolated profiles, with a NAME-system companion running as root or Windows LocalSystem. Explicit System work requires an instruction grant; failures never trigger elevation. Hybrid names allow 56 characters. Run Hybrid as your user on Unix, or in Administrator PowerShell on Windows.</p>${proxyFields(workers, ready)}<div class="notice">The gateway needs published amd64 and arm64 installers for the selected platform. This invitation expires after 15 minutes.</div>`,
     async (fields, current) => {
       const name = fields.name.trim(),
-        automatic = !name || name === "auto";
-      const link = await api("fleet/installations", "POST", {
+        automatic = !name || name === "auto",
+        via = fields.connection === "proxy",
+        proxyWorker = via ? fields.proxyWorker || "" : "",
+        proxyUrl = via ? fields.proxyUrl || "" : "";
+      if (via && !proxyWorker) throw new Error("Select a ready proxy worker in this fleet.");
+      if (via && !proxyUrl) throw new Error("Select the address the target machine can reach.");
+      /** @type {InstallationRequest} */
+      const request = {
         name: automatic ? "" : name,
         autoName: automatic,
         os: fields.os,
@@ -2449,14 +2462,70 @@ function addMachine() {
         ttlSeconds: 900,
         gateway: location.origin,
         force: fields.force === "on",
-      });
+      };
+      if (via) Object.assign(request, { proxyWorker, proxyUrl });
+      const link = await api("fleet/installations", "POST", request);
       if (!current()) return false;
+      // Never retry: an unconfirmed selection must be checked in invitations.
+      if (via && (link.gatewayProxy?.worker !== proxyWorker || link.gatewayProxy?.url !== proxyUrl))
+        throw new Error("The gateway did not confirm the requested proxy. Check invitations before creating another command.");
       showInstallationCommand(link);
       return false;
     },
     "Create installation command",
     false, "", true,
   );
+  const sync = () => {
+    const via = $('#modal-form select[name="connection"]').value === "proxy",
+      worker = $('#modal-form select[name="proxyWorker"]');
+    $("#proxy-worker-field").hidden = !via;
+    $("#proxy-guidance").hidden = !via;
+    worker.disabled = !via;
+    /** @type {NodeListOf<HTMLLabelElement>} */ (document.querySelectorAll("#modal-form .proxy-address")).forEach((label) => {
+      const active = via && label.dataset.worker === worker.value;
+      label.hidden = !active;
+      $("select", label).disabled = !active;
+    });
+  };
+  $('#modal-form select[name="connection"]').addEventListener("change", sync);
+  $('#modal-form select[name="proxyWorker"]').addEventListener("change", sync);
+  sync();
+}
+/** @returns {Machine[]} */
+function proxyWorkers() {
+  return (state.snapshot?.nodes || []).filter((n) => n.proxyEndpoints?.length);
+}
+/** @param {Machine} n @returns {ProxyEndpointStatus[]} */
+function readyEndpoints(n) {
+  return n.online && !n.disabled ? (n.proxyEndpoints || []).filter((e) => e.state === "ready") : [];
+}
+/** @param {GatewayProxy} proxy @returns {string} */
+function proxyWorkerName(proxy) {
+  const worker = state.snapshot?.nodes.find((n) => n.id === proxy.worker);
+  return worker?.name || (proxy.worker ? proxy.worker.slice(0, 12) : "worker");
+}
+/** @param {ProxyEndpointStatus} e @returns {string} */
+function endpointText(e) {
+  const checked = e.checkedAt ? " · checked " + age(e.checkedAt) + " ago" : "";
+  return e.url + (e.interface ? " (" + e.interface + ")" : "") + " · " + e.state + checked + (e.error ? " · " + e.error : "");
+}
+// Stable IDs are submitted; names are display only. Each worker has its own
+// address select, so ambiguous workers require an explicit choice.
+/** @param {Machine[]} workers @param {Machine[]} ready @returns {string} */
+function proxyFields(workers, ready) {
+  const unavailable = workers.filter((n) => !readyEndpoints(n).length);
+  const addresses = ready.map((n) => {
+    const endpoints = readyEndpoints(n),
+      ambiguous = (n.proxyEndpoints || []).length > 1;
+    return `<label class="proxy-address" data-worker="${esc(n.id)}" hidden>Address<select name="proxyUrl" disabled${ambiguous ? " required" : ""}>${ambiguous ? '<option value="">Select an address</option>' : ""}${endpoints.map((e) => `<option value="${esc(e.url)}">${esc(endpointText(e))}</option>`).join("")}</select></label>`;
+  });
+  return `<div class="form-grid"><label>Connection<select name="connection"><option value="direct">Direct</option><option value="proxy">Through worker</option></select></label><label id="proxy-worker-field" hidden>Worker<select name="proxyWorker" disabled>${ready.length ? ready.map((n) => `<option value="${esc(n.id)}">${esc(n.name)}</option>`).join("") : '<option value="">No ready proxy workers</option>'}</select></label></div>${addresses.join("")}<div id="proxy-guidance" class="field-help" hidden><p>The target reaches the gateway, its scripts, and binaries through a CONNECT proxy on the selected worker. The target must be able to reach the selected LAN or VPN address; readiness proves only the proxy-to-gateway path.</p>${unavailable.length ? `<p>Not ready: ${unavailable.map((n) => esc(n.name + (n.online ? "" : " (offline)") + ": " + (n.proxyEndpoints || []).map(endpointText).join(", "))).join("; ")}</p>` : ""}</div>`;
+}
+// Advertised proxies with the worker's own fresh readiness checks.
+/** @param {Machine} n @returns {string} */
+function proxySection(n) {
+  if (!n.proxyEndpoints?.length) return "";
+  return `<section class="drawer-section"><h3>Gateway proxy</h3><dl class="metadata">${n.proxyEndpoints.map((e) => `<dt>${esc(e.interface || "Endpoint")}</dt><dd><span class="mono">${esc(e.url)}</span><small class="muted">${esc(e.state)}${e.checkedAt ? " · checked " + esc(age(e.checkedAt)) + " ago" : ""}${e.error ? " · " + esc(e.error) : ""}</small></dd>`).join("")}</dl></section>`;
 }
 /** @returns {Promise<void>} */
 async function updateInvitation() {
@@ -2535,7 +2604,7 @@ function machineDetails(id) {
             `<div class="disk-usage">${meter(percent(disk.usedBytes, disk.totalBytes), "Disk utilization for " + disk.path)}<small class="muted mono">${esc(disk.path)}</small><small class="muted">${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small></div>`,
         )
         .join("") || meter(null, "Disk utilization")
-    }</dd><dt>Processor</dt><dd>${esc(sys.cpuModel || "Unknown")}${sys.logicalCPUs ? " · " + esc(sys.logicalCPUs) + " cores" : ""}</dd><dt>Sampled</dt><dd>${esc(date(sys.sampledAt))}${n.online ? "" : `<small class="muted">Cached while offline</small>`}</dd></dl></section>${activitySection(n)}<section class="drawer-section"><h3>System</h3><dl class="metadata"><dt>Platform</dt><dd>${esc(platformText(n) || "Unknown")}</dd>${n.runAs ? `<dt>Runs as</dt><dd>${runAsLabels[n.runAs][1]}</dd>` : ""}<dt>Version</dt><dd>${esc(n.software?.version || "Unknown")}</dd><dt>Labels</dt><dd>${labels.length ? `<span class="labels">${labels.map(([k, v]) => `<span class="label-chip">${esc(k)}=${esc(v)}</span>`).join("")}</span>` : "None"}</dd>${n.online ? "" : `<dt>Last seen</dt><dd>${esc(date(n.lastSeen))}</dd>`}<dt>Identity</dt><dd class="mono">${esc(n.id)}</dd></dl></section>${!n.online && n.wakeVia ? `<p class="drawer-note">Wake sends a Wake-on-LAN packet from ${esc(n.wakeVia)}, an online machine on the same LAN. The machine appears online once its node starts.</p>` : ""}<div class="drawer-actions">${!n.online && n.wakeVia ? `<button class="primary" data-action="wake" data-id="${esc(n.id)}">Wake</button>` : ""}<button class="secondary" data-action="rename" data-id="${esc(n.id)}">Rename</button><button class="secondary" data-action="toggle" data-id="${esc(n.id)}">${n.disabled ? "Enable" : "Disable"}</button><button class="secondary square machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="More actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div>`,
+    }</dd><dt>Processor</dt><dd>${esc(sys.cpuModel || "Unknown")}${sys.logicalCPUs ? " · " + esc(sys.logicalCPUs) + " cores" : ""}</dd><dt>Sampled</dt><dd>${esc(date(sys.sampledAt))}${n.online ? "" : `<small class="muted">Cached while offline</small>`}</dd></dl></section>${activitySection(n)}${proxySection(n)}<section class="drawer-section"><h3>System</h3><dl class="metadata"><dt>Platform</dt><dd>${esc(platformText(n) || "Unknown")}</dd>${n.runAs ? `<dt>Runs as</dt><dd>${runAsLabels[n.runAs][1]}</dd>` : ""}<dt>Version</dt><dd>${esc(n.software?.version || "Unknown")}</dd><dt>Labels</dt><dd>${labels.length ? `<span class="labels">${labels.map(([k, v]) => `<span class="label-chip">${esc(k)}=${esc(v)}</span>`).join("")}</span>` : "None"}</dd>${n.online ? "" : `<dt>Last seen</dt><dd>${esc(date(n.lastSeen))}</dd>`}<dt>Identity</dt><dd class="mono">${esc(n.id)}</dd></dl></section>${!n.online && n.wakeVia ? `<p class="drawer-note">Wake sends a Wake-on-LAN packet from ${esc(n.wakeVia)}, an online machine on the same LAN. The machine appears online once its node starts.</p>` : ""}<div class="drawer-actions">${!n.online && n.wakeVia ? `<button class="primary" data-action="wake" data-id="${esc(n.id)}">Wake</button>` : ""}<button class="secondary" data-action="rename" data-id="${esc(n.id)}">Rename</button><button class="secondary" data-action="toggle" data-id="${esc(n.id)}">${n.disabled ? "Enable" : "Disable"}</button><button class="secondary square machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="More actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div>`,
     "machine-drawer",
   );
 }

@@ -196,7 +196,7 @@ func (r *routing) start(ctx context.Context) error {
 	}
 	peer := transport.New(transport.Config{
 		Client:  true,
-		Gateway: r.cfg.Gateway.URL, Token: r.cfg.Gateway.Key, Identity: sessionID, ClientOwner: id,
+		Gateway: r.cfg.Gateway.URL, Token: r.cfg.Gateway.Key, Identity: sessionID, ClientOwner: id, Route: r.cfg.Gateway.Route,
 		Node:      model.Node{ID: sessionID.ID, Name: "cli-" + id.ID[:16], PublicKey: sessionID.Public, OS: runtime.GOOS},
 		RelayOnly: r.cfg.RelayOnly, ICEServers: r.cfg.ICEServers,
 		RequireDelegation: r.cfg.AccountRouting,

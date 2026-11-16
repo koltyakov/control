@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,14 +29,19 @@ type networkRoute struct {
 // Track gateway egress networks, not the host's entire address inventory. IPv6
 // privacy addresses can alternate on one interface/subnet without changing any
 // established connection. UDP connect asks the OS for a route; no packets are sent.
-func networkProbe(ctx context.Context, gatewayURL string) func() (string, error) {
+// A proxied node watches its route to the proxy: the gateway may not resolve.
+func networkProbe(ctx context.Context, host, port string) func() (string, error) {
 	var targets []*net.UDPAddr
-	if u, err := url.Parse(gatewayURL); err == nil {
+	if host != "" {
 		resolve, cancel := context.WithTimeout(ctx, 2*time.Second)
-		addresses, _ := net.DefaultResolver.LookupIPAddr(resolve, u.Hostname())
+		addresses, _ := net.DefaultResolver.LookupIPAddr(resolve, host)
 		cancel()
+		number, err := strconv.Atoi(port)
+		if err != nil || number <= 0 {
+			number = 443
+		}
 		for _, address := range addresses[:min(len(addresses), 16)] {
-			targets = append(targets, &net.UDPAddr{IP: address.IP, Zone: address.Zone, Port: 443})
+			targets = append(targets, &net.UDPAddr{IP: address.IP, Zone: address.Zone, Port: number})
 		}
 	}
 	return func() (string, error) {
@@ -110,7 +114,8 @@ func networkFingerprint(interfaces []networkInterface, routes []networkRoute) (s
 func (p *Peer) watchNetwork() {
 	sample := p.networkSnapshot
 	if sample == nil {
-		sample = networkProbe(p.ctx, p.cfg.Gateway)
+		host, port := p.cfg.Route.MonitorHost(p.cfg.Gateway)
+		sample = networkProbe(p.ctx, host, port)
 	}
 	ticker := time.NewTicker(networkPollInterval)
 	defer ticker.Stop()

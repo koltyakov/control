@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/update"
 )
 
@@ -29,6 +30,11 @@ type Request struct {
 	ServiceMode string `json:"serviceMode,omitempty"`
 	Linger      bool   `json:"linger,omitempty"` // Linux Hybrid only: keep the User manager running without a login.
 	Force       bool   `json:"force,omitempty"`
+	// ProxyWorker is the stable ID of a ready same-fleet worker whose advertised
+	// endpoint the child uses to reach the gateway. ProxyURL selects one of its
+	// advertised endpoints and is required when it advertises several.
+	ProxyWorker string `json:"proxyWorker,omitempty"`
+	ProxyURL    string `json:"proxyUrl,omitempty"`
 }
 
 type Invitation struct {
@@ -51,6 +57,18 @@ type Invitation struct {
 	RedeemedID string         `json:"redeemedId,omitempty"`
 	ReplaceID  string         `json:"replaceId,omitempty"` // Existing identity reserved by a same-name invitation.
 	Revoked    bool           `json:"revoked"`
+	// GatewayProxy is the gateway-validated snapshot of the selected proxy
+	// worker and endpoint. Later worker renames or address changes never
+	// rewrite it; a replacement requires a new invitation.
+	GatewayProxy *model.GatewayProxy `json:"gatewayProxy,omitempty"`
+}
+
+// ProxyURL returns the selected endpoint, or "" for a direct invitation.
+func (i Invitation) ProxyURL() string {
+	if i.GatewayProxy == nil {
+		return ""
+	}
+	return i.GatewayProxy.URL
 }
 
 type Link struct {
@@ -64,7 +82,10 @@ type Redemption struct {
 	Name           string `json:"name,omitempty"`
 	PublicKey      []byte `json:"publicKey"`
 	CredentialHash string `json:"credentialHash"`
-	Signature      []byte `json:"signature"`
+	// GatewayProxy echoes a proxied invitation's endpoint. Older installers
+	// omit it, so the gateway refuses them before the ticket is consumed.
+	GatewayProxy string `json:"gatewayProxy,omitempty"`
+	Signature    []byte `json:"signature"`
 }
 
 func Hash(secret string) string {
@@ -87,7 +108,8 @@ func Message(ticket string, r Redemption) []byte {
 		PublicKey                   []byte
 		Arch                        string `json:"arch,omitempty"`
 		Name                        string `json:"name,omitempty"`
-	}{"control-enrollment-v1", Hash(ticket), r.CredentialHash, r.PublicKey, r.Arch, r.Name})
+		GatewayProxy                string `json:"gatewayProxy,omitempty"`
+	}{"control-enrollment-v1", Hash(ticket), r.CredentialHash, r.PublicKey, r.Arch, r.Name, r.GatewayProxy})
 	return b
 }
 
@@ -98,7 +120,8 @@ func CheckMessage(ticket string, r Redemption) []byte {
 		PublicKey       []byte
 		Arch            string `json:"arch,omitempty"`
 		Name            string `json:"name,omitempty"`
-	}{"control-enrollment-check-v1", Hash(ticket), r.PublicKey, r.Arch, r.Name})
+		GatewayProxy    string `json:"gatewayProxy,omitempty"`
+	}{"control-enrollment-check-v1", Hash(ticket), r.PublicKey, r.Arch, r.Name, r.GatewayProxy})
 	return b
 }
 

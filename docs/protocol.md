@@ -140,6 +140,29 @@ Any append error makes the running node's journal dirty. Before another append, 
 
 Artifact accounting includes active imports and resumable partials. Writes stop before exceeding the configured logical budget. A free-space check at admission and each MiB protects metadata headroom, but does not reserve disk against external writers. Owned blobs are never evicted to satisfy the budget. Cleanup removes old unowned staging, partial and unpublished files, and retries pending deletions. Retained task inputs, outputs and result artifacts protect content. Adding a 257th owner fails without turning an owned artifact into a shared record.
 
+## Gateway proxy
+
+`gatewayProxy` routes every gateway request from this node through one explicit CONNECT proxy: authentication, the WebSocket connection and relay, directory/peer lookups, placement reads, signed policy and retirement reads, update selection, and managed binary downloads. Its `url` is `http://HOST:PORT` without credentials, path, query, or fragment; IPv6 hosts are bracketed and zoned addresses rejected. Optional `worker` records the selected proxy worker's stable ID for display. It requires an `https://` gateway, ignores inherited `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, never falls back directly, and changes no global HTTP defaults or provider environments. Proxied nodes download managed binaries from the gateway only. The network monitor watches the route to the proxy. Peer WebRTC is unaffected.
+
+`proxyEndpoints` advertises up to eight separately managed CONNECT proxies on this worker for other fleet machines. Each has a normalized `url` and an optional `interface` label of at most 64 bytes. A node cannot both use `gatewayProxy` and advertise endpoints. The signed registration carries `proxyEndpoints` only to gateways that accept exact registration bytes. Every minute, independently of dashboard polling, the worker checks each endpoint by CONNECT, gateway TLS verification, and `GET /healthz`, bounded to ten seconds. Health reports carry `proxies` entries with `url`, `state` (`ready` or `unavailable`), `checkedAt`, `ageSeconds`, and a sanitized `error` of at most 160 bytes. The gateway keeps only reports for advertised endpoints and dates each check by its own receipt time minus `ageSeconds`.
+
+```json
+{
+  "gateway": "https://control.example.com",
+  "gatewayProxy": { "url": "http://10.20.0.5:3128", "worker": "STABLE_WORKER_ID" }
+}
+```
+
+```json
+{
+  "proxyEndpoints": [{ "url": "http://10.20.0.5:3128", "interface": "office LAN" }]
+}
+```
+
+`GET /v1/status` returns owner-only `proxyEndpoints` on each node snapshot, with `url`, `interface`, `state`, `checkedAt`, and `error`. States are `ready`, `unavailable`, `stale` (no check within three minutes), `offline`, or `unchecked`. `GET /v1/auth` advertises `gatewayProxy: true`.
+
+`POST /v1/fleet/installations` accepts optional `proxyWorker`, a same-fleet stable machine ID, and `proxyUrl`, one of its advertised endpoints. `proxyUrl` is required when the worker advertises several and is rejected without `proxyWorker`. The gateway requires an HTTPS base, an online and enabled worker in the requesting fleet, a matching advertised endpoint, and a fresh `ready` observation, before writing any invitation state. It persists `gatewayProxy: {url, worker}` with the invitation and echoes it in the link, registry, and public `info` responses. The link's command fetches through the endpoint. Clients require the echo and never retry an unconfirmed creation. Redemption and check proofs sign an optional `gatewayProxy` string after `name`; it is omitted for direct invitations, preserving legacy signature bytes. The gateway refuses a proxied invitation's check or redemption unless it equals the selected endpoint. `control enroll --gateway-proxy URL|direct` selects the route; the hidden `control __installer-features` prints `{"gatewayProxy":true}`. See [install through a worker proxy](gateway-proxy.md).
+
 ## Browser automation
 
 Opt-in `browser.run` accepts `{args:[COMMAND,...],session?:NAME,stdin?:TEXT}`. `session` is 1..32 ASCII letters/digits/underscores/hyphens starting with a letter/digit; omission uses `default`. It requires stable agent-browser 0.41.2 or newer, checked with `--version` before each requested command. It invokes absolute `browser.cli` without a shell, with `--json` prepended and inherited agent-browser/home/XDG settings replaced by private defaults. A durable empty upstream config prevents workspace auto-discovery unless absolute `browser.config` selects trusted settings. Full upstream commands/flags are forwarded, including explicit overrides; this is not a sandbox. Commands share `maxTasks` and an owner-specific file lock, not the desktop admission slot. Normal task, owner, delegation, lease, cancellation and maintenance rules remain unchanged.

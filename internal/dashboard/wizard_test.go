@@ -16,7 +16,7 @@ import (
 func TestRegistrationWizardCopiesAndRetriesWithoutCreatingAnotherInvitation(t *testing.T) {
 	created, copied := 0, 0
 	m := view{ctx: context.Background(), width: 80, height: 24, options: Options{
-		Invite: func(_ context.Context, name, platform, mode string) (enrollment.Link, error) {
+		Invite: func(_ context.Context, name, platform, mode string, _ model.GatewayProxy) (enrollment.Link, error) {
 			created++
 			if name != "render-01" || platform != "windows" || mode != "user" {
 				t.Fatalf("wrong registration: %s %s", name, platform)
@@ -88,7 +88,7 @@ func TestRegistrationSelectsStartupContextBeforeCreating(t *testing.T) {
 				created := 0
 				m := view{ctx: context.Background(), width: 80, height: 24,
 					wizard: &registration{id: 1, name: "worker", step: "platform", platform: platform},
-					options: Options{Invite: func(_ context.Context, name, os, gotMode string) (enrollment.Link, error) {
+					options: Options{Invite: func(_ context.Context, name, os, gotMode string, _ model.GatewayProxy) (enrollment.Link, error) {
 						created++
 						if name != "worker" || os != osName || gotMode != mode {
 							t.Fatalf("wrong context: %s %s %s", name, os, gotMode)
@@ -126,7 +126,7 @@ func TestRegistrationSelectsStartupContextBeforeCreating(t *testing.T) {
 func TestRegistrationEmptyNameUsesTargetHostname(t *testing.T) {
 	for _, name := range []string{"", "auto"} {
 		m := view{ctx: context.Background(), wizard: &registration{id: 1, step: "name", name: name}, options: Options{
-			Invite: func(_ context.Context, name, platform, mode string) (enrollment.Link, error) {
+			Invite: func(_ context.Context, name, platform, mode string, _ model.GatewayProxy) (enrollment.Link, error) {
 				if name != "auto" || platform != "darwin" || mode != "user" {
 					t.Fatalf("wrong automatic naming: %q, %q", name, platform)
 				}

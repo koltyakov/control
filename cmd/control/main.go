@@ -23,6 +23,7 @@ import (
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/client"
 	"github.com/koltyakov/control/internal/desktop"
+	"github.com/koltyakov/control/internal/enrollment"
 	"github.com/koltyakov/control/internal/gateway"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/installation"
@@ -33,6 +34,12 @@ import (
 
 func main() {
 	args := os.Args[1:]
+	// Installers check declared capabilities, never version strings, after
+	// verifying the pinned binary and before changing the machine.
+	if len(args) == 1 && args[0] == "__installer-features" {
+		_ = json.NewEncoder(os.Stdout).Encode(enrollment.InstallerFeatures{GatewayProxy: true})
+		return
+	}
 	if len(args) > 0 && args[0] == "__desktop" {
 		desktop.RunHelper(os.Stdin, os.Stdout, args[1:])
 		return
@@ -198,7 +205,7 @@ func run(ctx context.Context, args []string) error {
 	case "runbooks":
 		return runbooksCLI(ctx, c, args[1:])
 	case "login":
-		return loginCLI(ctx, args[1:])
+		return loginCLI(ctx, args[1:], *profile)
 	case "secrets":
 		var override *string
 		flags.Visit(func(f *flag.Flag) {

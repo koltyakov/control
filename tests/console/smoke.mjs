@@ -1459,6 +1459,23 @@ try {
     .waitFor();
   await page.locator("#modal-form [data-action=close]").click();
 
+  // Through worker needs a ready proxy worker; none is advertised here, so the
+  // dialog explains it and submits nothing.
+  await page.locator(".heading-actions [data-action=add]").click();
+  assert.ok(await page.locator("#proxy-worker-field").isHidden(), "Direct must hide proxy fields");
+  await page.locator('#modal-form select[name="connection"]').locator("xpath=preceding-sibling::button[1]").click();
+  await page.locator('[role=option][data-value="proxy"]').click();
+  await page.locator("#proxy-worker-field").waitFor();
+  await page.getByText("must be able to reach the selected LAN or VPN address", { exact: false }).waitFor();
+  await page.locator("#modal-form button[type=submit]").click();
+  await page
+    .locator("#modal-form .form-error")
+    .filter({ hasText: "Select a ready proxy worker" })
+    .waitFor();
+  await page.locator("#modal-form [data-action=close]").click();
+  assert.equal((await api("/v1/fleet/installations", "GET", undefined, account.token)).length, 0,
+    "An unselected proxy worker must not create an invitation");
+
   const os = await publishInstallers();
   const groupedInvitations = await page.evaluate(() => {
     const shared = { expiresAt: new Date(Date.now() + 60000).toISOString() };

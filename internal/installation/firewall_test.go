@@ -3,6 +3,9 @@ package installation
 import (
 	"strings"
 	"testing"
+
+	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/node"
 )
 
 func TestFirewallGatewayPort(t *testing.T) {
@@ -21,6 +24,38 @@ func TestFirewallGatewayPort(t *testing.T) {
 	for _, gateway := range []string{"", "gateway.example", "https://", "file:///profile", "ftp://gateway.example:443", "https://gateway.example:0", "https://gateway.example:65536", "https://gateway.example:bad"} {
 		if port, err := gatewayPort(gateway); err == nil {
 			t.Fatalf("invalid gateway %q accepted as port %q", gateway, port)
+		}
+	}
+}
+
+func TestFirewallUsesConfiguredNextHopIncludingHybrid(t *testing.T) {
+	for _, tc := range []struct {
+		name, gateway, proxy, want string
+		hybrid                     bool
+	}{
+		{name: "direct", gateway: "https://gateway.example", want: "443"},
+		{name: "direct-port", gateway: "https://gateway.example:7443", want: "7443"},
+		{name: "proxy", gateway: "https://gateway.example", proxy: "http://10.20.0.5:3128", want: "3128"},
+		{name: "hybrid", gateway: "https://gateway.example", proxy: "http://[fd00::5]:8080", hybrid: true, want: "8080"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := node.Config{Gateway: tc.gateway, HybridSystem: tc.hybrid}
+			if tc.proxy != "" {
+				cfg.GatewayProxy = &model.GatewayProxy{URL: tc.proxy}
+			}
+			port, err := firewallPort(cfg)
+			if err != nil || port != tc.want {
+				t.Fatalf("TCP next hop: %q %v", port, err)
+			}
+			script := windowsFirewallScript(`C:\control\control.exe`, `C:\control\node.json`, `C:\control\runtime\control.exe`, port)
+			if strings.Count(script, "Protocol = 'TCP'; RemotePort = '"+tc.want+"'") != 2 {
+				t.Fatal("installed CLI and runtime do not both permit the next-hop port")
+			}
+		})
+	}
+	for _, proxy := range []string{"http://10.20.0.5:0", "http://user:pass@proxy:3128", ""} {
+		if _, err := firewallPort(node.Config{Gateway: "https://gateway.example", GatewayProxy: &model.GatewayProxy{URL: proxy}}); err == nil {
+			t.Fatalf("invalid explicit proxy accepted: %q", proxy)
 		}
 	}
 }

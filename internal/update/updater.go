@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/buildinfo"
+	"github.com/koltyakov/control/internal/gatewayroute"
 	"github.com/koltyakov/control/internal/store"
 )
 
@@ -23,11 +24,13 @@ type UpdaterOptions struct {
 	Gateway, Token, Dir string
 	CacheDir            string // Empty selects the OS machine-wide download cache.
 	Software            buildinfo.Info
-	Busy                func() bool
-	Pause               func() bool
-	Resume              func()
-	Report              func(context.Context, Status) error
-	Apply               func(string) error
+	// Route carries gateway selection reads and binary downloads.
+	Route  gatewayroute.Route
+	Busy   func() bool
+	Pause  func() bool
+	Resume func()
+	Report func(context.Context, Status) error
+	Apply  func(string) error
 }
 
 type queuedCommand struct {
@@ -160,7 +163,7 @@ func (a *Updater) checkSelection(ctx context.Context) error {
 		return err
 	}
 	request.Header.Set("Authorization", "Bearer "+a.options.Token)
-	response, err := (&http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(request)
+	response, err := a.options.Route.Client(5*time.Second, false).Do(request)
 	if err != nil {
 		return err
 	}
@@ -266,7 +269,7 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 		var stagedInfo buildinfo.Info
 		err := a.whileReporting(ctx, func() error {
 			err := downloadCached(ctx, a.options.CacheDir, path, command.Asset, func() error {
-				return DownloadPreferred(ctx, command.ReleaseRepo, command.Version, a.options.Gateway+"/v1/updates/blobs/"+command.Asset.SHA256, a.options.Token, path, command.Asset)
+				return DownloadPreferred(ctx, a.options.Route, command.ReleaseRepo, command.Version, a.options.Gateway+"/v1/updates/blobs/"+command.Asset.SHA256, a.options.Token, path, command.Asset)
 			})
 			if err != nil {
 				return err

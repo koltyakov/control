@@ -21,6 +21,7 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/koltyakov/control/internal/clipboard"
+	"github.com/koltyakov/control/internal/gatewayroute"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/processutil"
@@ -120,6 +121,8 @@ type Node struct {
 	clipboardSlots      chan struct{}
 	connectionTests     chan struct{}
 	sendWake            func(context.Context, string, model.Node) (int, error)
+	route               gatewayroute.Route
+	proxyChecks         *proxyChecks
 	delegationMu        sync.Mutex
 	delegations         map[string]*delegationState
 	runbookRoots        []runbooks.Root
@@ -180,6 +183,11 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 	n.clipboardSlots = make(chan struct{}, 8)
 	n.connectionTests = make(chan struct{}, 2)
 	n.sendWake = wol.Send
+	if n.route, err = cfg.Route(); err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	n.proxyChecks = newProxyChecks(cfg.ProxyEndpoints)
 	n.delegations = map[string]*delegationState{}
 	n.artifactStaging = make(map[string]bool)
 	n.uploads, err = upload.New(root, cfg.WorkDir, cfg.DataDir, id.ID, upload.Limits{StagingBytes: cfg.MaxUploadStagingBytes, OwnerBytes: cfg.MaxUploadOwnerBytes, ReserveBytes: cfg.UploadReserveBytes, Retention: time.Duration(cfg.UploadRetentionHours) * time.Hour})
@@ -216,8 +224,8 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 		return nil, err
 	}
 	n.Peer = transport.New(transport.Config{
-		Gateway: cfg.Gateway, Token: cfg.Token, Identity: id, RelayOnly: cfg.RelayOnly, ICEServers: cfg.ICEServers,
-		Node: model.Node{ID: id.ID, Name: cfg.Name, PublicKey: id.Public, OS: runtime.GOOS, Labels: cfg.Labels, Capabilities: n.Capabilities(), RunAs: processutil.RunAs(), InstructionOnly: cfg.InstructionOnly, GatewayWake: !cfg.InstructionOnly && accountMayCall(cfg.Allow, "network.wake")},
+		Gateway: cfg.Gateway, Token: cfg.Token, Identity: id, RelayOnly: cfg.RelayOnly, ICEServers: cfg.ICEServers, Route: n.route,
+		Node: model.Node{ID: id.ID, Name: cfg.Name, PublicKey: id.Public, OS: runtime.GOOS, Labels: cfg.Labels, Capabilities: n.Capabilities(), RunAs: processutil.RunAs(), InstructionOnly: cfg.InstructionOnly, GatewayWake: !cfg.InstructionOnly && accountMayCall(cfg.Allow, "network.wake"), ProxyEndpoints: cfg.ProxyEndpoints},
 	}, n.handle, peerOptions...)
 	if err = n.configureSecrets(); err != nil {
 		_ = root.Close()
@@ -291,6 +299,10 @@ func (n *Node) Start(ctx context.Context) error {
 	go func() { defer n.wg.Done(); n.system.Run(n.ctx) }()
 	n.wg.Add(1)
 	go func() { defer n.wg.Done(); n.runHealth(n.ctx) }()
+	if n.proxyChecks != nil {
+		n.wg.Add(1)
+		go func() { defer n.wg.Done(); n.proxyChecks.run(n.ctx, n.Config.Gateway) }()
+	}
 	n.wg.Add(1)
 	go func() { defer n.wg.Done(); n.runMachineState(n.ctx) }()
 	n.wg.Add(1)
