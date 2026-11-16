@@ -159,6 +159,7 @@ func (c Client) Dashboard(ctx context.Context, gateway Admin, query model.PoolAc
 			// identity metadata, even if this CLI targets another node's API.
 			live.Name, live.OS, live.Labels, live.LastSeen = n.Name, n.OS, n.Labels, n.LastSeen
 			live.Software, live.Disabled, live.ControlPending = n.Software, n.Disabled, n.ControlPending
+			live.RunAs, live.HybridID, live.HybridRole = n.RunAs, n.HybridID, n.HybridRole
 			live.RetainedTunnels = n.RetainedTunnels
 			live.GatewayProxy = n.GatewayProxy
 			if n.Status == "summary" && n.ObservedAt.After(live.ObservedAt) {

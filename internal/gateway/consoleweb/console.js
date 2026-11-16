@@ -50,6 +50,21 @@
  * @property {Machine[]} [contexts] Presentation-only grouping, never sent to the API.
  * @property {string} [targetName]
  * @typedef {Machine & {contexts: Machine[]}} MachineGroup
+ * @typedef {object} MachineDrag
+ * @property {number} pointerId
+ * @property {HTMLButtonElement} handle
+ * @property {string} key
+ * @property {number} startX
+ * @property {number} startY
+ * @property {number} x
+ * @property {number} y
+ * @property {boolean} active
+ * @property {HTMLElement | null} target
+ * @property {boolean} after
+ * @property {HTMLElement | null} preview
+ * @property {number} frame
+ * @property {string[]} visible
+ * @property {string[]} order
  * @typedef {{observedAt: string, nodes: Machine[], gateway?: {url: string, startedAt: string, software: Software, system?: SystemInfo}}} FleetSnapshot
  * @typedef {{invitations: number, children: number, retiring: number, machines?: number}} ProxyDependents
  * @typedef {{url: string, interface?: string, managed?: boolean, state: string, checkedAt?: string, error?: string, dependents?: ProxyDependents}} ProxyEndpointStatus
@@ -89,6 +104,7 @@
  * @property {string} filter
  * @property {string} sort
  * @property {boolean} descending
+ * @property {string[]} machineOrder
  * @property {boolean} busy
  * @property {Auxiliary | null} auxiliary
  * @property {InstallationLink | null} invitation
@@ -215,6 +231,7 @@ const state = {
   filter: "all",
   sort: "name",
   descending: false,
+  machineOrder: [],
   busy: false,
   auxiliary: null,
   invitation: null,
@@ -223,6 +240,9 @@ const state = {
   stale: false,
   updatedAt: null,
 };
+/** @type {MachineDrag | null} */
+let machineDrag = null;
+let suppressMachineClick = false;
 /** @type {Record<string, [string, string]>} */
 const pages = {
   overview: ["Overview", ""],
@@ -421,6 +441,7 @@ async function api(path, method = "GET", body) {
 
 /** @returns {void} */
 function showLogin() {
+  cancelMachineDrag();
   auditGeneration++;
   clearTimeout(toastTimer);
   $("#toast").hidden = true;
@@ -431,6 +452,9 @@ function showLogin() {
   state.auxiliary = null;
   state.invitation = null;
   state.contexts.clear();
+  state.machineOrder = [];
+  state.sort = "name";
+  state.descending = false;
   state.search = "";
   state.filter = "all";
   state.stale = false;
@@ -449,6 +473,9 @@ function showLogin() {
 /** @param {ConsoleSession} session @returns {void} */
 function showApp(session) {
   state.session = session;
+  state.machineOrder = loadMachineOrder();
+  state.sort = state.machineOrder.length ? "custom" : "name";
+  state.descending = false;
   $("#login").hidden = true;
   $("#app").hidden = false;
   $("#profile-name").textContent = session.username;
@@ -1115,6 +1142,7 @@ function gpuResources(gpus, online, metadata = false) {
 }
 /** @template {Machine} T @param {T[]} nodes @returns {T[]} */
 function sortedMachines(nodes) {
+  if (state.sort === "custom") return customSortedMachines(nodes);
   /** @param {Machine} n @returns {string | number | null | undefined} */
   const value = (n) => {
     const metrics = machineMetricsContext(n);
@@ -1154,6 +1182,218 @@ function sortedMachines(nodes) {
   });
 }
 
+/** @returns {string} */
+function machineOrderStorageKey() {
+  return "control-machine-order:" + state.session?.role + ":" + state.session?.userId;
+}
+/** @returns {string[]} */
+function loadMachineOrder() {
+  try {
+    const value = /** @type {unknown} */ (JSON.parse(localStorage.getItem(machineOrderStorageKey()) || "[]"));
+    if (Array.isArray(value) &&
+        value.every(/** @returns {key is string} */ (key) => typeof key === "string" && key.length <= 128 &&
+          /^(node|hybrid):[a-zA-Z0-9_-]+$/.test(key)))
+      return [...new Set(value)];
+  } catch {
+    /* Missing, invalid, or unavailable storage falls back to name order. */
+  }
+  return [];
+}
+/** @param {Machine} node @returns {string} */
+function machineOrderKey(node) {
+  return node.hybridId && ["user", "system"].includes(node.hybridRole || "")
+    ? "hybrid:" + node.hybridId : "node:" + node.id;
+}
+/** @template {Machine} T @param {T[]} nodes @returns {T[]} */
+function customSortedMachines(nodes) {
+  const positions = new Map(state.machineOrder.map((key, index) => [key, index]));
+  return [...nodes].sort((a, b) =>
+    (positions.get(machineOrderKey(a)) ?? positions.size) - (positions.get(machineOrderKey(b)) ?? positions.size) ||
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) ||
+    a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
+  );
+}
+/** @param {string[]} order @returns {void} */
+function saveMachineOrder(order) {
+  if (!state.session) return;
+  try {
+    if (order.length) localStorage.setItem(machineOrderStorageKey(), JSON.stringify(order));
+    else localStorage.removeItem(machineOrderStorageKey());
+  } catch {
+    throw new Error("Browser storage is unavailable. The machine order was not saved.");
+  }
+  state.machineOrder = order;
+  state.sort = order.length ? "custom" : "name";
+  state.descending = false;
+  render();
+}
+/** @returns {string[]} */
+function visibleMachineKeys() {
+  return [.../** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll(".machine-table tbody tr"))]
+    .map((row) => row.dataset.orderKey || "");
+}
+/**
+ * Reorder only the visible slots, retaining hidden hosts in their positions.
+ * Reconcile the frozen display with the newest snapshot before saving.
+ * @param {string} key @param {string} target @param {boolean} after
+ * @param {string[]} visible @param {string[]} order @returns {void}
+ */
+function moveMachine(key, target, after, visible, order) {
+  const current = customSortedMachines(groupedMachines(state.snapshot?.nodes || [])).map(machineOrderKey),
+    present = new Set(current);
+  if (key === target || !present.has(key) || !present.has(target)) return;
+  const slots = visible.filter((entry) => present.has(entry)),
+    moved = slots.filter((entry) => entry !== key),
+    index = moved.indexOf(target);
+  if (!slots.includes(key) || index < 0) return;
+  moved.splice(index + Number(after), 0, key);
+  if (moved.every((entry, i) => entry === slots[i])) return;
+  const visibleSet = new Set(slots),
+    original = new Set(order),
+    full = [...order.filter((entry) => present.has(entry)), ...current.filter((entry) => !original.has(entry))];
+  let next = 0;
+  try {
+    saveMachineOrder(full.map((entry) => visibleSet.has(entry) ? moved[next++] : entry));
+    toast("Machine order saved");
+  } catch (error) {
+    toast(errorMessage(error));
+    render();
+  }
+}
+/** @returns {void} */
+function cancelMachineDrag() {
+  const drag = machineDrag;
+  if (!drag) return;
+  machineDrag = null;
+  cancelAnimationFrame(drag.frame);
+  drag.preview?.remove();
+  drag.target?.classList.remove("machine-drop-before", "machine-drop-after");
+  drag.handle.closest("tr")?.classList.remove("machine-dragging");
+  document.body.classList.remove("reordering-machines");
+  if (drag.handle.hasPointerCapture(drag.pointerId))
+    drag.handle.releasePointerCapture(drag.pointerId);
+}
+/** @returns {void} */
+function positionMachineDrag() {
+  const drag = machineDrag;
+  if (!drag?.active) return;
+  drag.target?.classList.remove("machine-drop-before", "machine-drop-after");
+  const hit = document.elementFromPoint(drag.x, drag.y),
+    row = hit?.closest(".machine-table tbody tr"),
+    scroller = $(".content-scroll").getBoundingClientRect();
+  drag.target = row instanceof HTMLElement && row.dataset.orderKey !== drag.key &&
+    drag.y >= scroller.top && drag.y <= scroller.bottom ? row : null;
+  if (drag.target) {
+    const box = drag.target.getBoundingClientRect();
+    drag.after = drag.y > box.top + box.height / 2;
+    drag.target.classList.add(drag.after ? "machine-drop-after" : "machine-drop-before");
+  }
+  if (drag.preview) {
+    drag.preview.style.left = Math.max(8, Math.min(drag.x + 16, innerWidth - drag.preview.offsetWidth - 8)) + "px";
+    drag.preview.style.top = Math.max(8, Math.min(drag.y + 12, innerHeight - drag.preview.offsetHeight - 8)) + "px";
+  }
+}
+/** @returns {void} */
+function scrollMachineDrag() {
+  const drag = machineDrag;
+  if (!drag?.active) return;
+  const scroller = $(".content-scroll"),
+    box = scroller.getBoundingClientRect();
+  if (drag.x >= box.left && drag.x <= box.right && drag.y >= box.top && drag.y <= box.bottom) {
+    const distance = drag.y < box.top + 48 ? drag.y - box.top - 48 :
+      drag.y > box.bottom - 48 ? drag.y - box.bottom + 48 : 0;
+    scroller.scrollTop += Math.max(-16, Math.min(16, distance / 3));
+  }
+  positionMachineDrag();
+  drag.frame = requestAnimationFrame(scrollMachineDrag);
+}
+document.addEventListener("pointerdown", (event) => {
+  suppressMachineClick = false;
+  if (!(event.target instanceof Element) || !event.isPrimary || event.button !== 0 || machineDrag) return;
+  const handle = event.target.closest(".machine-drag-handle");
+  if (!(handle instanceof HTMLButtonElement)) return;
+  event.preventDefault();
+  closeMachineMenu();
+  handle.focus({ preventScroll: true });
+  handle.setPointerCapture(event.pointerId);
+  machineDrag = {
+    pointerId: event.pointerId, handle, key: handle.dataset.orderKey || "",
+    startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY,
+    active: false, target: null, after: false, preview: null, frame: 0,
+    visible: visibleMachineKeys(),
+    order: sortedMachines(groupedMachines(state.snapshot?.nodes || [])).map(machineOrderKey),
+  };
+});
+document.addEventListener("pointermove", (event) => {
+  const drag = machineDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  drag.x = event.clientX;
+  drag.y = event.clientY;
+  if (!drag.active && Math.hypot(drag.x - drag.startX, drag.y - drag.startY) >= 5) {
+    drag.active = true;
+    drag.handle.closest("tr")?.classList.add("machine-dragging");
+    document.body.classList.add("reordering-machines");
+    const preview = document.createElement("div");
+    preview.className = "machine-drag-preview";
+    preview.setAttribute("aria-hidden", "true");
+    preview.textContent = drag.handle.closest("tr")?.querySelector(".machine-name")?.textContent || "";
+    document.body.append(preview);
+    drag.preview = preview;
+    drag.frame = requestAnimationFrame(scrollMachineDrag);
+  }
+  positionMachineDrag();
+});
+document.addEventListener("pointerup", (event) => {
+  const drag = machineDrag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  drag.x = event.clientX;
+  drag.y = event.clientY;
+  positionMachineDrag();
+  const target = drag.target?.dataset.orderKey;
+  suppressMachineClick = true;
+  cancelMachineDrag();
+  if (drag.active && target) moveMachine(drag.key, target, drag.after, drag.visible, drag.order);
+  render();
+  find(`.machine-drag-handle[data-order-key="${CSS.escape(drag.key)}"]`)?.focus({ preventScroll: true });
+});
+document.addEventListener("click", (event) => {
+  if (!suppressMachineClick || event.detail === 0) return;
+  suppressMachineClick = false;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+document.addEventListener("pointercancel", (event) => {
+  if (machineDrag?.pointerId !== event.pointerId) return;
+  cancelMachineDrag();
+  render();
+});
+document.addEventListener("lostpointercapture", (event) => {
+  if (machineDrag?.pointerId !== event.pointerId) return;
+  cancelMachineDrag();
+  render();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && machineDrag) {
+    event.preventDefault();
+    suppressMachineClick = true;
+    cancelMachineDrag();
+    render();
+    return;
+  }
+  if (!(event.target instanceof HTMLButtonElement) ||
+      !event.target.matches(".machine-drag-handle") || !event.altKey ||
+      !["ArrowUp", "ArrowDown"].includes(event.key)) return;
+  event.preventDefault();
+  const key = event.target.dataset.orderKey || "",
+    visible = visibleMachineKeys(),
+    index = visible.indexOf(key),
+    after = event.key === "ArrowDown",
+    target = visible[index + (after ? 1 : -1)];
+  if (target) moveMachine(key, target, after, visible,
+    sortedMachines(groupedMachines(state.snapshot?.nodes || [])).map(machineOrderKey));
+  find(`.machine-drag-handle[data-order-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
+});
+
 /** @param {Machine[]} nodes @param {boolean} showGPUs @returns {string[]} */
 function machineRows(nodes, showGPUs) {
   return nodes.map((n) => {
@@ -1167,7 +1407,7 @@ function machineRows(nodes, showGPUs) {
     const platformIcon =
       (/** @type {Record<string, string>} */ ({ darwin: "laptop", windows: "windows", linux: "gateway" }))[n.os] ||
       "machine";
-    return `<tr data-id="${esc(n.id)}"><td class="name-column"><div class="machine-cell"><span class="os-icon">${icon(platformIcon)}</span><div class="machine-text"><div class="machine-title"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.targetName || n.name)}">${esc(n.name)}</button>${contextChips(n)}${proxyChips(n)}</div><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version"> · ${esc(n.software?.version || "Unknown version")}</span></small></div><button class="icon-button machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="Actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(metrics)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${metrics.system?.logicalCPUs ? `<small>${plural(metrics.system.logicalCPUs, "core")}</small>` : ""}</td>${gpuColumn}<td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
+    return `<tr data-id="${esc(n.id)}" data-order-key="${esc(machineOrderKey(n))}"><td class="name-column"><div class="machine-cell"><button type="button" class="os-icon machine-drag-handle" data-action="drag-machine" data-order-key="${esc(machineOrderKey(n))}" aria-label="Reorder ${esc(n.name)}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" title="Drag to reorder. Keyboard: Alt+Up or Alt+Down.">${icon(platformIcon)}</button><div class="machine-text"><div class="machine-title"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.targetName || n.name)}">${esc(n.name)}</button>${contextChips(n)}${proxyChips(n)}</div><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version"> · ${esc(n.software?.version || "Unknown version")}</span></small></div><button class="icon-button machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="Actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(metrics)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${metrics.system?.logicalCPUs ? `<small>${plural(metrics.system.logicalCPUs, "core")}</small>` : ""}</td>${gpuColumn}<td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
   });
 }
 /** @param {Machine[]} nodes @returns {MachineGroup[]} */
@@ -1567,6 +1807,8 @@ function renderAccount() {
 /** @returns {void} */
 function render() {
   if (!state.session) return;
+  // Polling may update the snapshot, but cannot replace a captured drag handle.
+  if (machineDrag) return;
   const content = $("#page-content");
   const active = document.activeElement;
   let focusSelector = "";
@@ -1578,6 +1820,8 @@ function render() {
       focusSelector = `[data-action="${CSS.escape(active.dataset.action)}"]`;
       if (active.dataset.id)
         focusSelector += `[data-id="${CSS.escape(active.dataset.id)}"]`;
+      if (active.dataset.orderKey)
+        focusSelector += `[data-order-key="${CSS.escape(active.dataset.orderKey)}"]`;
       if (active.dataset.sort)
         focusSelector += `[data-sort="${CSS.escape(active.dataset.sort)}"]`;
       if (active.dataset.filter)
@@ -1721,6 +1965,7 @@ async function refresh(manual = false) {
 /** @returns {void} */
 function navigate() {
   if (!state.session) return;
+  cancelMachineDrag();
   closeMachineMenu();
   let page = location.hash.slice(1) || "overview";
   if (
@@ -1794,7 +2039,7 @@ function syncMachineMenu() {
     `<button role="menuitem" tabindex="-1" class="menu-item${danger ? " destructive" : ""}" data-action="${action}" data-id="${esc(node.id)}">${label}</button>`;
   const startup = canChangeStartup(node) ? item("startup", "Startup context") : "",
     secrets = node.online && !node.disabled ? item("worker-secrets", "Secrets") : "",
-    proxy = item("worker-proxy", node.proxyEndpoints?.length ? "Gateway proxy" : "Enable gateway proxy"),
+    proxy = item("worker-proxy", "Gateway proxy"),
     separator = '<div role="separator" class="menu-separator"></div>';
   const html = target.drawer
     ? secrets + startup + proxy + separator + item("unregister", "Unregister", true)

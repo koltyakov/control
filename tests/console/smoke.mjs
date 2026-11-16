@@ -468,6 +468,202 @@ async function assertOverviewFullFleet(page, snapshot) {
   }
 }
 
+async function assertCustomMachineOrder(page, snapshot) {
+  await page.evaluate(() => {
+    state.sort = "name";
+    state.descending = false;
+  });
+  const baseNode = { ...snapshot.nodes[0], online: true, disabled: false, status: "summary" },
+    alpha = { ...baseNode, id: "order-alpha", name: "alpha" },
+    pair = { ...baseNode, id: "order-user", name: "beta-pair", hybridId: "order-pair", hybridRole: "user" },
+    companion = { ...pair, id: "order-system", name: "beta-pair-system", hybridRole: "system" },
+    offline = { ...baseNode, id: "order-offline", name: "offline", online: false, status: "offline" },
+    disabled = { ...baseNode, id: "order-disabled", name: "disabled", disabled: true };
+  let nodes = [offline, companion, alpha, disabled, pair];
+  await page.route("**/console/api/status", (route) => route.fulfill({ json: { ...snapshot, nodes } }));
+  const names = page.locator(".machine-table .machine-name"),
+    dialog = page.locator("#dialog");
+  const drag = async (name, target, after = false, cancel = false, duringDrag) => {
+    const handle = page.getByRole("button", { name: "Reorder " + name, exact: true }),
+      targetRow = page.locator(".machine-table tbody tr").filter({
+        has: page.getByRole("button", { name: target, exact: true }),
+      });
+    await handle.scrollIntoViewIfNeeded();
+    const start = await handle.boundingBox(),
+      end = await targetRow.boundingBox();
+    assert.ok(start && end);
+    await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(start.x + start.width / 2, end.y + end.height * (after ? 0.8 : 0.2), { steps: 8 });
+    assert.equal(await page.locator(".machine-drag-preview").count(), 1);
+    if (duringDrag) await duringDrag();
+    if (cancel) await page.keyboard.press("Escape");
+    await page.mouse.up();
+    assert.equal(await page.locator(".machine-drag-preview").count(), 0);
+    assert.equal(await dialog.isVisible(), false, "Dragging an icon must not open machine details");
+  };
+  try {
+    await pageLink(page, "machines");
+    await refreshPage(page);
+    assert.equal(await page.getByRole("button", { name: "Custom order", exact: true }).count(), 0, "Direct dragging must not require an ordering dialog");
+    assert.deepEqual(await names.allTextContents(), ["alpha", "beta-pair", "disabled", "offline"]);
+    await page.getByRole("button", { name: "Reorder alpha", exact: true }).click();
+    assert.equal(await dialog.isVisible(), false, "Clicking an icon must not open details or reorder");
+    assert.equal(await page.evaluate(() => localStorage.getItem(machineOrderStorageKey())), null);
+    await drag("beta-pair", "alpha", false, true);
+    assert.deepEqual(await names.allTextContents(), ["alpha", "beta-pair", "disabled", "offline"], "Escape must cancel without saving");
+    await drag("beta-pair", "alpha", false, false, async () => {
+      await refreshPage(page);
+      assert.equal(await page.locator(".machine-dragging").count(), 1, "Polling must preserve the captured row");
+      assert.deepEqual(await names.allTextContents(), ["alpha", "beta-pair", "disabled", "offline"], "Reordering must save only on drop");
+    });
+    assert.deepEqual(await names.allTextContents(), ["beta-pair", "alpha", "disabled", "offline"]);
+    await page.locator('.context-choice[data-id="order-system"]').click();
+    assert.equal(await page.locator(".machine-table tbody tr").first().getAttribute("data-id"), "order-system", "Chip changes must not move Hybrid hosts");
+    await page.locator('.brand[href="#overview"]').click();
+    await page.locator(".gateway-card").waitFor();
+    assert.deepEqual(await names.allTextContents(), ["beta-pair", "alpha"], "Overview must use the same order without showing offline or disabled hosts");
+    await page.locator('[data-action="sort"][data-sort="name"]').click();
+    assert.deepEqual(await names.allTextContents(), ["alpha", "beta-pair"], "Column sorting must still work");
+    await drag("beta-pair", "alpha");
+    assert.deepEqual(await names.allTextContents(), ["beta-pair", "alpha"], "Dragging must replace the active column sort");
+
+    // IDs, not display names or selected contexts, determine saved positions.
+    nodes = [{ ...alpha, name: "aardvark-renamed" }, companion, pair,
+      { ...baseNode, id: "order-new-z", name: "z-new" },
+      { ...baseNode, id: "order-new-a", name: "a-new" }];
+    await refreshPage(page);
+    assert.deepEqual(await names.allTextContents(), ["beta-pair", "aardvark-renamed", "a-new", "z-new"], "Renames must retain positions, removed hosts must disappear and new hosts must append alphabetically");
+    await page.reload();
+    await page.getByRole("button", { name: "beta-pair", exact: true }).waitFor();
+    assert.deepEqual(await names.allTextContents(), ["beta-pair", "aardvark-renamed", "a-new", "z-new"], "Reload must restore the saved order");
+    await page.locator("#account-button").click();
+    await page.locator('#account-menu [data-action="logout"]').click();
+    await page.locator("#modal-form button[type=submit]").click();
+    await page.locator("#login").waitFor({ state: "visible" });
+    assert.deepEqual(await page.evaluate(() => state.machineOrder), [], "Sign-out must clear the in-memory fleet preference");
+    await login(page, "browser-owner");
+    await page.getByRole("button", { name: "beta-pair", exact: true }).waitFor();
+    assert.deepEqual(await names.allTextContents(), ["beta-pair", "aardvark-renamed", "a-new", "z-new"], "Sign-in must restore this fleet's saved order");
+
+    const scoped = await page.evaluate(() => {
+      const original = state.session,
+        originalKey = machineOrderStorageKey(),
+        saved = loadMachineOrder();
+      try {
+        state.session = { ...original, userId: "another-fleet" };
+        const other = loadMachineOrder();
+        state.session = { ...original, role: "superuser" };
+        return { saved, other, operator: loadMachineOrder(), separateKey: originalKey !== machineOrderStorageKey() };
+      } finally {
+        state.session = original;
+      }
+    });
+    assert.deepEqual(scoped.saved, ["hybrid:order-pair", "node:order-alpha", "node:order-disabled", "node:order-offline"]);
+    assert.deepEqual(scoped.other, [], "Another fleet must not inherit an order");
+    assert.deepEqual(scoped.operator, [], "Operator and account order must remain separate");
+    assert.equal(scoped.separateKey, true);
+
+    // A denied storage write must leave the prior order intact.
+    await page.evaluate(() => {
+      window.fixtureStorageSetItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = () => { throw new DOMException("Fixture storage denied", "SecurityError"); };
+    });
+    try {
+      await drag("beta-pair", "aardvark-renamed", true);
+      await page.getByText("Browser storage is unavailable. The machine order was not saved.", { exact: true }).waitFor();
+      assert.equal(await names.first().textContent(), "beta-pair");
+    } finally {
+      await page.evaluate(() => {
+        Storage.prototype.setItem = window.fixtureStorageSetItem;
+        delete window.fixtureStorageSetItem;
+      });
+    }
+
+    await page.getByRole("button", { name: "Reorder beta-pair", exact: true }).focus();
+    await page.keyboard.press("Alt+ArrowDown");
+    assert.deepEqual(await names.allTextContents(), ["aardvark-renamed", "beta-pair", "a-new", "z-new"]);
+    assert.equal(await page.locator(":focus").getAttribute("aria-label"), "Reorder beta-pair", "Keyboard focus must follow the moved host");
+    await refreshPage(page);
+    assert.equal(await page.locator(":focus").getAttribute("aria-label"), "Reorder beta-pair", "Polling must retain focus on the correct handle");
+    await page.keyboard.press("Alt+ArrowUp");
+    assert.equal(await names.first().textContent(), "beta-pair");
+
+    // On a filtered view, only visible slots move. Hidden hosts retain theirs.
+    await pageLink(page, "machines");
+    await page.locator("#machine-search").fill("new");
+    await drag("z-new", "a-new");
+    await page.locator("#machine-search").fill("");
+    assert.deepEqual(await names.allTextContents(), ["beta-pair", "aardvark-renamed", "z-new", "a-new"]);
+    await drag("a-new", "z-new");
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await drag("beta-pair", "aardvark-renamed", true);
+    assert.deepEqual(await names.allTextContents(), ["aardvark-renamed", "beta-pair", "a-new", "z-new"], "Icon dragging must also work in the stacked mobile layout");
+    assert.ok(await page.locator("#app").evaluate((element) => element.scrollWidth <= element.clientWidth));
+    const touch = await page.context().newCDPSession(page);
+    try {
+      const handle = page.getByRole("button", { name: "Reorder beta-pair", exact: true });
+      await handle.scrollIntoViewIfNeeded();
+      const start = await handle.boundingBox(),
+        end = await page.locator(".machine-table tbody tr").first().boundingBox(),
+        point = { x: start.x + start.width / 2, y: start.y + start.height / 2 };
+      await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
+      await touch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: point.x, y: end.y + 10 }] });
+      await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      assert.deepEqual(await names.allTextContents(), ["beta-pair", "aardvark-renamed", "a-new", "z-new"], "Touch dragging must save on release");
+      assert.equal(await dialog.isVisible(), false);
+    } finally {
+      await touch.detach();
+    }
+
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const previousNodes = nodes;
+    nodes = [...nodes, ...Array.from({ length: 24 }, (_, i) => ({
+      ...baseNode, id: "order-scroll-" + i, name: "scroll-" + String(i).padStart(2, "0"),
+    }))];
+    await refreshPage(page);
+    const scrollHandle = page.getByRole("button", { name: "Reorder beta-pair", exact: true });
+    await scrollHandle.scrollIntoViewIfNeeded();
+    const start = await scrollHandle.boundingBox(),
+      scrollBox = await page.locator(".content-scroll").boundingBox(),
+      beforeScroll = await page.locator(".content-scroll").evaluate((element) => element.scrollTop);
+    await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(start.x + start.width / 2, scrollBox.y + scrollBox.height - 8, { steps: 8 });
+    await page.waitForFunction((before) => document.querySelector(".content-scroll").scrollTop > before + 80, beforeScroll);
+    await page.keyboard.press("Escape");
+    await page.mouse.up();
+    assert.equal(await page.locator(".machine-drag-preview").count(), 0, "Cancelling must stop the auto-scroll drag and remove its preview");
+    nodes = previousNodes;
+    await refreshPage(page);
+
+    const invalid = await page.evaluate(() => {
+      const key = machineOrderStorageKey();
+      return ["broken JSON", "{}", "[null]", '["node:valid",42]', '["foreign:bad"]'].map((value) => {
+        localStorage.setItem(key, value);
+        const order = loadMachineOrder();
+        localStorage.removeItem(key);
+        return order;
+      });
+    });
+    assert.ok(invalid.every((order) => order.length === 0), "Malformed preferences must fall back safely");
+  } finally {
+    await page.evaluate(() => {
+      localStorage.removeItem(machineOrderStorageKey());
+      state.machineOrder = [];
+      state.sort = "name";
+      state.descending = false;
+      state.contexts.clear();
+    });
+    if (await dialog.isVisible()) await page.keyboard.press("Escape");
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.unroute("**/console/api/status");
+    await page.locator('.brand[href="#overview"]').click();
+    await refreshPage(page);
+  }
+}
+
 async function assertContextChips(page) {
   assert.equal(await page.locator(".context-presence").count(), 0, "Context chips must not contain status dots");
   const chips = await page.locator(".machine-table .context-tag").evaluateAll(
@@ -628,7 +824,7 @@ async function assertStartupCommands(page, snapshot) {
       assert.equal(await actions.getByRole("button", { name: "Rename", exact: true }).isVisible(), true);
       assert.equal(await actions.getByRole("button", { name: "Disable", exact: true }).isVisible(), true);
       await more.press("ArrowDown");
-      assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Startup context", "Enable gateway proxy", "Unregister"]);
+      assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Startup context", "Gateway proxy", "Unregister"]);
       await refresh();
       assert.equal(await menu.isVisible(), true, "Polling must preserve drawer overflow menus");
       assert.equal(await more.getAttribute("aria-expanded"), "true");
@@ -748,7 +944,7 @@ async function assertStartupCommands(page, snapshot) {
 
   await page.getByRole("button", { name: "startup-worker", exact: true }).click();
   await page.getByRole("button", { name: "More actions for startup-worker", exact: true }).click();
-  assert.deepEqual(await page.locator("#machine-menu").getByRole("menuitem").allTextContents(), ["Enable gateway proxy", "Unregister"]);
+  assert.deepEqual(await page.locator("#machine-menu").getByRole("menuitem").allTextContents(), ["Gateway proxy", "Unregister"]);
   await page.keyboard.press("End");
   await page.keyboard.press("Enter");
   await page.getByLabel("Type startup-worker to confirm").waitFor();
@@ -1022,7 +1218,7 @@ async function assertProxyChips(page, snapshot) {
     assert.equal(await page.getByRole("heading", { name: "Gateway proxy", exact: true }).count(), 0, "Disabled hosting must not occupy a drawer section");
     assert.equal(await page.locator('.drawer-section [data-action="worker-proxy"]').count(), 0);
     await page.getByRole("button", { name: "More actions for direct", exact: true }).click();
-    await page.getByRole("menuitem", { name: "Enable gateway proxy", exact: true }).waitFor();
+    await page.getByRole("menuitem", { name: "Gateway proxy", exact: true }).waitFor();
     await page.keyboard.press("Escape");
     await close();
     assert.deepEqual(await chips(user.id).allTextContents(), ["Proxy", "Via proxy"], "Grouped rows must include roles configured in either context");
@@ -1592,7 +1788,7 @@ try {
     "Rename",
     "Secrets",
     ...(registered.runAs === "user" ? ["Startup context"] : []),
-    "Enable gateway proxy",
+    "Gateway proxy",
     "Disable",
     "Unregister",
   ]);
@@ -1934,6 +2130,7 @@ try {
   // names and missing metrics. Only this browser's read response is replaced.
   const snapshot = await api("/v1/status", "GET", undefined, account.token);
   await assertOverviewFullFleet(page, snapshot);
+  await assertCustomMachineOrder(page, snapshot);
   const fixtureNames = [
     "build-linux-01",
     "design-mac",

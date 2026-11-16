@@ -977,6 +977,43 @@ td strong {
   color: var(--muted);
   flex-shrink: 0;
 }
+.machine-drag-handle {
+  border: 0;
+  padding: 0;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.machine-drag-handle:hover {
+  color: var(--text);
+}
+.reordering-machines,
+.reordering-machines * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+.machine-dragging {
+  opacity: 0.45;
+}
+.machine-drop-before {
+  box-shadow: inset 0 2px 0 var(--action);
+}
+.machine-drop-after {
+  box-shadow: inset 0 -2px 0 var(--action);
+}
+.machine-drag-preview {
+  position: fixed;
+  z-index: 100;
+  pointer-events: none;
+  max-width: min(320px, calc(100vw - 32px));
+  padding: 10px 16px;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--action);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
 .machine-title {
   display: flex;
   flex-wrap: wrap;

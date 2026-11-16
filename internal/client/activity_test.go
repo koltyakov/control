@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/koltyakov/control/internal/buildinfo"
+	"github.com/koltyakov/control/internal/dashboard"
 	"github.com/koltyakov/control/internal/model"
 )
 
@@ -33,7 +35,7 @@ func TestDashboardGatewaySurvivesPeerFailureAndScopesEnrichment(t *testing.T) {
 	admin := Admin{URL: remote.URL, Key: "account-key"}
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"result": model.PoolActivitySnapshot{Nodes: []model.NodeActivitySnapshot{
-			{ID: "own", Name: "wrong-name", Online: true, Status: "ready", ActiveCount: 1,
+			{ID: "own", Name: "wrong-name", Online: true, Status: "ready", ActiveCount: 1, HybridID: "peer-invented", HybridRole: "system", RunAs: "system",
 				ConnectionRoutes: &model.ConnectionRouteCounts{Direct: 2, TURN: 1, Relay: 3},
 				Active:           []model.Activity{{Kind: "tunnel", Operation: "tcp.listen", Phase: "listening"}},
 				Recent:           []model.Activity{{Kind: "tunnel", Operation: "tcp.accept", State: "succeeded"}}},
@@ -55,6 +57,9 @@ func TestDashboardGatewaySurvivesPeerFailureAndScopesEnrichment(t *testing.T) {
 	}
 	if got.Nodes[0].GatewayProxy == nil || got.Nodes[0].GatewayProxy.URL != "http://10.0.0.5:3128" {
 		t.Fatal("peer enrichment discarded owner-visible proxy configuration")
+	}
+	if got.Nodes[0].HybridID != "" || got.Nodes[0].HybridRole != "" || got.Nodes[0].RunAs != "" {
+		t.Fatal("peer enrichment invented execution-context metadata", got.Nodes[0])
 	}
 	if got.Nodes[0].Tunnels == nil || *got.Nodes[0].Tunnels != (model.TunnelCounts{Reverse: 1}) || got.Nodes[1].Tunnels != nil {
 		t.Fatalf("live listener missing, completed socket counted, or offline counts invented: %+v", got.Nodes)
@@ -115,6 +120,72 @@ func TestDashboardGatewaySurvivesPeerFailureAndScopesEnrichment(t *testing.T) {
 	got, err = (Client{}).Dashboard(context.Background(), admin, model.PoolActivityQuery{})
 	if err != nil || got.Gateway == nil || got.Notice != "" {
 		t.Fatalf("empty fleet needs a local node: %+v %v", got, err)
+	}
+}
+
+func TestDashboardPreservesHybridGroupingDuringPeerEnrichment(t *testing.T) {
+	for _, test := range []struct {
+		name, userStatus, systemStatus, peerStatus string
+		cached                                     bool
+	}{
+		{"ready peers", "summary", "summary", "ready", false},
+		{"cached peers", "summary", "summary", "ready", true},
+		{"partial update", "update", "summary", "ready", false},
+		{"offline user", "offline", "summary", "ready", false},
+		{"unavailable peers", "online", "online", "unavailable", false},
+		{"fresh health", "summary", "summary", "unavailable", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now()
+			pool := model.PoolActivitySnapshot{
+				ObservedAt: now, Gateway: &model.GatewaySnapshot{},
+				Nodes: []model.NodeActivitySnapshot{
+					{ID: "user", Name: "host", HybridID: "pair", HybridRole: "user", RunAs: "user", Online: test.userStatus != "offline", Status: test.userStatus, ObservedAt: now},
+					{ID: "system", Name: "host-system", HybridID: "pair", HybridRole: "system", RunAs: "system", Online: true, Status: test.systemStatus, ObservedAt: now},
+				},
+			}
+			gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(pool)
+			}))
+			defer gateway.Close()
+			// Legacy activity responses omit pairing. Conflicting peer metadata
+			// must also lose to the directly authenticated gateway directory.
+			observed := model.PoolActivitySnapshot{Nodes: []model.NodeActivitySnapshot{
+				{ID: "user", Name: "wrong-user", Online: true, Status: test.peerStatus},
+				{ID: "system", Name: "wrong-system", Online: true, Status: test.peerStatus, HybridID: "wrong-pair", HybridRole: "user", RunAs: "user"},
+			}}
+			peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{"result": observed})
+			}))
+			defer peer.Close()
+			c := Client{URL: peer.URL, Token: "node-key"}
+			if test.cached {
+				c = c.WithLifetime(t.Context())
+				defer func() { _ = c.Close() }()
+			}
+			for range 2 {
+				got, err := c.Dashboard(t.Context(), Admin{URL: gateway.URL, Key: "account-key"}, model.PoolActivityQuery{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(got.Nodes) != 2 {
+					t.Fatal("presentation grouping changed context identities", got.Nodes)
+				}
+				for i, n := range got.Nodes {
+					want := pool.Nodes[i]
+					if n.ID != want.ID || n.Name != want.Name || n.HybridID != want.HybridID || n.HybridRole != want.HybridRole || n.RunAs != want.RunAs {
+						t.Fatalf("peer enrichment changed gateway context metadata: %+v", n)
+					}
+					if want.Online && want.Status != "update" && test.peerStatus == "ready" && n.Status != "ready" {
+						t.Fatal("pairing survived only by dropping peer activity", n)
+					}
+				}
+				text := dashboard.Render(got, now)
+				if !strings.Contains(text, "Machines  1 total · 1 online") || strings.Contains(text, "host-system") {
+					t.Fatal("enriched dashboard split a Hybrid host", text)
+				}
+			}
+		})
 	}
 }
 
