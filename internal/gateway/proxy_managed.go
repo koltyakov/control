@@ -51,12 +51,24 @@ func (g *Gateway) hasCredentialLocked(id string) bool {
 	return false
 }
 
+// proxyChildHostLocked groups only contexts redeemed from the same Hybrid
+// installation. Names and reported routes are not evidence of host pairing.
+func (g *Gateway) proxyChildHostLocked(child string, d proxyDependency) string {
+	for _, i := range g.installations {
+		if i.ID == d.Invitation && i.UserID == d.UserID && i.RedeemedID == child && i.HybridID != "" {
+			return "hybrid:" + i.HybridID
+		}
+	}
+	return "node:" + child
+}
+
 // managedDependentsLocked counts dependencies of each managed endpoint for one
 // fleet, keyed by worker and endpoint URL. Disconnected children count as
 // enrolled; an unregistered child counts as retiring until it acknowledges.
 // Caller holds g.mu.
 func (g *Gateway) managedDependentsLocked(userID string, now time.Time) map[string]map[string]*model.ProxyDependents {
 	out := map[string]map[string]*model.ProxyDependents{}
+	hosts := map[[3]string]bool{}
 	entry := func(worker, url string) *model.ProxyDependents {
 		if out[worker] == nil {
 			out[worker] = map[string]*model.ProxyDependents{}
@@ -80,7 +92,13 @@ func (g *Gateway) managedDependentsLocked(userID string, now time.Time) map[stri
 		case g.machineStates[child].Unregistered:
 			entry(d.Worker, d.URL).Retiring++
 		case registered || g.hasCredentialLocked(child):
-			entry(d.Worker, d.URL).Children++
+			count := entry(d.Worker, d.URL)
+			count.Children++
+			key := [3]string{d.Worker, d.URL, g.proxyChildHostLocked(child, d)}
+			if !hosts[key] {
+				hosts[key] = true
+				count.Machines++
+			}
 		}
 	}
 	return out
@@ -198,6 +216,7 @@ type observedProxyInvitation struct {
 type observedProxyChild struct {
 	UserID, Worker, URL string
 	Retiring            bool
+	Host                string
 }
 
 // managedProxyObservation is a committed projection protected by observationMu,
@@ -243,7 +262,7 @@ func (g *Gateway) publishProxyObservations(c change) {
 		retiring := g.machineStates[id].Unregistered
 		_, registered := g.nodes[id]
 		if retiring || registered || g.hasCredentialLocked(id) {
-			children[id] = observedProxyChild{d.UserID, d.Worker, d.URL, retiring}
+			children[id] = observedProxyChild{d.UserID, d.Worker, d.URL, retiring, g.proxyChildHostLocked(id, d)}
 		}
 	}
 	if len(c.invitations) == 0 && len(ids) == 0 {
@@ -282,6 +301,7 @@ func (g *Gateway) proxyDependentsFor(userID string, entries []observation, now t
 		return nil
 	}
 	out := map[string]map[string]*model.ProxyDependents{}
+	hosts := map[[3]string]bool{}
 	entry := func(worker, endpoint string) *model.ProxyDependents {
 		if out[worker] == nil {
 			out[worker] = map[string]*model.ProxyDependents{}
@@ -305,7 +325,13 @@ func (g *Gateway) proxyDependentsFor(userID string, entries []observation, now t
 		if d.Retiring {
 			entry(d.Worker, d.URL).Retiring++
 		} else {
-			entry(d.Worker, d.URL).Children++
+			count := entry(d.Worker, d.URL)
+			count.Children++
+			key := [3]string{d.Worker, d.URL, d.Host}
+			if !hosts[key] {
+				hosts[key] = true
+				count.Machines++
+			}
 		}
 	}
 	return out

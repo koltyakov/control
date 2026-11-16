@@ -51,7 +51,7 @@
  * @property {string} [targetName]
  * @typedef {Machine & {contexts: Machine[]}} MachineGroup
  * @typedef {{observedAt: string, nodes: Machine[], gateway?: {url: string, startedAt: string, software: Software, system?: SystemInfo}}} FleetSnapshot
- * @typedef {{invitations: number, children: number, retiring: number}} ProxyDependents
+ * @typedef {{invitations: number, children: number, retiring: number, machines?: number}} ProxyDependents
  * @typedef {{url: string, interface?: string, managed?: boolean, state: string, checkedAt?: string, error?: string, dependents?: ProxyDependents}} ProxyEndpointStatus
  * @typedef {{url: string, worker?: string, managed?: boolean}} GatewayProxy
  * @typedef {{name: string, address: string, prefix: string}} ProxyInterface
@@ -1794,7 +1794,7 @@ function syncMachineMenu() {
     `<button role="menuitem" tabindex="-1" class="menu-item${danger ? " destructive" : ""}" data-action="${action}" data-id="${esc(node.id)}">${label}</button>`;
   const startup = canChangeStartup(node) ? item("startup", "Startup context") : "",
     secrets = node.online && !node.disabled ? item("worker-secrets", "Secrets") : "",
-    proxy = item("worker-proxy", "Gateway proxy"),
+    proxy = item("worker-proxy", node.proxyEndpoints?.length ? "Gateway proxy" : "Enable gateway proxy"),
     separator = '<div role="separator" class="menu-separator"></div>';
   const html = target.drawer
     ? secrets + startup + proxy + separator + item("unregister", "Unregister", true)
@@ -2508,7 +2508,7 @@ async function workerProxy(node) {
   let submitted = false;
   formDialog(
     title,
-    `<p>Let machines on this LAN or VPN reach the gateway through ${esc(node.name)}. The proxy stays enabled until you explicitly disable it, even after its last dependent is removed.</p><label class="force-confirm"><input type="checkbox" name="enabled"${result.enabled ? " checked" : ""}>Enable gateway proxy</label><div id="proxy-settings-fields"><label>Network interface and address<select name="interfaceAddress" required><option value="">Select a network interface</option>${choices.map((entry, index) => `<option value="${index}"${index === selected ? " selected" : ""}>${esc(entry.name)} · ${esc(entry.address)}</option>`).join("")}</select></label><label>Port<input name="port" type="number" min="1" max="65535" required value="${settings?.port || 3128}"></label><label>Allowed source addresses or CIDRs<textarea name="sources" rows="3" required maxlength="1024" spellcheck="false">${esc(settings?.sources.join("\n") || "")}</textarea></label><p class="field-help">Only active private LAN or VPN addresses reported by this machine are listed. Select the address the new machines can reach. The selected network is suggested as an allowed source; review it and enter the new machines' addresses or subnet. Allow up to 16 private addresses or CIDRs, separated by commas or new lines.</p>${choices.length ? "" : '<p class="notice">This machine has no active private LAN or VPN address available for proxy hosting.</p>'}</div>${inUse ? `<p class="notice">In use by ${dependents.invitations} pending invitations, ${dependents.children} children, and ${dependents.retiring} retiring children. Move or remove these dependencies before disabling or changing the proxy.</p>` : ""}<p class="field-help">No firewall rules or elevation are applied. Allow the selected TCP port through the host firewall if required. Saving is sent once; a lost response must be checked with Reload settings before another change.</p><button type="button" data-action="worker-proxy" data-id="${esc(node.id)}" class="secondary">Reload settings</button>`,
+    `<p>Let machines on this LAN or VPN reach the gateway through ${esc(node.name)}. The proxy stays enabled until you explicitly disable it, even after its last dependent is removed.</p><label class="force-confirm"><input type="checkbox" name="enabled"${result.enabled ? " checked" : ""}>Enable gateway proxy</label><div id="proxy-settings-fields"><label>Network interface and address<select name="interfaceAddress" required><option value="">Select a network interface</option>${choices.map((entry, index) => `<option value="${index}"${index === selected ? " selected" : ""}>${esc(entry.name)} · ${esc(entry.address)}</option>`).join("")}</select></label><label>Port<input name="port" type="number" min="1" max="65535" required value="${settings?.port || 3128}"></label><label>Allowed source addresses or CIDRs<textarea name="sources" rows="3" required maxlength="1024" spellcheck="false">${esc(settings?.sources.join("\n") || "")}</textarea></label><p class="field-help">Only active private LAN or VPN addresses reported by this machine are listed. Select the address the new machines can reach. The selected network is suggested as an allowed source; review it and enter the new machines' addresses or subnet. Allow up to 16 private addresses or CIDRs, separated by commas or new lines.</p>${choices.length ? "" : '<p class="notice">This machine has no active private LAN or VPN address available for proxy hosting.</p>'}</div>${inUse ? `<p class="notice">${esc(proxyDependencyNotice(dependents))}</p>` : ""}<p class="field-help">No firewall rules or elevation are applied. Allow the selected TCP port through the host firewall if required. Saving is sent once; a lost response must be checked with Reload settings before another change.</p><button type="button" data-action="worker-proxy" data-id="${esc(node.id)}" class="secondary">Reload settings</button>`,
     async (fields, current) => {
       if (submitted) throw new Error("Reload settings to check whether the previous change was applied before submitting another change.");
       const enabled = fields.enabled === "on";
@@ -2663,7 +2663,24 @@ function readyEndpoints(n) {
 }
 /** @param {ProxyDependents | undefined} d @returns {string} */
 function dependentsText(d) {
-  return d && d.invitations + d.children + d.retiring > 0 ? ` · ${d.invitations} invitations, ${d.children} children, ${d.retiring} retiring` : "";
+  if (!d) return "";
+  const parts = [];
+  if (d.machines !== undefined) {
+    if (d.machines) parts.push(`${d.machines} ${d.machines === 1 ? "machine" : "machines"}`);
+  } else if (d.children) {
+    parts.push(`${d.children} ${d.children === 1 ? "context" : "contexts"}`);
+  }
+  if (d.invitations) parts.push(`${d.invitations} pending ${d.invitations === 1 ? "invitation" : "invitations"}`);
+  return parts.length ? " · " + parts.join(", ") : "";
+}
+
+/** @param {ProxyDependents} d @returns {string} */
+function proxyDependencyNotice(d) {
+  const usage = dependentsText(d).replace(/^ · /, ""),
+    removal = d.retiring
+      ? `${d.retiring} removed ${d.retiring === 1 ? "context has" : "contexts have"} not yet acknowledged removal. The proxy must stay available so each can receive its removal notice. If a context will never reconnect, its owner can release the wait with control machines proxies release CHILD_ID.`
+      : "";
+  return [usage ? "In use by " + usage + "." : "", removal, "Move or remove these dependencies before disabling or changing the proxy."].filter(Boolean).join(" ");
 }
 /** @param {GatewayProxy} proxy @returns {string} */
 function proxyWorkerName(proxy) {
@@ -2692,7 +2709,8 @@ function proxyFields(workers, ready) {
 /** @param {Machine} n @returns {string} */
 function proxySection(n) {
   const endpoints = n.proxyEndpoints || [];
-  return `<section class="drawer-section"><h3>Gateway proxy</h3>${endpoints.length ? `<dl class="metadata">${endpoints.map((e) => `<dt>${esc(e.interface || "Endpoint")}</dt><dd><span class="mono">${esc(e.url)}</span><small class="muted">${e.managed ? "managed · " : ""}${esc(e.state)}${e.checkedAt ? " · checked " + esc(age(e.checkedAt)) + " ago" : ""}${e.error ? " · " + esc(e.error) : ""}${esc(dependentsText(e.dependents))}</small></dd>`).join("")}</dl>` : '<p class="muted">Not enabled. Choose a network interface to let other machines reach the gateway through this machine.</p>'}<button class="secondary" data-action="worker-proxy" data-id="${esc(n.id)}">${endpoints.length ? "Proxy settings" : "Enable gateway proxy"}</button></section>`;
+  if (!endpoints.length) return "";
+  return `<section class="drawer-section"><h3>Gateway proxy</h3><dl class="metadata">${endpoints.map((e) => `<dt>${esc(e.interface || "Endpoint")}</dt><dd><span class="mono">${esc(e.url)}</span><small class="muted">${e.managed ? "managed · " : ""}${esc(e.state)}${e.checkedAt ? " · checked " + esc(age(e.checkedAt)) + " ago" : ""}${e.error ? " · " + esc(e.error) : ""}${esc(dependentsText(e.dependents))}</small></dd>`).join("")}</dl><button class="secondary" data-action="worker-proxy" data-id="${esc(n.id)}">Proxy settings</button></section>`;
 }
 /** @returns {Promise<void>} */
 async function updateInvitation() {

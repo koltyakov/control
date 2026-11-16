@@ -75,7 +75,7 @@ async function assertGatewayProxySetup(page) {
       { name: "Ethernet <test>", address: "192.168.10.5", prefix: "192.168.10.0/24" },
       { name: "VPN", address: "fd00::5", prefix: "fd00::/64" },
     ],
-    dependents: { invitations: 0, children: 0, retiring: 0 },
+    dependents: { invitations: 0, children: 0, retiring: 0, machines: 0 },
   };
   const writes = [];
   let loseReply = false;
@@ -117,15 +117,23 @@ async function assertGatewayProxySetup(page) {
       port: 4321, sources: ["192.168.10.20/32", "192.168.10.32/28"],
     }], "Enabling must submit the exact chosen interface, address and sources");
 
-    setup.dependents.children = 1;
+    setup.dependents.children = 2;
+    setup.dependents.machines = 1;
+    setup.dependents.retiring = 1;
     await open();
     assert.ok(await page.locator('#modal-form input[name="enabled"]').isDisabled());
     assert.ok(await page.locator("#modal-form button[type=submit]").isDisabled());
     await page.getByText("Move or remove these dependencies", { exact: false }).waitFor();
+    await page.getByText("In use by 1 machine.", { exact: false }).waitFor();
+    await page.getByText("1 removed context has not yet acknowledged removal.", { exact: false }).waitFor();
+    assert.ok((await page.locator("#modal-form").textContent()).includes("control machines proxies release CHILD_ID"));
+    assert.ok(!(await page.locator("#modal-form").textContent()).includes("retiring"));
     await page.locator('#modal-form [data-action="close"]').click();
     assert.equal(writes.length, 1, "A dependent child must block disabling or reconfiguring the proxy");
 
     setup.dependents.children = 0;
+    setup.dependents.machines = 0;
+    setup.dependents.retiring = 0;
     await open();
     assert.ok(await page.locator('#modal-form input[name="enabled"]').isChecked(), "Zero dependents must not disable the explicit setting");
     await page.locator('#modal-form input[name="enabled"]').uncheck();
@@ -620,7 +628,7 @@ async function assertStartupCommands(page, snapshot) {
       assert.equal(await actions.getByRole("button", { name: "Rename", exact: true }).isVisible(), true);
       assert.equal(await actions.getByRole("button", { name: "Disable", exact: true }).isVisible(), true);
       await more.press("ArrowDown");
-      assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Startup context", "Gateway proxy", "Unregister"]);
+      assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Startup context", "Enable gateway proxy", "Unregister"]);
       await refresh();
       assert.equal(await menu.isVisible(), true, "Polling must preserve drawer overflow menus");
       assert.equal(await more.getAttribute("aria-expanded"), "true");
@@ -740,7 +748,7 @@ async function assertStartupCommands(page, snapshot) {
 
   await page.getByRole("button", { name: "startup-worker", exact: true }).click();
   await page.getByRole("button", { name: "More actions for startup-worker", exact: true }).click();
-  assert.deepEqual(await page.locator("#machine-menu").getByRole("menuitem").allTextContents(), ["Gateway proxy", "Unregister"]);
+  assert.deepEqual(await page.locator("#machine-menu").getByRole("menuitem").allTextContents(), ["Enable gateway proxy", "Unregister"]);
   await page.keyboard.press("End");
   await page.keyboard.press("Enter");
   await page.getByLabel("Type startup-worker to confirm").waitFor();
@@ -981,6 +989,16 @@ async function assertProxyChips(page, snapshot) {
     assert.equal(await page.locator(".drawer-status .proxy-tag").count(), 0, "Configuration chips must be separate from status");
     await close();
 
+    host.proxyEndpoints[0].dependents = { invitations: 0, children: 2, retiring: 1, machines: 1 };
+    await refreshPage(page);
+    await row(host.id).locator(".machine-name").click();
+    const proxySection = page.locator(".drawer-section").filter({ has: page.getByRole("heading", { name: "Gateway proxy", exact: true }) });
+    assert.ok((await proxySection.textContent()).includes("1 machine"));
+    assert.ok(!/children|retiring|0 invitations/.test(await proxySection.textContent()), "The summary must not expose internal context counts or removal waits");
+    await close();
+    assert.equal(await page.evaluate(() => dependentsText({ invitations: 0, children: 0, retiring: 1, machines: 0 })), "", "A removal wait belongs in settings, not the summary");
+    assert.equal(await page.evaluate(() => dependentsText({ invitations: 1, children: 2, retiring: 0 })), " · 2 contexts, 1 pending invitation", "Older gateway counts must not be mislabeled as machines");
+
     host.online = false;
     host.status = "offline";
     host.proxyEndpoints[0].state = "offline";
@@ -1000,6 +1018,13 @@ async function assertProxyChips(page, snapshot) {
     await refreshPage(page);
     assert.equal(await chips(host.id).count(), 0, "Disabling hosting must remove Proxy");
     assert.equal(await chips(child.id).count(), 0, "Switching to direct must remove Via proxy");
+    await row(direct.id).locator(".machine-name").click();
+    assert.equal(await page.getByRole("heading", { name: "Gateway proxy", exact: true }).count(), 0, "Disabled hosting must not occupy a drawer section");
+    assert.equal(await page.locator('.drawer-section [data-action="worker-proxy"]').count(), 0);
+    await page.getByRole("button", { name: "More actions for direct", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Enable gateway proxy", exact: true }).waitFor();
+    await page.keyboard.press("Escape");
+    await close();
     assert.deepEqual(await chips(user.id).allTextContents(), ["Proxy", "Via proxy"], "Grouped rows must include roles configured in either context");
     assert.equal(await row(user.id).getAttribute("data-id"), user.id);
     await row(user.id).locator(".machine-name").click();
@@ -1567,7 +1592,7 @@ try {
     "Rename",
     "Secrets",
     ...(registered.runAs === "user" ? ["Startup context"] : []),
-    "Gateway proxy",
+    "Enable gateway proxy",
     "Disable",
     "Unregister",
   ]);

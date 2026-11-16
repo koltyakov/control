@@ -27,6 +27,16 @@ func (g *Gateway) proxyCountsLocked(userID, node string) model.ProxyDependents {
 		out.Children += d.Children
 		out.Retiring += d.Retiring
 	}
+	hosts := map[string]bool{}
+	for child, d := range g.proxyDependencies {
+		if d.UserID != userID || d.Worker != node || g.owners[node] != userID || g.machineStates[child].Unregistered {
+			continue
+		}
+		if _, registered := g.nodes[child]; registered || g.hasCredentialLocked(child) {
+			hosts[g.proxyChildHostLocked(child, d)] = true
+		}
+	}
+	out.Machines = len(hosts)
 	return out
 }
 

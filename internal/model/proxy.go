@@ -94,6 +94,9 @@ type ProxyDependents struct {
 	Invitations int `json:"invitations"`
 	Children    int `json:"children"`
 	Retiring    int `json:"retiring"`
+	// Machines groups enrolled children by their gateway-issued Hybrid pair.
+	// It is display-only and does not add to Total.
+	Machines int `json:"machines"`
 }
 
 // Total is the number of dependencies preventing explicit disable.

@@ -188,7 +188,7 @@ func TestManagedProxyDependenciesSurviveAndRequireRetirementAcknowledgement(t *t
 	g.mu.Lock()
 	counts := g.managedDependentsLocked(alice.ID, time.Now())[worker.ID][office]
 	g.mu.Unlock()
-	if counts == nil || counts.Children != 2 || counts.Invitations != 0 {
+	if counts == nil || counts.Children != 2 || counts.Machines != 2 || counts.Invitations != 0 {
 		t.Fatalf("dependency counts %+v", counts)
 	}
 	// Enrolled children cannot be released, and another fleet cannot release.
@@ -312,16 +312,63 @@ func TestManagedProxyCountsPendingHybridCompanion(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Redeeming the User context leaves the System companion pending.
-	redeemProxied(t, server.URL, link)
+	user, userKey := redeemProxied(t, server.URL, link)
 	g.mu.Lock()
 	counts := g.managedDependentsLocked(alice.ID, time.Now())[worker.ID][office]
 	g.mu.Unlock()
-	if counts == nil || counts.Invitations != 1 || counts.Children != 1 {
+	if counts == nil || counts.Invitations != 1 || counts.Children != 1 || counts.Machines != 1 {
 		t.Fatalf("hybrid dependency counts %+v", counts)
 	}
 	if status := waitProxyState(t, a, worker.ID, model.ProxyStandby); status.Dependents == nil || status.Dependents.Total() != 2 {
 		t.Fatalf("owner projection %+v", status.Dependents)
 	}
+	ticket := enrollment.SystemTicket(link.URL[strings.LastIndex(link.URL, "/")+1:])
+	g.mu.Lock()
+	companion := g.installations[enrollment.Hash(ticket)]
+	g.mu.Unlock()
+	system, systemKey := redeemProxied(t, server.URL, enrollment.Link{Invitation: companion.Invitation, URL: server.URL + "/install/" + ticket})
+	registerAs(t, server.URL, userKey, user, model.Node{Name: link.Name, OS: "linux", RunAs: "user", Software: buildinfo.Info{Arch: "amd64"}})
+	registerAs(t, server.URL, systemKey, system, model.Node{Name: companion.Name, OS: "linux", RunAs: "system", InstructionOnly: true, Software: buildinfo.Info{Arch: "amd64"}})
+
+	check := func(children, machines, retiring int) {
+		t.Helper()
+		g.mu.Lock()
+		locked := g.managedDependentsLocked(alice.ID, time.Now())[worker.ID][office]
+		management := g.proxyCountsLocked(alice.ID, worker.ID)
+		g.mu.Unlock()
+		projected := proxyStatus(t, a, worker.ID)[0].Dependents
+		for _, got := range []*model.ProxyDependents{locked, &management, projected} {
+			if got == nil || got.Children != children || got.Machines != machines || got.Retiring != retiring || got.Invitations != 0 || got.Total() != children+retiring {
+				t.Fatalf("dependency counts %+v, want children=%d machines=%d retiring=%d", got, children, machines, retiring)
+			}
+		}
+	}
+	check(2, 1, 0)
+	if err := a.JSON(t.Context(), "DELETE", "/v1/fleet/installations", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	check(2, 1, 0)
+	server.Close()
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	g, err = New(filepath.Dir(g.path), commonKey, Options{SuperuserKey: superKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := httptest.NewServer(g.Handler())
+	t.Cleanup(func() { restarted.Close(); _ = g.Close() })
+	a.URL = restarted.URL
+	check(2, 1, 0)
+	if err := a.JSON(t.Context(), "DELETE", "/v1/fleet/nodes/"+system.ID, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	check(1, 1, 1)
+	if err := a.JSON(t.Context(), "DELETE", "/v1/fleet/nodes/"+user.ID, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	check(0, 0, 2)
 }
 
 func TestManagedProxyStatusDoesNotWaitForPersistence(t *testing.T) {
