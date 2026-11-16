@@ -41,6 +41,7 @@ func (n *Node) ConfigureStartup(prepare func(context.Context, string) error) {
 					n.mu.Lock()
 					n.startupChanging = false
 					n.mu.Unlock()
+					n.managedProxy.unfence()
 					n.work.Resume()
 					n.maintenanceMu.Unlock()
 				} else {
@@ -70,7 +71,12 @@ func (n *Node) reserveStartupChange() error {
 	if !n.work.ReserveIfIdle() {
 		return errors.New("the machine is busy, disabled, starting, or reserved for an update; wait until idle")
 	}
+	if !n.managedProxy.fenceIfIdle() {
+		n.work.Resume()
+		return errors.New("the machine's managed gateway proxy has active tunnels; wait until idle")
+	}
 	if n.updateBusy() {
+		n.managedProxy.unfence()
 		n.work.Resume()
 		return errors.New("the machine has a lease or pending work; wait until idle")
 	}

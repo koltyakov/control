@@ -180,6 +180,46 @@ func Probe(ctx context.Context, proxy, gateway string) error {
 	return nil
 }
 
+// ProbeDirect checks the direct path a Control-managed listener uses: it
+// dials the gateway with dial, completes gateway TLS verification, and fetches
+// the gateway health endpoint without inherited proxy settings or pooling.
+func ProbeDirect(ctx context.Context, gateway string, dial func(context.Context, string, string) (net.Conn, error)) error {
+	u, err := url.Parse(gateway)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return errors.New("gateway is not HTTPS")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(gateway, "/")+"/healthz", nil)
+	if err != nil {
+		return errors.New("invalid gateway URL")
+	}
+	mu.Lock()
+	t := newTransport("", false)
+	mu.Unlock()
+	t.Proxy, t.DialContext = nil, dial
+	defer t.CloseIdleConnections()
+	client := &http.Client{Transport: t, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
+	if err != nil {
+		var certificate *tls.CertificateVerificationError
+		var unknown x509.UnknownAuthorityError
+		var hostname x509.HostnameError
+		if errors.As(err, &certificate) || errors.As(err, &unknown) || errors.As(err, &hostname) {
+			return errors.New("gateway TLS verification failed")
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return errors.New("direct gateway check timed out")
+		}
+		return errors.New("direct gateway connection failed")
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return errors.New("gateway health check returned " + resp.Status)
+	}
+	return nil
+}
+
 // sanitize reduces transport errors to a bounded category without echoing
 // addresses, certificate subjects, or proxy response bodies.
 func sanitize(err error) error {

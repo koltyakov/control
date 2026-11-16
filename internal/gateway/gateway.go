@@ -151,8 +151,12 @@ type Gateway struct {
 	metricsWG        sync.WaitGroup
 	startedAt        time.Time
 	machineStates    map[string]model.MachineState
-	observationMu    sync.RWMutex
-	observed         map[string]*observedFleet
+	// proxyDependencies keeps managed proxy listeners active for enrolled and
+	// retiring children, keyed by child identity. Protected by mu.
+	proxyDependencies map[string]proxyDependency
+	observationMu     sync.RWMutex
+	observed          map[string]*observedFleet
+	proxyObservation  managedProxyObservation
 	// credentials indexes usable bearer credentials by digest; see authenticate.
 	credentials atomic.Pointer[map[string]principal]
 	// routes mirrors peers for relay forwarding under its own lock, so packet
@@ -280,6 +284,7 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 		ids = append(ids, id)
 	}
 	g.publishObservations(ids...)
+	g.publishAllProxyObservations()
 	g.startedAt = time.Now().UTC()
 	g.metrics = system.New([]string{dir}, 15*time.Second)
 	metricsCtx, cancel := context.WithCancel(context.Background())
@@ -315,6 +320,7 @@ func (g *Gateway) Handler() http.Handler {
 	g.updateRoutes(mux)
 	g.installationRoutes(mux)
 	g.machineRoutes(mux)
+	g.managedProxyRoutes(mux)
 	g.secretRoutes(mux)
 	g.consoleRoutes(mux)
 	return g.maintenanceHandler(mux)

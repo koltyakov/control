@@ -533,6 +533,9 @@ func (m view) registrationView() tea.View {
 				name = proxy.Worker
 			}
 			add("Through "+name+" at "+proxy.URL+". The target must reach that address.", "33")
+			if w.link.ProxyActivation == enrollment.ProxyActivationPending {
+				add("Managed listener activation is not confirmed yet; check the worker's proxy state before running the command.", "33")
+			}
 		}
 		add("", "")
 		add(clean(w.link.Command), "36")
@@ -599,12 +602,18 @@ func proxyEndpointLine(endpoint model.ProxyEndpointStatus, now time.Time) string
 	if endpoint.Interface != "" {
 		line += " (" + endpoint.Interface + ")"
 	}
+	if endpoint.Managed {
+		line += " · managed"
+	}
 	line += " · " + endpoint.State
 	if !endpoint.CheckedAt.IsZero() {
 		line += " " + now.Sub(endpoint.CheckedAt).Round(time.Second).String() + " ago"
 	}
 	if endpoint.Error != "" {
 		line += " · " + endpoint.Error
+	}
+	if d := endpoint.Dependents; d != nil && d.Total() > 0 {
+		line += fmt.Sprintf(" · %d invitations, %d children, %d retiring", d.Invitations, d.Children, d.Retiring)
 	}
 	return line
 }

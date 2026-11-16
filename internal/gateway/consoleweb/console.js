@@ -50,10 +50,11 @@
  * @property {string} [targetName]
  * @typedef {Machine & {contexts: Machine[]}} MachineGroup
  * @typedef {{observedAt: string, nodes: Machine[], gateway?: {url: string, startedAt: string, software: Software, system?: SystemInfo}}} FleetSnapshot
- * @typedef {{url: string, interface?: string, state: string, checkedAt?: string, error?: string}} ProxyEndpointStatus
- * @typedef {{url: string, worker?: string}} GatewayProxy
+ * @typedef {{invitations: number, children: number, retiring: number}} ProxyDependents
+ * @typedef {{url: string, interface?: string, managed?: boolean, state: string, checkedAt?: string, error?: string, dependents?: ProxyDependents}} ProxyEndpointStatus
+ * @typedef {{url: string, worker?: string, managed?: boolean}} GatewayProxy
  * @typedef {{id: string, name: string, autoName?: boolean, expiresAt: string, revoked?: boolean, redeemedId?: string, serviceMode?: string, hybridId?: string, hybridRole?: string, asset?: {os: string}, gatewayProxy?: GatewayProxy}} Invitation
- * @typedef {Invitation & {command: string}} InstallationLink
+ * @typedef {Invitation & {command: string, proxyActivation?: string}} InstallationLink
  * @typedef {{id: string, name: string, role: string, createdAt: string, revoked?: boolean}} FleetKey
  * @typedef {{id: string, name: string, createdAt: string, disabled?: boolean}} FleetUser
  * @typedef {{id: number, at: string, userId: string, fleet?: string, actor: string, via: string, keyId?: string, action: string, target?: string, targetId?: string, detail?: string, sourceIp?: string}} AuditEvent
@@ -2429,6 +2430,8 @@ function showInstallationCommand(
   state.invitation = link;
   if (link.gatewayProxy)
     description += ` The target reaches the gateway through ${proxyWorkerName(link.gatewayProxy)} at ${link.gatewayProxy.url}, and must be able to reach that address.`;
+  if (link.proxyActivation === "pending")
+    description += " The managed proxy listener is not confirmed active yet; check the worker's Gateway proxy state before running the command.";
   showSecret("Install on the target machine", command, description);
   const note = document.createElement("p");
   note.id = "enrollment-progress";
@@ -2495,9 +2498,14 @@ function addMachine() {
 function proxyWorkers() {
   return (state.snapshot?.nodes || []).filter((n) => n.proxyEndpoints?.length);
 }
+// A managed listener on standby is selectable: the invitation activates it.
 /** @param {Machine} n @returns {ProxyEndpointStatus[]} */
 function readyEndpoints(n) {
-  return n.online && !n.disabled ? (n.proxyEndpoints || []).filter((e) => e.state === "ready") : [];
+  return n.online && !n.disabled ? (n.proxyEndpoints || []).filter((e) => e.state === "ready" || (e.managed === true && e.state === "standby")) : [];
+}
+/** @param {ProxyDependents | undefined} d @returns {string} */
+function dependentsText(d) {
+  return d && d.invitations + d.children + d.retiring > 0 ? ` · ${d.invitations} invitations, ${d.children} children, ${d.retiring} retiring` : "";
 }
 /** @param {GatewayProxy} proxy @returns {string} */
 function proxyWorkerName(proxy) {
@@ -2507,7 +2515,7 @@ function proxyWorkerName(proxy) {
 /** @param {ProxyEndpointStatus} e @returns {string} */
 function endpointText(e) {
   const checked = e.checkedAt ? " · checked " + age(e.checkedAt) + " ago" : "";
-  return e.url + (e.interface ? " (" + e.interface + ")" : "") + " · " + e.state + checked + (e.error ? " · " + e.error : "");
+  return e.url + (e.interface ? " (" + e.interface + ")" : "") + (e.managed ? " · managed" : "") + " · " + e.state + checked + (e.error ? " · " + e.error : "") + dependentsText(e.dependents);
 }
 // Stable IDs are submitted; names are display only. Each worker has its own
 // address select, so ambiguous workers require an explicit choice.
@@ -2525,7 +2533,7 @@ function proxyFields(workers, ready) {
 /** @param {Machine} n @returns {string} */
 function proxySection(n) {
   if (!n.proxyEndpoints?.length) return "";
-  return `<section class="drawer-section"><h3>Gateway proxy</h3><dl class="metadata">${n.proxyEndpoints.map((e) => `<dt>${esc(e.interface || "Endpoint")}</dt><dd><span class="mono">${esc(e.url)}</span><small class="muted">${esc(e.state)}${e.checkedAt ? " · checked " + esc(age(e.checkedAt)) + " ago" : ""}${e.error ? " · " + esc(e.error) : ""}</small></dd>`).join("")}</dl></section>`;
+  return `<section class="drawer-section"><h3>Gateway proxy</h3><dl class="metadata">${n.proxyEndpoints.map((e) => `<dt>${esc(e.interface || "Endpoint")}</dt><dd><span class="mono">${esc(e.url)}</span><small class="muted">${e.managed ? "managed · " : ""}${esc(e.state)}${e.checkedAt ? " · checked " + esc(age(e.checkedAt)) + " ago" : ""}${e.error ? " · " + esc(e.error) : ""}${esc(dependentsText(e.dependents))}</small></dd>`).join("")}</dl></section>`;
 }
 /** @returns {Promise<void>} */
 async function updateInvitation() {

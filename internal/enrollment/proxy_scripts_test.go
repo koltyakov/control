@@ -3,7 +3,6 @@ package enrollment
 import (
 	"encoding/pem"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,12 +91,11 @@ func TestProxiedInstallerRejectsHTTPSDowngrade(t *testing.T) {
 	if err != nil {
 		t.Skip("bash is required to exercise the Unix installer")
 	}
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server, _ := testutil.TLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "http://"+r.Host+"/untrusted-script", http.StatusFound)
 	}))
-	t.Cleanup(server.Close)
 	ca := filepath.Join(t.TempDir(), "gateway.pem")
-	if err = os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+	if err = os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.TLS.Certificates[0].Certificate[1]}), 0600); err != nil {
 		t.Fatal(err)
 	}
 	address := server.Listener.Addr().String()

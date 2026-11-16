@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,8 +49,9 @@ type Config struct {
 	// proxy, ignoring inherited proxy variables and never falling back directly.
 	// Peer WebRTC traffic and provider environments are unaffected.
 	GatewayProxy *model.GatewayProxy `json:"gatewayProxy,omitempty"`
-	// ProxyEndpoints advertises separately managed CONNECT proxies on this host
-	// that other fleet machines may use to reach the gateway.
+	// ProxyEndpoints advertises CONNECT proxies on this host that other fleet
+	// machines may use to reach the gateway: separately managed software, or
+	// Control's own fixed-gateway listener when managed is set.
 	ProxyEndpoints []model.ProxyEndpoint `json:"proxyEndpoints,omitempty"`
 	// InstructionOnly requires an exact grant even from account clients.
 	// Hybrid system profiles enable it and retain a private local API.
@@ -265,6 +267,23 @@ func (c *Config) proxyDefaults() error {
 	}
 	if err = model.ValidateProxyEndpoints(c.ProxyEndpoints); err != nil {
 		return fmt.Errorf("proxyEndpoints: %w", err)
+	}
+	for i, endpoint := range c.ProxyEndpoints {
+		if !endpoint.Managed {
+			if len(endpoint.Sources) != 0 {
+				return fmt.Errorf("proxyEndpoints[%d]: sources apply only to a managed endpoint", i)
+			}
+			continue
+		}
+		// The managed listener is separate from the privileged local API and
+		// accepts only explicitly allowed private/VPN sources.
+		if _, err = model.ManagedSources(endpoint.Sources); err != nil {
+			return fmt.Errorf("proxyEndpoints[%d]: %w", i, err)
+		}
+		listen, _ := model.ManagedListenAddress(endpoint.URL)
+		if api, apiErr := netip.ParseAddrPort(c.Listen); apiErr == nil && api.Port() == listen.Port() && (api.Addr() == listen.Addr() || api.Addr().IsUnspecified()) {
+			return fmt.Errorf("proxyEndpoints[%d]: a managed proxy cannot share the local API listener", i)
+		}
 	}
 	if len(c.ProxyEndpoints) != 0 && !strings.HasPrefix(c.Gateway, "https://") {
 		return errors.New("proxyEndpoints require an https:// gateway; children verify gateway TLS through the proxy")

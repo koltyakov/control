@@ -10,7 +10,8 @@ import (
 // proxySelectionLocked validates an invitation's proxy worker and endpoint
 // against the requesting fleet's live registrations. The gateway never probes
 // the endpoint: only the worker's own fresh readiness report qualifies it.
-// An empty endpoint selects the worker's only advertised endpoint. Caller holds g.mu.
+// An empty endpoint selects the worker's only advertised endpoint. On success
+// the string is the endpoint's current readiness state. Caller holds g.mu.
 func (g *Gateway) proxySelectionLocked(userID, worker, endpoint string, now time.Time) (*model.GatewayProxy, string, int) {
 	n, exists := g.nodes[worker]
 	c := g.peers[worker]
@@ -40,25 +41,38 @@ func (g *Gateway) proxySelectionLocked(userID, worker, endpoint string, now time
 		if status.URL != endpoint {
 			continue
 		}
-		if status.State != model.ProxyReady {
+		// A managed listener on standby has freshly verified its direct gateway
+		// path; this invitation becomes the dependency that activates it.
+		if !status.Selectable() {
 			text := "proxy endpoint is " + status.State
 			if status.Error != "" {
 				text += ": " + status.Error
 			}
 			return nil, text + "; wait for a fresh ready check on the proxy worker", http.StatusConflict
 		}
-		return &model.GatewayProxy{URL: endpoint, Worker: worker}, "", 0
+		return &model.GatewayProxy{URL: endpoint, Worker: worker, Managed: status.Managed}, status.State, 0
 	}
 	return nil, "endpoint is not advertised by the proxy worker", http.StatusBadRequest
 }
 
 // proxyStatuses projects a node's advertised endpoints for the fleet owner.
-func proxyStatuses(entry observation, now time.Time) []model.ProxyEndpointStatus {
+// Managed endpoints include their durable dependency counts.
+func proxyStatuses(entry observation, now time.Time, dependents map[string]*model.ProxyDependents) []model.ProxyEndpointStatus {
 	var readiness []model.ProxyReadiness
 	if entry.health != nil {
 		readiness = entry.health.Proxies
 	}
-	return model.ProxyStatuses(entry.node.ProxyEndpoints, entry.node.Online, readiness, entry.healthAt, now)
+	statuses := model.ProxyStatuses(entry.node.ProxyEndpoints, entry.node.Online, readiness, entry.healthAt, now)
+	for i := range statuses {
+		if statuses[i].Managed {
+			count := model.ProxyDependents{}
+			if d := dependents[statuses[i].URL]; d != nil {
+				count = *d
+			}
+			statuses[i].Dependents = &count
+		}
+	}
+	return statuses
 }
 
 // advertisedReadiness keeps only reports for endpoints in the registration.

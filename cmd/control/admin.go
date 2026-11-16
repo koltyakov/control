@@ -116,6 +116,7 @@ Your fleet:
     --force                              Retract a pending invitation for that name
   machines add ... --via WORKER [--proxy-url URL]  Install a machine that reaches the gateway through a worker's proxy
   machines proxies                     List workers advertising gateway proxy endpoints and their readiness
+  machines proxies release CHILD_ID    Stop waiting for an unregistered child to acknowledge retirement
   machines invites [clear]             List installation status, or remove revoked and expired ones
   machines revoke ID                   Revoke an invitation and its machine key
   machines enable|disable NAME          Enable or disable new work on a machine
@@ -254,6 +255,9 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 		printJSON(list)
 		return nil
 	}
+	if args[0] == "proxies" && len(args) == 3 && args[1] == "release" {
+		return c.ReleaseProxyDependency(ctx, args[2])
+	}
 	if args[0] == "proxies" && len(args) == 1 {
 		workers, err := c.ProxyWorkers(ctx)
 		if err != nil {
@@ -380,6 +384,17 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 		fmt.Fprintf(os.Stderr, "Install %s. Link expires %s; redeemable by one machine.\n", displayName, link.ExpiresAt.Local().Format(time.RFC3339))
 		if link.GatewayProxy != nil {
 			fmt.Fprintf(os.Stderr, "Reaches the gateway through %s at %s. The target must be able to reach that address.\n", proxyName, link.GatewayProxy.URL)
+		}
+		if link.ProxyActivation == enrollment.ProxyActivationPending {
+			// Observe only: the invitation already exists and is never recreated.
+			waitCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+			_, waitErr := c.WaitProxyActivation(waitCtx, link.GatewayProxy.Worker, link.GatewayProxy.URL, link.CreatedAt, 3*time.Second)
+			cancel()
+			if waitErr != nil {
+				fmt.Fprintln(os.Stderr, "Warning: "+waitErr.Error()+".")
+			} else {
+				fmt.Fprintln(os.Stderr, "Managed proxy listener is active.")
+			}
 		}
 		fmt.Println(link.Command)
 	}

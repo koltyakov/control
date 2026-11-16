@@ -11,7 +11,10 @@ type MachineState struct {
 }
 
 // MachineStateProof permits a node to learn that it was unregistered even
-// after its enrollment credential has been revoked. It authorizes no mutation.
+// after its enrollment credential has been revoked. Its only effects are
+// acknowledgements of the signer's own policy revision: a connected node's
+// lifecycle acknowledgement, and an unregistered node's retirement
+// acknowledgement that releases its own managed proxy dependency.
 type MachineStateProof struct {
 	PublicKey   []byte    `json:"publicKey"`
 	SignedAt    time.Time `json:"signedAt"`

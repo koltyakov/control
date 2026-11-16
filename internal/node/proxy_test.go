@@ -118,7 +118,7 @@ func TestProxyConfigurationValidation(t *testing.T) {
 }
 
 func TestProxyChecksReportAgeAndSanitizedFailures(t *testing.T) {
-	checks := newProxyChecks([]model.ProxyEndpoint{{URL: "http://10.0.0.5:3128"}, {URL: "http://10.0.0.6:3128"}})
+	checks := newProxyChecks([]model.ProxyEndpoint{{URL: "http://10.0.0.5:3128"}, {URL: "http://10.0.0.6:3128"}}, nil)
 	checks.probe = func(_ context.Context, proxy, gateway string) error {
 		if gateway != "https://gateway.example" {
 			t.Fatalf("checked %s", gateway)

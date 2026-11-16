@@ -51,6 +51,10 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 	if needsWake {
 		slices.SortFunc(fleet, func(a, b model.Node) int { return strings.Compare(a.Name, b.Name) })
 	}
+	var proxyDependents map[string]map[string]*model.ProxyDependents
+	if p.Role == "user" || p.Role == "superuser" {
+		proxyDependents = g.proxyDependentsFor(p.UserID, entries, result.ObservedAt)
+	}
 	for _, entry := range entries {
 		n := entry.node
 		state := "offline"
@@ -84,7 +88,7 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 		// Advertised proxies and their readiness are fleet-owner observations.
 		// Readiness has its own freshness, independent of the health summary.
 		if p.Role == "user" || p.Role == "superuser" {
-			snapshot.ProxyEndpoints = proxyStatuses(entry, result.ObservedAt)
+			snapshot.ProxyEndpoints = proxyStatuses(entry, result.ObservedAt, proxyDependents[n.ID])
 		}
 		if nodeUpdating(n, entry.status, result.ObservedAt, deployment) {
 			snapshot.Status = "update"

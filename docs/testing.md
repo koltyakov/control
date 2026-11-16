@@ -213,6 +213,7 @@ This coverage does not establish behavior for every reparse tag, cloud/OneDrive 
 
 ```sh
 make test-compose-proxy
+CONTROL_TEST_MANAGED_PROXY=true make test-compose-proxy
 ```
 
 [`compose.proxy.yaml`](../compose.proxy.yaml) builds a separate topology on two internal networks:
@@ -222,6 +223,8 @@ child ── restricted ── bridge ── gateway-net ── gateway
 ```
 
 The `child` image has no Control binary and shares no network with the gateway, so it can neither resolve nor reach it; the script asserts both. `bridge` runs a Control node advertising `proxyEndpoints` and a separately managed tinyproxy that only joins the networks. A one-shot service issues a test CA and the gateway's certificate; every container trusts that CA through the system store, and the script confirms an untrusted store fails through the proxy. The script waits for the bridge's `ready` check, rejects an unadvertised endpoint, creates `machines add child-01 --via bridge`, and runs the exact generated command in the child with `NO_PROXY='*'`. It then requires the saved `gatewayProxy`, authorized work through the relayed connection, offline status after stopping the proxy and reconnection after restarting it, a service restart through the saved route, and signed retirement after unregistration.
+
+The second command replaces tinyproxy with Control's managed listener. It first requires `standby` and a closed port without dependencies, then confirms invitation-triggered activation. Restarting the bridge must restore the saved listener decision and reconnect the child. A second pending invitation must retain the listener after the first child retires. Revoking that invitation must return the endpoint to `standby` and close its listening port. Both variants use throwaway state and networks.
 
 Go tests cover the same contracts without containers: `internal/gatewayroute` checks bypass-variable overrides, no direct fallback, CONNECT refusal, mandatory certificate verification, and sanitized errors; `internal/node` registers, reads policy, and executes relayed work through a CONNECT fixture while provider HTTP stays direct; `internal/gateway` covers fleet-scoped selection, readiness states, legacy installer refusal, and persistence across restart; `internal/update` streams a managed binary only from the gateway; `cmd/control` covers pending-route persistence and retry; enrollment tests require the proxy on every generated download and enrollment line. Native Windows, macOS, and Linux installation, elevation, and service startup still need platform checks.
 

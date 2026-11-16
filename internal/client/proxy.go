@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/koltyakov/control/internal/enrollment"
 	"github.com/koltyakov/control/internal/model"
@@ -120,4 +122,48 @@ func confirmProxy(q enrollment.Request, link enrollment.Link) error {
 		return errors.New("gateway did not confirm the requested proxy selection; upgrade the gateway and check control machines invites before creating another invitation")
 	}
 	return nil
+}
+
+// WaitProxyActivation polls the fleet's proxy readiness until the worker's
+// managed endpoint reports a fresh ready check through its running listener,
+// or until ctx ends. It only observes: it never creates or retries an
+// invitation. The last observed status is returned with an error on timeout.
+func (c Admin) WaitProxyActivation(ctx context.Context, worker, endpoint string, after time.Time, interval time.Duration) (model.ProxyEndpointStatus, error) {
+	var last model.ProxyEndpointStatus
+	for {
+		workers, err := c.ProxyWorkers(ctx)
+		if err == nil {
+			last = model.ProxyEndpointStatus{}
+			for _, w := range workers {
+				if w.ID != worker || !w.Online || w.Disabled {
+					continue
+				}
+				for _, e := range w.Endpoints {
+					if e.URL == endpoint {
+						last = e
+					}
+				}
+			}
+			if last.State == model.ProxyReady && !last.CheckedAt.Before(after) {
+				return last, nil
+			}
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			if last.State == "" {
+				last.State = model.ProxyUnchecked
+			}
+			return last, fmt.Errorf("managed proxy listener activation is not confirmed (%s); check control machines proxies before running the command", last.State)
+		case <-timer.C:
+		}
+	}
+}
+
+// ReleaseProxyDependency abandons waiting for an unregistered child's
+// retirement acknowledgement, allowing its managed listener to stop when no
+// other dependency remains.
+func (c Admin) ReleaseProxyDependency(ctx context.Context, child string) error {
+	return c.JSON(ctx, http.MethodDelete, "/v1/fleet/proxy-dependencies/"+url.PathEscape(child), nil, nil)
 }

@@ -75,7 +75,17 @@ type Link struct {
 	Invitation
 	URL     string `json:"url"`
 	Command string `json:"command"`
+	// ProxyActivation reports a managed proxy listener's state at creation:
+	// active when the worker's latest listener check succeeded, otherwise
+	// pending until the worker reports a fresh ready check.
+	ProxyActivation string `json:"proxyActivation,omitempty"`
 }
+
+// Managed proxy activation states returned with a new invitation.
+const (
+	ProxyActivationPending = "pending"
+	ProxyActivationActive  = "active"
+)
 
 type Redemption struct {
 	Arch           string `json:"arch,omitempty"`

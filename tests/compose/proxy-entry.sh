@@ -29,6 +29,10 @@ gateway)
     ;;
 bridge)
     trust
+    endpoint="{\"url\":\"http://${CONTROL_PROXY_ADDRESS:?proxy address required}:8888\",\"interface\":\"restricted\"}"
+    if [ "${CONTROL_PROXY_MANAGED:-false}" = true ]; then
+        endpoint="{\"url\":\"http://${CONTROL_PROXY_ADDRESS}:8888\",\"interface\":\"restricted\",\"managed\":true,\"sources\":[\"${CONTROL_PROXY_ALLOW:?allowed subnet required}\"]}"
+    else
     cat > /tmp/tinyproxy.conf <<CONF
 User nobody
 Group nogroup
@@ -42,6 +46,7 @@ DisableViaHeader Yes
 PidFile "/tmp/tinyproxy.pid"
 CONF
     tinyproxy -d -c /tmp/tinyproxy.conf &
+    fi
     cat > /state/config.json <<CONF
 {
   "name": "bridge",
@@ -49,7 +54,7 @@ CONF
   "listen": "127.0.0.1:7331",
   "dataDir": "/state",
   "workDir": "/work",
-  "proxyEndpoints": [{"url": "http://${CONTROL_PROXY_ADDRESS}:8888", "interface": "restricted"}]
+  "proxyEndpoints": [$endpoint]
 }
 CONF
     exec control node --config /state/config.json

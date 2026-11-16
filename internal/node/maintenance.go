@@ -51,7 +51,7 @@ func (n *Node) enterWork(ctx context.Context) (context.Context, func(), error) {
 
 func (n *Node) updateBusy() bool {
 	active, _ := n.work.State()
-	if active > 0 {
+	if active > 0 || n.managedProxy.busy() {
 		return true
 	}
 	n.mu.Lock()
@@ -71,7 +71,15 @@ func (n *Node) pauseForUpdate() bool {
 	if !n.work.PauseIfIdle() {
 		return false
 	}
+	// Managed proxy tunnels, including pending CONNECT handshakes, are owned
+	// work for maintenance. The fence refuses new connections atomically with
+	// the idle check; an update never closes an admitted tunnel.
+	if !n.managedProxy.fenceIfIdle() {
+		n.work.Resume()
+		return false
+	}
 	if n.updateBusy() {
+		n.managedProxy.unfence()
 		n.work.Resume()
 		return false
 	}
@@ -85,6 +93,7 @@ func (n *Node) resumeAfterUpdate() {
 	changing := n.startupChanging
 	n.mu.Unlock()
 	if !changing {
+		n.managedProxy.unfence()
 		n.work.Resume()
 	}
 }

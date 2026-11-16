@@ -3,7 +3,8 @@
 #   child ── restricted (internal) ── bridge ── gateway-net (internal) ── gateway
 #
 # The child shares no network with the gateway and cannot resolve its name.
-# Only the bridge's tinyproxy, a separately managed CONNECT proxy, joins both.
+# The bridge uses tinyproxy by default, or Control's managed listener when
+# CONTROL_TEST_MANAGED_PROXY=true.
 name: control-proxy-test
 
 x-proxy-host: &proxy-host
@@ -49,6 +50,7 @@ services:
       CONTROL_TOKEN: control-compose-test-only-token
       CONTROL_PROXY_ADDRESS: 172.31.250.10
       CONTROL_PROXY_ALLOW: 172.31.250.0/24
+      CONTROL_PROXY_MANAGED: ${CONTROL_TEST_MANAGED_PROXY:-false}
     volumes: ["certs:/certs:ro", "bridge-state:/state", "bridge-work:/work"]
     depends_on:
       gateway:

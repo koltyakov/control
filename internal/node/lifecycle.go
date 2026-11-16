@@ -43,6 +43,9 @@ func (n *Node) syncMachineState(ctx context.Context) error {
 	}
 	current := n.currentMachineState()
 	if current.Unregistered {
+		// A previous acknowledgement may have been lost. Repeat it before
+		// stopping: the gateway may keep a managed proxy running for it.
+		n.acknowledgeRetirement(ctx, current.Revision, 1)
 		return ErrUnregistered
 	}
 	state, supported, err := n.Peer.MachineState(ctx, current.Revision)
@@ -50,6 +53,9 @@ func (n *Node) syncMachineState(ctx context.Context) error {
 		return err
 	}
 	if err := n.applyMachineState(state); err != nil {
+		if errors.Is(err, ErrUnregistered) {
+			n.acknowledgeRetirement(ctx, state.Revision, retirementAckAttempts)
+		}
 		return err
 	}
 	if state != current {
@@ -57,6 +63,32 @@ func (n *Node) syncMachineState(ctx context.Context) error {
 		_, _, err = n.Peer.MachineState(ctx, state.Revision)
 	}
 	return err
+}
+
+const retirementAckAttempts = 3
+
+// acknowledgeRetirement reads the durable retirement revision with a signed
+// proof after persisting it. The signature still verifies after credential
+// revocation, so the gateway can release this identity's managed proxy
+// dependency only once retirement is known to be applied. Failures are
+// bounded and leave the dependency in place; the next start repeats it.
+func (n *Node) acknowledgeRetirement(ctx context.Context, revision uint64, attempts int) {
+	for attempt := range attempts {
+		if attempt > 0 {
+			timer := time.NewTimer(time.Duration(attempt) * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+		if _, _, err := n.Peer.MachineState(ctx, revision); err == nil || ctx.Err() != nil {
+			return
+		} else {
+			slog.Debug("acknowledge retirement", "error", err)
+		}
+	}
 }
 
 func (n *Node) applyMachineState(state model.MachineState) error {
@@ -109,6 +141,10 @@ func (n *Node) runMachineState(ctx context.Context) {
 			return
 		} else if err != nil && ctx.Err() == nil {
 			slog.Debug("machine state refresh", "error", err)
+		}
+		// Managed proxy dependencies share the policy hint and poll.
+		if err := n.syncProxyState(ctx); err != nil && ctx.Err() == nil {
+			slog.Debug("managed proxy state refresh", "error", err)
 		}
 		timer.Reset(n.machineStateInterval())
 	}

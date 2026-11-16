@@ -186,7 +186,7 @@ func TLSServer(t testing.TB, handler http.Handler, hosts ...string) (*httptest.S
 		t.Fatal(err)
 	}
 	server := httptest.NewUnstartedServer(handler)
-	server.TLS = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{{Certificate: [][]byte{leafDER}, PrivateKey: leafKey}}}
+	server.TLS = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{{Certificate: [][]byte{leafDER, caDER}, PrivateKey: leafKey}}}
 	server.StartTLS()
 	t.Cleanup(server.Close)
 	pool := x509.NewCertPool()

@@ -78,6 +78,14 @@ func (g *Gateway) nodeState(w http.ResponseWriter, r *http.Request) {
 		}
 		g.publishObservations(id)
 	}
+	// An unregistered child has no gateway connection. Its signed read of the
+	// exact retirement revision is the durable acknowledgement that releases a
+	// managed proxy dependency.
+	if err := g.acknowledgeRetirementLocked(id, proof, state); err != nil {
+		g.mu.Unlock()
+		http.Error(w, "could not persist retirement acknowledgement", http.StatusInternalServerError)
+		return
+	}
 	g.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(state)

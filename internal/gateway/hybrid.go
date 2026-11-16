@@ -114,6 +114,11 @@ func (g *Gateway) cleanupHybridInstallations(now time.Time) error {
 		}
 		return err
 	}
+	for _, i := range previous {
+		if i.GatewayProxy != nil && i.GatewayProxy.Managed {
+			g.notifyProxyWorkers(i.GatewayProxy.Worker)
+		}
+	}
 	for _, id := range persisted.nodes {
 		delete(g.updateStatus, id)
 		if peer := g.peers[id]; peer != nil {

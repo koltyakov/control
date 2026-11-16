@@ -232,12 +232,18 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	var proxy *model.GatewayProxy
+	proxyState := ""
+	proxyAlreadyNeeded := false
 	if q.ProxyWorker != "" {
-		var text string
 		var status int
-		if proxy, text, status = g.proxySelectionLocked(p.UserID, q.ProxyWorker, q.ProxyURL, time.Now()); proxy == nil {
-			http.Error(w, text, status)
+		if proxy, proxyState, status = g.proxySelectionLocked(p.UserID, q.ProxyWorker, q.ProxyURL, time.Now()); proxy == nil {
+			http.Error(w, proxyState, status)
 			return
+		}
+		if proxy.Managed {
+			if d := g.managedDependentsLocked(p.UserID, time.Now())[proxy.Worker][proxy.URL]; d != nil {
+				proxyAlreadyNeeded = d.Total() > 0
+			}
 		}
 	}
 	ticket, err := g.newInstallationTicket(rand.Reader, q.ServiceMode == "hybrid")
@@ -364,10 +370,20 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not persist invitation", 500)
 		return
 	}
-	link := base + "/install/" + ticket
+	response := enrollment.Link{Invitation: i.Invitation, URL: base + "/install/" + ticket}
+	response.Command = enrollment.InstallCommand(response.URL, q.OS == "windows", q.ServiceMode, i.ProxyURL())
+	if proxy != nil && proxy.Managed {
+		// The committed invitation is now a durable dependency. Activation is
+		// reported only after the worker's own listener check succeeds.
+		response.ProxyActivation = enrollment.ProxyActivationPending
+		if proxyAlreadyNeeded && proxyState == model.ProxyReady {
+			response.ProxyActivation = enrollment.ProxyActivationActive
+		}
+		g.notifyProxyWorkers(proxy.Worker)
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(enrollment.Link{Invitation: i.Invitation, URL: link, Command: enrollment.InstallCommand(link, q.OS == "windows", q.ServiceMode, i.ProxyURL())})
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (g *Gateway) pendingInstallation(w http.ResponseWriter, r *http.Request) (installation, bool) {
@@ -632,9 +648,18 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 	g.owners[id] = i.UserID
 	i.RedeemedID, i.CredentialHash = id, q.CredentialHash
 	g.installations[hash] = i
+	// The signed redemption selects this identity's gateway route. A managed
+	// selection becomes a durable child dependency; any other route replaces
+	// a previous managed dependency of the same identity.
+	previousDependency, hadDependency := g.proxyDependencies[id]
+	if i.GatewayProxy != nil && i.GatewayProxy.Managed {
+		g.proxyDependencies[id] = proxyDependency{UserID: i.UserID, Worker: i.GatewayProxy.Worker, URL: i.GatewayProxy.URL, Invitation: i.ID, CreatedAt: time.Now().UTC()}
+	} else {
+		delete(g.proxyDependencies, id)
+	}
 	// The installer is the actor; the invitation names who authorized it.
 	enrolled := AuditEvent{At: time.Now().UTC(), UserID: i.UserID, Actor: "installer", Via: "invitation", Action: "machine.enroll", Target: clip(g.installationName(i), 128), TargetID: id, Detail: "invitation " + i.ID, SourceIP: sourceIP(r)}
-	persisted := change{identities: []string{id}, invitations: []string{hash}, machineStates: []string{id}, audit: []AuditEvent{enrolled}}
+	persisted := change{identities: []string{id}, invitations: []string{hash}, machineStates: []string{id}, proxyDependencies: []string{id}, audit: []AuditEvent{enrolled}}
 	if registered {
 		persisted.nodes = []string{id}
 	}
@@ -657,8 +682,19 @@ func (g *Gateway) redeemInstallation(w http.ResponseWriter, r *http.Request) {
 			delete(g.owners, id)
 		}
 		g.installations[hash] = old
+		if hadDependency {
+			g.proxyDependencies[id] = previousDependency
+		} else {
+			delete(g.proxyDependencies, id)
+		}
 		http.Error(w, "could not persist enrollment", 500)
 		return
+	}
+	if hadDependency {
+		g.notifyProxyWorkers(previousDependency.Worker)
+	}
+	if i.GatewayProxy != nil && i.GatewayProxy.Managed {
+		g.notifyProxyWorkers(i.GatewayProxy.Worker)
 	}
 	if peer := g.peers[id]; peer != nil {
 		_ = peer.ws.CloseNow()
@@ -712,6 +748,14 @@ func (g *Gateway) revokeInstallation(w http.ResponseWriter, r *http.Request) {
 	for _, peer := range peers {
 		_ = peer.ws.CloseNow()
 	}
+	// Revoking an unused managed invitation releases its dependency.
+	g.mu.Lock()
+	for _, candidate := range previous {
+		if candidate.GatewayProxy != nil && candidate.GatewayProxy.Managed {
+			g.notifyProxyWorkers(candidate.GatewayProxy.Worker)
+		}
+	}
+	g.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -850,6 +894,10 @@ func (g *Gateway) forgetMachine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	delete(g.updateStatus, id)
+	// A managed proxy dependency stays until the child acknowledges retirement.
+	if d, ok := g.proxyDependencies[id]; ok {
+		g.notifyProxyWorkers(d.Worker)
+	}
 	g.mu.Unlock()
 	if peer != nil {
 		_ = peer.ws.CloseNow()

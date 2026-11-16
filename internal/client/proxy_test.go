@@ -1,8 +1,14 @@
 package client
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/koltyakov/control/internal/enrollment"
 	"github.com/koltyakov/control/internal/model"
@@ -47,5 +53,35 @@ func TestConfirmProxyRequiresEchoedSelection(t *testing.T) {
 	}
 	if err := confirmProxy(enrollment.Request{}, enrollment.Link{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWaitProxyActivationRequiresNewOnlineCheck(t *testing.T) {
+	for _, state := range []string{"old", "offline", "disabled", "fresh"} {
+		t.Run(state, func(t *testing.T) {
+			after := time.Now().UTC()
+			checked := after.Add(time.Second)
+			if state == "old" {
+				checked = after.Add(-time.Second)
+			}
+			var reads atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reads.Add(1)
+				_ = json.NewEncoder(w).Encode(model.PoolActivitySnapshot{Nodes: []model.NodeActivitySnapshot{{
+					ID: "worker", Online: state != "offline", Disabled: state == "disabled",
+					ProxyEndpoints: []model.ProxyEndpointStatus{{URL: "http://10.0.0.5:3128", State: model.ProxyReady, CheckedAt: checked, Managed: true}},
+				}}})
+			}))
+			defer server.Close()
+			ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+			defer cancel()
+			_, err := (Admin{URL: server.URL}).WaitProxyActivation(ctx, "worker", "http://10.0.0.5:3128", after, 10*time.Millisecond)
+			if (err == nil) != (state == "fresh") {
+				t.Fatalf("activation %s returned %v", state, err)
+			}
+			if reads.Load() == 0 {
+				t.Fatal("activation was not observed")
+			}
+		})
 	}
 }
