@@ -160,6 +160,7 @@ func (c Client) Dashboard(ctx context.Context, gateway Admin, query model.PoolAc
 			live.Name, live.OS, live.Labels, live.LastSeen = n.Name, n.OS, n.Labels, n.LastSeen
 			live.Software, live.Disabled, live.ControlPending = n.Software, n.Disabled, n.ControlPending
 			live.RetainedTunnels = n.RetainedTunnels
+			live.GatewayProxy = n.GatewayProxy
 			if n.Status == "summary" && n.ObservedAt.After(live.ObservedAt) {
 				// Cached detail must not replace a more recent health aggregate.
 				live.ActiveCount, live.Leased, live.System = n.ActiveCount, n.Leased, n.System

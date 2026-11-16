@@ -89,6 +89,7 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 		// Readiness has its own freshness, independent of the health summary.
 		if p.Role == "user" || p.Role == "superuser" {
 			snapshot.ProxyEndpoints = proxyStatuses(entry, result.ObservedAt, proxyDependents[n.ID])
+			snapshot.GatewayProxy = n.GatewayProxy
 		}
 		if nodeUpdating(n, entry.status, result.ObservedAt, deployment) {
 			snapshot.Status = "update"

@@ -25,6 +25,11 @@ import (
 
 func proxyWorkerPeer(t *testing.T, serverURL, token, name, userID string, endpoints []model.ProxyEndpoint) (*websocket.Conn, *identity.Identity, bool) {
 	t.Helper()
+	return proxyNodePeer(t, serverURL, token, model.Node{Name: name, UserID: userID, ProxyEndpoints: endpoints})
+}
+
+func proxyNodePeer(t *testing.T, serverURL, token string, n model.Node) (*websocket.Conn, *identity.Identity, bool) {
+	t.Helper()
 	id, err := identity.Generate()
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +45,7 @@ func proxyWorkerPeer(t *testing.T, serverURL, token, name, userID string, endpoi
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := model.Node{ID: id.ID, PublicKey: id.Public, Name: name, UserID: userID, ProxyEndpoints: endpoints}
+	n.ID, n.PublicKey = id.ID, id.Public
 	hello := Hello{Version: model.Version, NodeBytes: model.JSON(n)}
 	hello.Signature = ed25519.Sign(id.Private, hello.Message(challenge))
 	if err = ws.Write(ctx, websocket.MessageBinary, model.JSON(hello)); err != nil {

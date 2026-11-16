@@ -103,7 +103,7 @@ func TestLANMetadataNegotiatesBeforeAutomaticReporting(t *testing.T) {
 			if tc.label {
 				labels["lan"] = "home"
 			}
-			p := New(Config{Gateway: s.URL, Token: "fixture", Identity: id, Node: model.Node{ID: id.ID, PublicKey: id.Public, Name: "worker", Labels: labels, Software: buildinfo.Info{Runtime: "supervised"}}}, nil)
+			p := New(Config{Gateway: s.URL, Token: "fixture", Identity: id, Node: model.Node{ID: id.ID, PublicKey: id.Public, Name: "worker", Labels: labels, Software: buildinfo.Info{Runtime: "supervised"}, GatewayProxy: &model.GatewayProxy{URL: "http://10.0.0.5:3128"}}}, nil)
 			defer func() { _ = p.Close() }()
 			var samples atomic.Int32
 			p.wakeSnapshot = func() ([]model.WakeInterface, error) {
@@ -115,6 +115,9 @@ func TestLANMetadataNegotiatesBeforeAutomaticReporting(t *testing.T) {
 				t.Fatal("rolling-upgrade registration failed", err)
 			}
 			node := <-observed
+			if (node.GatewayProxy != nil) != tc.nodeBytes {
+				t.Fatal("configured route changed legacy registration bytes", node.GatewayProxy)
+			}
 			if tc.nodeBytes && node.Software.Runtime != "supervised" || !tc.nodeBytes && node.Software.Runtime != "" {
 				t.Fatal("runtime metadata changed legacy registration bytes", node.Software)
 			}

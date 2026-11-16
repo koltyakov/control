@@ -68,6 +68,9 @@ type Node struct {
 	// ProxyEndpoints are explicitly configured CONNECT proxies on this worker.
 	// Readiness is reported separately in health; advertisement is not proof.
 	ProxyEndpoints []ProxyEndpoint `json:"proxyEndpoints,omitempty"`
+	// GatewayProxy reports this node's configured route, not connection health.
+	// It is retained by the gateway for owner status, not peer discovery.
+	GatewayProxy *GatewayProxy `json:"gatewayProxy,omitempty"`
 }
 
 type Artifact struct {

@@ -140,7 +140,9 @@ func (g *Gateway) conditionalDirectory(user, condition string) ([]model.Node, st
 	}
 	nodes := make([]model.Node, 0, len(fleet.order))
 	for _, id := range fleet.order {
-		nodes = append(nodes, fleet.nodes[id].node)
+		n := fleet.nodes[id].node
+		n.GatewayProxy = nil // Configured gateway routes are owner-only metadata.
+		nodes = append(nodes, n)
 	}
 	return nodes, fleet.etag, false
 }

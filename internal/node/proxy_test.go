@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -50,6 +51,21 @@ func TestProxiedWorkerRegistersReadsPolicyAndExecutesThroughProxy(t *testing.T) 
 	t.Cleanup(func() { _ = n.Close() })
 	if err = n.Start(ctx); err != nil {
 		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/v1/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testAccount)
+	responseMetadata, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status model.PoolActivitySnapshot
+	decodeErr := json.NewDecoder(responseMetadata.Body).Decode(&status)
+	_ = responseMetadata.Body.Close()
+	if decodeErr != nil || len(status.Nodes) != 1 || status.Nodes[0].GatewayProxy == nil || status.Nodes[0].GatewayProxy.URL != proxy.URL {
+		t.Fatal("worker did not report its actual configured gateway route", status, decodeErr)
 	}
 	attachTestOrchestrator(t, n, orchestrator)
 	if err = os.WriteFile(filepath.Join(cfg.WorkDir, "file.bin"), []byte("proxied"), 0600); err != nil {

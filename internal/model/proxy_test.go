@@ -1,9 +1,26 @@
 package model
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestValidateGatewayProxyMetadata(t *testing.T) {
+	for _, proxy := range []*GatewayProxy{nil, {URL: "http://10.0.0.5:3128"}, {URL: "http://[fd00::5]:8080", Worker: strings.Repeat("a", 64), Managed: true}} {
+		if err := ValidateGatewayProxy(proxy); err != nil {
+			t.Fatal(proxy, err)
+		}
+	}
+	for _, proxy := range []*GatewayProxy{
+		{URL: ""}, {URL: "http://user:secret@10.0.0.5:3128"}, {URL: "http://10.0.0.5:3128/"},
+		{URL: "http://10.0.0.5:3128?token=secret"}, {URL: "http://10.0.0.5:3128", Worker: strings.Repeat("a", 65)},
+	} {
+		if err := ValidateGatewayProxy(proxy); err == nil {
+			t.Fatal("accepted unsafe or noncanonical route metadata", proxy)
+		}
+	}
+}
 
 func TestNormalizeProxyURL(t *testing.T) {
 	for input, want := range map[string]string{

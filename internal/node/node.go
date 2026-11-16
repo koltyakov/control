@@ -238,7 +238,7 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 	}
 	n.Peer = transport.New(transport.Config{
 		Gateway: cfg.Gateway, Token: cfg.Token, Identity: id, RelayOnly: cfg.RelayOnly, ICEServers: cfg.ICEServers, Route: n.route,
-		Node: model.Node{ID: id.ID, Name: cfg.Name, PublicKey: id.Public, OS: runtime.GOOS, Labels: cfg.Labels, Capabilities: n.Capabilities(), RunAs: processutil.RunAs(), InstructionOnly: cfg.InstructionOnly, GatewayWake: !cfg.InstructionOnly && accountMayCall(cfg.Allow, "network.wake"), ProxyEndpoints: advertisedProxyEndpoints(endpoints)},
+		Node: model.Node{ID: id.ID, Name: cfg.Name, PublicKey: id.Public, OS: runtime.GOOS, Labels: cfg.Labels, Capabilities: n.Capabilities(), RunAs: processutil.RunAs(), InstructionOnly: cfg.InstructionOnly, GatewayWake: !cfg.InstructionOnly && accountMayCall(cfg.Allow, "network.wake"), ProxyEndpoints: advertisedProxyEndpoints(endpoints), GatewayProxy: cfg.GatewayProxy},
 	}, n.handle, peerOptions...)
 	n.configureProxyManagement()
 	if err = n.configureSecrets(); err != nil {

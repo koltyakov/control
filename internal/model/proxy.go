@@ -131,6 +131,21 @@ type GatewayProxy struct {
 	Managed bool `json:"managed,omitempty"`
 }
 
+// ValidateGatewayProxy checks display metadata as well as the configured URL.
+func ValidateGatewayProxy(proxy *GatewayProxy) error {
+	if proxy == nil {
+		return nil
+	}
+	url, err := NormalizeProxyURL(proxy.URL)
+	if err != nil {
+		return err
+	}
+	if url != proxy.URL || len(proxy.Worker) > 64 {
+		return errors.New("gateway proxy must have a normalized URL and a worker ID of at most 64 bytes")
+	}
+	return nil
+}
+
 // NormalizeProxyURL accepts only an explicit http://host:port CONNECT proxy
 // without credentials, path, query, or fragment. IPv6 hosts are bracketed.
 func NormalizeProxyURL(value string) (string, error) {

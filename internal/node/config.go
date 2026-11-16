@@ -254,6 +254,9 @@ func (c *Config) proxyDefaults() error {
 	}
 	if route.Proxied() {
 		c.GatewayProxy.URL = route.Proxy()
+		if err = model.ValidateGatewayProxy(c.GatewayProxy); err != nil {
+			return fmt.Errorf("gatewayProxy: %w", err)
+		}
 		if len(c.ProxyEndpoints) != 0 {
 			return errors.New("a proxied node cannot advertise proxyEndpoints; proxy chains are not supported")
 		}

@@ -943,6 +943,96 @@ async function assertWorkerSecrets(page) {
   page.off("request", observe);
 }
 
+async function assertProxyChips(page, snapshot) {
+  const baseNode = { ...snapshot.nodes[0], online: true, status: "summary", disabled: false, controlPending: false, activeCount: 0, proxyEndpoints: [], gatewayProxy: undefined },
+    endpoint = "http://10.20.0.5:3128",
+    host = { ...baseNode, id: "proxy-host", name: 'bridge "<img src=x onerror=alert(1)>', proxyEndpoints: [{ url: endpoint, managed: true, state: "unavailable", dependents: { invitations: 0, children: 0, retiring: 0 } }] },
+    child = { ...baseNode, id: "proxy-child", name: "proxy-child", gatewayProxy: { url: endpoint, worker: host.id } },
+    direct = { ...baseNode, id: "direct", name: "direct" },
+    user = { ...baseNode, id: "proxy-pair-user", name: "proxy-pair", hybridId: "proxy-pair", hybridRole: "user", runAs: "user", gatewayProxy: { url: endpoint, worker: host.id } },
+    system = { ...baseNode, id: "proxy-pair-system", name: "proxy-pair-system", hybridId: "proxy-pair", hybridRole: "system", runAs: "system", proxyEndpoints: [{ url: "http://10.20.0.6:3128", state: "unchecked" }] },
+    fixture = { ...snapshot, nodes: [host, child, direct, user, system] };
+  const statusRoute = (route) => route.fulfill({ json: fixture });
+  await page.route("**/console/api/status", statusRoute);
+  const row = (id) => page.locator(`.machine-table tbody tr[data-id="${id}"]`);
+  const chips = (id) => row(id).locator(".proxy-tag");
+  const close = () => page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  try {
+    await page.waitForFunction(() => !state.busy);
+    await page.evaluate(() => { state.contexts.clear(); state.filter = "all"; state.search = ""; });
+    await pageLink(page, "machines");
+    await refreshPage(page);
+    await row(host.id).waitFor();
+    assert.deepEqual(await chips(host.id).allTextContents(), ["Proxy"], "Hosting with zero dependents must still have a chip");
+    assert.deepEqual(await chips(child.id).allTextContents(), ["Via proxy"]);
+    assert.equal(await chips(direct.id).count(), 0, "Direct and legacy nodes must not get guessed proxy roles");
+    assert.equal(await row(host.id).locator(".status-column .badge").textContent(), "Idle", "An unavailable proxy must not replace machine status");
+    const gateway = snapshot.gateway.url;
+    assert.ok((await chips(host.id).getAttribute("title")).includes(gateway));
+    assert.ok((await chips(child.id).getAttribute("title")).includes(gateway));
+    assert.ok((await chips(child.id).getAttribute("title")).includes(host.name), "The tooltip must resolve the proxy's fleet alias");
+    assert.equal(await page.locator(".machine-table img").count(), 0, "Tooltip metadata must remain escaped text");
+    assert.equal(await chips(child.id).getAttribute("onerror"), null);
+    await chips(child.id).focus();
+    assert.equal(await chips(child.id).evaluate((el) => el === document.activeElement), true, "Chip descriptions must be keyboard focusable");
+    await row(host.id).locator(".machine-name").click();
+    assert.deepEqual(await page.locator(".proxy-tags .proxy-tag").allTextContents(), ["Proxy"]);
+    await page.locator(".drawer-section small").filter({ hasText: "unavailable" }).waitFor();
+    assert.equal(await page.locator(".drawer-status .proxy-tag").count(), 0, "Configuration chips must be separate from status");
+    await close();
+
+    host.online = false;
+    host.status = "offline";
+    host.proxyEndpoints[0].state = "offline";
+    child.online = false;
+    child.status = "offline";
+    await refreshPage(page);
+    assert.deepEqual(await chips(host.id).allTextContents(), ["Proxy"], "Offline does not disable proxy hosting");
+    assert.deepEqual(await chips(child.id).allTextContents(), ["Via proxy"], "Offline does not clear configured routing");
+    assert.equal(await row(child.id).locator(".status-column .badge").textContent(), "Offline");
+    child.gatewayProxy.worker = "missing-worker";
+    await refreshPage(page);
+    assert.ok((await chips(child.id).getAttribute("title")).includes(endpoint), "Unknown or external proxy workers must retain the configured endpoint");
+    assert.ok(!(await chips(child.id).getAttribute("title")).includes(host.name), "A missing worker must not borrow an unrelated machine's name");
+
+    host.proxyEndpoints = [];
+    child.gatewayProxy = undefined;
+    await refreshPage(page);
+    assert.equal(await chips(host.id).count(), 0, "Disabling hosting must remove Proxy");
+    assert.equal(await chips(child.id).count(), 0, "Switching to direct must remove Via proxy");
+    assert.deepEqual(await chips(user.id).allTextContents(), ["Proxy", "Via proxy"], "Grouped rows must include roles configured in either context");
+    assert.equal(await row(user.id).getAttribute("data-id"), user.id);
+    await row(user.id).locator(".machine-name").click();
+    assert.deepEqual(await page.locator(".proxy-tags .proxy-tag").allTextContents(), ["Via proxy"], "A drawer must describe only its explicitly selected context");
+    await close();
+    await row(user.id).getByRole("button", { name: "System", exact: true }).click();
+    await row(system.id).waitFor();
+    assert.deepEqual(await chips(system.id).allTextContents(), ["Proxy", "Via proxy"]);
+    await row(system.id).locator(".machine-name").click();
+    assert.deepEqual(await page.locator(".proxy-tags .proxy-tag").allTextContents(), ["Proxy"]);
+    await close();
+
+    for (const readiness of ["ready", "stale", "unchecked", "unavailable"]) {
+      system.proxyEndpoints[0].state = readiness;
+      await refreshPage(page);
+      assert.deepEqual(await chips(system.id).allTextContents(), ["Proxy", "Via proxy"], "Readiness must not change configuration chips");
+    }
+    await page.setViewportSize({ width: 360, height: 800 });
+    await row(system.id).scrollIntoViewIfNeeded();
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Proxy and context chips must wrap on narrow screens");
+    assert.equal(await chips(system.id).count(), 2);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.locator('.brand[href="#overview"]').click();
+    await row(system.id).waitFor();
+    assert.deepEqual(await chips(system.id).allTextContents(), ["Proxy", "Via proxy"], "Overview must show the same role chips");
+  } finally {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.unroute("**/console/api/status", statusRoute);
+    await page.evaluate(() => { state.contexts.clear(); });
+    await refreshPage(page);
+  }
+}
+
 // Removing one context of a grouped host must name the one left running.
 async function assertHybridUnregister(page, snapshot) {
   const baseNode = { ...snapshot.nodes[0], status: "summary", activeCount: 0, leased: false, disabled: false, controlPending: false, online: true },
@@ -1947,6 +2037,7 @@ try {
   await page.locator('.brand[href="#overview"]').click();
   await assertHybridGrouping(page, snapshot);
   await assertAcceleratorPresence(page, snapshot);
+  await assertProxyChips(page, snapshot);
   assert.equal(machineMutations, mutationsBeforeStartup, "Preparing startup commands must not mutate machine lifecycle policy");
   await assertHybridUnregister(page, snapshot);
 

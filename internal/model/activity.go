@@ -68,6 +68,7 @@ type NodeActivitySnapshot struct {
 	ConnectionRoutes *ConnectionRouteCounts `json:"connectionRoutes,omitempty"`
 	// ProxyEndpoints are owner-visible advertised gateway proxies and readiness.
 	ProxyEndpoints  []ProxyEndpointStatus `json:"proxyEndpoints,omitempty"`
+	GatewayProxy    *GatewayProxy         `json:"gatewayProxy,omitempty"`
 	Tunnels         *TunnelCounts         `json:"tunnels,omitempty"`
 	RetainedTunnels *TunnelCounts         `json:"retainedTunnels,omitempty"`
 	LeaseOwner      string                `json:"leaseOwner,omitempty"`

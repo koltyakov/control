@@ -979,9 +979,17 @@ td strong {
 }
 .machine-title {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  row-gap: 4px;
   min-width: 0;
+}
+.proxy-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
 }
 .context-tag {
   display: inline-flex;

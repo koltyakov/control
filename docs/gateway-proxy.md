@@ -92,6 +92,8 @@ Enable the proxy before creating an invitation. Its advertisement updates withou
 
 `control machines proxies`, the dashboard, and the console show `managed` endpoints and their dependents as invitations, children, and retiring children. Status reads use a separately locked committed projection, so dependency display does not wait behind gateway database writes. Invitation expiry is evaluated when reading the projection.
 
+The console marks configured hosting with a **Proxy** chip, even with no dependents, and reported child routing with **Via proxy**. Tooltips identify the gateway, proxy worker, and endpoint where available. Offline machines keep their configuration chips; readiness and machine status stay separate. Via proxy requires a node version that reports its configured route in registration, rather than inferring it from historical enrollment dependencies.
+
 ### Unregister a child
 
 Unregistering a child revokes its credential, but its listener stays up so the child can still read its signed retirement policy through it. The child persists retirement, then repeats the signed read with that exact revision as an acknowledgement. Only this acknowledgement releases the dependency: disconnection, directory removal, or delivery of the response alone do not. A failed acknowledgement is retried twice, and once more on every later start of the retired node. Inspect-only reads and other identities' proofs cannot release it.

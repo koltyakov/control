@@ -17,7 +17,7 @@ import (
 func TestDashboardGatewaySurvivesPeerFailureAndScopesEnrichment(t *testing.T) {
 	var mu sync.Mutex
 	pool := model.PoolActivitySnapshot{ObservedAt: time.Now(), Gateway: &model.GatewaySnapshot{Software: buildinfo.Info{Version: "remote-version"}}, Nodes: []model.NodeActivitySnapshot{
-		{ID: "own", Name: "worker", Online: true, Status: "unavailable"},
+		{ID: "own", Name: "worker", Online: true, Status: "unavailable", GatewayProxy: &model.GatewayProxy{URL: "http://10.0.0.5:3128"}},
 		{ID: "offline", Name: "old-worker", Status: "offline"},
 	}}
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +52,9 @@ func TestDashboardGatewaySurvivesPeerFailureAndScopesEnrichment(t *testing.T) {
 	}
 	if got.Gateway.URL != remote.URL || got.Gateway.Software.Version != "remote-version" {
 		t.Fatal("lost remote identity")
+	}
+	if got.Nodes[0].GatewayProxy == nil || got.Nodes[0].GatewayProxy.URL != "http://10.0.0.5:3128" {
+		t.Fatal("peer enrichment discarded owner-visible proxy configuration")
 	}
 	if got.Nodes[0].Tunnels == nil || *got.Nodes[0].Tunnels != (model.TunnelCounts{Reverse: 1}) || got.Nodes[1].Tunnels != nil {
 		t.Fatalf("live listener missing, completed socket counted, or offline counts invented: %+v", got.Nodes)

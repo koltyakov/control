@@ -82,6 +82,7 @@ func (g *Gateway) lookupPeer(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	n.GatewayProxy = nil // Peer authentication does not expose owner configuration.
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(n)

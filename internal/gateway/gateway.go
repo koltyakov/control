@@ -455,6 +455,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	if wol.Validate(n.WakeInterfaces) != nil || (client && (len(n.WakeInterfaces) != 0 || n.LANDiscovery || len(n.LANPeers) != 0 || len(n.ProxyEndpoints) != 0)) || (n.RunAs != "" && n.RunAs != "system" && n.RunAs != "user") || model.ValidateProxyEndpoints(n.ProxyEndpoints) != nil {
 		return
 	}
+	if model.ValidateGatewayProxy(n.GatewayProxy) != nil || (n.GatewayProxy != nil && (client || len(n.ProxyEndpoints) != 0)) {
+		return
+	}
 	if !ed25519.Verify(n.PublicKey, hello.Message(challenge), hello.Signature) {
 		return
 	}

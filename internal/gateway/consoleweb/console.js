@@ -46,6 +46,7 @@
  * @property {string} [hybridRole]
  * @property {string} [wakeVia]
  * @property {ProxyEndpointStatus[]} [proxyEndpoints] Owner-visible advertised gateway proxies.
+ * @property {GatewayProxy} [gatewayProxy] Configured gateway route, independent of connectivity.
  * @property {Machine[]} [contexts] Presentation-only grouping, never sent to the API.
  * @property {string} [targetName]
  * @typedef {Machine & {contexts: Machine[]}} MachineGroup
@@ -988,6 +989,28 @@ function runAsTag(node) {
     ? `<span class="context-tag" title="${label[1]}">${label[0]}</span>`
     : "";
 }
+// Configuration chips do not imply that a proxy or its gateway is reachable.
+// Grouped rows include every context; drawers describe only their exact target.
+/** @param {Machine} node @returns {string} */
+function proxyChips(node) {
+  const contexts = node.contexts || [node],
+    gateway = state.snapshot?.gateway?.url,
+    target = gateway ? "gateway " + gateway : "the gateway",
+    hosts = contexts.filter((context) => context.proxyEndpoints?.length),
+    clients = contexts.filter((context) => context.gatewayProxy?.url);
+  /** @param {string} label @param {string[]} descriptions @returns {string} */
+  const chip = (label, descriptions) => descriptions.length
+    ? `<span class="context-tag proxy-tag" tabindex="0" title="${esc(descriptions.join("\n"))}">${label}</span>`
+    : "";
+  return chip("Proxy", hosts.map((context) =>
+    `${context.name}: Proxy hosting configured for ${target} at ${(context.proxyEndpoints || []).map((endpoint) => endpoint.url).join(", ")}`,
+  )) + chip("Via proxy", clients.map((context) => {
+    const proxy = context.gatewayProxy;
+    if (!proxy) return "";
+    const worker = state.snapshot?.nodes.find((entry) => entry.id === proxy.worker);
+    return `${context.name}: Connection to ${target} configured through ${worker ? worker.name + " at " : ""}${proxy.url}`;
+  }));
+}
 /** @param {number} count @param {string} noun @returns {string} */
 function plural(count, noun) {
   return count + " " + noun + (count === 1 ? "" : "s");
@@ -1144,7 +1167,7 @@ function machineRows(nodes, showGPUs) {
     const platformIcon =
       (/** @type {Record<string, string>} */ ({ darwin: "laptop", windows: "windows", linux: "gateway" }))[n.os] ||
       "machine";
-    return `<tr data-id="${esc(n.id)}"><td class="name-column"><div class="machine-cell"><span class="os-icon">${icon(platformIcon)}</span><div class="machine-text"><div class="machine-title"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.targetName || n.name)}">${esc(n.name)}</button>${contextChips(n)}</div><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version"> · ${esc(n.software?.version || "Unknown version")}</span></small></div><button class="icon-button machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="Actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(metrics)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${metrics.system?.logicalCPUs ? `<small>${plural(metrics.system.logicalCPUs, "core")}</small>` : ""}</td>${gpuColumn}<td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
+    return `<tr data-id="${esc(n.id)}"><td class="name-column"><div class="machine-cell"><span class="os-icon">${icon(platformIcon)}</span><div class="machine-text"><div class="machine-title"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.targetName || n.name)}">${esc(n.name)}</button>${contextChips(n)}${proxyChips(n)}</div><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version"> · ${esc(n.software?.version || "Unknown version")}</span></small></div><button class="icon-button machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="Actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(metrics)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${metrics.system?.logicalCPUs ? `<small>${plural(metrics.system.logicalCPUs, "core")}</small>` : ""}</td>${gpuColumn}<td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
   });
 }
 /** @param {Machine[]} nodes @returns {MachineGroup[]} */
@@ -2694,10 +2717,11 @@ function machineDetails(id) {
     live = n.online ? sys : /** @type {Partial<SystemInfo>} */ ({}),
     memory = percent(live.memoryUsedBytes, live.memoryTotalBytes),
     detail = statusDetail(n),
-    labels = Object.entries(n.labels || {});
+    labels = Object.entries(n.labels || {}),
+    proxyTags = proxyChips(n);
   dialog(
     n.name,
-    `<div class="drawer-status">${badge(machineState(n))}${detail ? `<span class="muted">${esc(detail)}</span>` : ""}</div><section class="drawer-section"><h3>Resources</h3><dl class="metadata"><dt>CPU utilization</dt><dd>${meter(live.cpuUsagePercent, "CPU utilization")}</dd>${visibleGPUs(sys.gpus).length ? gpuResources(sys.gpus, n.online, true) : ""}<dt>Memory usage</dt><dd>${meter(memory, "Memory utilization")}${sys.memoryTotalBytes ? `<small class="muted">${memory == null ? bytes(sys.memoryTotalBytes) + " total" : bytes(live.memoryUsedBytes) + " of " + bytes(live.memoryTotalBytes)}</small>` : ""}</dd><dt>Disk usage</dt><dd>${
+    `<div class="drawer-status">${badge(machineState(n))}${detail ? `<span class="muted">${esc(detail)}</span>` : ""}</div>${proxyTags ? `<div class="proxy-tags">${proxyTags}</div>` : ""}<section class="drawer-section"><h3>Resources</h3><dl class="metadata"><dt>CPU utilization</dt><dd>${meter(live.cpuUsagePercent, "CPU utilization")}</dd>${visibleGPUs(sys.gpus).length ? gpuResources(sys.gpus, n.online, true) : ""}<dt>Memory usage</dt><dd>${meter(memory, "Memory utilization")}${sys.memoryTotalBytes ? `<small class="muted">${memory == null ? bytes(sys.memoryTotalBytes) + " total" : bytes(live.memoryUsedBytes) + " of " + bytes(live.memoryTotalBytes)}</small>` : ""}</dd><dt>Disk usage</dt><dd>${
       (live.disks || [])
         .filter((disk) => disk.totalBytes > 0)
         .map(

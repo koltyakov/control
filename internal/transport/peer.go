@@ -395,6 +395,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 			hello.Node.Software.NodeGatewayMin, hello.Node.Software.NodeGatewayMax = 0, 0
 			// Legacy gateways re-encode known fields only; never sign this one.
 			hello.Node.ProxyEndpoints = nil
+			hello.Node.GatewayProxy = nil
 		}
 		hello.Signature = ed25519.Sign(p.cfg.Identity.Private, hello.Message(challenge))
 		if p.cfg.ClientOwner != nil {
