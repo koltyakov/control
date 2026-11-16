@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,19 +36,26 @@ func TestExecSecretProcess(t *testing.T) {
 		for _, ch := range []byte(value) {
 			_, _ = os.Stdout.Write([]byte{ch})
 		}
-		fmt.Fprintln(os.Stdout, "|"+string(stdin)+"|"+os.Getenv("CONTROL_TEST_LITERAL"))
-		fmt.Fprint(os.Stderr, base64.StdEncoding.EncodeToString([]byte(value)))
+		_, _ = fmt.Fprintln(os.Stdout, "|"+string(stdin)+"|"+os.Getenv("CONTROL_TEST_LITERAL"))
+		_, _ = fmt.Fprint(os.Stderr, base64.StdEncoding.EncodeToString([]byte(value)))
 		if mode == "fail" {
 			os.Exit(7)
 		}
 	case "json":
-		fmt.Fprint(os.Stdout, `{"password":"\u0070rivate-token"}`)
+		_, _ = fmt.Fprint(os.Stdout, `{"password":"\u0070rivate-token"}`)
+	case "number":
+		_, _ = fmt.Fprint(os.Stdout, `{"pin":1234567890}`)
+	case "verify-rotation":
+		if value != "rotated-token" {
+			os.Exit(9)
+		}
+		fmt.Print("verified")
 	case "overflow":
 		fmt.Print(strings.Repeat("x", (2<<20)-3) + value)
-		fmt.Fprint(os.Stderr, value)
+		_, _ = fmt.Fprint(os.Stderr, value)
 	case "binary":
 		_, _ = os.Stdout.Write([]byte{0xff})
-		fmt.Fprint(os.Stderr, value)
+		_, _ = fmt.Fprint(os.Stderr, value)
 	case "sleep":
 		fmt.Print(value)
 		time.Sleep(time.Minute)
@@ -68,7 +76,7 @@ func execSecretArgs(t *testing.T, mode string) map[string]any {
 			"CONTROL_TEST_EXEC_SECRET": mode,
 			"CONTROL_TEST_LITERAL":     "ordinary",
 		},
-		"envSecrets": map[string]string{"CONTROL_TEST_PASSWORD": "domain.admin.password"},
+		"envSecrets":  map[string]string{"CONTROL_TEST_PASSWORD": "domain.admin.password"},
 		"stdinSecret": "stdin.password",
 	}
 }
@@ -78,21 +86,22 @@ func TestExecSecretInjection(t *testing.T) {
 	n := localNode(t, nil)
 	setTestSecret(t, n, "domain.admin.password", "private-token")
 	setTestSecret(t, n, "stdin.password", "exact stdin\n")
-	for _, mode := range []string{"echo", "fail", "json", "overflow", "binary"} {
+	setTestSecret(t, n, "unused.pin", "1234567890")
+	for _, mode := range []string{"echo", "fail", "json", "number", "overflow", "binary"} {
 		t.Run(mode, func(t *testing.T) {
 			args := model.JSON(execSecretArgs(t, mode))
 			before := bytes.Clone(args)
 			var logs bytes.Buffer
 			value, err := n.execRun(t.Context(), args, Execution{Dir: n.Config.WorkDir, Log: &logs})
 			result := value.(commandResult)
-			if (mode == "echo" || mode == "json") != (err == nil) {
+			if (mode == "echo" || mode == "json" || mode == "number") != (err == nil) {
 				t.Fatalf("unexpected outcome: %v", err)
 			}
 			if !bytes.Equal(before, args) {
 				t.Fatal("mutated caller arguments")
 			}
 			for _, output := range []string{string(model.JSON(result)), logs.String(), fmt.Sprint(err)} {
-				for _, secret := range []string{"private-token", "exact stdin", "inherited-must-be-overridden", base64.StdEncoding.EncodeToString([]byte("private-token"))} {
+				for _, secret := range []string{"private-token", "exact stdin", "1234567890", "inherited-must-be-overridden", base64.StdEncoding.EncodeToString([]byte("private-token"))} {
 					if strings.Contains(output, secret) {
 						t.Fatal("command output leaked a credential")
 					}
@@ -109,6 +118,10 @@ func TestExecSecretInjection(t *testing.T) {
 			case "json":
 				if result.Stdout != `{"password":"[REDACTED]"}` {
 					t.Fatal("JSON-escaped credential was not masked")
+				}
+			case "number":
+				if result.Stdout != `{"pin":[REDACTED]}` {
+					t.Fatal("numeric credential was not masked")
 				}
 			case "overflow", "binary":
 				if result.Stdout != "" || result.Stderr != "" || logs.Len() != 0 {
@@ -209,6 +222,34 @@ func TestExecSecretLaunchErrorAndCancellation(t *testing.T) {
 	value, err := n.execRun(ctx, model.JSON(execSecretArgs(t, "sleep")), Execution{Dir: n.Config.WorkDir, Log: &logs})
 	if err == nil || time.Since(start) > 5*time.Second || strings.Contains(logs.String()+string(model.JSON(value))+err.Error(), "private-token") {
 		t.Fatal("cancellation failed or leaked credentials")
+	}
+	if result := value.(commandResult); result.Stdout != "" || result.Stderr != "" || logs.Len() != 0 {
+		t.Fatal("cancellation published incomplete output")
+	}
+}
+
+func TestExecSecretResolvesAfterQueue(t *testing.T) {
+	n := localNode(t, func(cfg *Config) { cfg.MaxTasks = 1 })
+	release, err := acquireProviderSlot(t.Context(), n.executionPool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	unblock := func() { once.Do(release) }
+	defer unblock()
+	args := execSecretArgs(t, "verify-rotation")
+	delete(args, "stdinSecret")
+	setTestSecret(t, n, "domain.admin.password", "old-token")
+	spec := model.TaskSpec{ID: "queued-secret", Capability: "exec.run", Args: model.JSON(args)}
+	accepted, err := n.startTaskContext(t.Context(), n.Identity.ID, spec)
+	if err != nil || accepted.Phase != "waiting for worker slot" {
+		t.Fatal("task did not queue", err)
+	}
+	setTestSecret(t, n, "domain.admin.password", "rotated-token")
+	unblock()
+	finished := pipelineFinished(t, n, t.Context(), n.Identity.ID, accepted.ID, "succeeded")
+	if !bytes.Equal(finished.Spec.Args, spec.Args) || !bytes.Contains(finished.Result, []byte("verified")) {
+		t.Fatal("queued command did not resolve current secret with reference-only arguments")
 	}
 }
 

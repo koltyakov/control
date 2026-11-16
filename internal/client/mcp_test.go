@@ -138,6 +138,8 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 			"does not permit batching dependent UI actions, credential operations, or uncertain-effect retries",
 			"control secrets set NAME", "secret", "setValue", "profile",
 			"exec.run output is not secret-masked",
+			"envSecrets", "stdinSecret", "domain.admin.password", "LDAP/RPC", "Azure", "AWS",
+			"older workers", "completion-delayed logs", "not secret management",
 			"desktop.run", "control_desktop", "private", "masked",
 			"desktop.cli", "command whitelist", "list-apps", "default state", "declare",
 			"suggest installation", "After approval", "latest compatible release", "agent-desktop-ffi-*",
@@ -358,5 +360,64 @@ func TestMCPRoutesDesktop(t *testing.T) {
 	}})
 	if err == nil && !result.IsError {
 		t.Fatal("native desktop tool accepted an unprotected command")
+	}
+}
+
+func TestMCPRoutesCommandSecrets(t *testing.T) {
+	requests := make(chan map[string]json.RawMessage, 2)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requests <- request
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"ok":true}}`))
+	}))
+	defer httpServer.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := (Client{URL: httpServer.URL, Token: "test"}).MCPServer().Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = serverSession.Close() }()
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Close() }()
+	params := map[string]any{
+		"command":     "approved-audit",
+		"envSecrets":  map[string]string{"DOMAIN_PASSWORD": "domain.admin.password"},
+		"stdinSecret": "app.password",
+	}
+	for _, tool := range []string{"control_call", "control_task_start"} {
+		arguments := map[string]any{"node": "worker", "method": "exec.run", "params": params}
+		method := `"exec.run"`
+		if tool == "control_task_start" {
+			arguments = map[string]any{"node": "worker", "task": map[string]any{"id": "audit", "capability": "exec.run", "args": params}}
+			method = `"tasks.start"`
+		}
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: arguments})
+		if err != nil || result.IsError {
+			t.Fatal("command secret routing failed", err)
+		}
+		select {
+		case request := <-requests:
+			if string(request["target"]) != `"worker"` || string(request["method"]) != method {
+				t.Fatal("command secret request routed to wrong method or worker")
+			}
+			for _, fragment := range []string{`"DOMAIN_PASSWORD":"domain.admin.password"`, `"stdinSecret":"app.password"`} {
+				if !strings.Contains(string(request["params"]), fragment) {
+					t.Fatal("command secret references were not preserved")
+				}
+			}
+		case <-ctx.Done():
+			t.Fatal("command secret request was not routed")
+		}
 	}
 }

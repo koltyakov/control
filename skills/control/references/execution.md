@@ -2,6 +2,24 @@
 
 # Workflows, capacity and delegation
 
+## Command and SDK credentials
+
+Use saved secrets directly for authorized application authentication, including LDAP/RPC programs and cloud SDKs. Discover `envSecrets` and `stdinSecret` in the destination's `exec.run` schema first. Upgrade older workers before use; they ignore unknown fields. Do not extract a stored value or require another SSH password entry when injection is supported.
+
+For an approved program that reads `DOMAIN_PASSWORD` from its own environment:
+
+```sh
+control task start worker --wait '{"id":"FRESH_AUDIT_ID","capability":"exec.run","args":{"command":"python3","args":["approved-audit.py"],"env":{"DOMAIN_USER":"ARVO\\andrew.koltyakov"},"envSecrets":{"DOMAIN_PASSWORD":"domain.admin.password"}}}'
+```
+
+The program consumes the injected credential without printing it, saving it to a file or putting it in subprocess argv. This example does not install a program or authorize domain changes. For AWS SDKs map their documented `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` variables; for Azure service-principal SDKs map `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_CLIENT_SECRET`. Select the application's documented authentication flow rather than inventing one.
+
+MCP `control_call` takes method `exec.run` with the same object as `params`; `control_task_start` takes it as the task's `args`. Include `leaseId` for leased tasks. At most 32 portable environment names matching `[A-Za-z_][A-Za-z0-9_]{0,127}` are allowed, unique ignoring case and without case-insensitive overlaps in literal `env`. References override inherited environment only for that invocation.
+
+For a command documented to read credentials from stdin, use `stdinSecret: "domain.admin.password"` instead of literal `stdin`. It supplies exact bytes with no added newline. Both environment and stdin references can be used together. Invalid/missing references fail before launch; values resolve at execution, while retained specs and delegation instructions contain names only. There is no argv/template/file substitution or value-read operation.
+
+Secret-bearing commands mask complete stdout/stderr/errors and delay sanitized logs until completion. These completion-delayed logs contain no raw chunks. Oversized, cancelled or non-UTF-8 output is suppressed and fails without undoing effects or permitting replay. Commands without references retain raw output/live logs. Never dump environments, read the secret store, export credential files, or move values into subprocess argv. Environment values are available to descendants and sufficiently privileged OS processes; files, application-managed logs and arbitrary transformations are unmasked. Injection is for applications consuming credentials directly, not a bypass of protected native GUI entry. Permission to invoke `exec.run` permits this credential use, not secret management or new peer authority.
+
 ## Read-only recovery and file processing
 
 When task creation is prohibited, inspect the original task with `control task get NAME ID`, then use direct `control call NAME files.read` or `files.list` for permitted file observations. MCP equivalents are `control_task_get` and `control_call` with the file method. A tracked read through `tasks.start` or `control_task_start` still creates task metadata and a workspace. It violates a no-new-task instruction even if its provider only reads. Do not use `exec`, a workflow, or a new ID as a read-only workaround. Direct calls cannot carry a lease; if an existing lease or access rule blocks the permitted route, report the blocker rather than bypassing it.

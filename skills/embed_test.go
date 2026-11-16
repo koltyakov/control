@@ -27,6 +27,7 @@ func TestControlSkillProgressiveDisclosure(t *testing.T) {
 		"query that same ID", "Never treat an old missing ID as proof",
 		"does not cancel accepted work", "leaseId", "Never batch dependent clicks",
 		"Never request, retrieve, print, or paste credential values",
+		"command/SDK authentication", "`envSecrets` and `stdinSecret`",
 		"control machines --compact --node NAME", "Reuse these results instead of repeating discovery",
 		"Do not separately fetch the same catalog unless it is missing or incomplete",
 		"a source error is not a reason to retry or bypass it",
@@ -92,7 +93,7 @@ func TestControlSkillProgressiveDisclosure(t *testing.T) {
 func TestControlSkillReferences(t *testing.T) {
 	for name, required := range map[string][]string{
 		"runbooks":       {"control_runbooks", "contentOmitted", "--source SOURCE --file FILE", "requires", "agent-friendly", "no fixed requirement schema", "Reuse the combined", "missing or incomplete", "Source errors do not authorize retries or bypasses"},
-		"execution":      {"maxTasks", "maxOperations", "inputStaging", "outputPublication", "32 unstarted ready steps", "control_delegate", "access.revoke", "pruned: true", "control_task_start", "still creates task metadata and a workspace", "Direct calls cannot carry a lease", "Get-ProtectedFileDigest", "Get-History", "-NoProfile", "csv.DictReader", "newline=\"\"", "Import-Csv -LiteralPath PATH -Encoding UTF8", "TextFieldParser", "quoted multiline fields", "Preserve file order", "validate headers, numeric types and ranges", "do not authorize execution"},
+		"execution":      {"maxTasks", "maxOperations", "inputStaging", "outputPublication", "32 unstarted ready steps", "control_delegate", "access.revoke", "pruned: true", "control_task_start", "still creates task metadata and a workspace", "Direct calls cannot carry a lease", "Get-ProtectedFileDigest", "Get-History", "-NoProfile", "csv.DictReader", "newline=\"\"", "Import-Csv -LiteralPath PATH -Encoding UTF8", "TextFieldParser", "quoted multiline fields", "Preserve file order", "validate headers, numeric types and ranges", "do not authorize execution", "envSecrets", "stdinSecret", "domain.admin.password", "AWS_SECRET_ACCESS_KEY", "AZURE_CLIENT_SECRET", "Upgrade older workers", "no added newline", "delay sanitized logs until completion", "not a bypass of protected native GUI entry"},
 		"browser":        {"browser.run", "skills get core", "control_browser_view", "2FA", "not redacted", "Pause AI mutations", "dashboard stop"},
 		"desktop":        {"control_desktop", "skills get desktop", "skills get platform", "ABI major 6 or 7", "leaseId", "desktop.cli", "cursor-overlay enable", "Never put credentials in CLI args"},
 		"transfers":      {"control_upload", "control_upload_resume", "no-overwrite", "artifacts.grant", "Only transfer a clipboard when the user requests it"},

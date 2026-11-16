@@ -14,6 +14,7 @@ Keep this core guidance loaded. Before using a specialized feature, read its ref
 | When needed | Read before acting |
 | --- | --- |
 | Repeatable application work, runbook discovery or source reads | [Runbooks](references/runbooks.md) |
+| Command or SDK authentication using saved secrets | [Execution](references/execution.md) |
 | Parallel workflows, capacity planning, delegation or old/pruned task recovery | [Execution](references/execution.md) |
 | Browser automation or browser login/2FA takeover | [Browser](references/browser.md) |
 | GUI interaction, desktop readiness or desktop setup | [Desktop](references/desktop.md) |
@@ -85,6 +86,6 @@ Only when a task requires GUI interaction, read the desktop reference before des
 
 ## Credentials and authorization
 
-For credentials, use worker-local secret names supplied by the user. Native `desktop.run` command `setValue` accepts `secret` instead of `text`; it has no secret typing or physical-input fallback. HTTP `headerSecrets` maps headers to `{secret, prefix}`. Ask the user to enter values themselves outside chat: `control secrets set NAME` on the worker, `control secrets set NAME --node WORKER` in their orchestrator terminal, or the web console's machine Secrets action. Remote entry encrypts values to the worker and requires owner login, HTTPS and destination `secrets.manage` permission. Never run secret entry through an AI tool or `control exec`. Never request, retrieve, print, or paste credential values into prompts or tool inputs. There is no secret-value read operation. Secret-bearing HTTP requests do not follow redirects. Supported text results mask configured values, but raw CLI output, screenshots and unrestricted execution can expose them. Do not reveal passwords or capture credential-bearing screens.
+Use worker-local secret names supplied by the user. For command/SDK authentication, discover `exec.run` fields `envSecrets` and `stdinSecret`, then read the execution reference. Native `desktop.run` command `setValue` accepts `secret` instead of `text`; it has no secret typing or physical-input fallback. HTTP `headerSecrets` maps headers to `{secret, prefix}`. Ask the user to enter values outside chat: `control secrets set NAME` on the worker, `control secrets set NAME --node WORKER` in their orchestrator terminal, or the web console's machine Secrets action. Remote entry encrypts values to the worker and requires owner login, HTTPS and destination `secrets.manage` permission. Never run secret entry through an AI tool or `control exec`. Never request, retrieve, print, or paste credential values into prompts or tool inputs. There is no secret-value read operation. Secret-bearing HTTP requests do not follow redirects. Supported text results mask configured values, but commands without references, files, screenshots and unrestricted execution can expose them. Do not reveal passwords or capture credential-bearing screens.
 
 Prefer MCP tools when already available. The MCP server is self-contained and does not need this skill to expose its tool schemas.

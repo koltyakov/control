@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os/exec"
 	"strings"
 	"unicode/utf8"
 
@@ -76,7 +77,7 @@ func (n *Node) execRun(ctx context.Context, args json.RawMessage, e Execution) (
 	private := e
 	private.Log = io.Discard
 	result, runErr := runCommand(ctx, input.Command, private, stdin)
-	if result.Truncated || !utf8.ValidString(result.Stdout) || !utf8.ValidString(result.Stderr) {
+	if result.Truncated || ctx.Err() != nil || errors.Is(runErr, exec.ErrWaitDelay) || !utf8.ValidString(result.Stdout) || !utf8.ValidString(result.Stderr) {
 		result.Stdout, result.Stderr = "", ""
 		return result, errors.New("secret-bearing command output is incomplete or non-UTF-8; output suppressed")
 	}
@@ -102,9 +103,10 @@ func validSecretEnvName(name string) bool {
 		return false
 	}
 	for i, ch := range []byte(name) {
-		if ch != '_' && !(ch >= 'a' && ch <= 'z') && !(ch >= 'A' && ch <= 'Z') && !(i > 0 && ch >= '0' && ch <= '9') {
-			return false
+		if ch == '_' || ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || i > 0 && ch >= '0' && ch <= '9' {
+			continue
 		}
+		return false
 	}
 	return true
 }
@@ -112,7 +114,9 @@ func validSecretEnvName(name string) bool {
 func redactCommandText(redactor secrets.Redactor, text string) string {
 	if json.Valid([]byte(text)) {
 		if clean, err := redactor.JSON([]byte(text)); err == nil {
-			return string(clean)
+			// JSON numbers can also echo numeric credentials. Stdout is a text
+			// field, so masking those tokens need not preserve upstream JSON.
+			return redactor.Text(string(clean))
 		}
 	}
 	return redactor.Text(text)
