@@ -534,6 +534,7 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 			// The selected gateway code can coordinate compatible node updates
 			// even while its own startup entry still needs supervisor migration.
 			gatewaySoftwareCurrent := hasGateway && update.IsSoftwareCurrent(g.options.Software, d.Manifest.Version, gatewayAsset)
+			g.coordinateProxyRollout(d, peers, gatewaySoftwareCurrent, time.Now(), send)
 			peersApplied, err := g.advanceNodes(d, peers, gatewaySoftwareCurrent, send)
 			if err != nil {
 				return
@@ -577,7 +578,7 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 			}
 			// Do not interrupt a node commit handshake. Unknown offline commits
 			// remain durable pending records, never fabricated success.
-			if len(d.InFlight) != 0 {
+			if len(d.InFlight) != 0 || g.proxyRollout != nil && !g.proxyRollout.releasing {
 				_ = g.updates.SetGatewayState(d.ID, "waiting-nodes")
 				return
 			}
@@ -693,6 +694,14 @@ func (g *Gateway) advanceNodes(d *update.Deployment, peers []rolloutPeer, gatewa
 		applied := matching && update.IsCurrent(s.Software, d.Manifest.Version, asset)
 		allApplied = allApplied && applied && !s.Paused
 		command := update.Command{ID: d.ID, Version: d.Manifest.Version, Asset: asset, ReleaseRepo: g.updateReleaseRepo(d)}
+		if g.proxyBlocks[peer.node.ID] && !applied || s.ProxyFor != "" {
+			// Staging may continue, but only the group coordinator releases a
+			// child's hold. That pause must never authorize a child commit.
+			if !matching || !applied && !stagedStatus(s) {
+				send(peer.node.ID, "update.offer", command)
+			}
+			continue
+		}
 		if applied {
 			if s.Paused {
 				send(peer.node.ID, "update.resume", update.Command{ID: d.ID})

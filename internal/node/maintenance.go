@@ -102,13 +102,18 @@ func (n *Node) resumeAfterUpdate() {
 // cannot accidentally replace their own test runner through an update message.
 func (n *Node) ConfigureUpdates(info buildinfo.Info, apply func(string) error) error {
 	n.Peer.SetSoftware(info)
-	updater, err := update.NewUpdater(update.UpdaterOptions{
+	options := update.UpdaterOptions{
 		Gateway: n.Config.Gateway, Token: n.Config.Token, Dir: n.Config.DataDir, Software: info, Route: n.route,
 		Busy: n.updateBusy, Pause: n.pauseForUpdate, Resume: n.resumeAfterUpdate, Apply: apply,
 		Report: func(ctx context.Context, status update.Status) error {
 			return n.Peer.SendControl(ctx, "update.status", model.JSON(status))
 		},
-	})
+	}
+	if proxy := n.Config.GatewayProxy; proxy != nil {
+		options.ProxyWorker, options.ProxyURL = proxy.Worker, proxy.URL
+		options.ParkGateway, options.ResumeGateway = n.Peer.ParkGateway, n.route.Resume
+	}
+	updater, err := update.NewUpdater(options)
 	if err != nil {
 		return err
 	}

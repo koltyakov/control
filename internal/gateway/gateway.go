@@ -144,6 +144,9 @@ type Gateway struct {
 	updateCancel     context.CancelFunc
 	updateWG         sync.WaitGroup
 	rolloutMu        sync.Mutex
+	proxyRollout     *proxyRollout // Protected by rolloutMu, like node commit coordination.
+	proxyRetryAt     time.Time
+	proxyBlocks      map[string]bool
 	installations    map[string]installation
 	hybridCancel     context.CancelFunc
 	hybridWG         sync.WaitGroup

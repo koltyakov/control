@@ -75,7 +75,7 @@ func (p *Peer) worker(fn func()) bool {
 func (p *Peer) registerSession(s *peerSession) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed || p.ctx.Err() != nil || (s.mode == "relay" && s.lane != IncomingLane && time.Now().Before(p.relayDrainUntil)) || (s.link != nil && (s.link.generation != p.networkGeneration || s.link.conn.ctx.Err() != nil)) {
+	if p.closed || p.ctx.Err() != nil || (s.mode == "relay" && s.lane != IncomingLane && p.relayDrainingLocked(s.remote)) || (s.link != nil && (s.link.generation != p.networkGeneration || s.link.conn.ctx.Err() != nil)) {
 		return false
 	}
 	p.allSessions[s.id] = s

@@ -58,6 +58,10 @@ type Command struct {
 	Asset       Asset     `json:"asset,omitempty"`
 	LeaseUntil  time.Time `json:"leaseUntil,omitempty"`
 	ReleaseRepo string    `json:"releaseRepo,omitempty"`
+	// ProxyFor binds a child's maintenance reservation to its configured proxy.
+	ProxyFor  string    `json:"proxyFor,omitempty"`
+	ProxyURL  string    `json:"proxyUrl,omitempty"`
+	ParkUntil time.Time `json:"parkUntil,omitzero"`
 }
 
 type Status struct {
@@ -70,6 +74,9 @@ type Status struct {
 	LeaseUntil     time.Time      `json:"leaseUntil,omitempty"`
 	Error          string         `json:"error,omitempty"`
 	SeenAt         time.Time      `json:"seenAt"`
+	ProxyDrain     bool           `json:"proxyDrain,omitempty"`
+	ProxyFor       string         `json:"proxyFor,omitempty"`
+	ParkUntil      time.Time      `json:"parkUntil,omitzero"`
 }
 
 var digestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)

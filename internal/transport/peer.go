@@ -108,6 +108,7 @@ type Peer struct {
 	closed              bool
 	relayDrainUntil     time.Time
 	relayDrainID        string
+	relayPeerDrains     map[string]peerDrain
 	closeOnce           sync.Once
 	handler             func(string, net.Conn)
 	log                 *slog.Logger
@@ -252,6 +253,9 @@ func (p *Peer) Start(ctx context.Context) error {
 }
 
 func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
+	if err := p.cfg.Route.Wait(ctx); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	p.mu.Lock()
@@ -428,6 +432,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	}
 	p.ws = ws
 	p.relayDrainUntil, p.relayDrainID = time.Time{}, ""
+	clear(p.relayPeerDrains)
 	p.gatewayWS.Store(ws)
 	// A reconnect may have missed an owner rename. Keep identity-bound sessions,
 	// but resolve names again before opening new streams through them.
@@ -1174,7 +1179,7 @@ func (p *Peer) dial(ctx context.Context, remote, mode string, lane Lane) (_ *pee
 	}
 	if mode == "relay" {
 		p.mu.Lock()
-		draining := time.Now().Before(p.relayDrainUntil)
+		draining := p.relayDrainingLocked(remote)
 		p.mu.Unlock()
 		if draining {
 			return nil, transientSetup("gateway relay is draining for maintenance")

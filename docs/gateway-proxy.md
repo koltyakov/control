@@ -110,7 +110,15 @@ Only the child's fleet owner can release it, and only after unregistration. The 
 
 ### Updates
 
-Admitted managed connections, including pending CONNECT requests, are owned work. A managed node update or startup change reserves maintenance only when none exist, atomically fencing new connections; it never closes an admitted tunnel. Consequently, a proxy worker postpones its own updates while any child holds a gateway connection through it. Stop or move children to apply the update. The fence is lifted if the update does not proceed.
+Admitted managed connections, including pending CONNECT requests, are owned work. A managed node update or startup change reserves maintenance only when none exist, atomically fencing new connections; it never force-closes an admitted tunnel.
+
+Managed rollouts coordinate a proxy before its children. The gateway first waits for fresh idle reports from all enrolled children using that managed endpoint, including both Hybrid contexts. Each child persists a proxy-bound maintenance reservation that refuses new work. The gateway then fences new relay carriers involving those children and asks outgoing session owners to drain existing carriers. Live streams finish normally. After relay drain, each reserved child parks its gateway route only when all admitted HTTP responses have drained and no relay or gateway connection setup remains. It closes idle HTTP pools and its idle gateway WebSocket, not application connections.
+
+The proxy still requires its own fresh idle reservation, zero actual CONNECT connections, and durable commit intent. Other traffic through the listener, including installers or independent clients, remains a blocker until it finishes. Unrelated nodes can keep working and updating.
+
+Children reconnect after a bounded park of at most 30 seconds, remain reserved until the proxy confirms the selected software and released maintenance, and acknowledge their own resumption before their updates can begin. A hold cannot authorize a child software commit. One proxy group coordinates at a time, with at most 256 children. Reservations last two minutes; attempts time out after 45 seconds and release rather than cancel traffic. Coordinator loss, stale reports, failed persistence, proxy errors, changed membership, and failed drain never count as successful installation. The ordinary durable commit reconciliation still governs an uncertain proxy restart.
+
+This requires the coordinating gateway and children to support `update.status.proxyDrain`. Older children update independently first to gain that support; an already-installed proxy can use its existing idle/socket fence. Offline children without an acknowledged live reservation are unknown, not idle, and postpone coordination. External proxies, startup-context changes, failover, and proxy chains are unchanged.
 
 ## Readiness
 

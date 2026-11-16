@@ -50,6 +50,8 @@ Only the gateway's superuser role can publish executable updates or provision us
 
 Reserve node updates independently. Require explicit compatibility from verified executable bytes before updating a node ahead of its gateway. Gate gateway restarts on live relay lifetimes and atomic transport/request admission, never on empty byte queues alone. Include standalone clients and silent tunnels. Maintenance timeouts postpone replacement rather than cancel accepted traffic, and unresolved commit intent remains durable until reconciled.
 
+Coordinate managed proxy maintenance with destination-owned idle reservations on its children. A child's permanent gateway connection is connectivity, not application work, but it may close only after admitted gateway traffic drains. Keep the proxy's actual socket fence, bound every child hold and park, and require acknowledged resumption before child software updates. Never infer child idleness from disconnection or extend reservations to unrelated nodes.
+
 Document the authority under which providers run. A filesystem root limits filesystem API paths; it does not sandbox an executable. An AI CLI is a provider running as the node's OS user, with the authority available to that process.
 
 Keep secret administration separate from execution. Encrypt remote values at the originating human-facing client and resolve them only on the destination worker. Never put them in tasks, generic tool inputs, audit records, gateway persistence or value-read responses. Fixed owner-management routes retain destination allow checks, fleet isolation, bounds, expiry, replay protection and maintenance admission.

@@ -18,6 +18,9 @@ const gatewayDrainWindow = 30 * time.Second
 // It never cancels a stream and expires even if its resume packet is lost.
 type RelayDrainRequest struct {
 	Until time.Time `json:"until"`
+	// Peer scopes a proxy-maintenance drain to carriers involving this node.
+	// Older receivers conservatively drain all their outgoing relays.
+	Peer string `json:"peer,omitempty"`
 }
 
 type relayKey struct{ first, second, session string }
@@ -37,6 +40,7 @@ type gatewayMaintenance struct {
 	until, retryAt time.Time
 	switching      bool
 	httpActive     int
+	peerDrains     map[string]time.Time
 }
 
 func (g *Gateway) maintenanceHandler(next http.Handler) http.Handler {
@@ -93,11 +97,12 @@ func (g *Gateway) admitRelay(from string, source, dest *connection, p *protocol.
 		return false
 	}
 	opening := p.Kind == "open" && len(p.Data) == 0
-	if opening && (exists || time.Now().Before(m.until)) {
+	draining := time.Now().Before(m.until) || time.Now().Before(m.peerDrains[from]) || time.Now().Before(m.peerDrains[p.To])
+	if opening && (exists || draining) {
 		return false
 	}
 	if (opening || p.Kind == "data") && !exists {
-		if time.Now().Before(m.until) || m.counts[source] >= 256 || m.counts[dest] >= 256 {
+		if draining || m.counts[source] >= 256 || m.counts[dest] >= 256 {
 			return false
 		}
 		if m.relays == nil {

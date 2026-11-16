@@ -31,6 +31,12 @@ type UpdaterOptions struct {
 	Resume func()
 	Report func(context.Context, Status) error
 	Apply  func(string) error
+	// Only proxied nodes with a known worker can reserve and park for that
+	// worker. Parking must refuse live gateway traffic, never cancel it.
+	ProxyWorker   string
+	ProxyURL      string
+	ParkGateway   func(time.Time) bool
+	ResumeGateway func()
 }
 
 type queuedCommand struct {
@@ -56,15 +62,17 @@ type Updater struct {
 
 func NewUpdater(options UpdaterOptions) (*Updater, error) {
 	a := &Updater{options: options, commands: make(chan queuedCommand, 32), status: Status{Software: options.Software, State: "idle"}}
+	a.status.ProxyDrain = options.ParkGateway != nil && ValidDigest(options.ProxyWorker) && options.ProxyURL != ""
 	var saved Command
 	if err := store.Read(a.marker(), &saved); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	if saved.ID != "" && time.Now().Before(saved.LeaseUntil) && options.Pause() {
+	if saved.ID != "" && (saved.ProxyFor == "" || a.validProxy(saved)) && time.Now().Before(saved.LeaseUntil) && options.Pause() {
 		a.target, a.lease = saved, saved.LeaseUntil
 		a.staged = a.stagePath(saved.Asset)
 		a.status.ID, a.status.State, a.status.Paused = saved.ID, "ready", true
 		a.status.LeaseUntil = saved.LeaseUntil
+		a.status.ProxyFor = saved.ProxyFor
 		if IsCurrent(options.Software, saved.Version, saved.Asset) {
 			a.status.State = "applied"
 		}
@@ -203,12 +211,17 @@ func (a *Updater) cleanup(ctx context.Context) {
 }
 
 func (a *Updater) resume() {
+	if a.options.ResumeGateway != nil {
+		a.options.ResumeGateway()
+	}
 	_ = os.Remove(a.marker())
 	a.lease = time.Time{}
 	a.options.Resume()
 	a.mu.Lock()
 	a.status.Paused = false
 	a.status.LeaseUntil = time.Time{}
+	a.status.ProxyFor, a.status.ParkUntil = "", time.Time{}
+	a.target.ProxyFor, a.target.ProxyURL = "", ""
 	a.mu.Unlock()
 	if IsCurrent(a.options.Software, a.target.Version, a.target.Asset) {
 		a.set("applied", nil)
@@ -287,8 +300,16 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 		a.status.StagedSoftware = stagedInfo
 		a.mu.Unlock()
 		a.set("staged", nil)
-	case "update.prepare":
+	case "update.prepare", "update.proxy-prepare":
 		if command.ID != a.target.ID || (a.staged == "" && !IsCurrent(a.options.Software, a.target.Version, a.target.Asset)) {
+			return
+		}
+		if message.kind == "update.proxy-prepare" {
+			if !a.validProxy(command) || a.Snapshot().Paused && a.target.ProxyFor != command.ProxyFor {
+				return
+			}
+		} else if a.target.ProxyFor != "" || command.ProxyFor != "" {
+			// A child's hold cannot be converted into a software commit.
 			return
 		}
 		if command.LeaseUntil.Before(time.Now()) || command.LeaseUntil.After(time.Now().Add(5*time.Minute)) {
@@ -300,6 +321,7 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 		}
 		a.lease = command.LeaseUntil
 		a.target.LeaseUntil = command.LeaseUntil
+		a.target.ProxyFor, a.target.ProxyURL = command.ProxyFor, command.ProxyURL
 		if err := store.Write(a.marker(), a.target); err != nil {
 			a.resume()
 			a.set("error", err)
@@ -308,18 +330,37 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 		a.mu.Lock()
 		a.status.Paused = true
 		a.status.LeaseUntil = a.lease
+		a.status.ProxyFor = a.target.ProxyFor
 		a.mu.Unlock()
 		if IsCurrent(a.options.Software, a.target.Version, a.target.Asset) {
 			a.set("applied", nil)
 		} else {
 			a.set("ready", nil)
 		}
+	case "update.proxy-park":
+		now := time.Now()
+		s := a.Snapshot()
+		if command.ID != a.target.ID || !a.validProxy(command) || s.ProxyFor != command.ProxyFor || !s.Paused ||
+			!now.Before(a.lease) || !now.Before(command.ParkUntil) || command.ParkUntil.After(now.Add(30*time.Second)) ||
+			command.ParkUntil.After(a.lease) || now.Before(s.ParkUntil) || !a.options.Pause() {
+			return
+		}
+		// Acknowledgement precedes disconnection. It proves the reservation,
+		// not an idle socket: the proxy still checks its actual live tunnels.
+		a.mu.Lock()
+		a.status.ParkUntil = command.ParkUntil
+		a.mu.Unlock()
+		if err := a.options.Report(ctx, a.Snapshot()); err != nil || !a.options.ParkGateway(command.ParkUntil) {
+			a.mu.Lock()
+			a.status.ParkUntil = time.Time{}
+			a.mu.Unlock()
+		}
 	case "update.resume":
 		if command.ID == a.target.ID {
 			a.resume()
 		}
 	case "update.commit":
-		if command.ID != a.target.ID {
+		if command.ID != a.target.ID || a.target.ProxyFor != "" {
 			return
 		}
 		if IsCurrent(a.options.Software, a.target.Version, a.target.Asset) {
@@ -347,4 +388,8 @@ func (a *Updater) process(ctx context.Context, message queuedCommand) {
 			a.set("error", err)
 		}
 	}
+}
+
+func (a *Updater) validProxy(command Command) bool {
+	return a.status.ProxyDrain && command.ProxyFor == a.options.ProxyWorker && command.ProxyURL == a.options.ProxyURL
 }

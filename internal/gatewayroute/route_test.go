@@ -206,13 +206,19 @@ func TestRouteJSONPreservesProxyAndValidatesRestoration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !route.ParkIfIdle(time.Now().Add(time.Minute)) {
+		t.Fatal("could not park route before serialization")
+	}
 	data, err := json.Marshal(route)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var restored Route
-	if err = json.Unmarshal(data, &restored); err != nil || restored != route {
+	if err = json.Unmarshal(data, &restored); err != nil || restored.Proxy() != route.Proxy() {
 		t.Fatalf("restored route: %q %v", restored.Proxy(), err)
+	}
+	if restored.maintenance == route.maintenance || restored.maintenance == nil || !restored.maintenance.until.IsZero() {
+		t.Fatal("restoration retained process-local maintenance state")
 	}
 	for _, legacy := range []string{`{}`, `null`} {
 		if err = json.Unmarshal([]byte(legacy), &restored); err != nil || restored.Proxied() {

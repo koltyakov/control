@@ -25,7 +25,8 @@ import (
 
 // Route selects how this process reaches its gateway. The zero value is direct.
 type Route struct {
-	proxy string
+	proxy       string
+	maintenance *routeMaintenance
 }
 
 // MarshalJSON preserves the next hop in saved client and tunnel-service profiles.
@@ -62,7 +63,7 @@ func New(proxy string) (Route, error) {
 	if err != nil {
 		return Route{}, err
 	}
-	return Route{proxy: normalized}, nil
+	return Route{proxy: normalized, maintenance: &routeMaintenance{changed: make(chan struct{})}}, nil
 }
 
 // FromConfig accepts a persisted child profile selection.
@@ -119,6 +120,14 @@ func (r Route) MonitorHost(gateway string) (host, port string) {
 // Transport returns the shared round tripper for this route. Direct routes keep
 // the process default, including its environment proxy settings.
 func (r Route) Transport() http.RoundTripper {
+	base := r.baseTransport()
+	if r.maintenance != nil {
+		return maintenanceTransport{base: base, state: r.maintenance}
+	}
+	return base
+}
+
+func (r Route) baseTransport() http.RoundTripper {
 	mu.Lock()
 	defer mu.Unlock()
 	if roots == nil && !r.Proxied() {
