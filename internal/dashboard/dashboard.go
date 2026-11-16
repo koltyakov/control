@@ -324,17 +324,20 @@ func Render(snapshot model.PoolActivitySnapshot, now time.Time) string {
 func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOptions) string {
 	var b strings.Builder
 	online, active, omitted, observed := 0, 0, 0, 0
+	machines := machineRows(snapshot.Nodes)
 	names := map[string]string{}
 	for _, n := range snapshot.Nodes {
 		names[n.ID] = n.Name
+		active += n.ActiveCount
+		omitted += n.Omitted
+	}
+	for _, n := range machines {
 		if n.Online {
 			online++
 		}
-		if n.Status == "ready" || n.Status == "summary" {
+		if n.observed {
 			observed++
 		}
-		active += n.ActiveCount
-		omitted += n.Omitted
 	}
 	name := func(id string) string {
 		if id == "" {
@@ -380,7 +383,7 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 		options.line(&b, "No machines registered.")
 		return strings.TrimRight(b.String(), "\n")
 	}
-	summary := fmt.Sprintf("Machines  %d nodes · %d online", len(snapshot.Nodes), online)
+	summary := fmt.Sprintf("Machines  %d total · %d online", len(machines), online)
 	if observed < online {
 		summary += fmt.Sprintf(" · %d observed", observed)
 	}
@@ -392,40 +395,8 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 		options.line(&b, fmt.Sprintf("%d active records omitted. Filter with --node.", omitted))
 	}
 	rows := [][]string{}
-	for _, n := range snapshot.Nodes {
-		status := n.Status
-		if n.Status == "ready" || n.Status == "summary" {
-			status = "idle"
-			if n.ActiveCount > 0 {
-				status = "busy"
-			}
-			if n.LeaseOwner != "" || n.Leased {
-				if options.details {
-					status += "/leased"
-				} else {
-					status = "reserved"
-				}
-			}
-		}
-		if n.Disabled {
-			status = "disabled"
-		}
-		if n.ControlPending {
-			status = "enabling"
-			if n.Disabled {
-				status = "disabling"
-			}
-		}
-		if n.Status == "update" {
-			status = "update"
-		}
-		count := fmt.Sprint(n.ActiveCount)
-		if n.Status != "ready" && n.Status != "summary" {
-			count = "?"
-		}
-		if n.Status == "online" || n.Status == "update" || !n.Online {
-			count = "-"
-		}
+	for _, n := range machines {
+		status := machineStatus(n.NodeActivitySnapshot, options.details)
 		osName, cpuUsed, ram, free := n.OS, "-", "-", "-"
 		if s := n.System; n.Online && s != nil {
 			if s.CPUUsagePercent != nil {
@@ -439,10 +410,6 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 			if len(s.Disks) > 0 && s.Disks[0].Error == "" {
 				free = bytes(s.Disks[0].FreeBytes)
 			}
-		}
-		connections := "-"
-		if n.Status == "ready" {
-			connections = connectionRatio(n)
 		}
 		version := options.version(n.Software.Version)
 		if version == "" {
@@ -462,7 +429,7 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 		if n.RetainedTunnels != nil {
 			saved = fmt.Sprintf("↑%d ↓%d", n.RetainedTunnels.Forward, n.RetainedTunnels.Reverse)
 		}
-		rows = append(rows, []string{n.Name, status, seen, count, connections, tunnels, cpuUsed, ram, free, saved, osName, version})
+		rows = append(rows, []string{n.Name, status, seen, n.work, n.connections, tunnels, cpuUsed, ram, free, saved, osName, version})
 	}
 	b.WriteByte('\n')
 	options.table(&b, machineColumns, rows)
@@ -529,7 +496,7 @@ func render(snapshot model.PoolActivitySnapshot, now time.Time, options renderOp
 		return strings.TrimRight(b.String(), "\n")
 	}
 	hardwareHeading := false
-	for _, n := range snapshot.Nodes {
+	for _, n := range machines {
 		if s := n.System; s != nil {
 			if !hardwareHeading {
 				options.heading(&b, "Hardware")

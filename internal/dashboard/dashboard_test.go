@@ -21,7 +21,7 @@ func TestRenderAvailabilityAndHostileTerminalText(t *testing.T) {
 		{Name: "denied-node", Online: true, Status: "unavailable", Error: "not authorized"},
 	}}
 	text := Render(snapshot, now)
-	for _, expected := range []string{"3 nodes", "2 online", "1 observed", "1 active", "worker", "busy", "offline-node", "unavailable", "denied-node", "exec.run", "not authorized", "Seen", "now", "30m", "windows"} {
+	for _, expected := range []string{"3 total", "2 online", "1 observed", "1 active", "worker", "busy", "offline-node", "unavailable", "denied-node", "exec.run", "not authorized", "Seen", "now", "30m", "windows"} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("missing %q in:\n%s", expected, text)
 		}
@@ -65,7 +65,7 @@ func TestMachineSummarySeparatedFromTable(t *testing.T) {
 	snapshot := model.PoolActivitySnapshot{ObservedAt: now, Nodes: []model.NodeActivitySnapshot{{Name: "worker", Status: "offline"}}}
 	for _, options := range []renderOptions{{}, {width: 80, color: true}, {width: 80, details: true}} {
 		text := ansi.Strip(render(snapshot, now, options))
-		if !strings.Contains(text, "Machines  1 nodes · 0 online\n\nNode") {
+		if !strings.Contains(text, "Machines  1 total · 0 online\n\nNode") {
 			t.Fatalf("missing blank line before machine table:\n%s", text)
 		}
 	}
