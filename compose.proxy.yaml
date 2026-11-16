@@ -5,6 +5,7 @@
 # The child shares no network with the gateway and cannot resolve its name.
 # The bridge uses tinyproxy by default, or Control's managed listener when
 # CONTROL_TEST_MANAGED_PROXY=true.
+# Requires Compose 2.36.0+ for stable bridge interface names across restarts.
 name: control-proxy-test
 
 x-proxy-host: &proxy-host
@@ -56,8 +57,10 @@ services:
       gateway:
         condition: service_healthy
     networks:
-      gateway-net: {}
+      gateway-net:
+        interface_name: eth0
       restricted:
+        interface_name: eth1
         ipv4_address: 172.31.250.10
     healthcheck:
       test: ["CMD", "control", "--api", "http://127.0.0.1:7331", "call", "", "node.describe"]

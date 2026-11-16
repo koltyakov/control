@@ -43,7 +43,7 @@ control machines proxies disable office-bridge
 
 `configure` is an alias for `enable` with explicit settings. Discovery reports only private addresses assigned to live interfaces on the worker. The network prefix is a suggestion for explicit source confirmation, not proof of child reachability. Management requires an HTTPS gateway, `proxy.manage` permission for account clients, and a node advertising `gatewayProxyManagement`. A node that itself uses a gateway proxy cannot host another.
 
-An explicitly selected System companion can permit `proxy.manage` independently of execution delegation. Control does not switch to System or elevate automatically. Enabled listeners whose interface or port was unavailable at startup retry binding at the normal proxy-check cadence, without rewriting settings or replaying an owner request.
+An explicitly selected System companion can permit `proxy.manage` independently of execution delegation. Control does not switch to System or elevate automatically. Enabled listeners whose interface or port was unavailable at startup retry binding with readiness checks, without rewriting settings or replaying an owner request.
 
 Existing profile declarations remain supported:
 
@@ -94,6 +94,8 @@ Enable the proxy before creating an invitation. Its advertisement updates withou
 
 The console marks configured hosting with a **Proxy** chip, even with no dependents, and reported child routing with **Via proxy**. Tooltips identify the gateway, proxy worker, and endpoint where available. Offline machines keep their configuration chips; readiness and machine status stay separate. Via proxy requires a node version that reports its configured route in registration, rather than inferring it from historical enrollment dependencies.
 
+After an update, configured hosting may appear before the proxy's next successful check. Add machine explains when configured proxies are not ready. While Direct is selected, newly eligible choices appear automatically on the console's normal snapshot refresh without clearing the form. An explicit proxy choice stays selected if readiness disappears; creation is refused until that endpoint is ready again or the user explicitly chooses another route. Recovery never creates or retries an invitation automatically.
+
 ### Unregister a child
 
 Unregistering a child revokes its credential, but its listener stays up so the child can still read its signed retirement policy through it. The child persists retirement, then repeats the signed read with that exact revision as an acknowledgement. Only this acknowledgement releases the dependency: disconnection, directory removal, or delivery of the response alone do not. A failed acknowledgement is retried twice, and once more on every later start of the retired node. Inspect-only reads and other identities' proofs cannot release it.
@@ -112,13 +114,15 @@ Admitted managed connections, including pending CONNECT requests, are owned work
 
 ## Readiness
 
-Every minute, independently of dashboard polling, the worker checks each endpoint by:
+At startup and every minute while healthy, independently of dashboard polling, the worker checks each endpoint by:
 
 1. Establishing CONNECT through the endpoint to its own gateway.
 2. Completing gateway TLS verification.
 3. Fetching the gateway's `/healthz` response.
 
 Each check is bounded to ten seconds and reuses no pooled connection. Results travel in the existing owner health report with a bounded, sanitized failure reason such as `proxy connection failed`, `proxy refused CONNECT: forbidden`, or `gateway TLS verification failed`. The gateway dates every check on its own clock.
+
+Gateway reconnection and leaving maintenance trigger another check without waiting for the minute interval. Failed checks retry after five seconds, doubling the delay up to one minute; a successful check restores the healthy cadence. Managed maintenance fences invalidate previous readiness and report the listener as paused. Leaving maintenance invalidates that failure and schedules a fresh check. These are read-only probes, not retries of configuration changes or enrollment.
 
 Owners see one state per advertised endpoint:
 

@@ -515,11 +515,20 @@ func (m *managedProxy) fenceIfIdle() bool {
 		return true
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.active > 0 {
+		m.mu.Unlock()
 		return false
 	}
+	changed := !m.fenced
 	m.fenced = true
+	if changed {
+		m.gen++
+	}
+	notify := m.changed
+	m.mu.Unlock()
+	if changed && notify != nil {
+		notify()
+	}
 	return true
 }
 
@@ -528,8 +537,16 @@ func (m *managedProxy) unfence() {
 		return
 	}
 	m.mu.Lock()
+	changed := m.fenced
 	m.fenced = false
+	if changed {
+		m.gen++
+	}
+	notify := m.changed
 	m.mu.Unlock()
+	if changed && notify != nil {
+		notify()
+	}
 }
 
 // setSupported records whether the gateway serves managed proxy state and
@@ -558,6 +575,9 @@ func (m *managedProxy) generation() uint64 {
 func (m *managedProxy) endpointState(u string) (supported, listening bool, failure string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.fenced {
+		return m.supported, false, "managed listener is paused for maintenance"
+	}
 	return m.supported, m.listeners[u] != nil, m.failures[u]
 }
 

@@ -19,6 +19,8 @@ cleanup() {
     trap - EXIT HUP INT TERM
     if [ "$status" -ne 0 ]; then
         compose logs --no-color gateway bridge || true
+        control machines proxies || true
+        if [ -n "${bridge_id:-}" ]; then proxy_settings --fail || true; fi
         compose exec -T child sh -c 'cat /root/.control/node.log 2>/dev/null | tail -n 80' || true
     fi
     compose down --volumes --remove-orphans || true
@@ -83,6 +85,10 @@ child_offline() {
     control machines | jq_filter -e '[.[] | select(.name == "child-01" and (.online | not))] | length == 1'
 }
 
+bridge_online() {
+    control machines | jq_filter -e '[.[] | select(.name == "bridge" and .online)] | length == 1'
+}
+
 compose up --build --wait gateway bridge
 compose up --build -d child
 trusted() { child "test -f /tmp/control-proxy-ready"; }
@@ -142,9 +148,16 @@ fi
 
 # Proxy loss disconnects without a direct fallback; recovery reconnects.
 if [ "$managed" = true ]; then
-    compose stop bridge
-    wait_for "child offline after managed proxy loss" child_offline
-    compose start bridge
+    # Repeat to expose nondeterministic interface assignment across restarts.
+    for restart in 1 2 3 4 5; do
+        compose stop bridge
+        wait_for "child offline after managed proxy loss $restart" child_offline
+        compose start bridge
+        wait_for "bridge online after restart $restart" bridge_online
+        proxy_settings --fail | jq_filter -e '.settings as $saved | any(.interfaces[]; .name == $saved.interface and .address == $saved.address)' >/dev/null ||
+            fail "restarted bridge changed the saved proxy interface/address pairing"
+        wait_for "child reconnected through the proxy after restart $restart" child_online
+    done
 else
     compose exec -T bridge pkill -x tinyproxy
     wait_for "child offline after proxy loss" child_offline

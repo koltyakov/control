@@ -21,6 +21,7 @@ type proxyChecks struct {
 	probe     func(context.Context, string, string) error
 	managed   *managedProxy
 	interval  time.Duration
+	retry     time.Duration
 	kick      chan struct{}
 	reported  func()
 	mu        sync.Mutex
@@ -31,7 +32,7 @@ func newProxyChecks(endpoints []model.ProxyEndpoint, managed *managedProxy) *pro
 	if len(endpoints) == 0 && managed == nil {
 		return nil
 	}
-	c := &proxyChecks{endpoints: endpoints, probe: gatewayroute.Probe, managed: managed, interval: model.ProxyCheckInterval, kick: make(chan struct{}, 1), results: map[string]model.ProxyReadiness{}}
+	c := &proxyChecks{endpoints: endpoints, probe: gatewayroute.Probe, managed: managed, interval: model.ProxyCheckInterval, retry: 5 * time.Second, kick: make(chan struct{}, 1), results: map[string]model.ProxyReadiness{}}
 	return c
 }
 
@@ -55,40 +56,63 @@ func (c *proxyChecks) recheck() {
 	}
 }
 
-func (c *proxyChecks) run(ctx context.Context, gateway string) {
-	ticker := time.NewTicker(c.interval)
-	defer ticker.Stop()
+func (c *proxyChecks) run(ctx context.Context, gateway string, connected <-chan struct{}) {
+	timer := time.NewTimer(c.interval)
+	defer timer.Stop()
+	retry := c.retry
 	for {
-		c.checkAll(ctx, gateway)
+		// Startup and listener restoration can queue the same initial check.
+		// Coalesce signals already pending, but retain arrivals during a probe.
+		select {
+		case <-c.kick:
+		default:
+		}
+		select {
+		case <-connected:
+		default:
+		}
+		healthy := c.checkAll(ctx, gateway)
 		if c.reported != nil && ctx.Err() == nil {
 			c.reported()
 		}
+		delay := c.interval
+		if healthy {
+			retry = c.retry
+		} else {
+			delay = min(retry, c.interval)
+			retry = min(retry*2, c.interval)
+		}
+		timer.Reset(delay)
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		case <-c.kick:
+			retry = c.retry
+		case <-connected:
+			retry = c.retry
 		}
 	}
 }
 
 // checkAll runs sequentially: at most MaxProxyEndpoints bounded probes.
-func (c *proxyChecks) checkAll(ctx context.Context, gateway string) {
+func (c *proxyChecks) checkAll(ctx context.Context, gateway string) bool {
 	if ctx.Err() != nil {
-		return
+		return false
 	}
 	c.managed.retryListeners()
 	c.mu.Lock()
 	endpoints := append([]model.ProxyEndpoint(nil), c.endpoints...)
 	c.mu.Unlock()
+	healthy := true
 	for _, endpoint := range endpoints {
 		if ctx.Err() != nil {
-			return
+			return false
 		}
 		generation := c.managed.generation()
 		result, ok := c.check(ctx, endpoint, gateway)
 		if ctx.Err() != nil {
-			return
+			return false
 		}
 		// A listener change during the check makes its result stale; the
 		// change already scheduled another check.
@@ -98,11 +122,13 @@ func (c *proxyChecks) checkAll(ctx context.Context, gateway string) {
 		c.mu.Lock()
 		if ok {
 			c.results[endpoint.URL] = result
+			healthy = healthy && result.State == model.ProxyReady
 		} else {
 			delete(c.results, endpoint.URL)
 		}
 		c.mu.Unlock()
 	}
+	return healthy
 }
 
 func (c *proxyChecks) check(ctx context.Context, endpoint model.ProxyEndpoint, gateway string) (model.ProxyReadiness, bool) {

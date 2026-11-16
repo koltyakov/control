@@ -71,6 +71,13 @@ func TestGatewayRestartAndDirectSessionContinuity(t *testing.T) {
 				}
 			}
 			echo("before restart")
+			for _, peer := range []*Peer{a, b} {
+				select {
+				case <-peer.GatewayConnected():
+				default:
+					t.Fatal("initial gateway registration did not signal readiness")
+				}
+			}
 			if err = g.Close(); err != nil {
 				t.Fatal(err)
 			}
@@ -108,6 +115,13 @@ func TestGatewayRestartAndDirectSessionContinuity(t *testing.T) {
 				}
 			}
 			echo("after restart")
+			for _, peer := range []*Peer{a, b} {
+				select {
+				case <-peer.GatewayConnected():
+				default:
+					t.Fatal("gateway reconnection did not signal readiness")
+				}
+			}
 		})
 	}
 }

@@ -92,6 +92,7 @@ type Peer struct {
 	writes              chan *gatewayWrite
 	priorityWrites      chan *gatewayWrite
 	reconnectWake       chan struct{}
+	gatewayConnected    chan struct{}
 	links               map[string]*link
 	sessions            map[sessionKey]*peerSession
 	allSessions         map[string]*peerSession
@@ -136,7 +137,7 @@ func New(cfg Config, handler func(string, net.Conn), options ...Options) *Peer {
 	return &Peer{
 		cfg: cfg, handler: handler, log: slog.Default(), api: newWebRTCAPI(cfg.DirectTimeout, false, options...), trickleAPI: newWebRTCAPI(cfg.DirectTimeout, true, options...),
 		writes: make(chan *gatewayWrite, 64), priorityWrites: make(chan *gatewayWrite, 32),
-		reconnectWake: make(chan struct{}, 1), machineStateWake: make(chan struct{}, 1),
+		reconnectWake: make(chan struct{}, 1), gatewayConnected: make(chan struct{}, 1), machineStateWake: make(chan struct{}, 1),
 		lanSlots: make(chan struct{}, 4), lanInbound: map[string]time.Time{},
 		secretSlots: make(chan struct{}, 1),
 		proxySlots:  make(chan struct{}, 1),
@@ -171,6 +172,10 @@ func (p *Peer) SetSoftware(info buildinfo.Info) {
 	p.cfg.Node.Software = info
 }
 func (p *Peer) SetControlHandler(handler func(string, []byte)) { p.control = handler }
+
+// GatewayConnected signals successful registration and reconnections. Unread
+// signals coalesce; receiving one does not prove ongoing connection health.
+func (p *Peer) GatewayConnected() <-chan struct{} { return p.gatewayConnected }
 
 // SetWakeHandler receives wake requests the gateway relays for the fleet owner.
 func (p *Peer) SetWakeHandler(handler func([]byte)) { p.wake = handler }
@@ -437,6 +442,10 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		return nil, errors.New("peer stopped during connection")
 	}
 	p.mu.Unlock()
+	select {
+	case p.gatewayConnected <- struct{}{}:
+	default:
+	}
 	return ws, nil
 }
 

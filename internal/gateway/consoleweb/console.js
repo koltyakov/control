@@ -1674,6 +1674,7 @@ async function refresh(manual = false) {
     const snapshot = await api("status");
     if (session !== state.session) return;
     state.snapshot = snapshot;
+    updateInstallationProxies();
     state.updatedAt = snapshot.observedAt;
     $("#nav-count").textContent = String(groupedMachines(snapshot.nodes).length);
     /** @type {Auxiliary | null} */
@@ -2561,7 +2562,7 @@ function addMachine() {
     ready = workers.filter((n) => readyEndpoints(n).length);
   formDialog(
     "Add a machine",
-    `<p>Create a one-time installation command for the target machine.</p><label>Machine name<input name="name" placeholder="Use target hostname" maxlength="63" pattern="[a-zA-Z0-9]([a-zA-Z0-9._]|-){0,62}"></label><p class="field-help">Leave blank to use the target's hostname. Existing names create a replacement enrollment.</p><div class="form-grid"><label>Platform<select name="os"><option value="linux">Linux</option><option value="darwin">macOS</option><option value="windows">Windows</option></select></label><label>Startup context<select name="serviceMode"><option value="user">User context</option><option value="system">System context</option><option value="hybrid">Hybrid</option></select></label></div><p class="field-help">User uses your files and desktop session and may stop at logout. System starts at boot as root on Unix or LocalService on Windows. Hybrid installs both as isolated profiles, with a NAME-system companion running as root or Windows LocalSystem. Explicit System work requires an instruction grant; failures never trigger elevation. Hybrid names allow 56 characters. Run Hybrid as your user on Unix, or in Administrator PowerShell on Windows.</p>${proxyFields(workers, ready)}<div class="notice">The gateway needs published amd64 and arm64 installers for the selected platform. This invitation expires after 15 minutes.</div>`,
+    `<p>Create a one-time installation command for the target machine.</p><label>Machine name<input name="name" placeholder="Use target hostname" maxlength="63" pattern="[a-zA-Z0-9]([a-zA-Z0-9._]|-){0,62}"></label><p class="field-help">Leave blank to use the target's hostname. Existing names create a replacement enrollment.</p><div class="form-grid"><label>Platform<select name="os"><option value="linux">Linux</option><option value="darwin">macOS</option><option value="windows">Windows</option></select></label><label>Startup context<select name="serviceMode"><option value="user">User context</option><option value="system">System context</option><option value="hybrid">Hybrid</option></select></label></div><p class="field-help">User uses your files and desktop session and may stop at logout. System starts at boot as root on Unix or LocalService on Windows. Hybrid installs both as isolated profiles, with a NAME-system companion running as root or Windows LocalSystem. Explicit System work requires an instruction grant; failures never trigger elevation. Hybrid names allow 56 characters. Run Hybrid as your user on Unix, or in Administrator PowerShell on Windows.</p><div id="installation-proxies">${proxyFields(workers, ready)}</div><p id="installation-proxy-status" class="field-help" role="status" hidden></p><div class="notice">The gateway needs published amd64 and arm64 installers for the selected platform. This invitation expires after 15 minutes.</div>`,
     async (fields, current) => {
       const name = fields.name.trim(),
         automatic = !name || name === "auto",
@@ -2570,6 +2571,8 @@ function addMachine() {
         proxyUrl = via ? fields.proxyUrl || "" : "";
       if (via && !proxyWorker) throw new Error("Select a ready proxy worker in this fleet.");
       if (via && !proxyUrl) throw new Error("Select the address the target machine can reach.");
+      if (via && !proxyWorkers().some((worker) => worker.id === proxyWorker && readyEndpoints(worker).some((endpoint) => endpoint.url === proxyUrl)))
+        throw new Error("The selected proxy is not ready. Wait for a fresh check or explicitly choose Direct. No invitation was created.");
       /** @type {InstallationRequest} */
       const request = {
         name: automatic ? "" : name,
@@ -2592,22 +2595,62 @@ function addMachine() {
     "Create installation command",
     false, "", true,
   );
-  if (!ready.length) return;
-  const sync = () => {
-    const via = $('#modal-form select[name="connection"]').value === "proxy",
-      worker = $('#modal-form select[name="proxyWorker"]');
-    $("#proxy-worker-field").hidden = !via;
-    $("#proxy-guidance").hidden = !via;
-    worker.disabled = !via;
-    /** @type {NodeListOf<HTMLLabelElement>} */ (document.querySelectorAll("#modal-form .proxy-address")).forEach((label) => {
-      const active = via && label.dataset.worker === worker.value;
-      label.hidden = !active;
-      $("select", label).disabled = !active;
-    });
-  };
-  $('#modal-form select[name="connection"]').addEventListener("change", sync);
-  $('#modal-form select[name="proxyWorker"]').addEventListener("change", sync);
-  sync();
+  $("#installation-proxies").addEventListener("change", () => {
+    syncInstallationProxyFields();
+    updateInstallationProxies();
+  });
+  updateInstallationProxies();
+}
+/** @returns {void} */
+function syncInstallationProxyFields() {
+  const connection = find('#installation-proxies select[name="connection"]');
+  if (!connection) return;
+  const via = connection.value === "proxy",
+    worker = $('#installation-proxies select[name="proxyWorker"]');
+  $("#proxy-worker-field").hidden = !via;
+  $("#proxy-guidance").hidden = !via;
+  worker.disabled = !via;
+  /** @type {NodeListOf<HTMLLabelElement>} */ (document.querySelectorAll("#installation-proxies .proxy-address")).forEach((label) => {
+    const active = via && label.dataset.worker === worker.value;
+    label.hidden = !active;
+    $("select", label).disabled = !active;
+  });
+}
+// Refresh eligibility without replacing the form or silently downgrading an
+// explicit proxy choice to Direct. An invalid selected route stays visible and
+// is refused before submission; the gateway independently validates readiness.
+/** @returns {void} */
+function updateInstallationProxies() {
+  const root = find("#installation-proxies"),
+    form = find("#modal-form");
+  if (!root || !form || $('button[type="submit"]', form).disabled) return;
+  const workers = proxyWorkers(),
+    ready = workers.filter((worker) => readyEndpoints(worker).length),
+    signature = JSON.stringify(ready.map((worker) => [worker.id, worker.name, readyEndpoints(worker).map((endpoint) => [endpoint.url, endpoint.interface, endpoint.managed])])),
+    connection = find('#installation-proxies select[name="connection"]'),
+    via = connection?.value === "proxy";
+  if (root.dataset.choices !== signature && !via) {
+    const hadFocus = root.contains(document.activeElement);
+    root.innerHTML = proxyFields(workers, ready);
+    root.dataset.choices = signature;
+    enhanceSelects(root);
+    syncInstallationProxyFields();
+    if (hadFocus) (find("button", root) || find('#modal-form input[name="name"]'))?.focus();
+  }
+  let message = "";
+  if (via) {
+    const worker = $('#installation-proxies select[name="proxyWorker"]'),
+      address = [...root.querySelectorAll(".proxy-address")].find((label) => label instanceof HTMLElement && label.dataset.worker === worker.value),
+      url = address ? $("select", address).value : "";
+    if (!ready.some((entry) => entry.id === worker.value && readyEndpoints(entry).some((endpoint) => endpoint.url === url)))
+      message = "The selected proxy is not ready. Your choice is preserved; wait for a fresh check or explicitly choose Direct.";
+  } else if (workers.length && !ready.length) {
+    message = "Configured proxies are not ready yet: " + workers.map((worker) => worker.name).join(", ") +
+      ". Choices appear automatically after a successful check. The Proxy chip shows configuration, not readiness.";
+  }
+  const status = $("#installation-proxy-status");
+  status.textContent = message;
+  status.hidden = !message;
 }
 /** @returns {Machine[]} */
 function proxyWorkers() {

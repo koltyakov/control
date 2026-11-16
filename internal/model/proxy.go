@@ -16,7 +16,7 @@ const (
 	MaxProxyEndpoints      = 8
 	MaxProxyInterfaceBytes = 64
 	MaxProxyErrorBytes     = 160
-	// ProxyCheckInterval is the worker's own proxy-to-gateway check cadence,
+	// ProxyCheckInterval is the healthy worker's proxy-to-gateway check cadence,
 	// independent of dashboard polling.
 	ProxyCheckInterval = time.Minute
 	// ProxyReadinessTTL turns an older observation into "stale", which is

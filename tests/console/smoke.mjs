@@ -1033,6 +1033,64 @@ async function assertProxyChips(page, snapshot) {
   }
 }
 
+async function assertProxyChoicesRecoverInOpenForm(page, snapshot) {
+  const host = { ...snapshot.nodes[0], id: "recovering-proxy", name: "recovering-proxy", online: true, disabled: false,
+    proxyEndpoints: [{ url: "http://10.0.0.5:3128", state: "unchecked", managed: true }] };
+  const statusRoute = (route) => route.fulfill({ json: { ...snapshot, nodes: [host] } });
+  let submissions = 0;
+  const observe = (request) => {
+    if (request.method() === "POST" && request.url().endsWith("/console/api/fleet/installations")) submissions++;
+  };
+  page.on("request", observe);
+  await page.route("**/console/api/status", statusRoute);
+  try {
+    await page.waitForFunction(() => !state.busy);
+    await pageLink(page, "machines");
+    await refreshPage(page);
+    await page.locator(".heading-actions [data-action=add]").click();
+    const form = page.locator("#modal-form");
+    await form.locator('input[name="name"]').fill("retained-machine");
+    await form.locator('select[name="os"]').selectOption("windows");
+    await form.locator('select[name="serviceMode"]').selectOption("hybrid");
+    assert.equal(await form.locator('select[name="connection"]').count(), 0, "Direct-only setup must not show an unusable proxy choice");
+    await page.locator("#installation-proxy-status").filter({ hasText: "Configured proxies are not ready yet" }).waitFor();
+    await form.locator('input[name="name"]').focus();
+    host.proxyEndpoints[0].state = "ready";
+    await refreshPage(page);
+    await form.locator('select[name="connection"]').waitFor({ state: "attached" });
+    assert.equal(await form.locator('input[name="name"]').inputValue(), "retained-machine");
+    assert.equal(await form.locator('select[name="os"]').inputValue(), "windows");
+    assert.equal(await form.locator('select[name="serviceMode"]').inputValue(), "hybrid");
+    assert.equal(await form.locator('input[name="name"]').evaluate((input) => input === document.activeElement), true, "Refreshing proxy choices must preserve editing focus");
+    assert.equal(await form.locator('select[name="connection"]').inputValue(), "direct", "New readiness must not automatically choose proxy routing");
+    assert.ok(await page.locator("#installation-proxy-status").isHidden());
+    await form.locator('select[name="connection"]').selectOption("proxy");
+    assert.equal(await form.locator('select[name="proxyWorker"]').inputValue(), host.id);
+    assert.equal(await form.locator('select[name="proxyUrl"]').inputValue(), host.proxyEndpoints[0].url);
+    host.proxyEndpoints[0].state = "unavailable";
+    await refreshPage(page);
+    assert.equal(await form.locator('select[name="connection"]').inputValue(), "proxy", "Losing readiness must not silently switch to Direct");
+    await page.locator("#installation-proxy-status").filter({ hasText: "Your choice is preserved" }).waitFor();
+    await form.locator("button[type=submit]").click();
+    await form.locator(".form-error").filter({ hasText: "selected proxy is not ready" }).waitFor();
+    assert.equal(submissions, 0, "Unready routing must fail before sending an invitation");
+    host.proxyEndpoints[0].state = "ready";
+    await refreshPage(page);
+    assert.equal(await form.locator('select[name="connection"]').inputValue(), "proxy");
+    assert.equal(await form.locator('select[name="proxyWorker"]').inputValue(), host.id);
+    assert.equal(await form.locator('select[name="proxyUrl"]').inputValue(), host.proxyEndpoints[0].url);
+    assert.ok(await page.locator("#installation-proxy-status").isHidden());
+    assert.equal(submissions, 0, "Recovering readiness must not retry creation");
+    await form.locator('[data-action="close"]').click();
+    await refreshPage(page);
+    assert.equal(await page.locator("#modal-form").count(), 0, "Readiness refresh must not reopen a dismissed form");
+  } finally {
+    page.off("request", observe);
+    await page.unroute("**/console/api/status", statusRoute);
+    await refreshPage(page);
+  }
+}
+
 // Removing one context of a grouped host must name the one left running.
 async function assertHybridUnregister(page, snapshot) {
   const baseNode = { ...snapshot.nodes[0], status: "summary", activeCount: 0, leased: false, disabled: false, controlPending: false, online: true },
@@ -2038,6 +2096,7 @@ try {
   await assertHybridGrouping(page, snapshot);
   await assertAcceleratorPresence(page, snapshot);
   await assertProxyChips(page, snapshot);
+  await assertProxyChoicesRecoverInOpenForm(page, snapshot);
   assert.equal(machineMutations, mutationsBeforeStartup, "Preparing startup commands must not mutate machine lifecycle policy");
   await assertHybridUnregister(page, snapshot);
 

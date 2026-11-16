@@ -199,6 +199,8 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 	n.proxyChecks = newProxyChecks(endpoints, n.managedProxy)
 	if n.managedProxy != nil {
 		n.managedProxy.changed = n.proxyChecks.recheck
+	}
+	if n.proxyChecks != nil {
 		n.proxyChecks.reported = func() { n.reportHealth(n.ctx) }
 	}
 	n.delegations = map[string]*delegationState{}
@@ -323,7 +325,7 @@ func (n *Node) Start(ctx context.Context) error {
 	go func() { defer n.wg.Done(); n.runHealth(n.ctx) }()
 	if n.proxyChecks != nil {
 		n.wg.Add(1)
-		go func() { defer n.wg.Done(); n.proxyChecks.run(n.ctx, n.Config.Gateway) }()
+		go func() { defer n.wg.Done(); n.proxyChecks.run(n.ctx, n.Config.Gateway, n.Peer.GatewayConnected()) }()
 	}
 	n.wg.Add(1)
 	go func() { defer n.wg.Done(); n.runMachineState(n.ctx) }()
