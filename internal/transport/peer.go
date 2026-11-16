@@ -115,6 +115,8 @@ type Peer struct {
 	wake                func([]byte)
 	startup             func([]byte)
 	secrets             func([]byte)
+	proxyManagement     func([]byte)
+	proxySlots          chan struct{}
 	secretSlots         chan struct{}
 	nodeHealth          bool
 	clientSessions      bool
@@ -137,6 +139,7 @@ func New(cfg Config, handler func(string, net.Conn), options ...Options) *Peer {
 		reconnectWake: make(chan struct{}, 1), machineStateWake: make(chan struct{}, 1),
 		lanSlots: make(chan struct{}, 4), lanInbound: map[string]time.Time{},
 		secretSlots: make(chan struct{}, 1),
+		proxySlots:  make(chan struct{}, 1),
 		links:       map[string]*link{}, sessions: map[sessionKey]*peerSession{},
 		allSessions: map[string]*peerSession{}, pending: map[sessionKey]*sessionDial{},
 		incomingSetups: map[string]*incomingSetup{}, resolved: map[string]string{},
@@ -182,6 +185,19 @@ func (p *Peer) SetStartupHandler(handler func([]byte)) {
 func (p *Peer) SetSecretsHandler(key []byte, handler func([]byte)) {
 	p.secrets = handler
 	p.cfg.Node.SecretManagementKey = key
+}
+
+// SetProxyManagementHandler installs the fixed owner-management handler.
+func (p *Peer) SetProxyManagementHandler(handler func([]byte)) {
+	p.proxyManagement = handler
+	p.cfg.Node.GatewayProxyManagement = handler != nil
+}
+
+// SetProxyEndpoints updates future registration without reconnecting peers.
+func (p *Peer) SetProxyEndpoints(endpoints []model.ProxyEndpoint) {
+	p.mu.Lock()
+	p.cfg.Node.ProxyEndpoints = endpoints
+	p.mu.Unlock()
 }
 func (p *Peer) SendControl(ctx context.Context, kind string, data []byte) error {
 	return p.send(ctx, &protocol.Packet{Kind: kind, Data: data})
@@ -356,11 +372,14 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		err = errors.New("invalid gateway challenge")
 	}
 	if err == nil {
-		hello := gateway.Hello{Version: model.Version, Node: p.cfg.Node, Client: p.cfg.Client, GatewayHeartbeat: scope.GatewayHeartbeat, RelayDrain: scope.RelayDrain}
+		p.mu.Lock()
+		node := p.cfg.Node
+		p.mu.Unlock()
+		hello := gateway.Hello{Version: model.Version, Node: node, Client: p.cfg.Client, GatewayHeartbeat: scope.GatewayHeartbeat, RelayDrain: scope.RelayDrain}
 		if nodeBytes {
 			// Sign the exact registration bytes so a gateway that does not know
 			// a newer field ignores it instead of failing signature verification.
-			hello.NodeBytes, hello.Node = model.JSON(p.cfg.Node), model.Node{}
+			hello.NodeBytes, hello.Node = model.JSON(node), model.Node{}
 		} else if hello.Node.System != nil {
 			// Legacy gateways reconstruct the signed Node with their known
 			// fields. New nested metrics must not change those signature bytes.
@@ -369,6 +388,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 			hello.Node.System = &info
 		}
 		if !nodeBytes {
+			hello.Node.GatewayProxyManagement = false
 			hello.Node.SecretManagementKey = nil
 			hello.Node.Software.Runtime = ""
 			hello.Node.Software.GatewayProtocol = 0
@@ -532,6 +552,18 @@ func (p *Peer) send(ctx context.Context, msg *protocol.Packet) error {
 }
 
 func (p *Peer) receive(msg *protocol.Packet) {
+	if msg.Kind == "proxy.request" {
+		if msg.From == update.GatewaySender && p.proxyManagement != nil && len(msg.Data) <= 8192 {
+			select {
+			case p.proxySlots <- struct{}{}:
+				if !p.worker(func() { defer func() { <-p.proxySlots }(); p.proxyManagement(msg.Data) }) {
+					<-p.proxySlots
+				}
+			default:
+			}
+		}
+		return
+	}
 	if msg.Kind == "secrets.request" {
 		if msg.From == update.GatewaySender && p.secrets != nil && len(msg.Data) <= 12<<10 {
 			select {

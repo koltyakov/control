@@ -25,7 +25,7 @@ func (g *Gateway) proxySelectionLocked(userID, worker, endpoint string, now time
 		return nil, "proxy worker is disabled or unregistered", http.StatusConflict
 	}
 	if len(n.ProxyEndpoints) == 0 {
-		return nil, "proxy worker advertises no proxy endpoints; configure proxyEndpoints on that worker", http.StatusConflict
+		return nil, "proxy worker advertises no proxy endpoints; enable its Gateway proxy setting", http.StatusConflict
 	}
 	if endpoint == "" {
 		if len(n.ProxyEndpoints) != 1 {
@@ -41,8 +41,11 @@ func (g *Gateway) proxySelectionLocked(userID, worker, endpoint string, now time
 		if status.URL != endpoint {
 			continue
 		}
-		// A managed listener on standby has freshly verified its direct gateway
-		// path; this invitation becomes the dependency that activates it.
+		if status.Managed && n.ProxyManagementPending {
+			return nil, "proxy configuration outcome is uncertain; inspect the worker proxy settings", http.StatusConflict
+		}
+		// Standby is accepted only for legacy managed workers. Current workers
+		// explicitly enable listeners before advertising ready endpoints.
 		if !status.Selectable() {
 			text := "proxy endpoint is " + status.State
 			if status.Error != "" {
@@ -65,6 +68,10 @@ func proxyStatuses(entry observation, now time.Time, dependents map[string]*mode
 	statuses := model.ProxyStatuses(entry.node.ProxyEndpoints, entry.node.Online, readiness, entry.healthAt, now)
 	for i := range statuses {
 		if statuses[i].Managed {
+			if entry.node.ProxyManagementPending {
+				statuses[i].State = model.ProxyUnavailable
+				statuses[i].Error = "proxy configuration outcome is uncertain; inspect the worker proxy settings"
+			}
 			count := model.ProxyDependents{}
 			if d := dependents[statuses[i].URL]; d != nil {
 				count = *d

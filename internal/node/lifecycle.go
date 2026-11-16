@@ -142,10 +142,6 @@ func (n *Node) runMachineState(ctx context.Context) {
 		} else if err != nil && ctx.Err() == nil {
 			slog.Debug("machine state refresh", "error", err)
 		}
-		// Managed proxy dependencies share the policy hint and poll.
-		if err := n.syncProxyState(ctx); err != nil && ctx.Err() == nil {
-			slog.Debug("managed proxy state refresh", "error", err)
-		}
 		timer.Reset(n.machineStateInterval())
 	}
 }

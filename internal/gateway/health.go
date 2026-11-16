@@ -28,7 +28,6 @@ func (g *Gateway) receiveHealth(n model.Node, c *connection, data []byte) bool {
 	if !model.ValidProxyReadiness(health.Proxies) {
 		return false
 	}
-	health.Proxies = advertisedReadiness(n, health.Proxies)
 	if cpu := health.System.CPUUsagePercent; cpu != nil && (*cpu < 0 || *cpu > 100) {
 		return false
 	}
@@ -45,6 +44,7 @@ func (g *Gateway) receiveHealth(n model.Node, c *connection, data []byte) bool {
 	if g.peers[n.ID] != c {
 		return false
 	}
+	health.Proxies = advertisedReadiness(g.nodes[n.ID], health.Proxies)
 	c.health, c.healthAt = &health, time.Now().UTC()
 	g.publishTelemetry(n.ID)
 	return true

@@ -139,6 +139,7 @@ type Gateway struct {
 	wakes            map[string]pendingWake
 	startupChanges   map[string]pendingStartup
 	secretRequests   map[string]pendingSecrets
+	proxyRequests    map[string]pendingProxyManagement
 	updateCtx        context.Context
 	updateCancel     context.CancelFunc
 	updateWG         sync.WaitGroup
@@ -570,6 +571,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	n.LastSeen = time.Now().UTC()
 	previous, existed := g.nodes[n.ID]
 	n.UpdateUntil = previous.UpdateUntil // Never trust enrollment's display grace.
+	n.ProxyManagementPending = previous.ProxyManagementPending
 	n.LANPeers = retainedLANPeers(previous.LANPeers, n.WakeInterfaces)
 	previousOwner := g.owners[ownerID]
 	g.owners[ownerID] = n.UserID
@@ -742,6 +744,12 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		}
 		if p.Kind == "secrets.result" && p.To == "" {
 			if client || !g.receiveSecrets(n, c, p.Data) {
+				return
+			}
+			continue
+		}
+		if p.Kind == "proxy.result" && p.To == "" {
+			if client || !g.receiveProxyManagement(n, c, p.Data) {
 				return
 			}
 			continue

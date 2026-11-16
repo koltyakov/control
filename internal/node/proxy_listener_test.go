@@ -281,17 +281,16 @@ func TestManagedListenerRestoresPersistedDecisionAndReportsBindFailure(t *testin
 		t.Fatal("probed a listener that is not running")
 		return nil
 	}
-	checks.direct = func(context.Context, string) error { return nil }
 	checks.checkAll(ctx, cfg.Gateway)
 	if got := checks.snapshot(time.Now()); len(got) != 1 || got[0].State != model.ProxyUnavailable {
 		t.Fatalf("readiness %+v", got)
 	}
-	// Without dependencies the listener is on standby after a direct check.
+	// A stopped listener is unavailable, never selectable as standby.
 	if err := m.apply(nil, true); err != nil {
 		t.Fatal(err)
 	}
 	checks.checkAll(ctx, cfg.Gateway)
-	if got := checks.snapshot(time.Now()); len(got) != 1 || got[0].State != model.ProxyStandby {
+	if got := checks.snapshot(time.Now()); len(got) != 1 || got[0].State != model.ProxyUnavailable {
 		t.Fatalf("readiness %+v", got)
 	}
 	// Advertisement omits the local source allowlist.

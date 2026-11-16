@@ -61,8 +61,18 @@ proxy_ready() {
     control machines proxies | jq_filter -e '[.[] | select(.name == "bridge") | .endpoints[] | select(.state == "ready")] | length == 1'
 }
 
-proxy_standby() {
-    control machines proxies | jq_filter -e '[.[] | select(.name == "bridge") | .endpoints[] | select(.managed and .state == "standby" and .dependents.invitations == 0 and .dependents.children == 0 and .dependents.retiring == 0)] | length == 1'
+proxy_without_dependents() {
+    control machines proxies | jq_filter -e '[.[] | select(.name == "bridge") | .endpoints[] | select(.managed and .state == "ready" and .dependents.invitations == 0 and .dependents.children == 0 and .dependents.retiring == 0)] | length == 1'
+}
+
+proxy_settings() {
+    compose exec -T gateway curl --silent --show-error --max-time 30 "$@" \
+        -H 'Authorization: Bearer control-compose-superuser-only-test-key-0001' \
+        -H 'Content-Type: application/json' "$gateway_url/v1/fleet/nodes/$bridge_id/proxy"
+}
+
+disable_proxy() {
+    proxy_settings "$@" -X PUT --data '{"enabled":false}'
 }
 
 child_online() {
@@ -84,11 +94,14 @@ gateway_ip=$(compose exec -T gateway sh -c "hostname -i" | tr -d '\r' | awk '{pr
 if child "curl --fail --silent --max-time 3 --resolve gateway.control.test:7443:$gateway_ip $gateway_url/healthz"; then
     fail "child reached the gateway directly"
 fi
+bridge_id=$(control machines | jq_filter -r '.[] | select(.name == "bridge") | .id')
 if [ "$managed" = true ]; then
-    wait_for "managed listener standby before first invitation" proxy_standby
-    if child "curl --fail --silent --max-time 3 --proxy $proxy_url --noproxy '' $gateway_url/healthz"; then
-        fail "managed listener runs without dependencies"
-    fi
+    settings=$(proxy_settings --fail)
+    printf '%s\n' "$settings" | jq_filter -e '.supported and (.enabled | not)' >/dev/null || fail "new worker unexpectedly hosts a managed proxy"
+    request=$(printf '%s\n' "$settings" | jq_filter -c '.interfaces[] | select(.address == "172.31.250.10") | {enabled:true, interface:.name, address:.address, port:8888, sources:["172.31.250.0/24"]}')
+    [ -n "$request" ] || fail "worker did not report its restricted network interface"
+    proxy_settings --fail -X PUT --data "$request" | jq_filter -e '.enabled' >/dev/null || fail "explicit proxy enable was not confirmed"
+    wait_for "explicitly enabled managed listener without dependencies" proxy_without_dependents
 else
     wait_for "bridge proxy readiness" proxy_ready
 fi
@@ -121,6 +134,11 @@ child "export NO_PROXY='*' no_proxy='*'; $command" || fail "generated installer 
 wait_for "child online through the proxy" child_online
 child "grep -q '\"gatewayProxy\"' /root/.control/node.json" || fail "profile lacks gatewayProxy"
 control call child-01 node.describe >/dev/null || fail "authorized work through the proxy failed"
+if [ "$managed" = true ]; then
+    status=$(disable_proxy --output /dev/null --write-out '%{http_code}')
+    [ "$status" = 409 ] || fail "proxy disable with a dependent child returned $status instead of 409"
+    child "curl --fail --silent --max-time 10 --proxy $proxy_url --noproxy '' $gateway_url/healthz" >/dev/null || fail "refused disable disturbed the listener"
+fi
 
 # Proxy loss disconnects without a direct fallback; recovery reconnects.
 if [ "$managed" = true ]; then
@@ -153,9 +171,11 @@ if [ "$managed" = true ]; then
     wait_for "pending invitation retains the shared listener" proxy_ready
     child "curl --fail --silent --max-time 10 --proxy $proxy_url --noproxy '' $gateway_url/healthz" >/dev/null || fail "pending invitation lost its listener"
     control machines revoke "$pending_id"
-    wait_for "managed listener stops after final dependency" proxy_standby
+    wait_for "removing final dependency leaves the managed listener enabled" proxy_without_dependents
+    child "curl --fail --silent --max-time 10 --proxy $proxy_url --noproxy '' $gateway_url/healthz" >/dev/null || fail "removing final dependency disabled the listener"
+    disable_proxy --fail | jq_filter -e '.enabled == false' >/dev/null || fail "explicit proxy disable was not confirmed"
     if child "curl --fail --silent --max-time 3 --proxy $proxy_url --noproxy '' $gateway_url/healthz"; then
-        fail "managed listener still accepts after final dependency"
+        fail "managed listener still accepts after explicit disable"
     fi
 fi
 echo "PASS: gateway proxy installation, routing, recovery, restart, and retirement"

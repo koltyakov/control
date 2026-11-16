@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -40,8 +41,10 @@ func TestRegistrationSelectsProxyWorkerAndExplicitAddress(t *testing.T) {
 		return cmd
 	}
 	enter := tea.KeyPressMsg{Code: tea.KeyEnter}
-	if cmd := apply(enter); cmd != nil || m.wizard.step != "connection" {
-		t.Fatalf("context did not lead to connection selection: %s", m.wizard.step)
+	if cmd := apply(enter); cmd == nil || m.wizard.step != "loading-connections" {
+		t.Fatalf("context did not check available connections: %s", m.wizard.step)
+	} else {
+		apply(cmd())
 	}
 	text := ansi.Strip(m.registrationView().Content)
 	if !strings.Contains(text, "Direct") || !strings.Contains(text, "Through worker") {
@@ -49,11 +52,7 @@ func TestRegistrationSelectsProxyWorkerAndExplicitAddress(t *testing.T) {
 	}
 	apply(tea.KeyPressMsg{Code: '2', Text: "2"})
 	cmd := apply(enter)
-	if cmd == nil || m.wizard.step != "loading-workers" {
-		t.Fatal("worker list was not loaded")
-	}
-	apply(cmd())
-	if m.wizard.step != "worker" {
+	if cmd != nil || m.wizard.step != "worker" {
 		t.Fatalf("step %s", m.wizard.step)
 	}
 	text = ansi.Strip(m.registrationView().Content)
@@ -84,10 +83,17 @@ func TestRegistrationDirectConnectionSendsNoProxy(t *testing.T) {
 				got = proxy
 				return enrollment.Link{}, nil
 			},
-			ProxyWorkers: func(context.Context) ([]model.ProxyWorker, error) { t.Fatal("direct loaded workers"); return nil, nil },
+			ProxyWorkers: func(context.Context) ([]model.ProxyWorker, error) {
+				return []model.ProxyWorker{{ID: "bridge", Online: true, Endpoints: []model.ProxyEndpointStatus{{URL: "http://10.0.0.5:3128", State: model.ProxyReady}}}}, nil
+			},
 		},
 	}
-	next, _ := m.updateRegistration(tea.KeyPressMsg{Code: tea.KeyEnter})
+	next, load := m.updateRegistration(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(view)
+	if load == nil {
+		t.Fatal("available connections were not checked")
+	}
+	next, _ = m.updateRegistration(load())
 	m = next.(view)
 	next, cmd := m.updateRegistration(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if next.(view).wizard.step != "creating" || cmd == nil {
@@ -96,5 +102,56 @@ func TestRegistrationDirectConnectionSendsNoProxy(t *testing.T) {
 	cmd()
 	if got != (model.GatewayProxy{}) {
 		t.Fatalf("direct invitation carried %+v", got)
+	}
+}
+
+func TestRegistrationSkipsConnectionChoiceWithoutUsableProxy(t *testing.T) {
+	for _, state := range []string{"none", "offline", "stale", "disabled"} {
+		t.Run(state, func(t *testing.T) {
+			var workers []model.ProxyWorker
+			if state != "none" {
+				workers = []model.ProxyWorker{{ID: "bridge", Online: state != "offline", Disabled: state == "disabled", Endpoints: []model.ProxyEndpointStatus{{URL: "http://10.0.0.5:3128", State: model.ProxyReady}}}}
+				if state == "stale" {
+					workers[0].Endpoints[0].State = model.ProxyStale
+				}
+			}
+			created := 0
+			m := view{ctx: context.Background(), wizard: &registration{id: 1, name: "child", step: "context"}, options: Options{
+				ProxyWorkers: func(context.Context) ([]model.ProxyWorker, error) { return workers, nil },
+				Invite: func(_ context.Context, _, _, _ string, proxy model.GatewayProxy) (enrollment.Link, error) {
+					created++
+					if proxy != (model.GatewayProxy{}) {
+						t.Fatal("direct invitation carried a proxy")
+					}
+					return enrollment.Link{}, nil
+				},
+			}}
+			next, load := m.updateRegistration(tea.KeyPressMsg{Code: tea.KeyEnter})
+			m = next.(view)
+			if load == nil || created != 0 {
+				t.Fatal("invitation was not deferred until discovery completed")
+			}
+			next, create := m.updateRegistration(load())
+			if next.(view).wizard.step != "creating" || create == nil {
+				t.Fatal("unavailable connection choices were shown")
+			}
+			create()
+			if created != 1 {
+				t.Fatal("direct invitation was not created exactly once")
+			}
+		})
+	}
+}
+
+func TestRegistrationDoesNotCreateAfterProxyDiscoveryFailure(t *testing.T) {
+	m := view{ctx: context.Background(), wizard: &registration{id: 1, step: "loading-connections"}, options: Options{
+		Invite: func(context.Context, string, string, string, model.GatewayProxy) (enrollment.Link, error) {
+			t.Fatal("discovery failure created an invitation")
+			return enrollment.Link{}, nil
+		},
+	}}
+	next, cmd := m.updateRegistration(proxyWorkersResult{id: 1, err: errors.New("unavailable")})
+	if cmd != nil || next.(view).wizard.step != "context" || next.(view).wizard.err == "" {
+		t.Fatal("discovery failure was hidden")
 	}
 }

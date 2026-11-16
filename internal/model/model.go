@@ -52,6 +52,10 @@ type Node struct {
 	GatewayWake bool `json:"gatewayWake,omitempty"`
 	// GatewayStartup accepts fixed startup-context management requests.
 	GatewayStartup bool `json:"gatewayStartup,omitempty"`
+	// GatewayProxyManagement supports worker-local explicit proxy settings.
+	GatewayProxyManagement bool `json:"gatewayProxyManagement,omitempty"`
+	// ProxyManagementPending is a gateway-owned durable uncertainty fence.
+	ProxyManagementPending bool `json:"proxyManagementPending,omitempty"`
 	// SecretManagementKey is a process-local P-256 public key for encrypted writes.
 	SecretManagementKey []byte `json:"secretManagementKey,omitempty"`
 	// LargePackets advertises that this receiver accepts 64 KiB carrier packets.

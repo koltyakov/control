@@ -1,6 +1,6 @@
 # Install through a worker proxy
 
-Some machines cannot reach the gateway directly. They may sit on an isolated LAN, behind a VPN that only another machine joins, or in a subnet with no internet route. A worker that reaches both networks can host an HTTP CONNECT proxy: either separately managed software, or a [Control-managed listener](#managed-listener) that starts and stops with its dependents. Control can then install and run the restricted machine, called the child, through that proxy.
+Some machines cannot reach the gateway directly. They may sit on an isolated LAN, behind a VPN that only another machine joins, or in a subnet with no internet route. A worker that reaches both networks can host an HTTP CONNECT proxy, either separately managed software or an explicitly enabled [Control-managed listener](#managed-listener). Control can then install and run the restricted machine, called the child, through that proxy.
 
 The child keeps its canonical gateway URL, identity, and credentials. Scripts and binaries still come from the gateway and stream through the proxy; the proxy worker stores and prepares nothing per invitation. Gateway TLS is verified end to end by the child. Peer WebRTC sessions, provider requests, and child process environments are unaffected.
 
@@ -14,7 +14,7 @@ This release supports one explicitly selected proxy endpoint per child. Control 
 
 Proxy endpoints are `http://HOST:PORT` only, without credentials, path, query, or fragment. IPv6 literals use brackets, such as `http://[fd00::5]:3128`. Zoned link-local addresses are rejected because their zone depends on the child's interface naming. Authenticated proxies are not supported.
 
-## Advertise endpoints on the proxy worker
+## Advertise external endpoints on the proxy worker
 
 Add the addresses children can reach to the worker's profile and restart its node:
 
@@ -31,7 +31,21 @@ Only explicitly configured endpoints are advertised; Control never publishes eve
 
 ## Managed listener
 
-Set `managed` and an explicit source allowlist on an endpoint to let Control run the proxy itself:
+Open a machine's **Gateway proxy** setting in the console. Enable it, select an address from the worker's live Ethernet, LAN, or VPN interfaces, choose a port, and confirm the allowed source CIDRs. This works remotely through the fleet-owner management channel, without editing JSON, restarting the node, running commands on it, or changing firewall rules.
+
+The CLI uses the same management route:
+
+```sh
+control machines proxies inspect office-bridge
+control machines proxies enable office-bridge --interface en0 --address 10.20.0.5 --port 3128 --sources 10.20.0.0/24
+control machines proxies disable office-bridge
+```
+
+`configure` is an alias for `enable` with explicit settings. Discovery reports only private addresses assigned to live interfaces on the worker. The network prefix is a suggestion for explicit source confirmation, not proof of child reachability. Management requires an HTTPS gateway, `proxy.manage` permission for account clients, and a node advertising `gatewayProxyManagement`. A node that itself uses a gateway proxy cannot host another.
+
+An explicitly selected System companion can permit `proxy.manage` independently of execution delegation. Control does not switch to System or elevate automatically. Enabled listeners whose interface or port was unavailable at startup retry binding at the normal proxy-check cadence, without rewriting settings or replaying an owner request.
+
+Existing profile declarations remain supported:
 
 ```json
 {
@@ -48,7 +62,9 @@ The listener:
 - answers only `CONNECT` to the canonical gateway host and port from the worker's `gateway` setting. Other hosts, ports, IP spellings, absolute URIs and plain HTTP requests are refused before any upstream connection. It pipes bytes after `200`, so the child still verifies gateway TLS end to end. It has no credentials, cache, logging of payloads, or idle-byte timeout.
 - bounds the CONNECT request to 8 KiB and ten seconds, upstream dials to ten seconds, and admitted connections to 256.
 
-The gateway decides when the listener runs, from durable state in its fleet:
+Enabling starts the listener even with zero invitations or children. It remains enabled until explicit disable. The first managed profile endpoint is adopted as the editable setting; its disable override and subsequent settings persist in the worker's `proxy-settings.json`. Other profile endpoints, including external proxies, are preserved. A node restart restores enabled listeners before reaching the gateway.
+
+Disabling or reconfiguring is refused while any of these dependencies remain:
 
 | Dependency | Ends when |
 | --- | --- |
@@ -56,9 +72,11 @@ The gateway decides when the listener runs, from durable state in its fleet:
 | Enrolled child redeemed through the endpoint, online or offline | It is unregistered, or its identity re-enrolls through another route |
 | Unregistered child | It acknowledges its signed retirement, or the owner releases it |
 
-The listener runs while any dependency remains, and is shared by every dependent of the endpoint. Child dependencies are stored in their own gateway table with the child's identity. Clearing invitation history, gateway restarts, child disconnects, and re-registration do not change them. Expiry needs no mutation: it takes effect on the worker's next state read.
+The listener is shared by every dependent of the endpoint. Child dependencies are stored in their own gateway table with the child's identity. Clearing invitation history, gateway restarts, child disconnects, and re-registration do not change them. Expiry releases an invitation dependency, but does not disable the listener.
 
-The worker reads its own desired listeners with a signed request, on the existing policy hint and its 30-second fallback poll. It persists the last decision before changing listeners and restores it on restart before reaching the gateway. A failed read or state-file write keeps the current listeners and is retried on the next poll; an outage never means "no dependencies". An unreadable or corrupt saved decision prevents startup rather than silently dropping dependencies. When the last dependency ends, the listener closes its listening socket. Tunnels it already admitted continue until either side closes them or the node stops. Control only ever starts and stops this listener; it never stops external proxy software or other processes.
+Active CONNECT work and maintenance reservations also prevent changes. The worker binds a replacement before persisting it; a bind or write failure preserves the old configuration. The gateway checks dependencies and records a durable mutation fence under the same lock as invitation changes. Until the worker confirms or a later inspection reconciles an uncertain outcome, managed invitations are blocked. A timeout is uncertain, never success and never permission for automatic replay. GET reads applied settings and native interfaces without changing settings. A successful PUT means the worker applied and persisted the configuration, not that the child can reach it.
+
+A storage error can occur after atomic file replacement but before directory synchronization. The worker keeps its running sockets unchanged and refuses further changes or successful inspection until storage recovery and restart establish the durable settings. The gateway keeps its uncertainty fence; it does not infer success from the listener still running.
 
 ### Readiness and activation
 
@@ -66,11 +84,11 @@ A managed endpoint reports one of these states in addition to the [general ones]
 
 | State | Meaning |
 | --- | --- |
-| `standby` | No dependency; the listener is off. The worker freshly verified the direct gateway path, TLS and `/healthz` the listener would use. Selectable. |
+| `standby` | Legacy worker observation only. Upgraded workers do not advertise disabled listeners. |
 | `ready` | The listener is running and a check through it to the gateway succeeded. |
 | `unavailable` | The check failed, or the listener could not bind its address. |
 
-Creating an invitation for a `standby` endpoint is how the first child bootstraps it: the committed invitation becomes the dependency, and the gateway hints the worker. No binary or script is copied to the worker. The response's `proxyActivation` is `active` only when the endpoint was already `ready` and another dependency already kept it running, otherwise `pending`. The CLI then waits up to 90 seconds for an online, enabled worker's own `ready` check dated at or after invitation creation and prints a warning if it is not confirmed. The dashboard and console show the pending state. None of them retry the creation. Each listener change discards the previous managed observation and checks again immediately.
+Enable the proxy before creating an invitation. Its advertisement updates without a gateway reconnect or node restart, and the worker schedules an immediate check through the listener. Each settings change discards previous managed readiness. Invitations selecting an already `ready` endpoint report `proxyActivation: active`, including the first child. Legacy `standby` selection can still report `pending`; clients observe readiness without retrying creation.
 
 `control machines proxies`, the dashboard, and the console show `managed` endpoints and their dependents as invitations, children, and retiring children. Status reads use a separately locked committed projection, so dependency display does not wait behind gateway database writes. Invitation expiry is evaluated when reading the projection.
 
@@ -78,13 +96,13 @@ Creating an invitation for a `standby` endpoint is how the first child bootstrap
 
 Unregistering a child revokes its credential, but its listener stays up so the child can still read its signed retirement policy through it. The child persists retirement, then repeats the signed read with that exact revision as an acknowledgement. Only this acknowledgement releases the dependency: disconnection, directory removal, or delivery of the response alone do not. A failed acknowledgement is retried twice, and once more on every later start of the retired node. Inspect-only reads and other identities' proofs cannot release it.
 
-A child unregistered while offline keeps the listener running until it returns. If it never will, release the wait explicitly:
+A child unregistered while offline prevents disabling the listener until it returns. If it never will, release the wait explicitly:
 
 ```sh
 control machines proxies release CHILD_ID
 ```
 
-Only the child's fleet owner can release it, and only after unregistration. The release is audited.
+Only the child's fleet owner can release it, and only after unregistration. The release is audited. Releasing the final dependency leaves the listener running; disable it separately.
 
 ### Updates
 
@@ -127,7 +145,7 @@ control machines add render-01 --platform linux --via office-bridge --proxy-url 
 
 `--via` accepts the worker's name or stable ID; the CLI sends the stable ID, so renaming the worker never changes a stored selection. When the worker advertises several endpoints, `--proxy-url` is required and the command fails clearly otherwise. Other `machines add` options, including `--service user|system|hybrid` and `auto` naming, combine normally.
 
-In `control dashboard`, press `a` and choose **Connection → Through worker** after the startup context. The wizard lists ready workers, shows non-ready ones with their state and failure, and requires an explicit address when a worker advertises several. The web console's **Add machine** dialog offers the same Connection, Worker, and Address fields. All three produce the same request and command.
+In `control dashboard`, press `a` and choose **Connection → Through worker** after the startup context. The wizard requires an explicit address when a worker advertises several. The web console's **Add machine** dialog offers the same Connection, Worker, and Address fields. The connection choice appears only when a selectable endpoint exists. All three produce the same request and command.
 
 The gateway validates, under its fleet lock, that the worker belongs to the requesting fleet, is online and enabled, advertises the endpoint, and has a fresh `ready` observation, or `standby` for a managed endpoint. Invalid or foreign selections fail before any invitation state is written. This API never accepts an arbitrary proxy URL without a worker. The invitation stores a snapshot of the worker's stable ID and the endpoint URL in its existing transactional record, so it survives gateway restarts and later address changes never rewrite it.
 
@@ -196,7 +214,7 @@ Maintain external proxy software separately from Control node updates. Restartin
 
 1. Deploy gateway support. Managed listeners need a gateway advertising `managedGatewayProxy` in `GET /v1/auth`; its database migrates to schema version 8, which older gateways refuse to open.
 2. Publish compatible installer binaries with `make update` or a release.
-3. Upgrade workers that advertise proxy endpoints. A managed worker keeps its listeners unchanged and reports no managed readiness while its gateway lacks support.
+3. Upgrade workers. Owner management requires `gatewayProxyManagement` and `proxy.manage`; older nodes return `supported: false` on inspection and reject changes. An older gateway lacks the management route. Neither case falls back to local execution. Existing managed profile declarations now mean explicitly enabled, including with zero dependents.
 4. Upgrade CLI and dashboard clients.
 5. Create proxied invitations.
 
@@ -204,8 +222,8 @@ Children of a managed endpoint must run a version that acknowledges retirement; 
 
 ## Verification
 
-`make test-compose-proxy` runs the external proxy topology described in [testing](testing.md#gateway-proxy-isolation). `CONTROL_TEST_MANAGED_PROXY=true make test-compose-proxy` uses the same isolated networks with Control's own listener, checking standby bootstrap, restart recovery, retirement, retention for another pending invitation, and shutdown after the final dependency. Native Windows, macOS, and Linux installation checks remain necessary for service startup, elevation, and proxy propagation; cross-compilation does not verify them.
+`make test-compose-proxy` runs the external proxy topology described in [testing](testing.md#gateway-proxy-isolation). `CONTROL_TEST_MANAGED_PROXY=true make test-compose-proxy` starts with an ordinary worker, discovers its native interfaces, enables the proxy remotely, and checks readiness without dependencies. It covers refusal to disable with children, restart recovery, retirement, continued listening after the last dependency, and explicit disable. Native Windows, macOS, and Linux installation checks remain necessary for service startup, elevation, and proxy propagation; cross-compilation does not verify them.
 
-`internal/node` tests cover managed listener target restriction, source refusal, buffered handshake bytes, update fencing, deactivation without cutting tunnels, shutdown joins, bind failure and standby readiness, state-file failure recovery, and retirement acknowledgement retries. `internal/gateway` tests cover bootstrap from standby, revocation and expiry, Hybrid companions, persistence across history clearing and restarts, offline unregistration, exact acknowledgement, owner release, route replacement, fleet separation, and status reads while the persistence lock is held.
+`internal/node` tests cover interface validation, explicit lifecycle and persistence, bind/write failure, active-work refusal, fixed target restriction, source refusal, buffered handshake bytes, update fencing, shutdown joins, and retirement acknowledgement retries. Gateway tests cover owner/common/cross-fleet and CSRF boundaries, unsupported workers, applied replies, uncertain outcomes and inspection without replay, retained dependencies, and final-dependency retention.
 
-See also [configuration](protocol.md#gateway-proxy), [installation](installation.md#install-through-a-worker-proxy), [D146](decisions.md#d146-explicit-worker-proxy-for-isolated-machines), and [D147](decisions.md#d147-gateway-owned-lifecycle-for-managed-proxy-listeners).
+See also [configuration](protocol.md#gateway-proxy), [installation](installation.md#install-through-a-worker-proxy), [D146](decisions.md#d146-explicit-worker-proxy-for-isolated-machines), and [D148](decisions.md#d148-owner-managed-explicit-proxy-settings).

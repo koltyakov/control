@@ -192,7 +192,11 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 		_ = root.Close()
 		return nil, err
 	}
-	n.proxyChecks = newProxyChecks(cfg.ProxyEndpoints, n.managedProxy)
+	endpoints := cfg.ProxyEndpoints
+	if n.managedProxy != nil {
+		endpoints = n.managedProxy.advertisementLocked()
+	}
+	n.proxyChecks = newProxyChecks(endpoints, n.managedProxy)
 	if n.managedProxy != nil {
 		n.managedProxy.changed = n.proxyChecks.recheck
 		n.proxyChecks.reported = func() { n.reportHealth(n.ctx) }
@@ -234,8 +238,9 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 	}
 	n.Peer = transport.New(transport.Config{
 		Gateway: cfg.Gateway, Token: cfg.Token, Identity: id, RelayOnly: cfg.RelayOnly, ICEServers: cfg.ICEServers, Route: n.route,
-		Node: model.Node{ID: id.ID, Name: cfg.Name, PublicKey: id.Public, OS: runtime.GOOS, Labels: cfg.Labels, Capabilities: n.Capabilities(), RunAs: processutil.RunAs(), InstructionOnly: cfg.InstructionOnly, GatewayWake: !cfg.InstructionOnly && accountMayCall(cfg.Allow, "network.wake"), ProxyEndpoints: advertisedProxyEndpoints(cfg.ProxyEndpoints)},
+		Node: model.Node{ID: id.ID, Name: cfg.Name, PublicKey: id.Public, OS: runtime.GOOS, Labels: cfg.Labels, Capabilities: n.Capabilities(), RunAs: processutil.RunAs(), InstructionOnly: cfg.InstructionOnly, GatewayWake: !cfg.InstructionOnly && accountMayCall(cfg.Allow, "network.wake"), ProxyEndpoints: advertisedProxyEndpoints(endpoints)},
 	}, n.handle, peerOptions...)
+	n.configureProxyManagement()
 	if err = n.configureSecrets(); err != nil {
 		_ = root.Close()
 		return nil, err
@@ -312,9 +317,6 @@ func (n *Node) Start(ctx context.Context) error {
 		return err
 	}
 	n.setStartupPending(false)
-	if err := n.syncProxyState(n.ctx); err != nil {
-		slog.Warn("managed proxy state", "error", err)
-	}
 	n.wg.Add(1)
 	go func() { defer n.wg.Done(); n.system.Run(n.ctx) }()
 	n.wg.Add(1)

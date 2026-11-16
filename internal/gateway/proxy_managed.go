@@ -26,6 +26,9 @@ type proxyDependency struct {
 }
 
 func (g *Gateway) managedProxyRoutes(mux *http.ServeMux) {
+	for _, route := range []string{"GET /v1/fleet/nodes/{id}/proxy", "PUT /v1/fleet/nodes/{id}/proxy"} {
+		mux.Handle(route, g.consoleHeaders(http.HandlerFunc(g.fleetAdmin(g.manageProxy))))
+	}
 	mux.HandleFunc("POST /v1/node/proxy", g.nodeProxyState)
 	mux.HandleFunc("DELETE /v1/fleet/proxy-dependencies/{id}", g.fleetAdmin(g.releaseProxyDependency))
 }
@@ -91,9 +94,9 @@ func (g *Gateway) managedListenersLocked(worker string, now time.Time) []string 
 	if userID == "" || g.machineStates[worker].Unregistered {
 		return listeners
 	}
-	for url, dependents := range g.managedDependentsLocked(userID, now)[worker] {
-		if dependents.Total() > 0 {
-			listeners = append(listeners, url)
+	for _, endpoint := range g.nodes[worker].ProxyEndpoints {
+		if endpoint.Managed {
+			listeners = append(listeners, endpoint.URL)
 		}
 	}
 	slices.Sort(listeners)

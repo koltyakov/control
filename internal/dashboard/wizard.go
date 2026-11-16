@@ -172,14 +172,25 @@ func (m view) updateRegistration(msg tea.Msg) (tea.Model, tea.Cmd) {
 		w.link, w.step = msg.link, "copying"
 		return m, m.copyInvitation()
 	case proxyWorkersResult:
-		if msg.id != w.id || w.step != "loading-workers" {
+		if msg.id != w.id || (w.step != "loading-workers" && w.step != "loading-connections") {
 			return m, nil
 		}
+		connections := w.step == "loading-connections"
 		if msg.err != nil {
-			w.step, w.err = "connection", msg.err.Error()
+			w.step, w.err = "context", msg.err.Error()
 			return m, nil
 		}
 		w.workers, w.worker, w.step, w.err = msg.workers, 0, "worker", ""
+		if connections {
+			if len(readyProxyWorkers(w.workers)) == 0 {
+				w.proxy, w.proxyName = model.GatewayProxy{}, ""
+				w.step = "creating"
+				return m, m.createInvitation()
+			}
+			w.step = "connection"
+		} else if len(readyProxyWorkers(w.workers)) == 0 {
+			w.step, w.err = "context", "No usable proxy workers. Continue to create a direct invitation."
+		}
 		return m, nil
 	case clipboardResult:
 		if msg.id != w.id || w.step != "copying" {
@@ -220,6 +231,11 @@ func (m view) updateRegistration(msg tea.Msg) (tea.Model, tea.Cmd) {
 				w.step, w.err = "context", ""
 			case "worker", "loading-workers":
 				w.step, w.err = "connection", ""
+				if len(readyProxyWorkers(w.workers)) == 0 {
+					w.step = "context"
+				}
+			case "loading-connections":
+				w.step, w.err = "context", ""
 			case "address":
 				w.step, w.err = "worker", ""
 			case "context":
@@ -228,7 +244,7 @@ func (m view) updateRegistration(msg tea.Msg) (tea.Model, tea.Cmd) {
 				w.step, w.err = "name", ""
 			case "conflict", "force-confirm":
 				w.step, w.err, w.force = "context", "", false
-				if m.options.ProxyWorkers != nil {
+				if len(readyProxyWorkers(w.workers)) > 0 {
 					w.step = "connection"
 				}
 			default:
@@ -276,8 +292,8 @@ func (m view) updateRegistration(msg tea.Msg) (tea.Model, tea.Cmd) {
 				w.context = int(key[0] - '1')
 			case "enter":
 				if m.options.ProxyWorkers != nil {
-					w.step, w.err = "connection", ""
-					return m, nil
+					w.step, w.err = "loading-connections", ""
+					return m, m.loadProxyWorkers()
 				}
 				w.step, w.err = "creating", ""
 				return m, m.createInvitation()
@@ -294,8 +310,8 @@ func (m view) updateRegistration(msg tea.Msg) (tea.Model, tea.Cmd) {
 					w.step, w.err = "creating", ""
 					return m, m.createInvitation()
 				}
-				w.step, w.err = "loading-workers", ""
-				return m, m.loadProxyWorkers()
+				w.step, w.err = "worker", ""
+				return m, nil
 			}
 		case "worker":
 			ready := readyProxyWorkers(w.workers)
@@ -449,7 +465,7 @@ func (m view) registrationView() tea.View {
 			add("The target reaches the gateway URL directly.", "2")
 		}
 		footer = hint("↑↓", "select") + separator + hint("Enter", "next") + separator + hint("Esc", "back")
-	case "loading-workers":
+	case "loading-workers", "loading-connections":
 		add("Loading proxy workers…", "36")
 		footer = hint("Esc", "back")
 	case "worker":
@@ -476,7 +492,7 @@ func (m view) registrationView() tea.View {
 		}
 		if len(ready) == 0 {
 			add("No ready proxy workers in this fleet.", "33")
-			add("Configure proxyEndpoints on a worker and wait for a ready check.", "2")
+			add("Enable Gateway proxy in a machine's console settings and wait for a ready check.", "2")
 			footer = hint("r", "reload") + separator + hint("Esc", "back")
 		} else {
 			add("", "")

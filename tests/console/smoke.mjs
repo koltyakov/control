@@ -67,6 +67,117 @@ async function until(check, message) {
   }
   throw new Error(message);
 }
+
+async function assertGatewayProxySetup(page) {
+  let setup = {
+    supported: true, enabled: false,
+    interfaces: [
+      { name: "Ethernet <test>", address: "192.168.10.5", prefix: "192.168.10.0/24" },
+      { name: "VPN", address: "fd00::5", prefix: "fd00::/64" },
+    ],
+    dependents: { invitations: 0, children: 0, retiring: 0 },
+  };
+  const writes = [];
+  let loseReply = false;
+  const endpoint = "**/console/api/fleet/nodes/*/proxy";
+  await page.route(endpoint, async (route) => {
+    const request = route.request();
+    if (request.method() === "PUT") {
+      const value = request.postDataJSON();
+      writes.push(value);
+      setup = { ...setup, enabled: value.enabled, settings: value.enabled ? value : setup.settings };
+      if (loseReply) {
+        loseReply = false;
+        await route.abort("failed");
+        return;
+      }
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(setup) });
+  });
+  const open = async () => {
+    await page.getByRole("button", { name: "Actions for browser-worker", exact: true }).click();
+    await page.locator('#machine-menu [data-action="worker-proxy"]').click();
+    await page.locator('#modal-form input[name="enabled"]').waitFor();
+  };
+  try {
+    await open();
+    assert.equal(writes.length, 0, "Opening proxy settings must not enable a listener");
+    assert.equal(await page.locator('#modal-form input[name="enabled"]').isChecked(), false);
+    assert.ok(await page.locator("#proxy-settings-fields").isHidden());
+    await page.locator('#modal-form input[name="enabled"]').check();
+    await page.locator('#modal-form select[name="interfaceAddress"]').selectOption("0");
+    assert.equal(await page.locator('#modal-form textarea[name="sources"]').inputValue(), "192.168.10.0/24");
+    assert.equal(await page.locator("#modal-form img").count(), 0, "Interface labels must not become markup");
+    await page.locator('#modal-form input[name="port"]').fill("4321");
+    await page.locator('#modal-form textarea[name="sources"]').fill("192.168.10.20\n192.168.10.32/28");
+    await page.locator("#modal-form button[type=submit]").click();
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    assert.deepEqual(writes, [{
+      enabled: true, interface: "Ethernet <test>", address: "192.168.10.5",
+      port: 4321, sources: ["192.168.10.20/32", "192.168.10.32/28"],
+    }], "Enabling must submit the exact chosen interface, address and sources");
+
+    setup.dependents.children = 1;
+    await open();
+    assert.ok(await page.locator('#modal-form input[name="enabled"]').isDisabled());
+    assert.ok(await page.locator("#modal-form button[type=submit]").isDisabled());
+    await page.getByText("Move or remove these dependencies", { exact: false }).waitFor();
+    await page.locator('#modal-form [data-action="close"]').click();
+    assert.equal(writes.length, 1, "A dependent child must block disabling or reconfiguring the proxy");
+
+    setup.dependents.children = 0;
+    await open();
+    assert.ok(await page.locator('#modal-form input[name="enabled"]').isChecked(), "Zero dependents must not disable the explicit setting");
+    await page.locator('#modal-form input[name="enabled"]').uncheck();
+    await page.locator("#modal-form button[type=submit]").click();
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    assert.deepEqual(writes.at(-1), { enabled: false }, "Disabling must be an explicit mutation");
+
+    setup.enabled = true;
+    await open();
+    await page.locator('#modal-form input[name="enabled"]').uncheck();
+    loseReply = true;
+    await page.locator("#modal-form button[type=submit]").click();
+    await until(async () => (await page.locator("#modal-form .form-error").textContent()).length > 0, "Uncertain proxy write was not reported");
+    const attempted = writes.length;
+    await page.locator("#modal-form button[type=submit]").click();
+    await page.getByText("Reload settings to check whether the previous change", { exact: false }).waitFor();
+    assert.equal(writes.length, attempted, "An uncertain proxy write must not be replayed");
+    await page.getByRole("button", { name: "Reload settings", exact: true }).click();
+    await until(async () => !(await page.locator('#modal-form input[name="enabled"]').isChecked()), "Reload did not inspect the applied setting");
+    await page.locator('#modal-form [data-action="close"]').click();
+
+    setup.supported = false;
+    await page.getByRole("button", { name: "Actions for browser-worker", exact: true }).click();
+    await page.locator('#machine-menu [data-action="worker-proxy"]').click();
+    await page.getByText("This machine does not allow gateway proxy management", { exact: false }).waitFor();
+    assert.equal(await page.locator('#modal-form input[name="enabled"]').count(), 0);
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+
+    let releaseRead, completeRead;
+    const gate = new Promise((resolve) => { releaseRead = resolve; }),
+      completed = new Promise((resolve) => { completeRead = resolve; });
+    await page.route(endpoint, async (route) => {
+      await gate;
+      await route.fulfill({ json: { ...setup, supported: true } });
+      completeRead();
+    });
+    try {
+      await page.getByRole("button", { name: "Actions for browser-worker", exact: true }).click();
+      await page.locator('#machine-menu [data-action="worker-proxy"]').click();
+      await page.locator("#proxy-settings-loading").waitFor();
+      await page.keyboard.press("Escape");
+      releaseRead();
+      await completed;
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+      assert.equal(await page.locator("#dialog").isVisible(), false, "A cancelled settings read must not reopen the dialog");
+    } finally {
+      releaseRead();
+    }
+  } finally {
+    await page.unroute(endpoint);
+  }
+}
 const gatewayPort = await freePort();
 const nodePort = await freePort();
 const base = "http://127.0.0.1:" + gatewayPort;
@@ -509,7 +620,7 @@ async function assertStartupCommands(page, snapshot) {
       assert.equal(await actions.getByRole("button", { name: "Rename", exact: true }).isVisible(), true);
       assert.equal(await actions.getByRole("button", { name: "Disable", exact: true }).isVisible(), true);
       await more.press("ArrowDown");
-      assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Startup context", "Unregister"]);
+      assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Startup context", "Gateway proxy", "Unregister"]);
       await refresh();
       assert.equal(await menu.isVisible(), true, "Polling must preserve drawer overflow menus");
       assert.equal(await more.getAttribute("aria-expanded"), "true");
@@ -629,7 +740,8 @@ async function assertStartupCommands(page, snapshot) {
 
   await page.getByRole("button", { name: "startup-worker", exact: true }).click();
   await page.getByRole("button", { name: "More actions for startup-worker", exact: true }).click();
-  assert.deepEqual(await page.locator("#machine-menu").getByRole("menuitem").allTextContents(), ["Unregister"]);
+  assert.deepEqual(await page.locator("#machine-menu").getByRole("menuitem").allTextContents(), ["Gateway proxy", "Unregister"]);
+  await page.keyboard.press("End");
   await page.keyboard.press("Enter");
   await page.getByLabel("Type startup-worker to confirm").waitFor();
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -1252,6 +1364,7 @@ try {
   await pageLink(page, "machines");
   await assertResourceIcons(page);
   await assertWorkerSecrets(page);
+  await assertGatewayProxySetup(page);
   await page.locator("#machine-search").fill("not-a-real-machine");
   await page.getByText("No matching machines", { exact: true }).waitFor();
   await page.locator("#machine-search").fill("browser-worker");
@@ -1306,6 +1419,7 @@ try {
     "Rename",
     "Secrets",
     ...(registered.runAs === "user" ? ["Startup context"] : []),
+    "Gateway proxy",
     "Disable",
     "Unregister",
   ]);
@@ -1459,22 +1573,28 @@ try {
     .waitFor();
   await page.locator("#modal-form [data-action=close]").click();
 
-  // Through worker needs a ready proxy worker; none is advertised here, so the
-  // dialog explains it and submits nothing.
+  // Direct is the only available connection, so there is no choice to present.
   await page.locator(".heading-actions [data-action=add]").click();
-  assert.ok(await page.locator("#proxy-worker-field").isHidden(), "Direct must hide proxy fields");
-  await page.locator('#modal-form select[name="connection"]').locator("xpath=preceding-sibling::button[1]").click();
-  await page.locator('[role=option][data-value="proxy"]').click();
-  await page.locator("#proxy-worker-field").waitFor();
-  await page.getByText("must be able to reach the selected LAN or VPN address", { exact: false }).waitFor();
-  await page.locator("#modal-form button[type=submit]").click();
-  await page
-    .locator("#modal-form .form-error")
-    .filter({ hasText: "Select a ready proxy worker" })
-    .waitFor();
+  assert.equal(await page.locator('#modal-form select[name="connection"]').count(), 0);
+  assert.equal(await page.locator("#proxy-worker-field").count(), 0);
   await page.locator("#modal-form [data-action=close]").click();
+  for (const readiness of ["offline", "stale", "ready"]) {
+    await page.evaluate((readiness) => {
+      const n = state.snapshot.nodes.find((entry) => entry.name === "renamed-worker");
+      n.proxyEndpoints = [{ url: "http://10.0.0.5:3128", state: readiness }];
+      addMachine();
+      n.proxyEndpoints = [];
+    }, readiness);
+    assert.equal(await page.locator('#modal-form select[name="connection"]').count(), readiness === "ready" ? 1 : 0);
+    if (readiness === "ready") {
+      await page.locator('#modal-form select[name="connection"]').selectOption("proxy");
+      await page.locator("#proxy-worker-field").waitFor();
+      assert.equal(await page.locator('#modal-form select[name="proxyUrl"]').inputValue(), "http://10.0.0.5:3128");
+    }
+    await page.locator("#modal-form [data-action=close]").click();
+  }
   assert.equal((await api("/v1/fleet/installations", "GET", undefined, account.token)).length, 0,
-    "An unselected proxy worker must not create an invitation");
+    "Opening connection choices must not create an invitation");
 
   const os = await publishInstallers();
   const groupedInvitations = await page.evaluate(() => {

@@ -193,7 +193,7 @@ Set `CONTROL_PUBLIC_URL` on the gateway if installation links must use a differe
 
 ### Install through a worker proxy
 
-When the target cannot reach the gateway, select a ready worker that advertises a CONNECT proxy the target can reach, either separately managed software or a [managed listener](gateway-proxy.md#managed-listener) that the invitation activates:
+When the target cannot reach the gateway, select a ready worker that advertises a CONNECT proxy the target can reach, either separately managed software or a [managed listener](gateway-proxy.md#managed-listener). Enable a managed listener through the machine's Gateway proxy setting before creating the invitation:
 
 ```sh
 control machines proxies

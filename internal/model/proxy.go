@@ -48,8 +48,8 @@ type ProxyEndpoint struct {
 	Interface string `json:"interface,omitempty"`
 	// Managed selects Control's own fixed-gateway CONNECT listener on URL's
 	// private address instead of separately managed proxy software. The
-	// gateway starts and stops it from durable invitation and child
-	// dependencies; it never controls an external proxy.
+	// owner explicitly enables or disables it; dependencies prevent unsafe
+	// disable/reconfiguration. It never controls an external proxy.
 	Managed bool `json:"managed,omitempty"`
 	// Sources lists the private/VPN CIDRs a managed listener accepts. It is
 	// local profile configuration and is not advertised in registration.
@@ -77,7 +77,7 @@ type ProxyEndpointStatus struct {
 	State     string    `json:"state"`
 	CheckedAt time.Time `json:"checkedAt,omitzero"`
 	Error     string    `json:"error,omitempty"`
-	// Dependents counts what keeps a managed listener running.
+	// Dependents counts what prevents disabling a managed listener.
 	Dependents *ProxyDependents `json:"dependents,omitempty"`
 }
 
@@ -96,7 +96,7 @@ type ProxyDependents struct {
 	Retiring    int `json:"retiring"`
 }
 
-// Total is the number of dependencies keeping a managed listener active.
+// Total is the number of dependencies preventing explicit disable.
 func (d ProxyDependents) Total() int { return d.Invitations + d.Children + d.Retiring }
 
 // ProxyStateProof lets a worker read its own desired managed listeners. It is

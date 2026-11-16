@@ -117,6 +117,9 @@ Your fleet:
   machines add ... --via WORKER [--proxy-url URL]  Install a machine that reaches the gateway through a worker's proxy
   machines proxies                     List workers advertising gateway proxy endpoints and their readiness
   machines proxies release CHILD_ID    Stop waiting for an unregistered child to acknowledge retirement
+  machines proxies inspect NAME        Inspect native interfaces and applied proxy settings
+  machines proxies enable NAME --interface NIC --address IP --port PORT --sources CIDR[,CIDR]
+  machines proxies disable NAME        Disable the owner-managed proxy when no dependents need it
   machines invites [clear]             List installation status, or remove revoked and expired ones
   machines revoke ID                   Revoke an invitation and its machine key
   machines enable|disable NAME          Enable or disable new work on a machine
@@ -265,6 +268,9 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 		}
 		printJSON(workers)
 		return nil
+	}
+	if args[0] == "proxies" {
+		return machineProxySettings(ctx, c, args[1:])
 	}
 	if args[0] == "revoke" && len(args) == 2 {
 		return c.JSON(ctx, "DELETE", "/v1/fleet/installations/"+url.PathEscape(args[1]), nil, nil)

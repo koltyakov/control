@@ -31,8 +31,10 @@ bridge)
     trust
     endpoint="{\"url\":\"http://${CONTROL_PROXY_ADDRESS:?proxy address required}:8888\",\"interface\":\"restricted\"}"
     if [ "${CONTROL_PROXY_MANAGED:-false}" = true ]; then
-        endpoint="{\"url\":\"http://${CONTROL_PROXY_ADDRESS}:8888\",\"interface\":\"restricted\",\"managed\":true,\"sources\":[\"${CONTROL_PROXY_ALLOW:?allowed subnet required}\"]}"
+        # The test enables hosting through the owner-management API.
+        endpoints="[]"
     else
+    endpoints="[$endpoint]"
     cat > /tmp/tinyproxy.conf <<CONF
 User nobody
 Group nogroup
@@ -54,7 +56,7 @@ CONF
   "listen": "127.0.0.1:7331",
   "dataDir": "/state",
   "workDir": "/work",
-  "proxyEndpoints": [$endpoint]
+  "proxyEndpoints": $endpoints
 }
 CONF
     exec control node --config /state/config.json

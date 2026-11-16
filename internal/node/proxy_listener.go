@@ -42,17 +42,23 @@ type managedEndpoint struct {
 // managedProxy owns Control's fixed-gateway CONNECT listeners. It accepts only
 // CONNECT to the canonical gateway authority from configured private/VPN
 // sources, so it is not a general proxy, and it never terminates gateway TLS.
-// Listeners start and stop from the gateway's durable dependency state; this
-// type never touches external proxy software. Every socket and goroutine it
+// Listeners follow explicit durable worker settings; this type never touches
+// external proxy software. Every socket and goroutine it
 // creates is closed and joined by closeAll.
 type managedProxy struct {
-	target    string // Gateway authority host:port, the only CONNECT target.
-	endpoints map[string]managedEndpoint
-	statePath string
-	write     func(string, any) error
-	listen    func(context.Context, string) (net.Listener, error)
-	dial      func(context.Context, string, string) (net.Conn, error)
-	changed   func()
+	target           string // Gateway authority host:port, the only CONNECT target.
+	endpoints        map[string]managedEndpoint
+	statePath        string
+	write            func(string, any) error
+	listen           func(context.Context, string) (net.Listener, error)
+	dial             func(context.Context, string, string) (net.Conn, error)
+	changed          func()
+	base             []model.ProxyEndpoint
+	settings         *model.ProxySettings
+	enabled          bool
+	settingsPath     string
+	strictInterface  bool
+	storageUncertain bool
 
 	mu        sync.Mutex
 	ctx       context.Context
@@ -84,16 +90,18 @@ func newManagedProxy(cfg Config) (*managedProxy, error) {
 		}
 		endpoints[endpoint.URL] = managedEndpoint{url: endpoint.URL, addr: addr, sources: sources}
 	}
-	if len(endpoints) == 0 {
-		return nil, nil
-	}
 	target, err := gatewayAuthority(cfg.Gateway)
 	if err != nil {
+		if len(endpoints) == 0 {
+			return nil, nil
+		}
 		return nil, err
 	}
 	m := &managedProxy{
 		target: target, endpoints: endpoints, statePath: filepath.Join(cfg.DataDir, managedProxyStateFile),
 		listeners: map[string]net.Listener{}, failures: map[string]string{}, conns: map[net.Conn]struct{}{},
+		settingsPath: filepath.Join(cfg.DataDir, "proxy-settings.json"),
+		supported:    true,
 	}
 	m.listen = func(ctx context.Context, address string) (net.Listener, error) {
 		return (&net.ListenConfig{}).Listen(ctx, "tcp", address)
@@ -111,6 +119,53 @@ func newManagedProxy(cfg Config) (*managedProxy, error) {
 		m.desired = saved.Listeners
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("read managed proxy state %s: %w; repair or remove it, and the gateway decision is restored on the next read", m.statePath, err)
+	}
+	// Explicit profile declarations are enabled independently of dependencies.
+	// The first managed declaration becomes the owner-editable setting.
+	for _, e := range cfg.ProxyEndpoints {
+		if e.Managed && m.settings == nil {
+			a, _ := model.ManagedListenAddress(e.URL)
+			m.settings = &model.ProxySettings{Interface: e.Interface, Address: a.Addr().String(), Port: int(a.Port()), Sources: slices.Clone(e.Sources)}
+			m.enabled = true
+		} else {
+			m.base = append(m.base, e)
+		}
+	}
+	var savedSettings proxySavedSettings
+	if err := store.Read(m.settingsPath, &savedSettings); err == nil {
+		m.settings, m.enabled = savedSettings.Settings, savedSettings.Enabled
+		m.strictInterface = true
+		if m.enabled {
+			if m.settings == nil {
+				return nil, errors.New("enabled proxy settings have no endpoint")
+			}
+			s := m.settings
+			if _, err := (model.ProxyConfigure{Enabled: true, Interface: s.Interface, Address: s.Address, Port: s.Port, Sources: s.Sources}).Endpoint(); err != nil {
+				return nil, fmt.Errorf("invalid saved proxy settings: %w", err)
+			}
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("read proxy settings: %w", err)
+	}
+	m.endpoints = map[string]managedEndpoint{}
+	m.desired = nil
+	if cfg.GatewayProxy != nil && len(m.advertisementLocked()) != 0 {
+		return nil, errors.New("a proxy-routed node cannot advertise gateway proxy endpoints")
+	}
+	for _, e := range m.advertisementLocked() {
+		if !e.Managed {
+			continue
+		}
+		a, err := model.ManagedListenAddress(e.URL)
+		if err != nil {
+			return nil, err
+		}
+		sources, err := model.ManagedSources(e.Sources)
+		if err != nil {
+			return nil, err
+		}
+		m.endpoints[e.URL] = managedEndpoint{url: e.URL, addr: a, sources: sources}
+		m.desired = append(m.desired, e.URL)
 	}
 	return m, nil
 }
@@ -188,10 +243,55 @@ func (m *managedProxy) apply(desired []string, persist bool) error {
 			delete(m.failures, u)
 		}
 	}
-	for _, u := range desired {
+	changed = m.startMissingLocked() || changed
+	if changed {
+		m.gen++
+	}
+	notify := m.changed
+	m.mu.Unlock()
+	if changed && notify != nil {
+		notify()
+	}
+	return nil
+}
+
+// retryListeners restores already enabled listeners after a transient bind or
+// interface failure. It neither writes settings nor replays management.
+func (m *managedProxy) retryListeners() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || m.ctx == nil || m.fenced || m.storageUncertain {
+		return
+	}
+	if m.startMissingLocked() {
+		m.gen++
+	}
+}
+
+// startMissingLocked is bounded by the configured endpoint count. The caller
+// owns mu, so a retry cannot restore a stale desired set during configuration.
+func (m *managedProxy) startMissingLocked() bool {
+	changed := false
+	for _, u := range m.desired {
 		endpoint, ok := m.endpoints[u]
 		if !ok || m.listeners[u] != nil {
 			continue
+		}
+		if m.settingsPath != "" {
+			interfaces, err := nativeProxyInterfaces()
+			if err != nil || !slices.ContainsFunc(interfaces, func(nic model.ProxyInterface) bool {
+				if nic.Address != endpoint.addr.Addr().String() {
+					return false
+				}
+				return !m.strictInterface || m.settings == nil || m.settings.Address != nic.Address || m.settings.Interface == nic.Name
+			}) {
+				m.failures[u] = "proxy address is not assigned to a live private interface"
+				changed = true
+				continue
+			}
 		}
 		ln, err := m.listen(m.ctx, endpoint.addr.String())
 		if err != nil {
@@ -206,15 +306,7 @@ func (m *managedProxy) apply(desired []string, persist bool) error {
 		m.wg.Add(1)
 		go m.accept(ln, endpoint)
 	}
-	if changed {
-		m.gen++
-	}
-	notify := m.changed
-	m.mu.Unlock()
-	if changed && notify != nil {
-		notify()
-	}
-	return nil
+	return changed
 }
 
 func (m *managedProxy) accept(ln net.Listener, endpoint managedEndpoint) {
@@ -252,6 +344,15 @@ func (m *managedProxy) admit(conn net.Conn, endpoint managedEndpoint) bool {
 		return false
 	}
 	source := remote.AddrPort().Addr().Unmap()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// A same-address settings change replaces the allowlist without replacing
+	// the listening socket or leaving an old accept loop with stale rules.
+	current, exists := m.endpoints[endpoint.url]
+	if !exists {
+		return false
+	}
+	endpoint = current
 	allowed := source == endpoint.addr.Addr() // The worker's own readiness check.
 	for _, prefix := range endpoint.sources {
 		allowed = allowed || prefix.Contains(source)
@@ -259,8 +360,6 @@ func (m *managedProxy) admit(conn net.Conn, endpoint managedEndpoint) bool {
 	if !allowed {
 		return false
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.closed || m.fenced || m.active >= maxManagedTunnels {
 		return false
 	}

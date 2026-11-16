@@ -53,6 +53,10 @@
  * @typedef {{invitations: number, children: number, retiring: number}} ProxyDependents
  * @typedef {{url: string, interface?: string, managed?: boolean, state: string, checkedAt?: string, error?: string, dependents?: ProxyDependents}} ProxyEndpointStatus
  * @typedef {{url: string, worker?: string, managed?: boolean}} GatewayProxy
+ * @typedef {{name: string, address: string, prefix: string}} ProxyInterface
+ * @typedef {{interface: string, address: string, port: number, sources: string[]}} ProxySettings
+ * @typedef {{supported: boolean, enabled: boolean, interfaces: ProxyInterface[], settings?: ProxySettings, dependents: ProxyDependents}} ProxySetup
+ * @typedef {{enabled: boolean, interface?: string, address?: string, port?: number, sources?: string[]}} ProxySetupRequest
  * @typedef {{id: string, name: string, autoName?: boolean, expiresAt: string, revoked?: boolean, redeemedId?: string, serviceMode?: string, hybridId?: string, hybridRole?: string, asset?: {os: string}, gatewayProxy?: GatewayProxy}} Invitation
  * @typedef {Invitation & {command: string, proxyActivation?: string}} InstallationLink
  * @typedef {{id: string, name: string, role: string, createdAt: string, revoked?: boolean}} FleetKey
@@ -68,9 +72,10 @@
  * @typedef {{token: string}} IssuedKey
  * @typedef {{name: string, autoName?: boolean, os: string, serviceMode: string, ttlSeconds: number, gateway: string, force: boolean, proxyWorker?: string, proxyUrl?: string}} InstallationRequest
  * @typedef {{login: {username: string, password: string}, logout: never, 'fleet/installations': InstallationRequest, 'fleet/keys': {name: string}, 'admin/users': {name: string}, 'admin/updates/check': never} & Record<`fleet/nodes/${string}/startup`, {mode: string}> & Record<`fleet/nodes/${string}/wake`, never>} PostBody
- * @typedef {{'console/password': {username?: string, currentPassword?: string, password: string}} & Record<`fleet/nodes/${string}/secrets/${string}`, SecretEnvelope>} PutBody
+ * @typedef {{'console/password': {username?: string, currentPassword?: string, password: string}} & Record<`fleet/nodes/${string}/secrets/${string}`, SecretEnvelope> & Record<`fleet/nodes/${string}/proxy`, ProxySetupRequest>} PutBody
+ * @typedef {Record<`fleet/nodes/${string}/proxy`, ProxySetup>} PutAPI
  * @typedef {Record<`fleet/nodes/${string}`, {name?: string, force?: boolean, disabled?: boolean}> & Record<`fleet/keys/${string}`, {name: string}>} PatchBody
- * @typedef {{session: ConsoleSession, status: FleetSnapshot, 'fleet/installations': Invitation[], 'fleet/keys': FleetKey[], 'admin/users': FleetUser[], 'admin/updates': UpdateResult} & Record<`audit?${string}`, AuditPage> & Record<`fleet/nodes/${string}/secrets`, SecretList>} GetAPI
+ * @typedef {{session: ConsoleSession, status: FleetSnapshot, 'fleet/installations': Invitation[], 'fleet/keys': FleetKey[], 'admin/users': FleetUser[], 'admin/updates': UpdateResult} & Record<`audit?${string}`, AuditPage> & Record<`fleet/nodes/${string}/secrets`, SecretList> & Record<`fleet/nodes/${string}/proxy`, ProxySetup>} GetAPI
  * @typedef {{login: ConsoleSession, logout: null, 'fleet/installations': InstallationLink, 'fleet/keys': IssuedKey, 'admin/users': IssuedKey, 'admin/updates/check': unknown} & Record<`fleet/nodes/${string}/startup`, StartupResult> & Record<`fleet/nodes/${string}/wake`, {source: string}>} PostAPI
  * @typedef {{'fleet/installations': ClearResult} & Record<`audit${string}`, ClearResult> & Record<`fleet/nodes/${string}` | `fleet/keys/${string}` | `fleet/installations/${string}` | `admin/users/${string}`, unknown>} DeleteAPI
  * @typedef {{page: 'invitations', data: Invitation[]} | {page: 'keys', data: FleetKey[]} | {page: 'users', data: FleetUser[]} | {page: 'updates', data: UpdateResult} | {page: 'activity', data: AuditPage}} Auxiliary
@@ -358,7 +363,7 @@ new ResizeObserver(fitNav).observe($(".topbar"));
  * @param {UP} path
  * @param {'PUT'} method
  * @param {PutBody[UP]} body
- * @returns {Promise<unknown>}
+ * @returns {Promise<UP extends keyof PutAPI ? PutAPI[UP] : unknown>}
  */
 /**
  * @template {keyof PatchBody} MP
@@ -1732,6 +1737,7 @@ window.addEventListener("hashchange", navigate);
 // when opened there, so the modal does not make its actions inert.
 /** @type {{id: string, action: string, drawer: boolean} | null} */
 let machineMenuTarget = null;
+let machineMenuOpenedAt = 0;
 /** @returns {HTMLElement | null} */
 function machineMenuSource() {
   return (
@@ -1764,13 +1770,15 @@ function syncMachineMenu() {
     `<button role="menuitem" tabindex="-1" class="menu-item${danger ? " destructive" : ""}" data-action="${action}" data-id="${esc(node.id)}">${label}</button>`;
   const startup = canChangeStartup(node) ? item("startup", "Startup context") : "",
     secrets = node.online && !node.disabled ? item("worker-secrets", "Secrets") : "",
+    proxy = item("worker-proxy", "Gateway proxy"),
     separator = '<div role="separator" class="menu-separator"></div>';
   const html = target.drawer
-    ? secrets + startup + (secrets || startup ? separator : "") + item("unregister", "Unregister", true)
+    ? secrets + startup + proxy + separator + item("unregister", "Unregister", true)
     : item("details", "View details") +
       item("rename", "Rename") +
       secrets +
       startup +
+      proxy +
       (!node.online && node.wakeVia ? item("wake", "Wake") : "") +
       item("toggle", node.disabled ? "Enable" : "Disable") +
       separator +
@@ -1805,6 +1813,7 @@ function openMachineMenu(source, point) {
     box = source.getBoundingClientRect();
   (machineMenuTarget.drawer ? $("#dialog") : document.body).append(menu);
   menu.showPopover();
+  machineMenuOpenedAt = performance.now();
   syncMachineMenu();
   if (!menu.matches(":popover-open")) return;
   menu.style.left =
@@ -1889,6 +1898,9 @@ document.addEventListener("keydown", (event) => {
 document.addEventListener(
   "scroll",
   (event) => {
+    // Scrolling a drawer action into view can queue a scroll event before its
+    // click opens the menu. Only a new scroll should dismiss that menu.
+    if (event.timeStamp < machineMenuOpenedAt) return;
     if (!(event.target instanceof Node) || !$("#machine-menu").contains(event.target)) closeMachineMenu();
   },
   true,
@@ -2440,6 +2452,85 @@ function showInstallationCommand(
   note.textContent = "Waiting for installation · Expires " + date(link.expiresAt);
   $("#dialog-body").append(note);
 }
+/** @param {Machine} node @returns {Promise<void>} */
+async function workerProxy(node) {
+  const title = "Gateway proxy on " + node.name,
+    session = state.session;
+  if (!node.online || node.disabled) {
+    dialog(title, '<p>Bring this machine online and enable it before changing its gateway proxy.</p><div class="form-actions"><button data-action="close" class="secondary">Close</button></div>');
+    return;
+  }
+  dialog(title, '<p id="proxy-settings-loading" role="status">Reading network interfaces and proxy settings from the machine…</p>');
+  const loading = $("#proxy-settings-loading");
+  /** @type {ProxySetup} */
+  let result;
+  try {
+    result = await api(`fleet/nodes/${encodeURIComponent(node.id)}/proxy`);
+  } catch (error) {
+    if (session !== state.session || !loading.isConnected) return;
+    dialog(title, `<p role="alert">${esc(errorMessage(error))}</p><div class="form-actions"><button data-action="close" class="secondary">Close</button><button data-action="worker-proxy" data-id="${esc(node.id)}" class="primary">Reload settings</button></div>`);
+    return;
+  }
+  if (session !== state.session || !loading.isConnected) return;
+  if (!result.supported) {
+    dialog(title, '<p>This machine does not allow gateway proxy management. Use a node version with this feature and allow proxy.manage for account owners in its profile. Proxy hosting also requires an HTTPS gateway.</p><div class="form-actions"><button data-action="close" class="secondary">Close</button></div>');
+    return;
+  }
+  const choices = result.interfaces,
+    settings = result.settings,
+    selected = choices.findIndex((entry) => entry.name === settings?.interface && entry.address === settings.address),
+    dependents = result.dependents,
+    inUse = dependents.invitations + dependents.children + dependents.retiring > 0;
+  let submitted = false;
+  formDialog(
+    title,
+    `<p>Let machines on this LAN or VPN reach the gateway through ${esc(node.name)}. The proxy stays enabled until you explicitly disable it, even after its last dependent is removed.</p><label class="force-confirm"><input type="checkbox" name="enabled"${result.enabled ? " checked" : ""}>Enable gateway proxy</label><div id="proxy-settings-fields"><label>Network interface and address<select name="interfaceAddress" required><option value="">Select a network interface</option>${choices.map((entry, index) => `<option value="${index}"${index === selected ? " selected" : ""}>${esc(entry.name)} · ${esc(entry.address)}</option>`).join("")}</select></label><label>Port<input name="port" type="number" min="1" max="65535" required value="${settings?.port || 3128}"></label><label>Allowed source addresses or CIDRs<textarea name="sources" rows="3" required maxlength="1024" spellcheck="false">${esc(settings?.sources.join("\n") || "")}</textarea></label><p class="field-help">Only active private LAN or VPN addresses reported by this machine are listed. Select the address the new machines can reach. The selected network is suggested as an allowed source; review it and enter the new machines' addresses or subnet. Allow up to 16 private addresses or CIDRs, separated by commas or new lines.</p>${choices.length ? "" : '<p class="notice">This machine has no active private LAN or VPN address available for proxy hosting.</p>'}</div>${inUse ? `<p class="notice">In use by ${dependents.invitations} pending invitations, ${dependents.children} children, and ${dependents.retiring} retiring children. Move or remove these dependencies before disabling or changing the proxy.</p>` : ""}<p class="field-help">No firewall rules or elevation are applied. Allow the selected TCP port through the host firewall if required. Saving is sent once; a lost response must be checked with Reload settings before another change.</p><button type="button" data-action="worker-proxy" data-id="${esc(node.id)}" class="secondary">Reload settings</button>`,
+    async (fields, current) => {
+      if (submitted) throw new Error("Reload settings to check whether the previous change was applied before submitting another change.");
+      const enabled = fields.enabled === "on";
+      /** @type {ProxySetupRequest} */
+      const request = { enabled };
+      if (enabled) {
+        const entry = choices[Number(fields.interfaceAddress)],
+          port = Number(fields.port),
+          sources = fields.sources.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean)
+            .map((source) => source.includes("/") ? source : source + (source.includes(":") ? "/128" : "/32"));
+        if (!fields.interfaceAddress || !entry) throw new Error("Select a network interface.");
+        if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Port must be between 1 and 65535.");
+        if (!sources.length || sources.length > 16) throw new Error("Enter 1 to 16 allowed source addresses or CIDRs.");
+        Object.assign(request, { interface: entry.name, address: entry.address, port, sources });
+      }
+      submitted = true;
+      const applied = await api(`fleet/nodes/${encodeURIComponent(node.id)}/proxy`, "PUT", request);
+      if (!current()) return false;
+      if (applied.enabled !== enabled)
+        throw new Error("The machine did not confirm the requested setting. Reload settings before changing it again.");
+      toast(enabled ? "Gateway proxy enabled on " + node.name + ". Waiting for its readiness check." : "Gateway proxy disabled on " + node.name + ".");
+    },
+    result.enabled ? "Save proxy settings" : "Enable proxy",
+    false, "", true,
+  );
+  const form = $("#modal-form"),
+    enabled = $('input[name="enabled"]', form),
+    fields = $("#proxy-settings-fields"),
+    address = $("select", fields),
+    port = $('input[name="port"]', fields),
+    sources = $("textarea", fields),
+    save = $("button[type=submit]", form);
+  const sync = () => {
+    fields.hidden = !enabled.checked;
+    address.disabled = port.disabled = sources.disabled = !enabled.checked || inUse;
+    enabled.disabled = inUse || (!result.enabled && choices.length === 0);
+    save.disabled = inUse || (!enabled.checked && !result.enabled) || (enabled.checked && choices.length === 0);
+    save.textContent = enabled.checked ? (result.enabled ? "Save proxy settings" : "Enable proxy") : "Disable proxy";
+  };
+  address.addEventListener("change", () => {
+    const choice = choices[Number(address.value)];
+    if (address.value !== "" && choice) sources.value = choice.prefix;
+  });
+  enabled.addEventListener("change", sync);
+  sync();
+}
 /** @returns {void} */
 function addMachine() {
   state.invitation = null;
@@ -2478,6 +2569,7 @@ function addMachine() {
     "Create installation command",
     false, "", true,
   );
+  if (!ready.length) return;
   const sync = () => {
     const via = $('#modal-form select[name="connection"]').value === "proxy",
       worker = $('#modal-form select[name="proxyWorker"]');
@@ -2521,6 +2613,7 @@ function endpointText(e) {
 // address select, so ambiguous workers require an explicit choice.
 /** @param {Machine[]} workers @param {Machine[]} ready @returns {string} */
 function proxyFields(workers, ready) {
+  if (!ready.length) return "";
   const unavailable = workers.filter((n) => !readyEndpoints(n).length);
   const addresses = ready.map((n) => {
     const endpoints = readyEndpoints(n),
@@ -2532,8 +2625,8 @@ function proxyFields(workers, ready) {
 // Advertised proxies with the worker's own fresh readiness checks.
 /** @param {Machine} n @returns {string} */
 function proxySection(n) {
-  if (!n.proxyEndpoints?.length) return "";
-  return `<section class="drawer-section"><h3>Gateway proxy</h3><dl class="metadata">${n.proxyEndpoints.map((e) => `<dt>${esc(e.interface || "Endpoint")}</dt><dd><span class="mono">${esc(e.url)}</span><small class="muted">${e.managed ? "managed · " : ""}${esc(e.state)}${e.checkedAt ? " · checked " + esc(age(e.checkedAt)) + " ago" : ""}${e.error ? " · " + esc(e.error) : ""}${esc(dependentsText(e.dependents))}</small></dd>`).join("")}</dl></section>`;
+  const endpoints = n.proxyEndpoints || [];
+  return `<section class="drawer-section"><h3>Gateway proxy</h3>${endpoints.length ? `<dl class="metadata">${endpoints.map((e) => `<dt>${esc(e.interface || "Endpoint")}</dt><dd><span class="mono">${esc(e.url)}</span><small class="muted">${e.managed ? "managed · " : ""}${esc(e.state)}${e.checkedAt ? " · checked " + esc(age(e.checkedAt)) + " ago" : ""}${e.error ? " · " + esc(e.error) : ""}${esc(dependentsText(e.dependents))}</small></dd>`).join("")}</dl>` : '<p class="muted">Not enabled. Choose a network interface to let other machines reach the gateway through this machine.</p>'}<button class="secondary" data-action="worker-proxy" data-id="${esc(n.id)}">${endpoints.length ? "Proxy settings" : "Enable gateway proxy"}</button></section>`;
 }
 /** @returns {Promise<void>} */
 async function updateInvitation() {
@@ -2762,6 +2855,7 @@ document.addEventListener("click", async (event) => {
     if (action === "startup" && node && canChangeStartup(node))
       changeStartup(node);
     if (action === "worker-secrets" && node) await workerSecrets(node);
+    if (action === "worker-proxy" && node) await workerProxy(node);
     if (action === "secret-set" && node) await setWorkerSecret(node, name || "");
     if (action === "secret-delete" && node)
       confirmAction(

@@ -2,7 +2,6 @@ package node
 
 import (
 	"context"
-	"net"
 	"sync"
 	"time"
 
@@ -15,14 +14,11 @@ import (
 // probes advertised endpoints itself.
 //
 // A managed endpoint whose listener is running is checked through the
-// listener like an external proxy. A managed endpoint that is intentionally
-// off reports standby after a fresh direct check of the path its listener
-// would use, and a listener that failed to bind reports unavailable. Managed
-// results are omitted until the gateway confirms managed proxy support.
+// listener like an external proxy. A listener that failed to bind reports
+// unavailable. Disabled owner-managed endpoints are not advertised.
 type proxyChecks struct {
 	endpoints []model.ProxyEndpoint
 	probe     func(context.Context, string, string) error
-	direct    func(context.Context, string) error
 	managed   *managedProxy
 	interval  time.Duration
 	kick      chan struct{}
@@ -32,17 +28,10 @@ type proxyChecks struct {
 }
 
 func newProxyChecks(endpoints []model.ProxyEndpoint, managed *managedProxy) *proxyChecks {
-	if len(endpoints) == 0 {
+	if len(endpoints) == 0 && managed == nil {
 		return nil
 	}
 	c := &proxyChecks{endpoints: endpoints, probe: gatewayroute.Probe, managed: managed, interval: model.ProxyCheckInterval, kick: make(chan struct{}, 1), results: map[string]model.ProxyReadiness{}}
-	c.direct = func(ctx context.Context, gateway string) error {
-		dial := (&net.Dialer{Timeout: managedDialTimeout}).DialContext
-		if managed != nil {
-			dial = managed.dial
-		}
-		return gatewayroute.ProbeDirect(ctx, gateway, dial)
-	}
 	return c
 }
 
@@ -85,7 +74,14 @@ func (c *proxyChecks) run(ctx context.Context, gateway string) {
 
 // checkAll runs sequentially: at most MaxProxyEndpoints bounded probes.
 func (c *proxyChecks) checkAll(ctx context.Context, gateway string) {
-	for _, endpoint := range c.endpoints {
+	if ctx.Err() != nil {
+		return
+	}
+	c.managed.retryListeners()
+	c.mu.Lock()
+	endpoints := append([]model.ProxyEndpoint(nil), c.endpoints...)
+	c.mu.Unlock()
+	for _, endpoint := range endpoints {
 		if ctx.Err() != nil {
 			return
 		}
@@ -127,8 +123,7 @@ func (c *proxyChecks) check(ctx context.Context, endpoint model.ProxyEndpoint, g
 		case listening:
 			err = c.probe(ctx, endpoint.URL, gateway)
 		default:
-			result.State = model.ProxyStandby
-			err = c.direct(ctx, gateway)
+			result.State, result.Error = model.ProxyUnavailable, "managed listener is disabled"
 		}
 	}
 	if err != nil {

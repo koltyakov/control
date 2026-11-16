@@ -114,8 +114,8 @@ func TestManagedProxyDependenciesSurviveAndRequireRetirementAcknowledgement(t *t
 	if !ok {
 		t.Fatal("second fleet worker rejected")
 	}
-	if got := proxyListeners(t, server.URL, worker); len(got) != 0 {
-		t.Fatalf("listener requested without dependencies: %v", got)
+	if got := proxyListeners(t, server.URL, worker); len(got) != 1 {
+		t.Fatalf("configured listener not enabled without dependencies: %v", got)
 	}
 	// Bootstrap: a standby listener is selectable before any child exists.
 	sendProxyHealth(t, ws, []model.ProxyReadiness{{URL: office, State: model.ProxyStandby, CheckedAt: time.Now().UTC()}})
@@ -139,15 +139,15 @@ func TestManagedProxyDependenciesSurviveAndRequireRetirementAcknowledgement(t *t
 	if got := proxyListeners(t, server.URL, worker); !slices.Equal(got, want) {
 		t.Fatalf("pending invitation did not activate listener: %v", got)
 	}
-	if got := proxyListeners(t, server.URL, bobWorker); len(got) != 0 {
-		t.Fatalf("another fleet's invitation activated %v", got)
+	if got := proxyListeners(t, server.URL, bobWorker); len(got) != 1 {
+		t.Fatalf("another fleet's configured listener changed: %v", got)
 	}
 	// Revoking an unused invitation releases its dependency.
 	if err := a.JSON(context.Background(), "DELETE", "/v1/fleet/installations/"+pending.ID, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := proxyListeners(t, server.URL, worker); len(got) != 0 {
-		t.Fatalf("revoked invitation kept listener: %v", got)
+	if got := proxyListeners(t, server.URL, worker); len(got) != 1 {
+		t.Fatalf("revoked invitation stopped enabled listener: %v", got)
 	}
 	// Expiry releases it without any mutation.
 	expiring := create("render-02")
@@ -159,8 +159,8 @@ func TestManagedProxyDependenciesSurviveAndRequireRetirementAcknowledgement(t *t
 		}
 	}
 	g.mu.Unlock()
-	if got := proxyListeners(t, server.URL, worker); len(got) != 0 {
-		t.Fatalf("expired invitation kept listener: %v", got)
+	if got := proxyListeners(t, server.URL, worker); len(got) != 1 {
+		t.Fatalf("expired invitation stopped enabled listener: %v", got)
 	}
 	// A redeemed child is a durable dependency independent of invitation
 	// history, connection presence, and gateway restarts.
@@ -234,8 +234,8 @@ func TestManagedProxyDependenciesSurviveAndRequireRetirementAcknowledgement(t *t
 	if err = a.JSON(context.Background(), "DELETE", "/v1/fleet/proxy-dependencies/"+second.ID, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := proxyListeners(t, restarted.URL, worker); len(got) != 0 {
-		t.Fatalf("listener requested after final dependency: %v", got)
+	if got := proxyListeners(t, restarted.URL, worker); len(got) != 1 {
+		t.Fatalf("enabled listener stopped after final dependency: %v", got)
 	}
 }
 
@@ -268,8 +268,8 @@ func TestManagedProxyRedemptionThroughAnotherRouteReplacesDependency(t *testing.
 	if err := proxyRequest(t, server.URL+"/install/"+ticket+"/redeem", "", q, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := proxyListeners(t, server.URL, worker); len(got) != 0 {
-		t.Fatalf("direct re-enrollment kept managed dependency: %v", got)
+	if got := proxyListeners(t, server.URL, worker); len(got) != 1 {
+		t.Fatalf("direct re-enrollment stopped enabled listener: %v", got)
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -365,7 +365,7 @@ func TestManagedProxyStatusDoesNotWaitForPersistence(t *testing.T) {
 	}
 }
 
-func TestManagedProxyFirstDependencyDoesNotConfirmCachedReadiness(t *testing.T) {
+func TestManagedProxyFirstDependencyUsesEnabledListenerReadiness(t *testing.T) {
 	_, server := installationFixture(t)
 	alice, a := createTestUser(t, server, "alice")
 	const endpoint = "http://10.0.0.5:3128"
@@ -373,15 +373,14 @@ func TestManagedProxyFirstDependencyDoesNotConfirmCachedReadiness(t *testing.T) 
 	if !ok {
 		t.Fatal("worker rejected")
 	}
-	// A previous activation can still have a cached ready report after its
-	// last dependency disappeared. It does not confirm a new activation.
+	// The listener remains explicitly enabled before the first dependency.
 	sendProxyHealth(t, ws, []model.ProxyReadiness{{URL: endpoint, State: model.ProxyReady, CheckedAt: time.Now().UTC()}})
 	waitProxyState(t, a, worker.ID, model.ProxyReady)
 	var link enrollment.Link
 	if err := proxyRequest(t, server.URL+"/v1/fleet/installations", a.Key, enrollment.Request{Name: "child", OS: "linux", Arch: "amd64", Gateway: "https://gateway.example", ProxyWorker: worker.ID}, &link); err != nil {
 		t.Fatal(err)
 	}
-	if link.ProxyActivation != enrollment.ProxyActivationPending {
-		t.Fatal("cached readiness confirmed a new listener activation")
+	if link.ProxyActivation != enrollment.ProxyActivationActive {
+		t.Fatal("ready enabled listener was incorrectly reported pending")
 	}
 }

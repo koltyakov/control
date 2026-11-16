@@ -124,6 +124,9 @@ func TestTaskPublicationReleasesPinsAfterTerminalReference(t *testing.T) {
 		}
 		pipelineFinished(t, n, ctx, owner, id, state)
 	}
+	// Terminal references are published before deferred pin release. Wait for
+	// that cleanup rather than assuming the task reader runs after the defer.
+	eventually(t, ctx, func() bool { return artifactReaders(n) == 0 })
 	if readers := artifactReaders(n); readers != 0 {
 		t.Fatal("terminal tasks left publication pins", readers)
 	}
@@ -153,6 +156,7 @@ func TestTaskPublicationReleasesPinsAfterTerminalReference(t *testing.T) {
 	if !strings.Contains(got.Error, "persist task completion") || len(got.Artifacts) != 1 {
 		t.Fatal("completion write failure was not reported with its in-memory outputs", got.Error, got.Artifacts)
 	}
+	eventually(t, ctx, func() bool { return artifactReaders(n) == 0 })
 	if readers := artifactReaders(n); readers != 0 {
 		t.Fatal("persistence failure leaked publication pins", readers)
 	}

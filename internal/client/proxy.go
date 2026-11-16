@@ -16,6 +16,24 @@ import (
 // ErrProxyUnsupported reports a gateway without proxied invitation support.
 var ErrProxyUnsupported = errors.New("gateway does not support proxied invitations; upgrade the gateway first")
 
+// ProxyConfiguration inspects native worker interfaces and applied settings.
+func (c Admin) ProxyConfiguration(ctx context.Context, node string) (model.ProxyConfiguration, error) {
+	var result model.ProxyConfiguration
+	err := c.JSON(ctx, http.MethodGet, "/v1/fleet/nodes/"+url.PathEscape(node)+"/proxy", nil, &result)
+	return result, err
+}
+
+// ConfigureProxy sends one fixed mutation and waits for worker confirmation.
+// Errors may represent uncertain delivery and must never cause automatic replay.
+func (c Admin) ConfigureProxy(ctx context.Context, node string, q model.ProxyConfigure) (model.ProxyConfiguration, error) {
+	var result model.ProxyConfiguration
+	err := c.JSON(ctx, http.MethodPut, "/v1/fleet/nodes/"+url.PathEscape(node)+"/proxy", q, &result)
+	if err == nil && (!result.Supported || result.Enabled != q.Enabled) {
+		err = errors.New("worker did not confirm proxy settings; inspect before another change")
+	}
+	return result, err
+}
+
 // SupportsGatewayProxy reads the authenticated feature metadata.
 func (c Admin) SupportsGatewayProxy(ctx context.Context) (bool, error) {
 	var auth struct {
@@ -56,7 +74,7 @@ func SelectProxy(workers []model.ProxyWorker, worker, endpoint string) (model.Pr
 		}
 	}
 	if selected == nil {
-		return model.ProxyWorker{}, "", fmt.Errorf("machine %q advertises no gateway proxy endpoints; configure proxyEndpoints on it", worker)
+		return model.ProxyWorker{}, "", fmt.Errorf("machine %q advertises no gateway proxy endpoints; enable its Gateway proxy setting", worker)
 	}
 	if endpoint != "" {
 		normalized, err := model.NormalizeProxyURL(endpoint)
@@ -162,8 +180,8 @@ func (c Admin) WaitProxyActivation(ctx context.Context, worker, endpoint string,
 }
 
 // ReleaseProxyDependency abandons waiting for an unregistered child's
-// retirement acknowledgement, allowing its managed listener to stop when no
-// other dependency remains.
+// retirement acknowledgement, allowing explicit disable when no other
+// dependency remains. It never disables the listener itself.
 func (c Admin) ReleaseProxyDependency(ctx context.Context, child string) error {
 	return c.JSON(ctx, http.MethodDelete, "/v1/fleet/proxy-dependencies/"+url.PathEscape(child), nil, nil)
 }

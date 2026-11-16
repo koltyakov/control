@@ -233,17 +233,11 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	defer g.mu.Unlock()
 	var proxy *model.GatewayProxy
 	proxyState := ""
-	proxyAlreadyNeeded := false
 	if q.ProxyWorker != "" {
 		var status int
 		if proxy, proxyState, status = g.proxySelectionLocked(p.UserID, q.ProxyWorker, q.ProxyURL, time.Now()); proxy == nil {
 			http.Error(w, proxyState, status)
 			return
-		}
-		if proxy.Managed {
-			if d := g.managedDependentsLocked(p.UserID, time.Now())[proxy.Worker][proxy.URL]; d != nil {
-				proxyAlreadyNeeded = d.Total() > 0
-			}
 		}
 	}
 	ticket, err := g.newInstallationTicket(rand.Reader, q.ServiceMode == "hybrid")
@@ -376,7 +370,7 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 		// The committed invitation is now a durable dependency. Activation is
 		// reported only after the worker's own listener check succeeds.
 		response.ProxyActivation = enrollment.ProxyActivationPending
-		if proxyAlreadyNeeded && proxyState == model.ProxyReady {
+		if proxyState == model.ProxyReady {
 			response.ProxyActivation = enrollment.ProxyActivationActive
 		}
 		g.notifyProxyWorkers(proxy.Worker)
