@@ -420,6 +420,44 @@ async function refreshPage(page) {
   });
 }
 
+async function assertAuxiliaryRefreshTimestamp(page, snapshot) {
+  const statusURL = "**/console/api/status";
+  const keysURL = "**/console/api/fleet/keys";
+  const first = "2026-01-01T12:34:56Z";
+  const second = "2026-01-01T12:40:00Z";
+  let observedAt = first;
+  const status = (route) => route.fulfill({ json: { ...snapshot, observedAt } });
+  const unavailable = (route) => route.fulfill({ status: 503, body: "Keys unavailable." });
+  const banner = page.locator("#stale-banner");
+  await page.route(statusURL, status);
+  try {
+    await pageLink(page, "keys");
+    await refreshPage(page);
+    const initialTime = await page.evaluate((time) => clock(time), first);
+    const previousContent = await page.locator("#page-content").innerText();
+    assert.doesNotMatch(previousContent, /Fetching current records/);
+
+    observedAt = second;
+    await page.route(keysURL, unavailable);
+    await refreshPage(page);
+    assert.equal(await banner.textContent(), `Keys unavailable. Last update ${initialTime}.`);
+    assert.equal(await page.locator("#page-content").innerText(), previousContent);
+    await page.unroute(keysURL, unavailable);
+
+    await refreshPage(page);
+    assert.equal(await banner.isHidden(), true, "Successful refresh clears the warning");
+    await page.route(keysURL, unavailable);
+    await refreshPage(page);
+    const refreshedTime = await page.evaluate((time) => clock(time), second);
+    assert.equal(await banner.textContent(), `Keys unavailable. Last update ${refreshedTime}.`);
+  } finally {
+    await page.unroute(keysURL, unavailable);
+    await page.unroute(statusURL, status);
+    await page.locator('.brand[href="#overview"]').click();
+    await refreshPage(page);
+  }
+}
+
 async function assertOverviewFullFleet(page, snapshot) {
   const online = Array.from({ length: 12 }, (_, i) => ({
     ...snapshot.nodes[0],
@@ -2388,6 +2426,7 @@ try {
   // Exercise table density with explicitly synthetic records, including long
   // names and missing metrics. Only this browser's read response is replaced.
   const snapshot = await api("/v1/status", "GET", undefined, account.token);
+  await assertAuxiliaryRefreshTimestamp(page, snapshot);
   await assertOverviewFullFleet(page, snapshot);
   await assertCustomMachineOrder(page, snapshot);
   await assertMachineRefreshLayout(page, snapshot);

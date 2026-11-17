@@ -241,9 +241,7 @@ func (n *Node) pruneTasks(now time.Time) error {
 	// Make the tombstones durable before removing any record they replace.
 	var b bytes.Buffer
 	for i := range victims {
-		if len(victims[i].Error) > 4096 {
-			victims[i].Error = victims[i].Error[:4096] + " [truncated]"
-		}
+		victims[i].Error = persistedTaskError(victims[i].Error)
 		victims[i].Checksum = victims[i].checksum()
 		t := victims[i]
 		b.Write(model.JSON(t))

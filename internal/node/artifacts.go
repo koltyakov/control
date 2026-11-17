@@ -486,15 +486,19 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 		defer func() { _ = f.Close() }()
 		return n.importArtifact(ctx, f, filepath.Base(q.Path))
 	case "artifacts.list":
-		paths, err := filepath.Glob(filepath.Join(n.Config.DataDir, "artifacts", "*.json"))
-		if err != nil {
+		dir := filepath.Join(n.Config.DataDir, "artifacts")
+		entries, err := os.ReadDir(dir)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
 		owner := n.artifactOwner(ctx)
 		artifacts := []model.Artifact{}
-		for _, path := range paths {
+		for _, entry := range entries {
+			if !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
 			var a storedArtifact
-			if err = store.Read(path, &a); err != nil {
+			if err = store.Read(filepath.Join(dir, entry.Name()), &a); err != nil {
 				return nil, err
 			}
 			if !a.Deleting && a.visibleTo(owner, n.Identity.ID) {

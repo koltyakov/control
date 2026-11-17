@@ -16,6 +16,7 @@ import (
 
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/processutil"
+	"github.com/koltyakov/control/internal/store"
 )
 
 // Verify checks the actual bytes on every call. File metadata is not evidence
@@ -72,10 +73,7 @@ func SaveBinary(reader io.Reader, path string, asset Asset) error {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	if err = os.Rename(f.Name(), path); err != nil {
-		return err
-	}
-	return nil
+	return store.RenameInDirectory(f.Name(), path)
 }
 
 func Download(ctx context.Context, client *http.Client, url, token, path string, asset Asset) error {

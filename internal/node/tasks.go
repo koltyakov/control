@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
@@ -74,12 +75,17 @@ type acceptance struct {
 }
 
 func (n *Node) loadTasks() error {
-	paths, err := filepath.Glob(filepath.Join(n.Config.DataDir, "tasks", "*.json"))
-	if err != nil {
+	dir := filepath.Join(n.Config.DataDir, "tasks")
+	entries, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	taskPaths := make(map[string]string, len(paths))
-	for _, path := range paths {
+	taskPaths := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
 		var task model.Task
 		if err = store.Read(path, &task); err != nil {
 			return fmt.Errorf("load task %s: %w", path, err)
@@ -108,6 +114,21 @@ func (n *Node) loadTasks() error {
 	}
 	n.rebuildRecentTasksLocked()
 	return nil
+}
+
+func persistedTaskError(message string) string {
+	const limit = 4096
+	// JSON must round-trip the same text for tombstone checksums to match.
+	message = strings.ToValidUTF8(message, "\uFFFD")
+	if len(message) <= limit {
+		return message
+	}
+	const suffix = " [truncated]"
+	end := limit - len(suffix)
+	for !utf8.RuneStart(message[end]) {
+		end--
+	}
+	return message[:end] + suffix
 }
 
 // Caller holds mu or is loading state before Start. IDs remain case-sensitive
@@ -438,10 +459,7 @@ func (n *Node) finishTask(id string, ctx context.Context, result any, artifacts 
 		task.State, task.Updated, task.Artifacts = "succeeded", time.Now().UTC(), artifacts
 		task.Result, task.ResultArtifact = resultJSON, resultArtifact
 		if err != nil {
-			task.State, task.Error = "failed", err.Error()
-			if len(task.Error) > 4096 {
-				task.Error = task.Error[:4096] + " [truncated]"
-			}
+			task.State, task.Error = "failed", persistedTaskError(err.Error())
 		}
 		if ctx.Err() != nil {
 			task.State, task.Error = "cancelled", ctx.Err().Error()
@@ -456,7 +474,7 @@ func (n *Node) finishTask(id string, ctx context.Context, result any, artifacts 
 		// Report the failure without claiming a durable outcome.
 		stored := n.tasks[id]
 		final(stored)
-		stored.State, stored.Error = "failed", "persist task completion: "+writeErr.Error()
+		stored.State, stored.Error = "failed", persistedTaskError("persist task completion: "+writeErr.Error())
 		task = *stored
 		n.recordRecentTaskLocked(stored)
 	}

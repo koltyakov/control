@@ -116,7 +116,7 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-The release workflow builds with that exact tag as the version. Its verification job checks dependencies, runs vet and race tests, and exercises both Compose transport modes before publication. It supports `v*.*.*` tags and manual dispatch from the matching tag:
+The release workflow verifies and builds the same commit using the GitHub event SHA, with the tag as the version. Its verification job checks dependencies, runs vet and race tests, and exercises both Compose transport modes before publication. It supports `v*.*.*` tags and manual dispatch from the matching tag:
 
 ```sh
 gh workflow run release.yml --ref v0.2.0 -f tag=v0.2.0

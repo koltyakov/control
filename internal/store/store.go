@@ -40,7 +40,13 @@ func Bytes(path string, data []byte, mode os.FileMode) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	if err = os.Rename(tmp, path); err != nil {
+	return RenameInDirectory(tmp, path)
+}
+
+// RenameInDirectory publishes a synced temporary file in the same directory.
+// A sync failure is returned even though the rename may already be visible.
+func RenameInDirectory(tmp, path string) error {
+	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
 	return syncDirectory(filepath.Dir(path))

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -257,6 +258,68 @@ func TestArtifactOwnersScopeListingAndDeletion(t *testing.T) {
 	n.artifactMu.Unlock()
 	if transfers != 0 {
 		t.Fatal("transfer locks retained", transfers)
+	}
+}
+
+func TestRecordsInBracketedDataPath(t *testing.T) {
+	n := localNode(t, func(c *Config) { c.DataDir = filepath.Join(c.DataDir, "Control [work]") })
+	cfg := n.Config
+	task := recentTask("retained", time.Now().UTC())
+	task.Spec.TimeoutSeconds = 3600
+	task.State = "running"
+	if err := store.Write(n.taskPath(task.ID), task); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	artifact, err := n.importArtifact(ctx, strings.NewReader("artifact contents"), "artifact.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	n = openLocalNode(t, cfg)
+	got, err := n.startTaskContext(ctx, task.Owner, task.Spec)
+	if err != nil || got.State != "interrupted" {
+		t.Fatalf("retry should return the recovered task without running it: %+v, %v", got, err)
+	}
+	value, err := n.artifactMethod(ctx, n.Identity.ID, "artifacts.list", model.JSON(map[string]any{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := value.([]model.Artifact)
+	if len(list) != 1 || list[0].ID != artifact.ID {
+		t.Fatalf("listed artifacts = %v, want %s", list, artifact.ID)
+	}
+}
+
+func TestRecordDirectoryReadErrors(t *testing.T) {
+	n := localNode(t, nil)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		dir  string
+		read func() error
+	}{
+		{"tasks", n.loadTasks},
+		{"artifacts", func() error {
+			_, err := n.artifactMethod(ctx, n.Identity.ID, "artifacts.list", model.JSON(map[string]any{}))
+			return err
+		}},
+	} {
+		t.Run(tc.dir, func(t *testing.T) {
+			if err := tc.read(); err != nil {
+				t.Fatalf("missing directory should be empty: %v", err)
+			}
+			dir := filepath.Join(n.Config.DataDir, tc.dir)
+			if err := os.WriteFile(dir, []byte("not a directory"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var pathErr *os.PathError
+			if err := tc.read(); !errors.As(err, &pathErr) || pathErr.Path != dir {
+				t.Fatalf("want read error for %s, got %v", dir, err)
+			}
+		})
 	}
 }
 

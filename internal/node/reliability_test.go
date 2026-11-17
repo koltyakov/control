@@ -36,6 +36,41 @@ func TestCorruptInteriorTombstoneFailsClosed(t *testing.T) {
 	}
 }
 
+func TestMultibyteTaskErrorSurvivesPruneAndRestart(t *testing.T) {
+	n := localNode(t, func(c *Config) { c.TaskRetentionHours = 1 })
+	now := time.Now().UTC()
+	task := recentTask("multibyte", now.Add(-2*time.Hour))
+	task.Spec.TimeoutSeconds = 3600
+	task.State = "failed"
+	// Both the old byte cutoff and the new cutoff allowing for the suffix
+	// fall inside a multibyte rune.
+	prefix := strings.Repeat("a", 4083)
+	task.Error = prefix + strings.Repeat("€", 9)
+	n.tasks[task.ID] = task
+	if err := store.Write(n.taskPath(task.ID), task); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.pruneTasks(now); err != nil {
+		t.Fatal(err)
+	}
+	cfg := n.Config
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
+	}
+	n = openLocalNode(t, cfg)
+	got, err := n.startTaskContext(t.Context(), task.Owner, task.Spec)
+	if err != nil || !got.Pruned || got.State != "failed" || got.Error != prefix+" [truncated]" {
+		t.Fatalf("pruned task retry was not recovered with the complete UTF-8 prefix: %s, pruned=%t, error length=%d, err=%v",
+			got.State, got.Pruned, len(got.Error), err)
+	}
+}
+
+func TestPersistedTaskErrorNormalizesInvalidUTF8(t *testing.T) {
+	if got := persistedTaskError("diagnostic \xff"); got != "diagnostic \uFFFD" {
+		t.Fatalf("normalized error = %q", got)
+	}
+}
+
 func TestTaskCleanupPersistenceFailureStopsNewPruning(t *testing.T) {
 	n := localNode(t, func(c *Config) { c.TaskRetentionHours = 1 })
 	task := recentTask("pending-cleanup", time.Now().Add(-2*time.Hour))

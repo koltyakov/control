@@ -1977,7 +1977,6 @@ async function refresh(manual = false) {
     if (session !== state.session) return;
     state.snapshot = snapshot;
     updateInstallationProxies();
-    state.updatedAt = snapshot.observedAt;
     $("#nav-count").textContent = String(groupedMachines(snapshot.nodes).length);
     /** @type {Auxiliary | null} */
     let auxiliary = null;
@@ -2005,9 +2004,13 @@ async function refresh(manual = false) {
             ? "System startup was not confirmed. Inspect the machine and startup-change.log before using the local recovery command. No automatic retry was made."
             : "Waiting for the machine to reconnect and report System context…";
     }
-    banner("");
+    if (session !== state.session || page !== state.page || generation !== auditGeneration) return;
     // Resource refreshes preserve focus. Never replace an in-progress password form.
-    if (page === state.page && state.page !== "account") render();
+    if (page !== "account" && !machineDrag) {
+      render();
+      state.updatedAt = snapshot.observedAt;
+      banner("");
+    }
   } catch (error) {
     if (session === state.session && generation === auditGeneration) banner(errorMessage(error));
   } finally {
@@ -2034,6 +2037,8 @@ function navigate() {
   state.page = page;
   auditGeneration++;
   state.auxiliary = null;
+  state.updatedAt = null;
+  banner("");
   const info = pages[page];
   $("#page-title").textContent = info[0];
   $("#page-description").textContent = info[1];
@@ -2252,6 +2257,8 @@ document.addEventListener("change", (event) => {
     state.auditCategory = event.target.value;
     auditGeneration++;
     state.auxiliary = null;
+    state.updatedAt = null;
+    banner("");
     render();
     if (state.busy) pendingRefresh = true;
     else refresh();
