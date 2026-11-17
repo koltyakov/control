@@ -77,7 +77,7 @@ Select System to inspect that context's details or manage it; the drawer shows i
 
 ### Custom machine order
 
-Hold a machine's platform icon and drag its row to a new position on Overview or Machines. A line marks the drop position, and releasing saves the order immediately. There is no ordering dialog or Save button. Dragging near the top or bottom scrolls the list. Escape, a cancelled pointer gesture, or dropping outside a row cancels the move. With the icon focused, Alt+Up and Alt+Down move the machine using the keyboard. Clicking the icon alone does not open machine details.
+Hold a machine's platform icon and drag its row to a new position on Overview or Machines. Rows shift apart to open a full-height, outlined slot labeled "Drop NAME here" with its destination position. The machine lands in that slot when released, and the order saves immediately. There is no ordering dialog or Save button. Dragging near the top or bottom scrolls the list. Escape, a cancelled pointer gesture, or dropping outside the list cancels the move and closes the slot. With the icon focused, Alt+Up and Alt+Down move the machine using the keyboard. Clicking the icon alone does not open machine details.
 
 The order is saved in this browser for the signed-in fleet at this gateway, including across reloads and sign-outs. It does not sync to other browsers or affect CLI/MCP discovery, terminal dashboards, or worker selection. Stable identities preserve positions through renames, and Hybrid User/System contexts share one position regardless of the selected chip. New machines follow saved machines in name order; removed machines are ignored.
 
@@ -88,6 +88,8 @@ Search, state filters and Overview may hide machines. Reordering moves only the 
 When the fleet reports classified discrete GPUs or NPUs, machine tables add a GPU/NPU column. Integrated, virtual/remote display, and unclassified adapters are hidden, including in drawers. The main bar shows loaded dedicated memory, with used/total bytes underneath; any compute utilization is separately labeled. Model names appear only in hover tooltips on each device's usage block, in tables and drawers. Sorting uses the highest known dedicated-memory percentage, with unknown values last. GPU/NPU metrics follow the Hybrid fallback above; they do not change action targets. Unsupported readings stay unknown and offline contexts hide cached usage. Windows DXCore and adapter-wide memory counters supply dedicated-memory capacity/usage for supported AMD, Intel, and NVIDIA devices. See [platform support](dashboard.md#gpu-resources).
 
 In machine drawers, GPU and NPU memory usage appear in the Resources grid alongside CPU, memory, and disk, with matching labels and bar widths.
+
+Machine-row versions are capped at 23 character units and ellipsized instead of widening the table. Hover shows the full version, which also remains in the detail drawer. Narrow layouts hide row versions.
 
 A detected device without a dedicated-memory percentage shows `NPU detected` or `GPU detected` instead of a bar. Capacity or used bytes remain visible when known; otherwise the subtitle reads `Memory unavailable`. This distinguishes inventory-only devices such as Surface's Qualcomm Hexagon NPU from machines with no accelerator. Model names remain in tooltips, and offline devices still hide cached usage.
 

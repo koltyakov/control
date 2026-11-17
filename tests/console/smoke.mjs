@@ -490,17 +490,41 @@ async function assertCustomMachineOrder(page, snapshot) {
       });
     await handle.scrollIntoViewIfNeeded();
     const start = await handle.boundingBox(),
-      end = await targetRow.boundingBox();
+      end = await targetRow.boundingBox(),
+      source = await handle.locator("xpath=ancestor::tr").boundingBox(),
+      keys = await page.locator(".machine-table tbody tr").evaluateAll((rows) =>
+        rows.map((row) => row.dataset.orderKey)),
+      sourceKey = await handle.getAttribute("data-order-key"),
+      targetKey = await targetRow.getAttribute("data-order-key"),
+      remaining = keys.filter((key) => key !== sourceKey),
+      position = remaining.indexOf(targetKey) + Number(after) + 1;
     assert.ok(start && end);
     await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
     await page.mouse.down();
     await page.mouse.move(start.x + start.width / 2, end.y + end.height * (after ? 0.8 : 0.2), { steps: 8 });
     assert.equal(await page.locator(".machine-drag-preview").count(), 1);
+    const placeholder = page.locator(".machine-drop-placeholder"),
+      gap = await placeholder.boundingBox(),
+      shiftedTarget = await targetRow.boundingBox();
+    assert.ok(gap && source && shiftedTarget, "Dragging must open a visible insertion slot");
+    assert.ok(Math.abs(gap.height - source.height) < 2, "The gap must reserve the dragged row's full height");
+    assert.ok(gap.width >= shiftedTarget.width - 2, "The drop slot must span the table width");
+    assert.equal(await placeholder.getAttribute("data-position"), String(position));
+    assert.equal(await placeholder.locator("strong").textContent(), "Drop " + name + " here");
+    assert.equal(await placeholder.locator("small").textContent(), `Position ${position} of ${keys.length}`);
+    assert.ok(Math.abs(after ? gap.y - shiftedTarget.y - shiftedTarget.height :
+      gap.y + gap.height - shiftedTarget.y) < 2, "Rows must shift to show the exact landing position");
+    await page.evaluate(() => new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.deepEqual(await placeholder.boundingBox(), gap, "The insertion slot must not oscillate under a stationary pointer");
     if (duringDrag) await duringDrag();
     if (cancel) await page.keyboard.press("Escape");
     await page.mouse.up();
     assert.equal(await page.locator(".machine-drag-preview").count(), 0);
+    assert.equal(await placeholder.count(), 0, "Drop or cancellation must remove the insertion slot");
+    assert.equal(await page.locator('.machine-table tr[style*="transform"]').count(), 0, "Temporary row shifts must be cleared");
     assert.equal(await dialog.isVisible(), false, "Dragging an icon must not open machine details");
+    return gap;
   };
   try {
     await pageLink(page, "machines");
@@ -512,12 +536,39 @@ async function assertCustomMachineOrder(page, snapshot) {
     assert.equal(await page.evaluate(() => localStorage.getItem(machineOrderStorageKey())), null);
     await drag("beta-pair", "alpha", false, true);
     assert.deepEqual(await names.allTextContents(), ["alpha", "beta-pair", "disabled", "offline"], "Escape must cancel without saving");
-    await drag("beta-pair", "alpha", false, false, async () => {
+    const landing = await drag("beta-pair", "alpha", false, false, async () => {
       await refreshPage(page);
       assert.equal(await page.locator(".machine-dragging").count(), 1, "Polling must preserve the captured row");
       assert.deepEqual(await names.allTextContents(), ["alpha", "beta-pair", "disabled", "offline"], "Reordering must save only on drop");
+      if (process.env.CONTROL_CONSOLE_SCREENSHOTS) {
+        await mkdir(process.env.CONTROL_CONSOLE_SCREENSHOTS, { recursive: true });
+        await page.screenshot({ path: path.join(process.env.CONTROL_CONSOLE_SCREENSHOTS, "machine-drop-desktop.png") });
+      }
     });
     assert.deepEqual(await names.allTextContents(), ["beta-pair", "alpha", "disabled", "offline"]);
+    const landed = await page.locator(".machine-table tbody tr").first().boundingBox();
+    assert.ok(Math.abs(landed.y - landing.y) < 2, "The committed row must land exactly in the previewed slot");
+    await drag("beta-pair", "offline", true);
+    assert.equal(await names.last().textContent(), "beta-pair", "Dropping after the last row must append");
+    await drag("beta-pair", "alpha");
+    const savedBeforeOutside = await page.evaluate(() => [...state.machineOrder]);
+    const outsideHandle = page.getByRole("button", { name: "Reorder beta-pair", exact: true }),
+      outsideStart = await outsideHandle.boundingBox();
+    await page.mouse.move(outsideStart.x + 10, outsideStart.y + 10);
+    await page.mouse.down();
+    await page.mouse.move(outsideStart.x + 10, 20, { steps: 8 });
+    assert.equal(await page.locator(".machine-drop-placeholder").isVisible(), false, "Outside the list there must be no valid drop slot");
+    await page.mouse.up();
+    assert.deepEqual(await page.evaluate(() => state.machineOrder), savedBeforeOutside, "Dropping outside must not change the order");
+    await page.mouse.move(outsideStart.x + 10, outsideStart.y + 10);
+    await page.mouse.down();
+    await page.mouse.move(outsideStart.x + 10, outsideStart.y + 90, { steps: 8 });
+    await page.setViewportSize({ width: 1300, height: 950 });
+    await page.waitForFunction(() => machineDrag === null);
+    await page.mouse.up();
+    assert.equal(await page.locator(".machine-drop-placeholder").count(), 0, "Resizing must cancel cached row geometry and clear the slot");
+    assert.deepEqual(await page.evaluate(() => state.machineOrder), savedBeforeOutside);
+    await page.setViewportSize({ width: 1440, height: 1000 });
     await page.locator('.context-choice[data-id="order-system"]').click();
     assert.equal(await page.locator(".machine-table tbody tr").first().getAttribute("data-id"), "order-system", "Chip changes must not move Hybrid hosts");
     await page.locator('.brand[href="#overview"]').click();
@@ -598,7 +649,10 @@ async function assertCustomMachineOrder(page, snapshot) {
     await drag("a-new", "z-new");
 
     await page.setViewportSize({ width: 390, height: 844 });
-    await drag("beta-pair", "aardvark-renamed", true);
+    await drag("beta-pair", "aardvark-renamed", true, false, async () => {
+      if (process.env.CONTROL_CONSOLE_SCREENSHOTS)
+        await page.screenshot({ path: path.join(process.env.CONTROL_CONSOLE_SCREENSHOTS, "machine-drop-mobile.png") });
+    });
     assert.deepEqual(await names.allTextContents(), ["aardvark-renamed", "beta-pair", "a-new", "z-new"], "Icon dragging must also work in the stacked mobile layout");
     assert.ok(await page.locator("#app").evaluate((element) => element.scrollWidth <= element.clientWidth));
     const touch = await page.context().newCDPSession(page);
@@ -1352,6 +1406,62 @@ async function assertHybridUnregister(page, snapshot) {
   await page.unroute("**/console/api/status", statusRoute);
   await page.waitForFunction(() => !state.busy);
   await page.evaluate(() => refresh(true));
+}
+
+async function assertMachineVersionLayout(page, snapshot) {
+  const viewport = page.viewportSize(),
+    shortVersion = "v0.8.3-2-gd2e9b2d-dirty",
+    longVersion = shortVersion + '-20261113T041234Z-"quoted"<build>',
+    node = {
+      ...snapshot.nodes[0], id: "version-layout", name: "vm.fedora", os: "linux",
+      online: true, status: "summary", activeCount: 0, leased: false,
+      software: { version: shortVersion, arch: "amd64" },
+      system: {
+        arch: "amd64", logicalCPUs: 6, cpuUsagePercent: 2,
+        memoryUsedBytes: 4 * 2 ** 30, memoryTotalBytes: 16 * 2 ** 30,
+        disks: [{ path: "work", usedBytes: 28 * 2 ** 30, totalBytes: 128 * 2 ** 30 }],
+        gpus: [],
+      },
+    },
+    statusRoute = (route) => route.fulfill({ json: { ...snapshot, nodes: [node] } }),
+    table = page.locator(".machine-table"),
+    version = table.locator(".machine-version");
+  await page.route("**/console/api/status", statusRoute);
+  try {
+    for (const gpus of [[], [{ name: "Test GPU", kind: "discrete", memoryUsedBytes: 2 ** 30, memoryTotalBytes: 8 * 2 ** 30 }]]) {
+      node.system.gpus = gpus;
+      for (const width of [1440, 1366]) {
+        await page.setViewportSize({ width, height: 1000 });
+        node.software.version = shortVersion;
+        await refreshPage(page);
+        const baseline = await table.locator("table").boundingBox();
+        node.software.version = longVersion;
+        await refreshPage(page);
+        assert.equal(await version.getAttribute("title"), longVersion, "Hover must retain the exact escaped version");
+        assert.equal(await version.textContent(), " · " + longVersion, "Ellipsis must not discard the underlying version");
+        assert.ok(await version.evaluate((element) =>
+          element.scrollWidth > element.clientWidth &&
+          getComputedStyle(element).textOverflow === "ellipsis"), "Long versions must be visually ellipsized");
+        const expanded = await table.locator("table").boundingBox();
+        assert.ok(Math.abs(expanded.width - baseline.width) < 1, "Long versions must not widen the machine table");
+        assert.ok(await table.evaluate((element) => element.scrollWidth <= element.clientWidth),
+          `Machine table must fit at ${width}px, including the GPU column`);
+      }
+    }
+    await page.getByRole("button", { name: node.name, exact: true }).click();
+    assert.equal(await page.locator("dialog dt").filter({ hasText: /^Version$/ }).locator("xpath=following-sibling::dd[1]").textContent(), longVersion);
+    await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+    for (const width of [1024, 768, 390, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      assert.equal(await version.isVisible(), false, "Narrow layouts must keep hiding the version");
+      if (width <= 650)
+        assert.ok(await table.evaluate((element) => element.scrollWidth <= element.clientWidth), "Stacked machine rows must not overflow");
+    }
+  } finally {
+    await page.unroute("**/console/api/status", statusRoute);
+    await page.setViewportSize(viewport);
+    await refreshPage(page);
+  }
 }
 
 async function assertHybridGrouping(page, snapshot) {
@@ -2131,6 +2241,7 @@ try {
   const snapshot = await api("/v1/status", "GET", undefined, account.token);
   await assertOverviewFullFleet(page, snapshot);
   await assertCustomMachineOrder(page, snapshot);
+  await assertMachineVersionLayout(page, snapshot);
   const fixtureNames = [
     "build-linux-01",
     "design-mac",

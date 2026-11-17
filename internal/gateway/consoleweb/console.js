@@ -50,6 +50,7 @@
  * @property {Machine[]} [contexts] Presentation-only grouping, never sent to the API.
  * @property {string} [targetName]
  * @typedef {Machine & {contexts: Machine[]}} MachineGroup
+ * @typedef {{element: HTMLElement, key: string, top: number, height: number}} MachineDragRow
  * @typedef {object} MachineDrag
  * @property {number} pointerId
  * @property {HTMLButtonElement} handle
@@ -62,6 +63,9 @@
  * @property {HTMLElement | null} target
  * @property {boolean} after
  * @property {HTMLElement | null} preview
+ * @property {HTMLElement | null} placeholder
+ * @property {MachineDragRow[]} rows
+ * @property {number} index
  * @property {number} frame
  * @property {string[]} visible
  * @property {string[]} order
@@ -1267,7 +1271,8 @@ function cancelMachineDrag() {
   machineDrag = null;
   cancelAnimationFrame(drag.frame);
   drag.preview?.remove();
-  drag.target?.classList.remove("machine-drop-before", "machine-drop-after");
+  drag.placeholder?.remove();
+  for (const row of drag.rows) row.element.style.removeProperty("transform");
   drag.handle.closest("tr")?.classList.remove("machine-dragging");
   document.body.classList.remove("reordering-machines");
   if (drag.handle.hasPointerCapture(drag.pointerId))
@@ -1277,16 +1282,52 @@ function cancelMachineDrag() {
 function positionMachineDrag() {
   const drag = machineDrag;
   if (!drag?.active) return;
-  drag.target?.classList.remove("machine-drop-before", "machine-drop-after");
-  const hit = document.elementFromPoint(drag.x, drag.y),
-    row = hit?.closest(".machine-table tbody tr"),
-    scroller = $(".content-scroll").getBoundingClientRect();
-  drag.target = row instanceof HTMLElement && row.dataset.orderKey !== drag.key &&
-    drag.y >= scroller.top && drag.y <= scroller.bottom ? row : null;
-  if (drag.target) {
-    const box = drag.target.getBoundingClientRect();
-    drag.after = drag.y > box.top + box.height / 2;
-    drag.target.classList.add(drag.after ? "machine-drop-after" : "machine-drop-before");
+  const scroller = $(".content-scroll"),
+    viewport = scroller.getBoundingClientRect(),
+    table = $(".machine-table").getBoundingClientRect(),
+    source = drag.rows.find((row) => row.key === drag.key),
+    first = drag.rows[0],
+    last = drag.rows[drag.rows.length - 1];
+  if (!source || !first || !last) return;
+  const valid = drag.x >= Math.max(table.left, viewport.left) &&
+    drag.x <= Math.min(table.right, viewport.right) &&
+    drag.y >= Math.max(first.top - scroller.scrollTop, viewport.top) &&
+    drag.y <= Math.min(last.top + last.height - scroller.scrollTop, viewport.bottom),
+    remaining = drag.rows.filter((row) => row !== source);
+  // Use the original row midpoints, not the shifted rows under the pointer.
+  // Otherwise opening the gap can change its own target on the next frame.
+  let index = valid ? remaining.findIndex((row) =>
+    drag.y < row.top + row.height / 2 - scroller.scrollTop,
+  ) : -1;
+  if (valid && index < 0) index = remaining.length;
+  drag.target = valid ? (remaining[index] || remaining[remaining.length - 1])?.element || null : null;
+  drag.after = index === remaining.length;
+  let top = first.top;
+  for (let i = 0; i < index; i++) top += remaining[i].height;
+  if (index !== drag.index) {
+    if (valid) {
+      const arranged = [...remaining];
+      arranged.splice(index, 0, source);
+      let nextTop = first.top;
+      for (const row of arranged) {
+        row.element.style.transform = `translateY(${nextTop - row.top}px)`;
+        nextTop += row.height;
+      }
+    } else {
+      for (const row of drag.rows) row.element.style.removeProperty("transform");
+    }
+    drag.index = index;
+  }
+  if (drag.placeholder) {
+    drag.placeholder.hidden = !valid;
+    drag.placeholder.style.left = Math.max(table.left, viewport.left) + "px";
+    drag.placeholder.style.width = Math.min(table.right, viewport.right) - Math.max(table.left, viewport.left) + "px";
+    drag.placeholder.style.top = top - scroller.scrollTop + "px";
+    drag.placeholder.style.height = source.height + "px";
+    // Keep the slot inside the scroll viewport, including during auto-scroll.
+    drag.placeholder.style.clipPath = `inset(${Math.max(0, viewport.top - top + scroller.scrollTop)}px 0 ${Math.max(0, top - scroller.scrollTop + source.height - viewport.bottom)}px 0)`;
+    drag.placeholder.dataset.position = String(index + 1);
+    $("small", drag.placeholder).textContent = `Position ${index + 1} of ${drag.rows.length}`;
   }
   if (drag.preview) {
     drag.preview.style.left = Math.max(8, Math.min(drag.x + 16, innerWidth - drag.preview.offsetWidth - 8)) + "px";
@@ -1316,10 +1357,16 @@ document.addEventListener("pointerdown", (event) => {
   closeMachineMenu();
   handle.focus({ preventScroll: true });
   handle.setPointerCapture(event.pointerId);
+  const scrollTop = $(".content-scroll").scrollTop,
+    rows = [.../** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll(".machine-table tbody tr"))]
+      .map((element) => {
+        const box = element.getBoundingClientRect();
+        return { element, key: element.dataset.orderKey || "", top: box.top + scrollTop, height: box.height };
+      });
   machineDrag = {
     pointerId: event.pointerId, handle, key: handle.dataset.orderKey || "",
     startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY,
-    active: false, target: null, after: false, preview: null, frame: 0,
+    active: false, target: null, after: false, preview: null, placeholder: null, rows, index: -1, frame: 0,
     visible: visibleMachineKeys(),
     order: sortedMachines(groupedMachines(state.snapshot?.nodes || [])).map(machineOrderKey),
   };
@@ -1339,6 +1386,15 @@ document.addEventListener("pointermove", (event) => {
     preview.textContent = drag.handle.closest("tr")?.querySelector(".machine-name")?.textContent || "";
     document.body.append(preview);
     drag.preview = preview;
+    const placeholder = document.createElement("div"),
+      label = document.createElement("strong"),
+      position = document.createElement("small");
+    placeholder.className = "machine-drop-placeholder";
+    placeholder.setAttribute("aria-hidden", "true");
+    label.textContent = "Drop " + preview.textContent + " here";
+    placeholder.append(label, position);
+    document.body.append(placeholder);
+    drag.placeholder = placeholder;
     drag.frame = requestAnimationFrame(scrollMachineDrag);
   }
   positionMachineDrag();
@@ -1403,11 +1459,12 @@ function machineRows(nodes, showGPUs) {
       disk = diskUsage(sys) || {usedBytes: 0, totalBytes: 0},
       diskPercent = percent(disk?.usedBytes, disk?.totalBytes),
       gpuColumn = showGPUs ? `<td class="resource-column gpu-column" data-label="GPU/NPU">${gpuResources(metrics.system?.gpus, metrics.online)}</td>` : "",
-      detail = statusDetail(n);
+      detail = statusDetail(n),
+      version = n.software?.version || "Unknown version";
     const platformIcon =
       (/** @type {Record<string, string>} */ ({ darwin: "laptop", windows: "windows", linux: "gateway" }))[n.os] ||
       "machine";
-    return `<tr data-id="${esc(n.id)}" data-order-key="${esc(machineOrderKey(n))}"><td class="name-column"><div class="machine-cell"><button type="button" class="os-icon machine-drag-handle" data-action="drag-machine" data-order-key="${esc(machineOrderKey(n))}" aria-label="Reorder ${esc(n.name)}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" title="Drag to reorder. Keyboard: Alt+Up or Alt+Down.">${icon(platformIcon)}</button><div class="machine-text"><div class="machine-title"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.targetName || n.name)}">${esc(n.name)}</button>${contextChips(n)}${proxyChips(n)}</div><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version"> · ${esc(n.software?.version || "Unknown version")}</span></small></div><button class="icon-button machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="Actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(metrics)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${metrics.system?.logicalCPUs ? `<small>${plural(metrics.system.logicalCPUs, "core")}</small>` : ""}</td>${gpuColumn}<td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
+    return `<tr data-id="${esc(n.id)}" data-order-key="${esc(machineOrderKey(n))}"><td class="name-column"><div class="machine-cell"><button type="button" class="os-icon machine-drag-handle" data-action="drag-machine" data-order-key="${esc(machineOrderKey(n))}" aria-label="Reorder ${esc(n.name)}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" title="Drag to reorder. Keyboard: Alt+Up or Alt+Down.">${icon(platformIcon)}</button><div class="machine-text"><div class="machine-title"><button class="machine-name" data-action="details" data-id="${esc(n.id)}" title="${esc(n.targetName || n.name)}">${esc(n.name)}</button>${contextChips(n)}${proxyChips(n)}</div><small>${esc(osName(n.os))} · ${esc(n.system?.arch || n.software?.arch || "Unknown")}<span class="machine-version" title="${esc(version)}"> · ${esc(version)}</span></small></div><button class="icon-button machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="Actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div></td><td class="status-column">${badge(machineState(n))}${detail ? `<small>${esc(detail)}</small>` : ""}</td><td class="resource-column connection-column" data-label="Connections">${connectionCell(metrics)}</td><td class="resource-column cpu-column" data-label="CPU">${meter(sys?.cpuUsagePercent, "CPU utilization")}${metrics.system?.logicalCPUs ? `<small>${plural(metrics.system.logicalCPUs, "core")}</small>` : ""}</td>${gpuColumn}<td class="resource-column memory-column" data-label="Memory">${meter(memory, "Memory utilization")}${memory == null ? "" : `<small>${bytes(sys.memoryUsedBytes)} of ${bytes(sys.memoryTotalBytes)}</small>`}</td><td class="resource-column disk-column" data-label="Disk">${meter(diskPercent, "Disk utilization")}${diskPercent == null ? "" : `<small>${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small>`}</td></tr>`;
   });
 }
 /** @param {Machine[]} nodes @returns {MachineGroup[]} */
@@ -2174,7 +2231,13 @@ document.addEventListener(
   },
   true,
 );
-window.addEventListener("resize", () => closeMachineMenu());
+window.addEventListener("resize", () => {
+  closeMachineMenu();
+  if (machineDrag) {
+    cancelMachineDrag();
+    render();
+  }
+});
 document.addEventListener("input", (event) => {
   if (!(event.target instanceof HTMLInputElement) || event.target.id !== "machine-search") return;
   state.search = event.target.value;

@@ -967,6 +967,13 @@ td strong {
 .machine-text {
   min-width: 0;
 }
+.machine-version {
+  display: inline-block;
+  max-width: 23ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
 .os-icon {
   display: grid;
   place-items: center;
@@ -993,13 +1000,40 @@ td strong {
   user-select: none;
 }
 .machine-dragging {
-  opacity: 0.45;
+  opacity: 0;
 }
-.machine-drop-before {
-  box-shadow: inset 0 2px 0 var(--action);
+.machine-drop-placeholder {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px 20px;
+  border: 2px dashed var(--action);
+  border-radius: 7px;
+  background: var(--soft);
+  color: var(--action);
+  pointer-events: none;
+  overflow: hidden;
+  text-align: center;
 }
-.machine-drop-after {
-  box-shadow: inset 0 -2px 0 var(--action);
+.machine-drop-placeholder strong {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.machine-drop-placeholder small {
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .reordering-machines .machine-table tbody tr {
+    transition: transform 120ms ease;
+  }
 }
 .machine-drag-preview {
   position: fixed;
