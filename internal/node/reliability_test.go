@@ -3,6 +3,7 @@ package node
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -62,6 +63,68 @@ func TestMultibyteTaskErrorSurvivesPruneAndRestart(t *testing.T) {
 	if err != nil || !got.Pruned || got.State != "failed" || got.Error != prefix+" [truncated]" {
 		t.Fatalf("pruned task retry was not recovered with the complete UTF-8 prefix: %s, pruned=%t, error length=%d, err=%v",
 			got.State, got.Pruned, len(got.Error), err)
+	}
+}
+
+func TestLegacyTombstoneChecksumSurvivesRestart(t *testing.T) {
+	for _, corrupt := range []bool{false, true} {
+		name := "migrate"
+		if corrupt {
+			name = "reject corruption"
+		}
+		t.Run(name, func(t *testing.T) {
+			n := localNode(t, nil)
+			cfg, path := n.Config, n.tombstonePath()
+			if err := n.Close(); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			task := recentTask("legacy-multibyte", now)
+			task.Spec.TimeoutSeconds = 3600
+			// Reproduce the previous writer before JSON encoding. Include a
+			// literal replacement rune and an escaped backslash for comparison.
+			prefix := strings.Repeat("a", 4083) + `\ufffd` + "\uFFFD" + "aa"
+			message := prefix + "€€"
+			stone := taskTombstone{
+				ID: task.ID, Owner: task.Owner, Spec: specDigest(task.Spec), Capability: task.Spec.Capability,
+				State: "failed", Error: strings.ToValidUTF8(message[:4096], "\uFFFD\uFFFD") + " [truncated]", Pruned: now, CleanupPending: true,
+			}
+			// Reproduce encoding/json's older spelling of each invalid byte
+			// independently of the toolchain running the test.
+			legacy := []byte(`aa\ufffd\ufffd [truncated]`)
+			encodeLegacy := func() []byte {
+				return bytes.Replace(model.JSON(stone), []byte("aa\uFFFD\uFFFD [truncated]"), legacy, 1)
+			}
+			stone.Checksum = fmt.Sprintf("%x", sha256.Sum256(encodeLegacy()))
+			line := append(encodeLegacy(), '\n')
+			if !bytes.Contains(line, []byte("\ufffd"+`aa\ufffd\ufffd [truncated]`)) {
+				t.Fatalf("fixture did not produce legacy bytes: %q", line[len(line)-240:])
+			}
+			if corrupt {
+				line = bytes.Replace(line, []byte(`"state":"failed"`), []byte(`"state":"succeeded"`), 1)
+			}
+			if err := store.Bytes(path, line, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if corrupt {
+				if err := n.loadTombstones(); err == nil || !strings.Contains(err.Error(), "checksum") {
+					t.Fatalf("corrupt previous-format tombstone accepted: %v", err)
+				}
+				if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, line) {
+					t.Fatalf("corrupt journal was modified: %v", err)
+				}
+				return
+			}
+			n = openLocalNode(t, cfg)
+			got, err := n.startTaskContext(t.Context(), task.Owner, task.Spec)
+			if err != nil || !got.Pruned || got.State != "failed" || got.Error != prefix+"\uFFFD\uFFFD [truncated]" {
+				t.Fatalf("legacy task not recovered: state=%s, pruned=%t, err=%v", got.State, got.Pruned, err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || bytes.Equal(after, line) || bytes.Contains(after, []byte(`aa\ufffd\ufffd`)) {
+				t.Fatalf("legacy journal was not rewritten canonically: %v", err)
+			}
+		})
 	}
 }
 

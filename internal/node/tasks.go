@@ -219,9 +219,6 @@ func (n *Node) startTaskContext(parent context.Context, owner string, spec model
 	if !safeID.MatchString(spec.ID) {
 		return model.Task{}, errors.New("invalid task ID")
 	}
-	if _, ok := n.providers[spec.Capability]; !ok {
-		return model.Task{}, fmt.Errorf("unknown capability %q", spec.Capability)
-	}
 	if len(spec.Args) == 0 {
 		spec.Args = model.JSON(map[string]any{})
 	}
@@ -260,6 +257,11 @@ func (n *Node) startTaskContext(parent context.Context, owner string, spec model
 		}
 		pending := n.accepting[spec.ID]
 		if pending == nil {
+			if _, ok := n.providers[spec.Capability]; !ok {
+				n.releaseTaskIDLocked(spec.ID)
+				n.mu.Unlock()
+				return model.Task{}, fmt.Errorf("unknown capability %q", spec.Capability)
+			}
 			n.accepting[spec.ID] = reservation
 			n.mu.Unlock()
 			break

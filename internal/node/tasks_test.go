@@ -294,6 +294,50 @@ func TestRecordsInBracketedDataPath(t *testing.T) {
 	}
 }
 
+func TestTaskRetryAfterProviderRemoval(t *testing.T) {
+	n := localNode(t, func(c *Config) { c.TaskRetentionHours = 1 })
+	cfg := n.Config
+	now := time.Now().UTC()
+	retained := recentTask("retained-provider", now)
+	pruned := recentTask("pruned-provider", now.Add(-2*time.Hour))
+	for _, task := range []*model.Task{retained, pruned} {
+		task.Spec.Capability = "custom.removed"
+		task.Spec.TimeoutSeconds = 3600
+		n.mu.Lock()
+		n.tasks[task.ID] = task
+		n.mu.Unlock()
+		if err := store.Write(n.taskPath(task.ID), task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := n.pruneTasks(now); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
+	}
+	n = openLocalNode(t, cfg)
+	for _, task := range []*model.Task{retained, pruned} {
+		got, err := n.startTaskContext(t.Context(), task.Owner, task.Spec)
+		if err != nil || got.ID != task.ID || got.State != task.State || got.Pruned != (task == pruned) {
+			t.Fatalf("retry of %s: %+v, %v", task.ID, got, err)
+		}
+		if _, err := n.startTaskContext(t.Context(), "another-owner", task.Spec); err == nil || !strings.Contains(err.Error(), "different owner") {
+			t.Fatalf("retry by another owner of %s: %v", task.ID, err)
+		}
+	}
+	fresh := retained.Spec
+	fresh.ID = "fresh"
+	if _, err := n.startTaskContext(t.Context(), retained.Owner, fresh); err == nil || !strings.Contains(err.Error(), "unknown capability") {
+		t.Fatalf("fresh submission with missing provider: %v", err)
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.taskIDs[fresh.ID] != "" || n.accepting[fresh.ID] != nil || n.tasks[fresh.ID] != nil {
+		t.Fatal("rejected fresh submission reserved the ID")
+	}
+}
+
 func TestRecordDirectoryReadErrors(t *testing.T) {
 	n := localNode(t, nil)
 	ctx := context.Background()

@@ -21,6 +21,10 @@ try {
     $ProgressPreference = 'SilentlyContinue'
     Invoke-RestMethod -Uri "$base/control-manifest.json"
   }
+  $tag = $manifest.version
+  if ($tag -isnot [string] -or $tag -cnotmatch '\A[a-zA-Z0-9][a-zA-Z0-9_.+-]*\z' -or
+      ($env:CONTROL_VERSION -and $tag -cne $env:CONTROL_VERSION)) { throw 'Invalid release manifest version' }
+  $base = "https://github.com/$repo/releases/download/$tag"
   $metadata = @($manifest.assets | Where-Object { $_.file -eq $asset })
   if ($metadata.Count -ne 1) { throw 'Release does not contain this platform' }
   $exe = Join-Path $tmp 'control.exe'

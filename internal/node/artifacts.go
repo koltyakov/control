@@ -462,6 +462,25 @@ func (n *Node) pullArtifact(ctx context.Context, a model.Artifact) (_ model.Arti
 	return a, store.Write(n.artifactPath(a.ID)+".json", storedArtifact{Artifact: a, Owners: []string{owner}})
 }
 
+func listArtifacts(entries []os.DirEntry, owner, node string, read func(string, *storedArtifact) error) ([]model.Artifact, error) {
+	artifacts := []model.Artifact{}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		var a storedArtifact
+		if err := read(entry.Name(), &a); errors.Is(err, os.ErrNotExist) {
+			continue // A concurrent deletion removed this entry.
+		} else if err != nil {
+			return nil, fmt.Errorf("read artifact metadata %s: %w", entry.Name(), err)
+		}
+		if !a.Deleting && a.visibleTo(owner, node) {
+			artifacts = append(artifacts, a.Artifact)
+		}
+	}
+	return artifacts, nil
+}
+
 func (n *Node) artifactMethod(ctx context.Context, caller, method string, args json.RawMessage) (any, error) {
 	var q struct {
 		ID          string         `json:"id"`
@@ -491,21 +510,9 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
-		owner := n.artifactOwner(ctx)
-		artifacts := []model.Artifact{}
-		for _, entry := range entries {
-			if !strings.HasSuffix(entry.Name(), ".json") {
-				continue
-			}
-			var a storedArtifact
-			if err = store.Read(filepath.Join(dir, entry.Name()), &a); err != nil {
-				return nil, err
-			}
-			if !a.Deleting && a.visibleTo(owner, n.Identity.ID) {
-				artifacts = append(artifacts, a.Artifact)
-			}
-		}
-		return artifacts, nil
+		return listArtifacts(entries, n.artifactOwner(ctx), n.Identity.ID, func(name string, dst *storedArtifact) error {
+			return store.Read(filepath.Join(dir, name), dst)
+		})
 	case "artifacts.delete":
 		if !digestID.MatchString(q.ID) {
 			return nil, errors.New("invalid artifact ID")

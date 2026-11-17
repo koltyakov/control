@@ -52,6 +52,54 @@ func (t taskTombstone) checksum() string {
 	return hex.EncodeToString(sum[:])
 }
 
+// Older writers could cut Error inside a UTF-8 rune. encoding/json wrote the
+// resulting invalid bytes as \ufffd, but reading and re-encoding writes the
+// literal replacement rune. Verify the old writer's exact bytes, accepting
+// no other difference from the canonical encoding.
+func (t taskTombstone) hasLegacyChecksum(raw []byte) bool {
+	if !digestID.MatchString(t.Checksum) || !bytes.Contains(raw, []byte(`\ufffd`)) {
+		return false
+	}
+	raw, ok := bytes.CutSuffix(bytes.TrimSuffix(raw, []byte{'\n'}), []byte(`,"checksum":"`+t.Checksum+`"}`))
+	if !ok {
+		return false
+	}
+	checksum := t.Checksum
+	t.Checksum = ""
+	canonical := model.JSON(t)
+	const errorField = `,"error":`
+	i := bytes.Index(canonical, []byte(errorField))
+	if i < 0 {
+		return false
+	}
+	i += len(errorField)
+	encodedError := model.JSON(t.Error)
+	suffix := canonical[i+len(encodedError) : len(canonical)-1]
+	rest, ok := bytes.CutPrefix(raw, canonical[:i])
+	if !ok {
+		return false
+	}
+	const replacement = "\uFFFD"
+	const escaped = `\ufffd`
+	for len(encodedError) > 0 {
+		// A literal replacement rune was already valid before the old writer.
+		if bytes.HasPrefix(encodedError, []byte(replacement)) && bytes.HasPrefix(rest, []byte(escaped)) {
+			rest, encodedError = rest[len(escaped):], encodedError[len(replacement):]
+		} else if len(rest) > 0 && rest[0] == encodedError[0] {
+			rest, encodedError = rest[1:], encodedError[1:]
+		} else {
+			return false
+		}
+	}
+	if !bytes.Equal(rest, suffix) {
+		return false
+	}
+	hash := sha256.New()
+	_, _ = hash.Write(raw)
+	_, _ = hash.Write([]byte{'}'})
+	return hex.EncodeToString(hash.Sum(nil)) == checksum
+}
+
 func (t taskTombstone) task() model.Task {
 	return model.Task{ID: t.ID, Owner: t.Owner, Spec: model.TaskSpec{ID: t.ID, Capability: t.Capability}, State: t.State, Error: t.Error, Created: t.Created, Updated: t.Updated, Pruned: true}
 }
@@ -96,8 +144,14 @@ func (n *Node) loadTombstones() error {
 			stale = true
 			continue
 		}
-		if !safeID.MatchString(t.ID) || t.Owner == "" || !digestID.MatchString(t.Spec) || !t.task().Terminal() || t.Pruned.IsZero() || (t.Checksum != "" && t.Checksum != t.checksum()) {
+		if !safeID.MatchString(t.ID) || t.Owner == "" || !digestID.MatchString(t.Spec) || !t.task().Terminal() || t.Pruned.IsZero() {
 			return fmt.Errorf("invalid task tombstone at line %d; journal was not modified", line)
+		}
+		if t.Checksum != "" && t.Checksum != t.checksum() {
+			if !t.hasLegacyChecksum(raw) {
+				return fmt.Errorf("invalid task tombstone checksum at line %d; journal was not modified", line)
+			}
+			stale = true
 		}
 		if task := n.tasks[t.ID]; task != nil {
 			if task.Owner != t.Owner || specDigest(task.Spec) != t.Spec {
