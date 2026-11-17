@@ -152,49 +152,70 @@ func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 // Called under g.mu. Renaming changes only gateway routing metadata, not work
 // admission or the signed installation proof retained for response recovery.
 func (g *Gateway) renameMachine(w http.ResponseWriter, r *http.Request, n model.Node, name string, force bool) {
-	if g.clientNameReserved(n.UserID, name) {
-		http.Error(w, "name is reserved for a client identity", http.StatusConflict)
-		return
-	}
-	for id, other := range g.nodes {
-		if id != n.ID && other.UserID == n.UserID && other.Name == name {
-			http.Error(w, "name is already registered", http.StatusConflict)
+	targets := []model.Node{n}
+	names := map[string]string{n.ID: name}
+	// Pairing is gateway-owned enrollment metadata, never a name suffix.
+	// Renaming System directly remains a context-only operation.
+	if n.HybridID != "" && n.HybridRole == "user" {
+		for _, other := range g.nodes {
+			if other.ID == n.ID || other.UserID != n.UserID || other.HybridID != n.HybridID {
+				continue
+			}
+			if len(targets) != 1 || other.HybridRole != "system" {
+				http.Error(w, "host rename requires one User and one System context", http.StatusConflict)
+				return
+			}
+			targets = append(targets, other)
+			names[other.ID] = enrollment.SystemName(name)
+		}
+		if len(targets) == 2 && len(enrollment.SystemName(name)) > 63 {
+			http.Error(w, "hybrid names must be at most 56 characters to leave room for -system", http.StatusBadRequest)
 			return
 		}
 	}
 	retracted := map[string]installation{}
-	for hash, i := range g.installations {
-		if i.UserID == n.UserID && g.installationName(i) == name && !i.Revoked && i.RedeemedID != n.ID && (i.RedeemedID != "" || time.Now().Before(i.ExpiresAt)) {
-			if i.RedeemedID != "" {
-				http.Error(w, "name has an existing enrollment", http.StatusConflict)
-				return
-			}
-			retracted[hash] = i
+	for _, target := range targets {
+		if !g.checkRename(w, target, names[target.ID], retracted) {
+			return
 		}
 	}
 	if len(retracted) > 0 && !force {
 		http.Error(w, enrollment.ErrPendingInvitation.Error(), http.StatusConflict)
 		return
 	}
-	old := g.machineStates[n.ID]
-	state := old
-	state.Name = name
-	updated := n
-	updated.Name = name
-	g.nodes[n.ID], g.machineStates[n.ID] = updated, state
-	persisted := change{nodes: []string{n.ID}, machineStates: []string{n.ID}, audit: []AuditEvent{g.auditEventLocked(r, "", "machine.rename", name, n.ID, "was "+n.Name)}}
+	oldStates := map[string]model.MachineState{}
+	persisted := change{}
+	for _, target := range targets {
+		if old, ok := g.machineStates[target.ID]; ok {
+			oldStates[target.ID] = old
+		}
+		state := g.machineStates[target.ID]
+		state.Name = names[target.ID]
+		updated := target
+		updated.Name = state.Name
+		g.nodes[target.ID], g.machineStates[target.ID] = updated, state
+		persisted.nodes = append(persisted.nodes, target.ID)
+		persisted.machineStates = append(persisted.machineStates, target.ID)
+		persisted.audit = append(persisted.audit, g.auditEventLocked(r, "", "machine.rename", state.Name, target.ID, "was "+target.Name))
+	}
 	for hash, i := range retracted {
 		i.Revoked = true
 		g.installations[hash] = i
 		persisted.invitations = append(persisted.invitations, hash)
 	}
 	if err := g.commit(persisted); err != nil {
-		g.nodes[n.ID], g.machineStates[n.ID] = n, old
+		for _, target := range targets {
+			g.nodes[target.ID] = target
+			delete(g.machineStates, target.ID)
+		}
+		maps.Copy(g.machineStates, oldStates)
 		maps.Copy(g.installations, retracted)
 		http.Error(w, "could not persist machine name", 500)
 		return
 	}
-	g.notifyMachineState(n.ID)
+	for _, target := range targets {
+		g.notifyMachineState(target.ID)
+	}
 	for _, peer := range g.peers {
 		if peer.userID != n.UserID {
 			continue
@@ -206,5 +227,30 @@ func (g *Gateway) renameMachine(w http.ResponseWriter, r *http.Request, n model.
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(state)
+	_ = json.NewEncoder(w).Encode(g.machineStates[n.ID])
+}
+
+// Called under g.mu before any rename is applied. Collect pending reservations
+// separately so a hard conflict on either name cannot retract an invitation.
+func (g *Gateway) checkRename(w http.ResponseWriter, n model.Node, name string, retracted map[string]installation) bool {
+	if g.clientNameReserved(n.UserID, name) {
+		http.Error(w, "name is reserved for a client identity", http.StatusConflict)
+		return false
+	}
+	for id, other := range g.nodes {
+		if id != n.ID && other.UserID == n.UserID && other.Name == name {
+			http.Error(w, "name is already registered", http.StatusConflict)
+			return false
+		}
+	}
+	for hash, i := range g.installations {
+		if i.UserID == n.UserID && g.installationName(i) == name && !i.Revoked && i.RedeemedID != n.ID && (i.RedeemedID != "" || time.Now().Before(i.ExpiresAt)) {
+			if i.RedeemedID != "" {
+				http.Error(w, "name has an existing enrollment", http.StatusConflict)
+				return false
+			}
+			retracted[hash] = i
+		}
+	}
+	return true
 }

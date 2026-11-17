@@ -1366,6 +1366,76 @@ async function assertProxyChoicesRecoverInOpenForm(page, snapshot) {
   }
 }
 
+async function assertHybridRename(page, snapshot) {
+  const base = { ...snapshot.nodes[0], online: false, disabled: false, controlPending: false },
+    user = { ...base, id: "rename-user", name: "vm.host", hybridId: "rename-pair", hybridRole: "user" },
+    system = { ...base, id: "rename-system", name: "old-host-system", hybridId: "rename-pair", hybridRole: "system" },
+    single = { ...base, id: "rename-single", name: "standalone-system", hybridId: undefined, hybridRole: undefined };
+  const statusRoute = (route) => route.fulfill({ json: { ...snapshot, nodes: [user, system, single] } });
+  const writes = [];
+  let conflict = true;
+  const renameRoute = async (route) => {
+    if (route.request().method() !== "PATCH") return route.fallback();
+    const body = route.request().postDataJSON(),
+      id = new URL(route.request().url()).pathname.split("/").pop();
+    writes.push({ id, ...body });
+    if (conflict) {
+      conflict = false;
+      return route.fulfill({ status: 409, body: "name has an existing invitation" });
+    }
+    if (id === user.id) {
+      user.name = body.name;
+      system.name = body.name + "-system";
+    } else {
+      assert.equal(id, single.id);
+      single.name = body.name;
+    }
+    await route.fulfill({ json: { name: body.name } });
+  };
+  await page.route("**/console/api/status", statusRoute);
+  await page.route("**/console/api/fleet/nodes/*", renameRoute);
+  try {
+    await refreshPage(page);
+    for (const context of ["System", "User"]) {
+      const row = page.locator(".machine-table tbody tr").filter({ has: page.getByRole("button", { name: user.name, exact: true }) });
+      await row.getByRole("button", { name: context, exact: true }).click();
+      await row.getByRole("button", { name: "Actions for " + user.name, exact: true }).click();
+      await page.locator("#machine-menu").getByRole("menuitem", { name: "Rename", exact: true }).click();
+      const input = page.getByLabel("New name");
+      assert.equal(await input.inputValue(), user.name, "Host rename must start with User's base alias regardless of selected chip");
+      assert.equal(await input.getAttribute("maxlength"), "56");
+      await page.locator("#modal-form").getByText(/renames both Hybrid contexts together/).waitFor();
+      const name = context === "System" ? "vm.renamed" : "vm.again";
+      await input.fill(name);
+      await page.locator("#modal-form button[type=submit]").click();
+      if (context === "System") {
+        await page.locator("#force-confirm").waitFor();
+        assert.equal(user.name, "vm.host", "A conflict must not change either alias");
+        assert.equal(system.name, "old-host-system");
+        assert.equal(writes.length, 1, "Conflicts must not trigger automatic retries");
+        await page.locator("#force-confirm").check();
+        await page.locator("#modal-form button[type=submit]").click();
+      }
+      await page.locator("#modal-form").waitFor({ state: "detached" });
+      await page.getByRole("button", { name, exact: true }).waitFor();
+      assert.equal(writes.at(-1).id, user.id, "Either chip must rename the host through User");
+      assert.equal(system.name, name + "-system");
+    }
+    assert.equal(writes.length, 3, "Each submission must send one atomic rename, not two sequential mutations");
+    await page.getByRole("button", { name: "Actions for " + single.name, exact: true }).click();
+    await page.locator("#machine-menu").getByRole("menuitem", { name: "Rename", exact: true }).click();
+    assert.equal(await page.getByLabel("New name").getAttribute("maxlength"), "63", "An unrelated -system suffix must not imply pairing");
+    await page.getByLabel("New name").fill("single-renamed");
+    await page.locator("#modal-form button[type=submit]").click();
+    await page.locator("#modal-form").waitFor({ state: "detached" });
+    assert.equal(writes.at(-1).id, single.id);
+  } finally {
+    await page.unroute("**/console/api/fleet/nodes/*", renameRoute);
+    await page.unroute("**/console/api/status", statusRoute);
+    await refreshPage(page);
+  }
+}
+
 // Removing one context of a grouped host must name the one left running.
 async function assertHybridUnregister(page, snapshot) {
   const baseNode = { ...snapshot.nodes[0], status: "summary", activeCount: 0, leased: false, disabled: false, controlPending: false, online: true },
@@ -2511,6 +2581,7 @@ try {
   await assertProxyChips(page, snapshot);
   await assertProxyChoicesRecoverInOpenForm(page, snapshot);
   assert.equal(machineMutations, mutationsBeforeStartup, "Preparing startup commands must not mutate machine lifecycle policy");
+  await assertHybridRename(page, snapshot);
   await assertHybridUnregister(page, snapshot);
 
   await page.locator("#account-button").click();

@@ -3276,12 +3276,19 @@ document.addEventListener("click", async (event) => {
         button.disabled = false;
       }
     }
-    if (action === "rename" && node)
+    if (action === "rename" && node) {
+      const contexts = node.hybridId
+        ? (state.snapshot?.nodes || []).filter((n) => n.hybridId === node.hybridId)
+        : [];
+      const user = contexts.find((n) => n.hybridRole === "user"),
+        system = contexts.find((n) => n.hybridRole === "system"),
+        renameHost = contexts.length === 2 && !!user && !!system,
+        initialName = renameHost && user ? user.name : node.name;
       formDialog(
-        "Rename " + node.name,
-        `<p>This changes its routing name without restarting the node. Project-local scenario files on CLI hosts are not updated.</p><label>New name<input name="name" value="${esc(node.name)}" required maxlength="63" pattern="[a-zA-Z0-9]([a-zA-Z0-9._]|-){0,62}"></label>`,
+        "Rename " + initialName,
+        `<p>${renameHost ? "This renames both Hybrid contexts together. User uses the new name; System uses the new name plus -system." : "This changes its routing name."} Nodes are not restarted. Project-local scenario files on CLI hosts are not updated.</p><label>New name<input name="name" value="${esc(initialName)}" required maxlength="${renameHost ? 56 : 63}" pattern="[a-zA-Z0-9]([a-zA-Z0-9._]|-){0,${renameHost ? 55 : 62}}"></label>`,
         async (fields, current) => {
-          await api(`fleet/nodes/${encodeURIComponent(id)}`, "PATCH", {
+          await api(`fleet/nodes/${encodeURIComponent(renameHost && user ? user.id : id)}`, "PATCH", {
             name: fields.name,
             force: fields.force === "on",
           });
@@ -3289,6 +3296,7 @@ document.addEventListener("click", async (event) => {
           toast("Machine renamed");
         },
       );
+    }
     if (action === "toggle" && node)
       confirmAction(
         (node.disabled ? "Enable " : "Disable ") + node.name,

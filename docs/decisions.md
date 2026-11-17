@@ -822,6 +822,8 @@ Windows User to System migration can run only when the installed node already ha
 
 ## D089: Hybrid host grouping with explicit execution contexts
 
+The rename action's selected-context-only behavior is superseded by [D151](#d151-automatic-atomic-hybrid-companion-renames). Other context-specific actions and execution boundaries are unchanged.
+
 The offline-User metric display is superseded by [D091](#d091-system-telemetry-for-an-offline-hybrid-user); selection and execution boundaries remain unchanged.
 
 Refine D087's console presentation to show one host row with selectable User and System chips. Derive pairing from redeemed, fleet-owned invitation metadata, not a name suffix or a node assertion. Count that host once in machine and availability counters while retaining real per-context work counts. Online means at least one context is online; selecting a chip chooses which context's metrics and lifecycle actions are shown.
@@ -1331,3 +1333,11 @@ This supersedes only D147's accepted indefinite update starvation. Existing prox
 Store optional console machine order in browser local storage, scoped by gateway origin, authenticated fleet ID and role. Persist node IDs and gateway-issued Hybrid IDs rather than names or selected context IDs. This keeps positions stable through renames and User/System chip changes without changing directory records, gateway APIs, or worker selection.
 
 Use the existing platform icon as a pointer/touch drag handle, saving immediately on drop, with Alt+Up/Down for keyboard reordering. Keep Overview and Machines consistent without an ordering dialog. Freeze row rendering during capture, show the insertion point, and auto-scroll at the list edges. Reorder only visible slots so hidden machines retain their positions; reconcile identities with the latest snapshot before saving. New machines follow saved entries in name order; absent entries are ignored. Column sorts are temporary and do not erase the preference. Invalid storage falls back to name order, and failed writes leave the existing order unchanged. Preferences survive sign-out but do not sync across browsers. See [custom machine order](console.md#custom-machine-order).
+
+## D151: Automatic atomic Hybrid companion renames
+
+Renaming a Hybrid User node renames its registered same-fleet System companion to `NEW_NAME-system` automatically through every client. Pair by gateway-owned Hybrid identity and roles, never by alias suffix. Repair existing alias mismatches rather than requiring the old System alias to match the User alias. Missing companions do not block a single-node rename; ambiguous pairing is rejected. Direct System renames remain independent.
+
+Validate both destination names, including client identities and invitation reservations, before changing either. Commit both directory records, routing overrides, audit events and explicitly forced pending-invitation retractions in one SQLite transaction. Roll back all in-memory changes on failure and notify both nodes only after commit. Retain signed installation proofs, admission revisions, credentials and established sessions.
+
+The console's Rename action edits the host's base name from either context chip and submits one User rename, not two sequential mutations. This supersedes only D087/D089's independent rename behavior. Other lifecycle actions, execution targeting, privileges and task stores remain separate. Project-local runbook migration remains limited to the node explicitly selected by the CLI or terminal dashboard. See [rename protocol](protocol.md#gateway-observation) and [Hybrid console actions](console.md#hybrid-rows-and-counters).
