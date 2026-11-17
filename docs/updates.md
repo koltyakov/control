@@ -128,19 +128,78 @@ Dispatch rejects a branch ref or a mismatched tag. Tags with a prerelease suffix
 make release-local VERSION=v0.2.0
 ```
 
-Attach `dist/control-manifest.json`, `dist/control-manifest.sigstore`, `dist/checksums.txt`, and all six `dist/control_OS_ARCH` binaries to the GitHub release. Windows binaries have an `.exe` suffix. The gateway expects raw binaries, not archives. The manifest records each binary's OS, architecture, filename, byte size, and SHA-256 digest. Its version must equal the release tag. The [release workflow](../.github/workflows/release.yml) uses Control's bundle builder, checks its output, signs only the manifest with keyless cosign using GitHub OIDC, then publishes the binaries, metadata, and `control-manifest.sigstore` signature bundle with generated release notes. The bundle contains JSON despite its `.sigstore` extension. Write and OIDC permissions are limited to the publication job. The unsigned checksum file supports the [shell installer](installation.md); no separate checksum signature is published.
+Attach `dist/control-manifest.json`, `dist/control-manifest.sig`, `dist/checksums.txt`, and all six `dist/control_OS_ARCH` binaries to the GitHub release. Windows binaries have an `.exe` suffix. The gateway expects raw binaries, not archives. The manifest records each binary's OS, architecture, filename, byte size, and SHA-256 digest. Its version must equal the release tag. The [release workflow](../.github/workflows/release.yml) builds and checks the unsigned bundle and build-time signer without secrets. A separate publication job signs the final manifest with Ed25519, verifies it against the compiled public-key pins, and publishes only public release assets. It uses the `release` GitHub environment and has `contents: write`, without OIDC permission. The unsigned checksum file supports the [shell installer](installation.md); no separate checksum signature is published.
 
 `make release-check` validates an existing `DIST_DIR`, default `dist`, without rebuilding or publishing. It checks the manifest's platform and filename constraints, verifies every file's size and SHA-256, and confirms `checksums.txt` matches the manifest. The equivalent command is `go run ./cmd/control-bundle --out dist --check`.
 
 The gateway ignores drafts and prereleases. It skips a release already selected, and a release published before the current deployment's creation time. This prevents periodic checks from immediately replacing a newer development push with an older release. A development push can explicitly select an older bundle. A new selection may replace a merely pending rollout, but not an unresolved node commit or a gateway switch. Legacy persisted `installing` deployments retain their conservative publication barrier until completion.
 
-The CLI self-updater, gateway release fetcher, and managed nodes' GitHub downloads require `control-manifest.sigstore`. They verify the exact manifest bytes, a Sigstore transparency-log entry and trusted signing time, with the certificate issuer `https://token.actions.githubusercontent.com` and exact identity `https://github.com/OWNER/REPO/.github/workflows/release.yml@refs/tags/TAG`. Sigstore trust roots are fetched through TUF using the library's embedded trust anchor. Verification failure stops before executable download or validation. Unsigned historical releases are rejected, including a same-version CLI check. The gateway may skip an already selected release without downloading it again.
+The CLI self-updater, gateway release fetcher, and managed nodes' GitHub downloads require `control-manifest.sig`. They verify the exact manifest bytes with a public key compiled from [the release keyring](../internal/update/release_keys.go), scoped by exact repository and key ID. The signature also binds the repository, release tag, key ID, and protocol version. Verification needs no certificates, transparency service, downloaded trust roots, or external executable. Missing, malformed, oversized, unknown-key, or incorrect signatures stop public executable download and validation, including a same-version CLI check. The gateway may skip an already selected release without downloading it again. Managed nodes retain their authenticated gateway fallback.
 
-This is a clean rename without a legacy alias. Existing installations need a one-time reinstall or development push. See [D152](decisions.md#d152-one-release-signature-bundle-with-a-short-filename).
+This is a clean cutover from Sigstore, without legacy filenames or verification fallback. Existing installations need a one-time trusted reinstall or superuser development push. Current updaters reject old Sigstore-only releases. Do not disable verification to migrate. See [D153](decisions.md#d153-pinned-ed25519-release-manifests).
 
-Trust metadata normally comes from `https://tuf-repo-cdn.sigstore.dev`. If that endpoint rejects the deployment's location with HTTP 403, times out, rate-limits, returns a server error, or cannot be reached, Control tries the same file in Sigstore's official GitHub-hosted repository at `https://sigstore.github.io/root-signing/`. This changes only metadata transport. TUF still verifies the embedded anchor, signed root rotations, metadata expiry, and target digests; release identity and transparency checks remain mandatory. Invalid metadata and ordinary HTTP 404 responses do not trigger fallback. If neither endpoint works, the release is rejected and the current deployment remains selected. Automatic check errors appear in the gateway log as `release check`; a GitHub release being published does not itself confirm installation.
+Pinned signatures prove possession of a trusted release key, not execution by a particular GitHub workflow. There is no transparency-log proof or trusted signing timestamp. Protect the long-lived private key and the CI job allowed to use it. A compromised signing job can steal an exportable key. Existing release-selection checks are not complete rollback or freeze protection; a signed manifest's creation date alone does not prove freshness. Automatic check errors appear in the gateway log as `release check`; publication alone does not confirm installation.
 
-Development bundles remain explicitly superuser-published. Node runtime downloads trust the gateway's authenticated selected manifest and verify bytes against it. Bootstrap shell installers retain their checksum-based trust model; runtime signature verification does not authenticate a first installation script. Manual GitHub publication must include a signature from the exact tagged release workflow above.
+Development bundles remain explicitly superuser-published and do not need the public release key. Node runtime downloads trust the gateway's authenticated selected manifest and verify bytes against it. Bootstrap shell installers retain their checksum-based trust model; runtime signature verification does not authenticate a first installation script or executable. Manual GitHub publication must include a signature from a pinned key.
+
+### Release signing keys
+
+The current `koltyakov/control` pin is `release-2026-11-17`. Its public-key SHA-256 fingerprint is `767500973d493e0d351335a1cbe5b525d8dc9b73e806fd70ee950e5f289c7298`. The GitHub `release` environment restricts deployment to tags matching `v*.*.*`, without an additional manual approval gate. Missing or unknown pins reject public releases and the CI signer refuses to write an unverifiable signature. Development builds and superuser pushes remain available. Test keys are ephemeral and are never production pins.
+
+Generate a dedicated Ed25519 key on a trusted administration machine, outside the checkout. For example, with OpenSSL on Linux or macOS:
+
+```sh
+umask 077
+openssl genpkey -algorithm ED25519 -out "$HOME/control-release-private.pem"
+openssl pkey -in "$HOME/control-release-private.pem" -pubout -outform DER |
+  tail -c 32 | openssl base64 -A
+```
+
+The second command prints only the base64 raw 32-byte public key from the Ed25519 SubjectPublicKeyInfo. Review and add it to `internal/update/release_keys.go`, using a stable key ID. Example entry, with a placeholder rather than a usable key:
+
+```go
+var releaseKeys = ReleaseKeyring{
+    "koltyakov/control": {
+        "release-2026-11-17": "BASE64_RAW_32_BYTE_PUBLIC_KEY",
+    },
+}
+```
+
+Keep the public key in source, not a downloaded asset or mutable runtime setting. `CONTROL_RELEASE_REPO` changes download routing, not trusted keys. Forks must build their own reviewed repository/key pins. Never reuse node identities, gateway keys, or user credentials for release signing.
+
+Create and protect the GitHub `release` environment before publishing. Restrict allowed release tags, configure reviewers where available, and protect workflow/keyring changes. Configure its secret and variable:
+
+```sh
+gh secret set CONTROL_RELEASE_PRIVATE_KEY --env release < "$HOME/control-release-private.pem"
+gh variable set CONTROL_RELEASE_KEY_ID --env release --body release-2026-11-17
+```
+
+The secret is one unencrypted Ed25519 PKCS#8 PEM `PRIVATE KEY`. Keep an encrypted offline backup and record who can restore it. Never commit the private key, upload it as an artifact, print it, or pass it as a command-line argument. No initialization flag or public-key GitHub variable is needed.
+
+The standalone [signer](../cmd/control-sign/main.go) accepts the private key only on stdin. It validates the manifest and signing context before reading the key, checks the resulting signature against its compiled pins, and writes the public signature atomically:
+
+```sh
+go run ./cmd/control-sign --repository koltyakov/control --tag v0.2.0 \
+  --key-id release-2026-11-17 < "$HOME/control-release-private.pem"
+go run ./cmd/control-sign --check --repository koltyakov/control --tag v0.2.0
+```
+
+Run `make release-check` before signing. Do not change manifest bytes afterward. The signer is build-time tooling, not part of the shipped `control` command. CI builds it before the secret-bearing step, passes the key through stdin, removes the secret from the signer's environment, and performs an additional public verification before publishing. All release-workflow actions are pinned to commit SHAs.
+
+### Key rotation and recovery
+
+For planned rotation from A to B:
+
+1. Generate B separately and commit its public pin alongside A.
+2. Publish a bridge release signed by A whose binaries trust both keys.
+3. Upgrade installations to the bridge before switching the CI secret and key ID to B.
+4. Publish with B, then remove A from a later release after the migration window. Retaining A indefinitely retains its authority.
+
+An installation that missed the bridge must explicitly install that bridge version or use a trusted reinstall/development push. There is no automatic remote key discovery. Removing a key also makes its historical signatures unverifiable by the new binary.
+
+If A is lost, restore the encrypted backup. If no trusted key remains available, use a trusted reinstall or authenticated superuser development push to distribute new pins. An optional pre-pinned offline recovery key can help with loss, but every accepted key has full signing authority.
+
+If a key is compromised, disable publication, investigate CI and repository access, generate a new key, and distribute binaries that remove the old pin through a trusted recovery path. Do not sign the recovery only with the stolen key and assume that establishes trust. Old binaries still accept that key; a signed revocation file cannot force them to stop. A pre-pinned recovery key alone does not revoke it. If the gateway is compromised too, its development-push route is not a trustworthy recovery channel. Document the affected releases and coordinate manual recovery for installations that cannot be reached safely.
 
 ## Common keys and hidden administration help
 

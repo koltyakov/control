@@ -107,7 +107,7 @@ func (g *Gateway) fetchReleaseVerified(ctx context.Context, verify func(context.
 	if manifest.Version != latest.Tag {
 		return nil, errors.New("release tag and manifest version differ")
 	}
-	proofURL := assets["control-manifest.sigstore"]
+	proofURL := assets[update.ReleaseSignatureName]
 	if proofURL == "" {
 		return nil, errors.New("release lacks signed manifest bundle")
 	}
@@ -122,7 +122,7 @@ func (g *Gateway) fetchReleaseVerified(ctx context.Context, verify func(context.
 	if proofResp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("release signature: %s", proofResp.Status)
 	}
-	proof, err := io.ReadAll(io.LimitReader(proofResp.Body, (1<<20)+1))
+	proof, err := io.ReadAll(io.LimitReader(proofResp.Body, update.MaxReleaseSignatureSize+1))
 	if err != nil {
 		return nil, err
 	}

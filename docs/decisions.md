@@ -734,6 +734,8 @@ Keep permanent client identity and transport history in SQLite. Load bounded cac
 
 ## D078: Resource placement, explicit reconciliation and release signatures
 
+The Sigstore-specific release trust below is superseded by [D153](#d153-pinned-ed25519-release-manifests). Placement, reconciliation, and rejection of unauthenticated public executables remain unchanged.
+
 Selection excludes fresh known leases and update state, then scores active work per logical CPU plus CPU and memory pressure. Explicit memory, disk, CPU and freshness constraints reject missing or stale health. Unconstrained discovery can use directory-only candidates. Selection remains advisory; destination admission and leases own reservations.
 
 Expose explicit account-client workflow reconciliation by reading the persisted plan and querying stable child IDs. Return bounded summaries and unresolved query errors. Do not reconstruct grants, resume interrupted parents, or resubmit children. This extends D060 without treating absence as proof that execution never happened.
@@ -887,6 +889,8 @@ Treat download location separately from the selected deployment. A managed node 
 Keep every selected platform asset on the gateway, whether published by `make update` or fetched from a release. This permits private releases and public-network outages without giving nodes the gateway's GitHub token. Never send fleet credentials to GitHub, and refuse redirects for authenticated gateway downloads. Offer and startup-selection metadata carry only an optional repository name, never a caller-selected URL or credential. Old nodes ignore it, and absent metadata keeps gateway-only delivery. This extends D078's signed release trust and D096's startup catch-up without changing publication authority, update order, or idle admission. See [managed delivery](updates.md).
 
 ## D098: Sigstore trust metadata transport fallback
+
+Superseded by [D153](#d153-pinned-ed25519-release-manifests), which removes Sigstore and its trust-metadata downloads.
 
 The public Sigstore CDN and its Google Storage origin can reject a gateway's location with HTTP 403, preventing otherwise valid release verification. On that response, network failures, HTTP 408/429, or server errors, fetch the same metadata file from Sigstore's official GitHub-hosted TUF repository. Restrict this mapping to the canonical public CDN origin; do not accept arbitrary replacement URLs, roots, or verification bypasses.
 
@@ -1344,6 +1348,16 @@ The console's Rename action edits the host's base name from either context chip 
 
 ## D152: One release signature bundle with a short filename
 
+The Sigstore format and filename are superseded by [D153](#d153-pinned-ed25519-release-manifests). Publishing only one manifest signature and retaining unsigned installer checksums remain unchanged.
+
 Publish only `control-manifest.sigstore` as the JSON Sigstore bundle for `control-manifest.json`. Stop publishing a separate checksum signature because Control's consumers authenticate binary hashes through the signed manifest. Keep the unsigned `checksums.txt` for bootstrap installers and manual checksum checks. This refines D078's release asset contract without changing its signature, identity, transparency-log, or trust-root verification.
 
 Use the new filename consistently in release publication, CLI self-updates, gateway release ingestion, and managed nodes' GitHub downloads. Given the small installed base, use a clean rename rather than retaining a legacy alias. Migrate existing installations through a one-time reinstall or development push. See [release publication](updates.md#publish-github-releases).
+
+## D153: Pinned Ed25519 release manifests
+
+Replace Sigstore with standard-library Ed25519 verification and source-controlled public keys scoped by exact repository and key ID. Publish a bounded versioned `control-manifest.sig` over the exact manifest bytes and NUL-delimited purpose/repository/tag/key-ID context. Reject malformed envelopes, unknown pins, changed bytes, wrong context, and missing signatures before public executable download or execution. Keep binary hashes, executable validation, superuser development publication, authenticated gateway fallback, and idle rollout admission unchanged.
+
+The small installed base permits a clean cutover without a legacy verifier. This removes Sigstore's binary/dependency cost and online trust-root availability requirement, but gives up workflow-identity proofs, transparency records, and trusted signing time. A dedicated long-lived private key needs protected CI custody, encrypted offline backup, staged overlapping pins for planned rotation, and trusted reinstall/development-push recovery after loss or compromise. Old binaries cannot be forced to revoke a stolen key. Complete rollback/freeze protection and bootstrap authentication remain separate work.
+
+Build unsigned assets and the signer without secrets. Use a separate protected-environment publication job, expose the PKCS#8 secret only to a stdin-signing step, verify against compiled pins before writing and publication, and never ship signing tooling or private keys as release assets. Keep the initial keyring empty rather than generating a private key or trusting a fixture during implementation. Publication fails until an operator provisions a reviewed public pin and CI secret. This supersedes D078's Sigstore choice, D098, and D152's signature format/name. See [release signing and recovery](updates.md#release-signing-keys).

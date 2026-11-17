@@ -3,105 +3,139 @@ package update
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
+	"regexp"
 	"strings"
-	"time"
-
-	"github.com/sigstore/sigstore-go/pkg/bundle"
-	"github.com/sigstore/sigstore-go/pkg/root"
-	"github.com/sigstore/sigstore-go/pkg/tuf"
-	"github.com/sigstore/sigstore-go/pkg/verify"
-	"github.com/theupdateframework/go-tuf/v2/metadata"
 )
 
-// VerifyReleaseManifest authenticates the exact downloaded bytes against the
-// release workflow at the exact tag. TUF supplies Sigstore's rotating trust roots.
-func VerifyReleaseManifest(ctx context.Context, repository, tag string, manifest, proof []byte) error {
-	if len(manifest) > 64<<10 || len(proof) > 1<<20 {
-		return errors.New("release signature input exceeds limit")
-	}
-	var b bundle.Bundle
-	if err := b.UnmarshalJSON(proof); err != nil {
-		return fmt.Errorf("release signature bundle: %w", err)
-	}
-	opts := tuf.DefaultOptions().WithContext(ctx).WithDisableLocalCache().WithFetcher(trustFetcher{ctx: ctx})
-	trusted, err := root.FetchTrustedRootWithOptions(opts)
-	if err != nil {
-		return fmt.Errorf("sigstore trust roots: %w", err)
-	}
-	return verifyReleaseBundle(ctx, trusted, repository, tag, manifest, &b)
+const ReleaseSignatureName = "control-manifest.sig"
+const MaxReleaseManifestSize = 64 << 10
+const MaxReleaseSignatureSize = 4 << 10
+
+// ReleaseSignature is a versioned detached Ed25519 signature, not a key source.
+type ReleaseSignature struct {
+	Version   int    `json:"version"`
+	KeyID     string `json:"keyId"`
+	Signature []byte `json:"signature"`
 }
 
-func verifyReleaseBundle(ctx context.Context, trusted root.TrustedMaterial, repository, tag string, manifest []byte, b verify.SignedEntity) error {
+// ReleaseKeyring maps exact repositories and key IDs to base64 Ed25519 public keys.
+// Production uses only the reviewed pins in release_keys.go, never downloaded keys.
+type ReleaseKeyring map[string]map[string]string
+
+var releaseKeyIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+
+// VerifyReleaseManifest authenticates the exact manifest bytes with a pinned key.
+func VerifyReleaseManifest(ctx context.Context, repository, tag string, manifest, proof []byte) error {
+	return releaseKeys.Verify(ctx, repository, tag, manifest, proof)
+}
+
+// Verify permits isolated keyrings for build tooling and tests without changing
+// the process-wide production pins.
+func (keys ReleaseKeyring) Verify(ctx context.Context, repository, tag string, manifest, proof []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	verifier, err := verify.NewVerifier(trusted, verify.WithTransparencyLog(1), verify.WithObserverTimestamps(1))
+	if len(manifest) > MaxReleaseManifestSize || len(proof) > MaxReleaseSignatureSize {
+		return errors.New("release signature input exceeds limit")
+	}
+	sig, err := decodeReleaseSignature(proof)
+	if err != nil {
+		return fmt.Errorf("release signature: %w", err)
+	}
+	if sig.Version != 1 || !releaseKeyIDPattern.MatchString(sig.KeyID) || len(sig.Signature) != ed25519.SignatureSize {
+		return errors.New("release signature: invalid version, key ID, or signature length")
+	}
+	encoded, ok := keys[repository][sig.KeyID]
+	if !ok {
+		return errors.New("release signature: repository or key ID is not pinned")
+	}
+	public, err := base64.StdEncoding.Strict().DecodeString(encoded)
+	if err != nil || len(public) != ed25519.PublicKeySize {
+		return errors.New("release signature: invalid pinned public key")
+	}
+	message, err := ReleaseSignatureMessage(repository, tag, sig.KeyID, manifest)
 	if err != nil {
 		return err
 	}
-	identity, err := verify.NewShortCertificateIdentity("https://token.actions.githubusercontent.com", "", "https://github.com/"+repository+"/.github/workflows/release.yml@refs/tags/"+tag, "")
-	if err != nil {
-		return err
-	}
-	_, err = verifier.Verify(b, verify.NewPolicy(verify.WithArtifact(bytes.NewReader(manifest)), verify.WithCertificateIdentity(identity)))
-	if err != nil {
-		return fmt.Errorf("release signature verification: %w", err)
+	if !ed25519.Verify(ed25519.PublicKey(public), message, sig.Signature) {
+		return errors.New("release signature: verification failed")
 	}
 	return ctx.Err()
 }
 
-type trustFetcher struct {
-	ctx    context.Context
-	client *http.Client
+// ReleaseSignatureMessage defines the v1 signing protocol for build-time tooling.
+// NUL-delimited context fields exclude NUL themselves. Manifest bytes are last
+// and are never reserialized, so even whitespace changes invalidate a signature.
+func ReleaseSignatureMessage(repository, tag, keyID string, manifest []byte) ([]byte, error) {
+	parts := strings.Split(repository, "/")
+	if len(repository) > 256 || !repositoryPattern.MatchString(repository) || len(parts) != 2 ||
+		parts[0] == "." || parts[0] == ".." || parts[1] == "." || parts[1] == ".." ||
+		!versionPattern.MatchString(tag) || !releaseKeyIDPattern.MatchString(keyID) {
+		return nil, errors.New("release signature: invalid repository, tag, or key ID")
+	}
+	if len(manifest) > MaxReleaseManifestSize {
+		return nil, errors.New("release manifest exceeds limit")
+	}
+	var metadata Manifest
+	if err := json.Unmarshal(manifest, &metadata); err != nil {
+		return nil, errors.New("release signature: invalid manifest JSON")
+	}
+	if err := metadata.Validate(); err != nil {
+		return nil, fmt.Errorf("release signature: %w", err)
+	}
+	if metadata.Version != tag {
+		return nil, errors.New("release tag and manifest version differ")
+	}
+	return append([]byte("control-release-manifest-v1\x00"+repository+"\x00"+tag+"\x00"+keyID+"\x00"), manifest...), nil
 }
 
-func (f trustFetcher) DownloadFile(target string, limit int64, _ time.Duration) ([]byte, error) {
-	client := f.client
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+func decodeReleaseSignature(data []byte) (ReleaseSignature, error) {
+	var sig ReleaseSignature
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return sig, errors.New("expected signature object")
 	}
-	data, err := f.download(client, target, limit)
-	if err == nil || f.ctx.Err() != nil {
-		return data, err
+	seen := map[string]bool{}
+	for decoder.More() {
+		token, err = decoder.Token()
+		if err != nil {
+			return sig, errors.New("invalid signature field")
+		}
+		name, ok := token.(string)
+		if !ok || seen[name] {
+			return sig, errors.New("duplicate or invalid signature field")
+		}
+		seen[name] = true
+		switch name {
+		case "version":
+			err = decoder.Decode(&sig.Version)
+		case "keyId":
+			err = decoder.Decode(&sig.KeyID)
+		case "signature":
+			var encoded string
+			if err = decoder.Decode(&encoded); err == nil {
+				sig.Signature, err = base64.StdEncoding.Strict().DecodeString(encoded)
+			}
+		default:
+			return sig, errors.New("unknown signature field")
+		}
+		if err != nil {
+			return sig, errors.New("invalid signature field value")
+		}
 	}
-	var status *metadata.ErrDownloadHTTP
-	var network *url.Error
-	retry := errors.As(err, &network)
-	if errors.As(err, &status) {
-		retry = status.StatusCode == http.StatusForbidden || status.StatusCode == http.StatusRequestTimeout || status.StatusCode == http.StatusTooManyRequests || status.StatusCode >= http.StatusInternalServerError
+	if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
+		return sig, errors.New("incomplete signature object")
 	}
-	u, parseErr := url.Parse(target)
-	if !retry || parseErr != nil || u.Scheme != "https" || u.Host != "tuf-repo-cdn.sigstore.dev" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !strings.HasPrefix(u.Path, "/") {
-		return nil, err
+	var trailing json.RawMessage
+	if err = decoder.Decode(&trailing); err != io.EOF {
+		return sig, errors.New("trailing signature data")
 	}
-	// Sigstore publishes the same signed TUF repository here before promoting
-	// it to the CDN. This changes transport only: the TUF updater still verifies
-	// every root rotation, metadata signature, expiry, and target digest.
-	return f.download(client, "https://sigstore.github.io/root-signing"+u.EscapedPath(), limit)
-}
-
-func (f trustFetcher) download(client *http.Client, target string, limit int64) ([]byte, error) {
-	req, err := http.NewRequestWithContext(f.ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, &metadata.ErrDownloadHTTP{StatusCode: resp.StatusCode, URL: target}
-	}
-	limit = min(limit, 16<<20)
-	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
-	if err == nil && int64(len(data)) > limit {
-		err = errors.New("trust metadata exceeds limit")
-	}
-	return data, err
+	return sig, nil
 }

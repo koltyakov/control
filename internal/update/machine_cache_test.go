@@ -140,7 +140,7 @@ func TestMachineCachePreservesReleasePreference(t *testing.T) {
 						return
 					}
 					_ = json.NewEncoder(w).Encode(manifest)
-				case "/release/control-manifest.sigstore":
+				case "/release/control-manifest.sig":
 					_, _ = w.Write([]byte("fixture proof"))
 				case "/release/" + asset.File:
 					public.Add(1)

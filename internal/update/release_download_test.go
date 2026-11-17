@@ -15,13 +15,16 @@ import (
 	"testing"
 
 	"github.com/koltyakov/control/internal/gatewayroute"
+	"github.com/koltyakov/control/internal/testutil"
 )
 
 func TestManagedDownloadPrefersExactSignedReleaseWithGatewayFallback(t *testing.T) {
 	data := []byte("trusted managed executable")
 	sum := sha256.Sum256(data)
 	asset := Asset{OS: "linux", Arch: "amd64", File: AssetName("linux", "amd64"), Size: int64(len(data)), SHA256: hex.EncodeToString(sum[:])}
-	for _, scenario := range []string{"matching", "missing", "unavailable", "version-mismatch", "checksum-mismatch", "size-mismatch", "bad-signature", "missing-proof", "missing-binary", "corrupt-binary", "no-repository", "both-unavailable"} {
+	signer := testutil.NewReleaseSigner(t)
+	keys := ReleaseKeyring{"owner/repo": {signer.KeyID: signer.PublicKey()}}
+	for _, scenario := range []string{"matching", "missing", "unavailable", "version-mismatch", "checksum-mismatch", "size-mismatch", "bad-signature", "wrong-repo", "wrong-tag", "tampered-bytes", "malformed-proof", "oversized-proof", "missing-proof", "missing-binary", "corrupt-binary", "no-repository", "both-unavailable"} {
 		t.Run(scenario, func(t *testing.T) {
 			manifest := Manifest{Version: "v1", Assets: []Asset{asset}}
 			if scenario == "version-mismatch" {
@@ -33,6 +36,34 @@ func TestManagedDownloadPrefersExactSignedReleaseWithGatewayFallback(t *testing.
 			}
 			if scenario == "size-mismatch" {
 				manifest.Assets[0].Size++
+			}
+			manifestBytes, err := json.Marshal(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			proof := signer.Sign(t, "owner/repo", "v1", manifestBytes)
+			untrusted := false
+			switch scenario {
+			case "bad-signature":
+				proof = testutil.NewReleaseSigner(t).Sign(t, "owner/repo", "v1", manifestBytes)
+				untrusted = true
+			case "wrong-repo":
+				proof = signer.Sign(t, "other/repo", "v1", manifestBytes)
+				untrusted = true
+			case "wrong-tag":
+				proof = signer.Sign(t, "owner/repo", "other-tag", manifestBytes)
+				untrusted = true
+			case "tampered-bytes":
+				manifestBytes = append(manifestBytes, ' ')
+				untrusted = true
+			case "malformed-proof":
+				proof = []byte(`{}`)
+				untrusted = true
+			case "oversized-proof":
+				proof = []byte(strings.Repeat(" ", MaxReleaseSignatureSize+1))
+				untrusted = true
+			case "missing-proof":
+				untrusted = true
 			}
 			var binaries, fallbacks, proofs atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -61,13 +92,13 @@ func TestManagedDownloadPrefersExactSignedReleaseWithGatewayFallback(t *testing.
 						http.Error(w, "unavailable", http.StatusServiceUnavailable)
 						return
 					}
-					_ = json.NewEncoder(w).Encode(manifest)
-				case "/release/control-manifest.sigstore":
+					_, _ = w.Write(manifestBytes)
+				case "/release/control-manifest.sig":
 					if scenario == "missing-proof" {
 						http.NotFound(w, r)
 						return
 					}
-					_, _ = w.Write([]byte("fixture signature"))
+					_, _ = w.Write(proof)
 				case "/release/" + asset.File:
 					binaries.Add(1)
 					if scenario == "missing-binary" {
@@ -85,22 +116,19 @@ func TestManagedDownloadPrefersExactSignedReleaseWithGatewayFallback(t *testing.
 				}
 			}))
 			defer server.Close()
-			verify := func(_ context.Context, repository, tag string, manifest, proof []byte) error {
+			verify := func(ctx context.Context, repository, tag string, manifest, proof []byte) error {
 				proofs.Add(1)
-				if repository != "owner/repo" || tag != "v1" || len(manifest) == 0 || string(proof) != "fixture signature" {
+				if repository != "owner/repo" || tag != "v1" || len(manifest) == 0 {
 					t.Fatal("wrong signed release verification inputs")
 				}
-				if scenario == "bad-signature" {
-					return errors.New("invalid signature")
-				}
-				return nil
+				return keys.Verify(ctx, repository, tag, manifest, proof)
 			}
 			path := filepath.Join(t.TempDir(), "binary")
 			releases := server.URL + "/release"
 			if scenario == "no-repository" {
 				releases = ""
 			}
-			err := downloadPreferred(t.Context(), server.Client(), "owner/repo", "v1", releases, server.URL+"/gateway", "private-fleet-key", path, asset, verify)
+			err = downloadPreferred(t.Context(), server.Client(), "owner/repo", "v1", releases, server.URL+"/gateway", "private-fleet-key", path, asset, verify)
 			if scenario == "both-unavailable" {
 				if err == nil {
 					t.Fatal("unavailable sources acknowledged a download")
@@ -120,7 +148,7 @@ func TestManagedDownloadPrefersExactSignedReleaseWithGatewayFallback(t *testing.
 			} else if fallbacks.Load() != 1 {
 				t.Fatal("gateway fallback was not used exactly once", fallbacks.Load())
 			}
-			if strings.HasSuffix(scenario, "mismatch") || scenario == "bad-signature" {
+			if strings.HasSuffix(scenario, "mismatch") || untrusted {
 				if binaries.Load() != 0 {
 					t.Fatal("different or untrusted release reached executable download")
 				}

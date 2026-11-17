@@ -37,12 +37,12 @@ jobs:
             exit 1
           fi
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           ref: ${{ env.RELEASE_TAG }}
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version-file: go.mod
           cache: true
@@ -56,21 +56,18 @@ jobs:
           CONTROL_TEST_SUITE: e2e
         run: make test-compose
 
-  publish:
+  build:
     needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    permissions:
-      contents: write
-      id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           ref: ${{ env.RELEASE_TAG }}
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version-file: go.mod
           cache: true
@@ -79,10 +76,45 @@ jobs:
         run: go run ./cmd/control-bundle --version "$RELEASE_TAG"
       - name: Verify bundle checksums
         run: make release-check
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v4.1.2
+      - name: Build release signer without secrets
+        run: go build -trimpath -o release-tools/control-sign ./cmd/control-sign
+      - name: Upload unsigned bundle and signer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-release
+          path: |
+            dist/
+            release-tools/control-sign
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Download this run's unsigned bundle and signer
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: unsigned-release
+      - name: Prepare signer
+        run: chmod 700 release-tools/control-sign
       - name: Sign release manifest
-        run: cosign sign-blob --yes --bundle dist/control-manifest.sigstore dist/control-manifest.json
+        env:
+          CONTROL_RELEASE_PRIVATE_KEY: ${{ secrets.CONTROL_RELEASE_PRIVATE_KEY }}
+          CONTROL_RELEASE_KEY_ID: ${{ vars.CONTROL_RELEASE_KEY_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$CONTROL_RELEASE_PRIVATE_KEY" |
+            env -u CONTROL_RELEASE_PRIVATE_KEY ./release-tools/control-sign \
+              --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
+              --key-id "$CONTROL_RELEASE_KEY_ID"
+      - name: Verify pinned release signature
+        run: ./release-tools/control-sign --check --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -90,4 +122,5 @@ jobs:
         run: |
           flags=()
           if [[ "${RELEASE_TAG%%+*}" == *-* ]]; then flags+=(--prerelease); fi
-          gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes "${flags[@]}"
+          gh release create "$RELEASE_TAG" dist/control_* dist/control-manifest.json dist/control-manifest.sig dist/checksums.txt \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes "${flags[@]}"

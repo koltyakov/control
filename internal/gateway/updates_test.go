@@ -19,6 +19,7 @@ import (
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/protocol"
+	"github.com/koltyakov/control/internal/testutil"
 	"github.com/koltyakov/control/internal/update"
 )
 
@@ -114,15 +115,22 @@ func TestReleaseFetchChecksManifestAndDoesNotReplaceNewerDevelopment(t *testing.
 	sum := sha256.Sum256(data)
 	asset := update.Asset{OS: "linux", Arch: "amd64", File: update.AssetName("linux", "amd64"), Size: int64(len(data)), SHA256: hex.EncodeToString(sum[:])}
 	manifest := update.Manifest{Version: "v2", Assets: []update.Asset{asset}}
+	signer := testutil.NewReleaseSigner(t)
+	keys := update.ReleaseKeyring{"owner/repo": {signer.KeyID: signer.PublicKey()}}
 	published := time.Now().Add(-time.Hour).UTC()
 	var base string
 	var downloads atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/owner/repo/releases/latest":
-			_ = json.NewEncoder(w).Encode(release{Tag: "v2", Published: published, Assets: []releaseAsset{{"control-manifest.json", base + "/manifest"}, {"control-manifest.sigstore", base + "/proof"}, {asset.File, base + "/binary"}}})
+			_ = json.NewEncoder(w).Encode(release{Tag: "v2", Published: published, Assets: []releaseAsset{{"control-manifest.json", base + "/manifest"}, {"control-manifest.sig", base + "/proof"}, {asset.File, base + "/binary"}}})
 		case "/proof":
-			_, _ = w.Write([]byte("fixture proof"))
+			data, err := json.Marshal(manifest)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_, _ = w.Write(signer.Sign(t, "owner/repo", "v2", append(data, '\n')))
 		case "/manifest":
 			_ = json.NewEncoder(w).Encode(manifest)
 		case "/binary":
@@ -142,11 +150,11 @@ func TestReleaseFetchChecksManifestAndDoesNotReplaceNewerDevelopment(t *testing.
 	if _, err = g.fetchRelease(t.Context()); err == nil || downloads.Load() != 0 {
 		t.Fatal("unverified release reached binary download", err)
 	}
-	verify := func(_ context.Context, repo, tag string, data, proof []byte) error {
-		if repo != "owner/repo" || tag != "v2" || len(data) == 0 || string(proof) != "fixture proof" {
+	verify := func(ctx context.Context, repo, tag string, data, proof []byte) error {
+		if repo != "owner/repo" || tag != "v2" || len(data) == 0 {
 			t.Fatal("wrong verifier inputs")
 		}
-		return nil
+		return keys.Verify(ctx, repo, tag, data, proof)
 	}
 	d, err := g.fetchReleaseVerified(context.Background(), verify)
 	if err != nil {

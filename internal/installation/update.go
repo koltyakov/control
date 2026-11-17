@@ -100,7 +100,7 @@ func updateSelfVerified(ctx context.Context, path, releases, version, currentVer
 	if version != "" && manifest.Version != version {
 		return result, errors.New("release tag and manifest version differ")
 	}
-	proofURL := releases + "/download/" + manifest.Version + "/control-manifest.sigstore"
+	proofURL := releases + "/download/" + manifest.Version + "/" + update.ReleaseSignatureName
 	proofReq, err := http.NewRequestWithContext(ctx, http.MethodGet, proofURL, nil)
 	if err != nil {
 		return result, err
@@ -113,7 +113,7 @@ func updateSelfVerified(ctx context.Context, path, releases, version, currentVer
 	if proofResp.StatusCode != http.StatusOK {
 		return result, fmt.Errorf("release signature: %s", proofResp.Status)
 	}
-	proof, err := io.ReadAll(io.LimitReader(proofResp.Body, (1<<20)+1))
+	proof, err := io.ReadAll(io.LimitReader(proofResp.Body, update.MaxReleaseSignatureSize+1))
 	if err != nil {
 		return result, err
 	}
