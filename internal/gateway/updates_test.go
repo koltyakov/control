@@ -120,7 +120,7 @@ func TestReleaseFetchChecksManifestAndDoesNotReplaceNewerDevelopment(t *testing.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/owner/repo/releases/latest":
-			_ = json.NewEncoder(w).Encode(release{Tag: "v2", Published: published, Assets: []releaseAsset{{"control-manifest.json", base + "/manifest"}, {"control-manifest.json.sigstore.json", base + "/proof"}, {asset.File, base + "/binary"}}})
+			_ = json.NewEncoder(w).Encode(release{Tag: "v2", Published: published, Assets: []releaseAsset{{"control-manifest.json", base + "/manifest"}, {"control-manifest.sigstore", base + "/proof"}, {asset.File, base + "/binary"}}})
 		case "/proof":
 			_, _ = w.Write([]byte("fixture proof"))
 		case "/manifest":

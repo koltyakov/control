@@ -1341,3 +1341,9 @@ Renaming a Hybrid User node renames its registered same-fleet System companion t
 Validate both destination names, including client identities and invitation reservations, before changing either. Commit both directory records, routing overrides, audit events and explicitly forced pending-invitation retractions in one SQLite transaction. Roll back all in-memory changes on failure and notify both nodes only after commit. Retain signed installation proofs, admission revisions, credentials and established sessions.
 
 The console's Rename action edits the host's base name from either context chip and submits one User rename, not two sequential mutations. This supersedes only D087/D089's independent rename behavior. Other lifecycle actions, execution targeting, privileges and task stores remain separate. Project-local runbook migration remains limited to the node explicitly selected by the CLI or terminal dashboard. See [rename protocol](protocol.md#gateway-observation) and [Hybrid console actions](console.md#hybrid-rows-and-counters).
+
+## D152: One release signature bundle with a short filename
+
+Publish only `control-manifest.sigstore` as the JSON Sigstore bundle for `control-manifest.json`. Stop publishing a separate checksum signature because Control's consumers authenticate binary hashes through the signed manifest. Keep the unsigned `checksums.txt` for bootstrap installers and manual checksum checks. This refines D078's release asset contract without changing its signature, identity, transparency-log, or trust-root verification.
+
+Use the new filename consistently in release publication, CLI self-updates, gateway release ingestion, and managed nodes' GitHub downloads. Given the small installed base, use a clean rename rather than retaining a legacy alias. Migrate existing installations through a one-time reinstall or development push. See [release publication](updates.md#publish-github-releases).

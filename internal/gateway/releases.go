@@ -107,7 +107,7 @@ func (g *Gateway) fetchReleaseVerified(ctx context.Context, verify func(context.
 	if manifest.Version != latest.Tag {
 		return nil, errors.New("release tag and manifest version differ")
 	}
-	proofURL := assets["control-manifest.json.sigstore.json"]
+	proofURL := assets["control-manifest.sigstore"]
 	if proofURL == "" {
 		return nil, errors.New("release lacks signed manifest bundle")
 	}

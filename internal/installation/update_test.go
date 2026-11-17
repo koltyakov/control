@@ -56,6 +56,7 @@ func main() {
 		corrupt, missing, cancelled         bool
 		unchanged                           bool
 		rejectSignature                     bool
+		missingProof                        bool
 	}{
 		{name: "latest", version: "v2"},
 		{name: "pinned", version: "v2", requested: "v2"},
@@ -63,6 +64,7 @@ func main() {
 		{name: "same pinned version different checksum", version: "v2", requested: "v2", unchanged: true},
 		{name: "corrupt", version: "v2", corrupt: true, wantError: "checksum mismatch"},
 		{name: "invalid signature", version: "v2", rejectSignature: true, wantError: "release signature bundle"},
+		{name: "missing signature", version: "v2", missingProof: true, wantError: "release signature: 404"},
 		{name: "wrong executable version", version: "v3", wantError: "does not match"},
 		{name: "wrong release tag", version: "v2", requested: "v3", wantError: "tag and manifest"},
 		{name: "missing release", missing: true, wantError: "404"},
@@ -104,7 +106,11 @@ func main() {
 					base = "/download/" + tc.requested
 				}
 				switch r.URL.Path {
-				case "/download/" + tc.version + "/control-manifest.json.sigstore.json":
+				case "/download/" + tc.version + "/control-manifest.sigstore":
+					if tc.missingProof {
+						http.NotFound(w, r)
+						return
+					}
 					_, _ = w.Write([]byte("fixture proof"))
 				case base + "/control-manifest.json":
 					_ = json.NewEncoder(w).Encode(update.Manifest{Version: tc.version, Assets: []update.Asset{asset}})
@@ -141,7 +147,7 @@ func main() {
 			}
 			result, err := updateSelfVerified(ctx, path, server.URL, tc.requested, currentVersion, server.Client(), verify)
 			if tc.wantError != "" {
-				if tc.rejectSignature && downloads.Load() != 0 {
+				if (tc.rejectSignature || tc.missingProof) && downloads.Load() != 0 {
 					t.Fatal("downloaded executable before authenticating manifest")
 				}
 				if err == nil || !strings.Contains(err.Error(), tc.wantError) {

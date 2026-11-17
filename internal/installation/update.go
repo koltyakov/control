@@ -100,7 +100,7 @@ func updateSelfVerified(ctx context.Context, path, releases, version, currentVer
 	if version != "" && manifest.Version != version {
 		return result, errors.New("release tag and manifest version differ")
 	}
-	proofURL := releases + "/download/" + manifest.Version + "/control-manifest.json.sigstore.json"
+	proofURL := releases + "/download/" + manifest.Version + "/control-manifest.sigstore"
 	proofReq, err := http.NewRequestWithContext(ctx, http.MethodGet, proofURL, nil)
 	if err != nil {
 		return result, err

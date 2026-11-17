@@ -62,7 +62,7 @@ func TestManagedDownloadPrefersExactSignedReleaseWithGatewayFallback(t *testing.
 						return
 					}
 					_ = json.NewEncoder(w).Encode(manifest)
-				case "/release/control-manifest.json.sigstore.json":
+				case "/release/control-manifest.sigstore":
 					if scenario == "missing-proof" {
 						http.NotFound(w, r)
 						return

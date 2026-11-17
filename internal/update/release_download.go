@@ -68,7 +68,7 @@ func downloadMatchingRelease(ctx context.Context, client *http.Client, repositor
 	if manifest.Version != version || !ok || selected != asset {
 		return errors.New("GitHub release differs from the gateway selection")
 	}
-	proof, err := releaseMetadata(metadataCtx, client, releases+"/control-manifest.json.sigstore.json", 1<<20)
+	proof, err := releaseMetadata(metadataCtx, client, releases+"/control-manifest.sigstore", 1<<20)
 	if err != nil {
 		return err
 	}
