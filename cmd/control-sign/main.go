@@ -34,11 +34,22 @@ func run(args []string, stdin io.Reader, verify func(context.Context, string, st
 	tag := flags.String("tag", "", "exact release tag")
 	keyID := flags.String("key-id", "", "pinned key ID")
 	check := flags.Bool("check", false, "verify an existing signature without reading a private key")
+	checkKeys := flags.Bool("check-keys", false, "check public keyring JSON from stdin against compiled pins")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
 		return errors.New("unexpected signing arguments")
+	}
+	if *checkKeys {
+		if *check {
+			return errors.New("check and check-keys are mutually exclusive")
+		}
+		data, err := readLimited(stdin, update.MaxReleaseSignatureSize)
+		if err != nil {
+			return errors.New("read public keyring: missing, unreadable, or oversized input")
+		}
+		return update.CheckReleaseKeys(*repository, *keyID, data)
 	}
 	manifest, err := readFile(*manifestPath, update.MaxReleaseManifestSize)
 	if err != nil {

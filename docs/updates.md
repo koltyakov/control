@@ -144,18 +144,35 @@ Development bundles remain explicitly superuser-published and do not need the pu
 
 ### Release signing keys
 
-The current `koltyakov/control` pin is `release-2026-11-17`. Its public-key SHA-256 fingerprint is `767500973d493e0d351335a1cbe5b525d8dc9b73e806fd70ee950e5f289c7298`. The GitHub `release` environment restricts deployment to tags matching `v*.*.*`, without an additional manual approval gate. Missing or unknown pins reject public releases and the CI signer refuses to write an unverifiable signature. Development builds and superuser pushes remain available. Test keys are ephemeral and are never production pins.
+The current `koltyakov/control` pin is `release-2026-11-17`. Its public-key SHA-256 fingerprint is `dc7e0b74b00ee68f22eb92192a9988733baa325bf66519a78b0a839a94aea13f`. The GitHub `release` environment restricts deployment to tags matching `v*.*.*`, without an additional manual approval gate. Missing or unknown pins reject public releases and the CI signer refuses to write an unverifiable signature. Development builds and superuser pushes remain available. Test keys are ephemeral and are never production pins.
 
-Generate a dedicated Ed25519 key on a trusted administration machine, outside the checkout. For example, with OpenSSL on Linux or macOS:
+Control, Expose, and BBX use the same GitHub configuration names and scopes, with a different keypair in each repository:
+
+| Name | Type and scope | Value |
+| --- | --- | --- |
+| `RELEASE_SIGNING_PRIVATE_KEY` | Secret in the `release` environment | Ed25519 PKCS#8 PEM private key |
+| `RELEASE_SIGNING_PUBLIC_KEYS` | Repository variable | JSON map of stable key IDs to base64 raw 32-byte public keys |
+| `RELEASE_SIGNING_KEY_ID` | Repository variable | Active key ID, currently `release-2026-11-17` |
+
+Keep public configuration at repository level so unsigned builds need no environment secret access. Control additionally requires that the public map exactly match its reviewed source-controlled pins. The build-time signer's `--check-keys` mode checks that agreement and the active ID before CI builds the bundle. This variable is a consistency check, never an override of trusted keys.
+
+Store local keys outside the checkout under `~/.ssh/github/`: `control.pem` is the private key, `control.pub` is SPKI public PEM, and `control.json` is the public JSON map. Expose uses the basename `expose`; Browser Bridge uses `bbx`. The directory must be private and private files must have mode `0600`. These are release-signing keys, not SSH login keys or certificates.
+
+Generate a dedicated Ed25519 key on a trusted administration machine. For a new key only, with OpenSSL 3 on Linux or macOS, after confirming the destination files do not exist:
 
 ```sh
 umask 077
-openssl genpkey -algorithm ED25519 -out "$HOME/control-release-private.pem"
-openssl pkey -in "$HOME/control-release-private.pem" -pubout -outform DER |
-  tail -c 32 | openssl base64 -A
+mkdir -p "$HOME/.ssh/github"
+chmod 700 "$HOME/.ssh/github"
+openssl genpkey -algorithm ED25519 -out "$HOME/.ssh/github/control.pem"
+openssl pkey -in "$HOME/.ssh/github/control.pem" -pubout \
+  -out "$HOME/.ssh/github/control.pub"
+public_key=$(openssl pkey -in "$HOME/.ssh/github/control.pem" -pubout -outform DER |
+  tail -c 32 | openssl base64 -A)
+printf '{"release-2026-11-17":"%s"}\n' "$public_key" > "$HOME/.ssh/github/control.json"
 ```
 
-The second command prints only the base64 raw 32-byte public key from the Ed25519 SubjectPublicKeyInfo. Review and add it to `internal/update/release_keys.go`, using a stable key ID. Example entry, with a placeholder rather than a usable key:
+The JSON map contains only the raw public key extracted from the Ed25519 SubjectPublicKeyInfo. Review and add the same map to `internal/update/release_keys.go`, under the exact repository. Example entry, with a placeholder rather than a usable key:
 
 ```go
 var releaseKeys = ReleaseKeyring{
@@ -170,17 +187,20 @@ Keep the public key in source, not a downloaded asset or mutable runtime setting
 Create and protect the GitHub `release` environment before publishing. Restrict allowed release tags, configure reviewers where available, and protect workflow/keyring changes. Configure its secret and variable:
 
 ```sh
-gh secret set CONTROL_RELEASE_PRIVATE_KEY --env release < "$HOME/control-release-private.pem"
-gh variable set CONTROL_RELEASE_KEY_ID --env release --body release-2026-11-17
+gh secret set RELEASE_SIGNING_PRIVATE_KEY --repo koltyakov/control --env release \
+  < "$HOME/.ssh/github/control.pem"
+gh variable set RELEASE_SIGNING_PUBLIC_KEYS --repo koltyakov/control \
+  --body "$(cat "$HOME/.ssh/github/control.json")"
+gh variable set RELEASE_SIGNING_KEY_ID --repo koltyakov/control --body release-2026-11-17
 ```
 
-The secret is one unencrypted Ed25519 PKCS#8 PEM `PRIVATE KEY`. Keep an encrypted offline backup and record who can restore it. Never commit the private key, upload it as an artifact, print it, or pass it as a command-line argument. No initialization flag or public-key GitHub variable is needed.
+The secret is one unencrypted Ed25519 PKCS#8 PEM `PRIVATE KEY`. Keep an encrypted offline backup and record who can restore it. Never commit the private key, upload it as an artifact, print it, or pass it as a command-line argument. Control needs no feed initialization flag. Remove superseded signing secrets and variables after the new configuration is verified; do not keep repository-scoped copies of the environment secret.
 
 The standalone [signer](../cmd/control-sign/main.go) accepts the private key only on stdin. It validates the manifest and signing context before reading the key, checks the resulting signature against its compiled pins, and writes the public signature atomically:
 
 ```sh
 go run ./cmd/control-sign --repository koltyakov/control --tag v0.2.0 \
-  --key-id release-2026-11-17 < "$HOME/control-release-private.pem"
+  --key-id release-2026-11-17 < "$HOME/.ssh/github/control.pem"
 go run ./cmd/control-sign --check --repository koltyakov/control --tag v0.2.0
 ```
 
@@ -190,10 +210,10 @@ Run `make release-check` before signing. Do not change manifest bytes afterward.
 
 For planned rotation from A to B:
 
-1. Generate B separately and commit its public pin alongside A.
+1. Generate B separately and commit its public pin alongside A. Update the repository public-key variable to match both pins.
 2. Publish a bridge release signed by A whose binaries trust both keys.
-3. Upgrade installations to the bridge before switching the CI secret and key ID to B.
-4. Publish with B, then remove A from a later release after the migration window. Retaining A indefinitely retains its authority.
+3. Upgrade installations to the bridge before switching the environment secret and repository key-ID variable to B.
+4. Publish with B, then remove A from a later release and the public-key variable after the migration window. Retaining A indefinitely retains its authority.
 
 An installation that missed the bridge must explicitly install that bridge version or use a trusted reinstall/development push. There is no automatic remote key discovery. Removing a key also makes its historical signatures unverifiable by the new binary.
 

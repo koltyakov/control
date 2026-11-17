@@ -8,6 +8,6 @@ package update
 // Multiple entries support an explicitly staged key rotation.
 var releaseKeys = ReleaseKeyring{
 	"koltyakov/control": {
-		"release-2026-11-17": "5qmDhioRpJ9KhklhqNgjWuxv1wzplaHPw5g+aJI7uiA=",
+		"release-2026-11-17": "JnsJqhMK87yVEeeKV3MuIJF7NIVy0OM87cTRcxAtWRA=",
 	},
 }

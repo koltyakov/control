@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"regexp"
 	"strings"
 )
@@ -29,6 +30,24 @@ type ReleaseSignature struct {
 type ReleaseKeyring map[string]map[string]string
 
 var releaseKeyIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+
+// CheckReleaseKeys checks public CI configuration against reviewed source pins.
+// Configuration never replaces the keys trusted by a running executable.
+func CheckReleaseKeys(repository, keyID string, data []byte) error {
+	if len(data) > MaxReleaseSignatureSize {
+		return errors.New("release public keyring exceeds limit")
+	}
+	var configured map[string]string
+	if err := json.Unmarshal(data, &configured); err != nil {
+		return errors.New("release public keyring must be a JSON object")
+	}
+	pinned := releaseKeys[repository]
+	if len(pinned) == 0 || !releaseKeyIDPattern.MatchString(keyID) || pinned[keyID] == "" ||
+		!maps.Equal(configured, pinned) {
+		return errors.New("release public keyring or active key ID differs from compiled pins")
+	}
+	return nil
+}
 
 // VerifyReleaseManifest authenticates the exact manifest bytes with a pinned key.
 func VerifyReleaseManifest(ctx context.Context, repository, tag string, manifest, proof []byte) error {

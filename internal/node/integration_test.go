@@ -20,6 +20,7 @@ import (
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/store"
 	"github.com/koltyakov/control/internal/transport"
+	"github.com/koltyakov/control/internal/transport/transporttest"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -133,7 +134,7 @@ func TestThreeNodeExecutionAndDelivery(t *testing.T) {
 	t.Parallel()
 	for _, relay := range []bool{true, false} {
 		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
-			source, worker, consumer := cluster(t, relay, nil)
+			source, worker, consumer := cluster(t, relay, nil, transporttest.Loopback())
 			payload := bytes.Repeat([]byte("video-frame-content\n"), 120000)
 			if err := os.WriteFile(filepath.Join(source.Config.WorkDir, "input.bin"), payload, 0600); err != nil {
 				t.Fatal(err)

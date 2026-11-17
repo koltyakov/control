@@ -18,6 +18,7 @@ import (
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/wire"
+	"github.com/pion/webrtc/v4"
 )
 
 func TestConcurrentLanesShareCarrierAndSurviveSiblingClose(t *testing.T) {
@@ -38,19 +39,35 @@ func TestConcurrentLanesShareCarrierAndSurviveSiblingClose(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				p := New(Config{Gateway: s.URL, Token: token, Identity: id, Node: model.Node{ID: id.ID, Name: name, PublicKey: id.Public}, RelayOnly: relay}, func(_ string, conn net.Conn) { _, _ = io.Copy(conn, conn) })
+				// Keep this local carrier/lane fixture independent of host LAN,
+				// VPN and bridge interfaces without changing production defaults.
+				p := New(Config{Gateway: s.URL, Token: token, Identity: id, Node: model.Node{ID: id.ID, Name: name, PublicKey: id.Public}, RelayOnly: relay}, func(_ string, conn net.Conn) { _, _ = io.Copy(conn, conn) }, Options{
+					ConfigureWebRTC: func(settings *webrtc.SettingEngine) {
+						settings.SetIncludeLoopbackCandidate(true)
+						settings.SetIPFilter(func(ip net.IP) bool { return ip.IsLoopback() })
+						settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+					},
+				})
 				if name == "alpha" {
 					// A dependent lane must release setup admission before waiting
 					// for its carrier, even when only one setup slot is available.
 					p.setups = make(chan struct{}, 1)
 				}
 				if err := p.Start(ctx); err != nil {
-					t.Fatal(err)
+					t.Fatalf("start peer=%s: %v; sessions=%+v counters=%+v", name, err, p.SessionStats(), p.Stats())
 				}
 				return p
 			}
 			a, b := makePeer("alpha"), makePeer("beta")
-			defer func() { _ = a.Close(); _ = b.Close() }()
+			defer func() {
+				if t.Failed() {
+					for _, p := range []*Peer{a, b} {
+						t.Logf("peer=%s routes=%+v sessions=%+v counters=%+v", p.cfg.Node.Name, p.ConnectionRoutes(), p.SessionStats(), p.Stats())
+					}
+				}
+				_ = a.Close()
+				_ = b.Close()
+			}()
 			lanes := []Lane{ControlLane, BulkLane, InteractiveLane}
 			conns := make([]net.Conn, len(lanes))
 			failures := make(chan error, len(lanes))
@@ -86,7 +103,7 @@ func TestConcurrentLanesShareCarrierAndSurviveSiblingClose(t *testing.T) {
 			}
 			for _, p := range []*Peer{a, b} {
 				if got := p.ConnectionRoutes(); got != wantRoutes {
-					t.Fatalf("lane connections counted more than once or misclassified: %+v", got)
+					t.Fatalf("peer=%s lane connections counted more than once or misclassified: got=%+v want=%+v", p.cfg.Node.Name, got, wantRoutes)
 				}
 			}
 			if !relay {

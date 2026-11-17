@@ -72,12 +72,22 @@ jobs:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
+      - name: Build release signer without secrets
+        run: go build -trimpath -o release-tools/control-sign ./cmd/control-sign
+      - name: Check public release configuration against compiled pins
+        env:
+          RELEASE_SIGNING_PUBLIC_KEYS: ${{ vars.RELEASE_SIGNING_PUBLIC_KEYS }}
+          RELEASE_SIGNING_KEY_ID: ${{ vars.RELEASE_SIGNING_KEY_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$RELEASE_SIGNING_PUBLIC_KEYS" |
+            ./release-tools/control-sign --check-keys \
+              --repository "$GITHUB_REPOSITORY" --key-id "$RELEASE_SIGNING_KEY_ID"
       - name: Build release bundle
         run: go run ./cmd/control-bundle --version "$RELEASE_TAG"
       - name: Verify bundle checksums
         run: make release-check
-      - name: Build release signer without secrets
-        run: go build -trimpath -o release-tools/control-sign ./cmd/control-sign
       - name: Upload unsigned bundle and signer
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -104,15 +114,15 @@ jobs:
         run: chmod 700 release-tools/control-sign
       - name: Sign release manifest
         env:
-          CONTROL_RELEASE_PRIVATE_KEY: ${{ secrets.CONTROL_RELEASE_PRIVATE_KEY }}
-          CONTROL_RELEASE_KEY_ID: ${{ vars.CONTROL_RELEASE_KEY_ID }}
+          RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.RELEASE_SIGNING_PRIVATE_KEY }}
+          RELEASE_SIGNING_KEY_ID: ${{ vars.RELEASE_SIGNING_KEY_ID }}
         shell: bash
         run: |
           set -euo pipefail
-          printf '%s' "$CONTROL_RELEASE_PRIVATE_KEY" |
-            env -u CONTROL_RELEASE_PRIVATE_KEY ./release-tools/control-sign \
+          printf '%s' "$RELEASE_SIGNING_PRIVATE_KEY" |
+            env -u RELEASE_SIGNING_PRIVATE_KEY ./release-tools/control-sign \
               --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
-              --key-id "$CONTROL_RELEASE_KEY_ID"
+              --key-id "$RELEASE_SIGNING_KEY_ID"
       - name: Verify pinned release signature
         run: ./release-tools/control-sign --check --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
       - name: Publish release

@@ -75,6 +75,39 @@ func TestConfiguredReleasePins(t *testing.T) {
 	}
 }
 
+func TestCheckReleaseKeys(t *testing.T) {
+	const repository = "koltyakov/control"
+	const keyID = "release-2026-11-17"
+	valid, err := json.Marshal(releaseKeys[repository])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, repo, id string
+		data           []byte
+		valid          bool
+	}{
+		{"matching", repository, keyID, valid, true},
+		{"wrong repository", "other/repo", keyID, valid, false},
+		{"missing ID", repository, "", valid, false},
+		{"unknown ID", repository, "unknown", valid, false},
+		{"missing keys", repository, keyID, nil, false},
+		{"empty", repository, keyID, []byte("{}"), false},
+		{"null", repository, keyID, []byte("null"), false},
+		{"wrong type", repository, keyID, []byte("[]"), false},
+		{"malformed", repository, keyID, []byte("{"), false},
+		{"wrong key", repository, keyID, []byte(`{"release-2026-11-17":"wrong"}`), false},
+		{"extra key", repository, keyID, bytes.Replace(valid, []byte("}"), []byte(`,"extra":"key"}`), 1), false},
+		{"oversized", repository, keyID, bytes.Repeat([]byte(" "), MaxReleaseSignatureSize+1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := CheckReleaseKeys(tc.repo, tc.id, tc.data); (err == nil) != tc.valid {
+				t.Fatalf("valid=%v: %v", tc.valid, err)
+			}
+		})
+	}
+}
+
 func TestReleaseSignatureEnvelope(t *testing.T) {
 	signer := testutil.NewReleaseSigner(t)
 	data := releaseManifestFixture(t)

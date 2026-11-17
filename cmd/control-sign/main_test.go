@@ -137,3 +137,29 @@ func TestReleaseSignerRejectsUnexpectedArguments(t *testing.T) {
 		t.Fatal("unexpected arguments accepted")
 	}
 }
+
+func TestReleaseSignerChecksPublicConfiguration(t *testing.T) {
+	args := []string{"--check-keys", "--repository", "koltyakov/control", "--key-id", "release-2026-11-17"}
+	const public = `{"release-2026-11-17":"JnsJqhMK87yVEeeKV3MuIJF7NIVy0OM87cTRcxAtWRA="}`
+	for _, tc := range []struct {
+		name, input string
+		args        []string
+		valid       bool
+	}{
+		{"matching", public, args, true},
+		{"missing", "", args, false},
+		{"mismatch", "{}", args, false},
+		{"oversized", strings.Repeat(" ", update.MaxReleaseSignatureSize+1), args, false},
+		{"conflicting checks", public, append(append([]string{}, args...), "--check"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			verify := func(context.Context, string, string, []byte, []byte) error {
+				t.Fatal("public configuration check must not verify a manifest")
+				return nil
+			}
+			if err := run(tc.args, strings.NewReader(tc.input), verify); (err == nil) != tc.valid {
+				t.Fatalf("valid=%v: %v", tc.valid, err)
+			}
+		})
+	}
+}
