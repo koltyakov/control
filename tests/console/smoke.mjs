@@ -1408,6 +1408,85 @@ async function assertHybridUnregister(page, snapshot) {
   await page.evaluate(() => refresh(true));
 }
 
+async function assertMachineRefreshLayout(page, snapshot) {
+  const viewport = page.viewportSize(),
+    originalPage = await page.evaluate(() => state.page),
+    baseNode = {
+      ...snapshot.nodes[0], id: "refresh-layout", name: "refresh-host",
+      online: true, disabled: false, controlPending: false, status: "summary",
+      activeCount: 0, leased: false, work: undefined, lastActive: undefined,
+      updateState: undefined, leaseExpires: undefined,
+      connectionRoutes: { direct: 0, turn: 0, relay: 0, unknown: 0 },
+      tunnels: { forward: 0, reverse: 0 },
+      system: {
+        arch: "amd64", logicalCPUs: 8, cpuUsagePercent: 0,
+        memoryUsedBytes: 0, memoryTotalBytes: 16 * 2 ** 30,
+        disks: [{ path: "work", usedBytes: 0, totalBytes: 128 * 2 ** 30 }],
+        gpus: [],
+      },
+    },
+    node = structuredClone(baseNode),
+    steady = { ...structuredClone(baseNode), id: "refresh-steady", name: "steady-host" },
+    statusRoute = (route) => route.fulfill({ json: { ...snapshot, nodes: [node, steady] } }),
+    table = page.locator(".machine-table"),
+    columns = () => table.locator("thead th").evaluateAll((elements) =>
+      elements.map((element) => {
+        const { x, width } = element.getBoundingClientRect();
+        return { x, width };
+      }));
+  await page.route("**/console/api/status", statusRoute);
+  try {
+    for (const gpus of [[], [{ name: "Refresh GPU", kind: "discrete", memoryUsedBytes: 0, memoryTotalBytes: 8 * 2 ** 30 }]]) {
+      steady.system.gpus = gpus;
+      for (const pageName of ["overview", "machines"]) {
+        await page.evaluate((name) => { location.hash = name; }, pageName);
+        await page.waitForFunction((name) => state.page === name, pageName);
+        for (const width of [1440, 1366, 1024, 768]) {
+          await page.setViewportSize({ width, height: 1000 });
+          Object.assign(node, structuredClone(baseNode));
+          await refreshPage(page);
+          const baseline = await columns();
+          for (const changes of [
+            { activeCount: 123, work: { tasks: 100, exec: 20, transfers: 2, other: 1 } },
+            { activeCount: 0, status: "update", updateState: "waiting-idle" },
+            { status: "summary", updateState: undefined, leased: true, leaseExpires: new Date(Date.now() + 600000).toISOString() },
+            { leased: false, system: undefined, connectionRoutes: undefined, tunnels: undefined },
+            { online: false, status: "offline" },
+          ]) {
+            Object.assign(node, changes);
+            await refreshPage(page);
+            const current = await columns();
+            assert.equal(current.length, baseline.length);
+            current.forEach((column, index) => {
+              assert.ok(Math.abs(column.x - baseline[index].x) < 1 &&
+                Math.abs(column.width - baseline[index].width) < 1,
+              `${pageName} column ${index} must not shift on status refresh at ${width}px, GPU column: ${gpus.length > 0}`);
+            });
+          }
+          Object.assign(node, structuredClone(baseNode), {
+            system: {
+              ...structuredClone(baseNode.system), cpuUsagePercent: 100,
+              memoryUsedBytes: 16 * 2 ** 30,
+              disks: [{ path: "work", usedBytes: 10000 * 2 ** 30, totalBytes: 10000 * 2 ** 30 }],
+            },
+          });
+          await refreshPage(page);
+          assert.deepEqual(await columns(), baseline, "Metric text changes must not resize columns");
+          assert.ok(await table.locator("td").evaluateAll((elements) =>
+            elements.every((element) => element.scrollWidth <= element.clientWidth + 1)),
+          "Machine content must stay within its column");
+        }
+      }
+    }
+  } finally {
+    await page.unroute("**/console/api/status", statusRoute);
+    await page.setViewportSize(viewport);
+    await page.evaluate((name) => { location.hash = name; }, originalPage);
+    await page.waitForFunction((name) => state.page === name, originalPage);
+    await refreshPage(page);
+  }
+}
+
 async function assertMachineVersionLayout(page, snapshot) {
   const viewport = page.viewportSize(),
     shortVersion = "v0.8.3-2-gd2e9b2d-dirty",
@@ -2241,6 +2320,7 @@ try {
   const snapshot = await api("/v1/status", "GET", undefined, account.token);
   await assertOverviewFullFleet(page, snapshot);
   await assertCustomMachineOrder(page, snapshot);
+  await assertMachineRefreshLayout(page, snapshot);
   await assertMachineVersionLayout(page, snapshot);
   const fixtureNames = [
     "build-linux-01",

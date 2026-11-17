@@ -91,6 +91,8 @@ In machine drawers, GPU and NPU memory usage appear in the Resources grid alongs
 
 Machine-row versions are capped at 23 character units and ellipsized instead of widening the table. Hover shows the full version, which also remains in the detail drawer. Narrow layouts hide row versions.
 
+Desktop machine tables use fixed status, connection, and resource column widths, leaving the remaining space for machine names. Status and metric refreshes do not resize the columns. Long status details wrap within their cell. Smaller screens scroll the table horizontally until the stacked mobile layout applies.
+
 A detected device without a dedicated-memory percentage shows `NPU detected` or `GPU detected` instead of a bar. Capacity or used bytes remain visible when known; otherwise the subtitle reads `Memory unavailable`. This distinguishes inventory-only devices such as Surface's Qualcomm Hexagon NPU from machines with no accelerator. Model names remain in tooltips, and offline devices still hide cached usage.
 
 The console reads gateway snapshots every five seconds while its tab is visible. Refresh requests do not initiate resource sampling or peer probes. Gateway metrics retain their original collection times; node health expires under the same rules as the terminal dashboard. Missing fresh health means unknown work, not zero work. Reported work is a count of tracked operations, not necessarily distinct jobs.

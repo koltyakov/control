@@ -1103,14 +1103,15 @@ const machineColumns = [
 ];
 /** @param {string[]} rows @param {boolean} showGPUs @returns {string} */
 function machineTable(rows, showGPUs) {
-  const head = machineColumns
-    .filter(([, key]) => key !== "gpu" || showGPUs)
+  const columns = machineColumns.filter(([, key]) => key !== "gpu" || showGPUs),
+    tracks = columns.map(([, key]) => `<col class="${key}-track">`).join(""),
+    head = columns
     .map(([label, key, resourceIcon]) => {
       const selected = state.sort === key;
       return `<th scope="col" aria-sort="${selected ? (state.descending ? "descending" : "ascending") : "none"}"><button class="sort-button${selected ? " sorted" : ""}" data-action="sort" data-sort="${key}">${resourceIcon ? icon(resourceIcon) : ""}${label}<span aria-hidden="true">${selected ? (state.descending ? "↓" : "↑") : "↕"}</span></button></th>`;
     })
     .join("");
-  return `<div class="table-wrap machine-table" role="region" aria-label="Machines" tabindex="0"><table><thead><tr>${head}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+  return `<div class="table-wrap machine-table${showGPUs ? " has-gpus" : ""}" role="region" aria-label="Machines" tabindex="0"><table><colgroup>${tracks}</colgroup><thead><tr>${head}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
 }
 
 // An offline User selection can still show its online System companion's

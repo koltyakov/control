@@ -956,8 +956,30 @@ td strong {
 .machine-table tbody tr {
   cursor: pointer;
 }
-.machine-table .name-column {
-  width: 34%;
+/* Leave the name the remaining space. Live text must not resize the tracks. */
+.machine-table table {
+  table-layout: fixed;
+  min-width: 1080px;
+}
+.machine-table.has-gpus table {
+  min-width: 1234px;
+}
+.machine-table .status-track {
+  width: 160px;
+}
+.machine-table .peers-track {
+  width: 192px;
+}
+.machine-table .cpu-track,
+.machine-table .gpu-track,
+.machine-table .memory-track,
+.machine-table .disk-track {
+  width: 154px;
+}
+.machine-table .status-column small,
+.machine-table .resource-column small {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .machine-cell {
   display: flex;
@@ -965,7 +987,12 @@ td strong {
   gap: 12px;
 }
 .machine-text {
+  flex: 1;
   min-width: 0;
+}
+.machine-text > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .machine-version {
   display: inline-block;
@@ -1093,7 +1120,7 @@ td strong {
 }
 .machine-name {
   display: block;
-  max-width: 360px;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2063,7 +2090,14 @@ dialog.secrets-drawer {
   .machine-table table,
   .machine-table tbody {
     display: block;
+    min-width: 0;
     white-space: normal;
+  }
+  .machine-table.has-gpus table {
+    min-width: 0;
+  }
+  .machine-table colgroup {
+    display: none;
   }
   .machine-table thead {
     display: none;
