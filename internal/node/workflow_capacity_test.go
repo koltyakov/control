@@ -62,6 +62,15 @@ func TestWorkflowCapacityOrdering(t *testing.T) {
 }
 
 func TestWorkflowReadyLookaheadAndCapacityBounds(t *testing.T) {
+	a := workflowTestStep("a", "worker", "files.read")
+	b := workflowTestStep("b", "worker", "files.list")
+	if capacityCanReorder([]WorkflowStep{a, b}) {
+		t.Fatal("identical pools requested discovery")
+	}
+	b.Task.Inputs = []model.Input{{Path: "in"}}
+	if !capacityCanReorder([]WorkflowStep{a, b}) {
+		t.Fatal("input staging difference ignored")
+	}
 	var steps []WorkflowStep
 	if err := json.Unmarshal([]byte(`[{"name":"started"},{"name":"dependency","needs":["unfinished"]},{"name":"input","inputs":[{"step":"unfinished"}]}]`), &steps); err != nil {
 		t.Fatal(err)

@@ -17,7 +17,7 @@ const (
 func workflowReadySteps(ordered []WorkflowStep, started, succeeded map[string]bool) []WorkflowStep {
 	steps := make([]WorkflowStep, 0, workflowReadyLookahead)
 	for _, step := range ordered {
-		if !started[step.Name] && ready(step, succeeded) {
+		if !started[step.Name] && step.Ready(succeeded) {
 			steps = append(steps, step)
 			if len(steps) == workflowReadyLookahead {
 				break
@@ -66,10 +66,20 @@ func (n *Node) workflowCapacity(ctx context.Context, target string) *model.NodeC
 	var description struct {
 		Concurrency *model.NodeConcurrency `json:"concurrency"`
 	}
-	if err := n.Call(ctx, target, "node.describe", map[string]any{}, &description); err != nil {
+	if err := n.Call(ctx, target, "node.describe", map[string]string{"view": "concurrency"}, &description); err != nil {
 		return nil
 	}
 	return description.Concurrency
+}
+
+func capacityCanReorder(steps []WorkflowStep) bool {
+	for i := 1; i < len(steps); i++ {
+		a, b := steps[0], steps[i]
+		if a.Target != b.Target || workflowProviderPool(a.Task.Capability) != workflowProviderPool(b.Task.Capability) || workflowUsesPool(a, "inputStaging") != workflowUsesPool(b, "inputStaging") {
+			return true
+		}
+	}
+	return false
 }
 
 func workflowProviderPool(capability string) string {

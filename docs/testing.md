@@ -361,6 +361,10 @@ Linux legacy-startup tests accept the known service-wide vendor timeout-abort se
 
 ## Performance benchmarks
 
+A November 17, 2026 macOS arm64 fixture loaded 512 terminal tasks with 64 KiB inline results. The live Go heap added after GC fell from about 32 MiB to 253–259 KiB with on-demand payload reads. A separate 10,000-task fixture with 4 KiB results added 6.7 MiB; 1,000 owner-checked full reads from the warm local filesystem took 24 µs median and 34 µs p95 in one run. These figures exclude RPC and do not measure process RSS or cold-disk latency.
+
+On the same host, a 1 MiB response written to `io.Discard` took a median of 0.54 ms with `wire.WriteResponse`, versus 0.97 ms for the previous size check followed by `WriteFrame`. The medians are from three 500 ms benchmark runs; neither path includes TLS or network I/O. A 100-step workflow with eight parallel slots also completed on both loopback WebRTC and forced gateway relay.
+
 `BenchmarkDirectoryPoll` compares ordinary directory responses with unchanged conditional requests for synthetic fleets whose nodes each advertise 24 capability schemas. On November 14, 2026, macOS arm64 and Apple M4 Pro, three 300 ms runs gave these approximate medians:
 
 | Nodes | Ordinary response | Unchanged conditional response |

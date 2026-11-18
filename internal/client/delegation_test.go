@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http/httptest"
@@ -18,6 +19,52 @@ import (
 	"github.com/koltyakov/control/internal/transport"
 	"github.com/koltyakov/control/internal/transport/transporttest"
 )
+
+func TestGrantPreparationJoinsAcknowledgedSiblingsOnFailure(t *testing.T) {
+	const workers = 8
+	failed := errors.New("grant denied")
+	started := make(chan int, workers)
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		grants, err := workflowGrants(t.Context(), workers, func(i int) (model.Delegation, error) {
+			started <- i
+			<-release
+			if i == 2 {
+				return model.Delegation{}, failed
+			}
+			return model.Delegation{ID: fmt.Sprint(i)}, nil
+		})
+		if !errors.Is(err, failed) || len(grants) != workers-1 {
+			done <- fmt.Errorf("acknowledged=%d error=%v", len(grants), err)
+			return
+		}
+		next := 0
+		for _, g := range grants {
+			if next == 2 {
+				next++
+			}
+			if g.ID != fmt.Sprint(next) {
+				done <- fmt.Errorf("grant order: %v", grants)
+				return
+			}
+			next++
+		}
+		done <- nil
+	}()
+	for range workers {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			close(release)
+			t.Fatal("independent grants did not start concurrently")
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
 
 type taskFileProvider struct{}
 

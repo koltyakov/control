@@ -64,14 +64,20 @@ func (p *Peer) OpenRPCWithReceipt(ctx context.Context, target, method string, pa
 	})
 	defer stop()
 	deadline, _ := ctx.Deadline()
-	request := model.Request{Version: model.Version, Method: method, Params: model.JSON(params), Deadline: deadline, Delegations: model.Delegations(ctx)}
+	request := model.Request{Version: model.Version, Method: method, Params: model.JSON(params), Deadline: deadline}
 	if method == "tasks.start" || method == "peers.call" {
 		request.SubmissionID = identity.NewID()
 	}
-	for _, grant := range request.Delegations {
-		if (grant.Target == target || grant.Alias == target) && grant.Matches(method, request.Params) {
+	for _, grant := range model.Delegations(ctx) {
+		// Only the coordinator needs instructions issued for its own
+		// downstream calls. A leaf validates the selected ID in its own store.
+		if grant.Subject == target {
+			request.Delegations = append(request.Delegations, grant)
+		}
+		// Locally reconstructed artifact access IDs can omit Subject; the
+		// destination still verifies the bound subject, expiry and instruction.
+		if request.Delegation == "" && (grant.Subject == "" || grant.Subject == p.IdentityID()) && (grant.Target == target || grant.Alias == target) && grant.Matches(method, request.Params) {
 			request.Delegation = grant.ID
-			break
 		}
 	}
 	if err = wire.WriteFrame(conn, request); err != nil {

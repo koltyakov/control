@@ -70,6 +70,7 @@ type Node struct {
 	providers           map[string]Provider
 	mu                  sync.Mutex
 	tasks               map[string]*model.Task
+	coldTasks           map[string]*coldTask
 	recentTasks         []model.Activity // Newest terminal task metadata, protected by mu.
 	cancels             map[string]context.CancelFunc
 	notifiers           map[string]*taskNotifier
@@ -132,6 +133,7 @@ type Node struct {
 	// may hold uncommitted or torn bytes. Protected by pruneMu. No append may
 	// follow until a complete, directory-synced compaction succeeds.
 	journalDirty bool
+	journalExtra int // Superseded cleanup intents since compaction; under pruneMu.
 	// journalAppend and journalReplace default to the store functions. Tests
 	// inject per-node faults here; production never changes them after New.
 	journalAppend  func(path string, data []byte) error
@@ -177,6 +179,7 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 	n.accepting = map[string]*acceptance{}
 	n.tombstones = map[string]taskTombstone{}
 	n.taskIDs = map[string]string{}
+	n.coldTasks = map[string]*coldTask{}
 	n.journalAppend, n.journalReplace = store.Append, store.Bytes
 	n.work = workgate.New()
 	n.tcpListeners = make(chan struct{}, 32)
@@ -500,7 +503,7 @@ func (n *Node) handle(caller string, conn net.Conn) {
 		copy.ID = request.SubmissionID
 		response.Submission = &copy
 	}
-	if writeErr := writeFrame(conn, wire.BoundResponse(response)); writeErr != nil {
+	if writeErr := wire.WriteResponse(conn, response); writeErr != nil {
 		slog.Debug("peer response", "method", request.Method, "error", writeErr)
 	}
 	slog.Debug("peer request", "caller", caller, "method", request.Method, "error", err)
@@ -545,7 +548,7 @@ func (n *Node) callWithReceipt(ctx context.Context, target, method string, param
 			if grant.Target == n.Identity.ID && grant.Matches(method, paramsJSON) {
 				var release func()
 				var err error
-				ctx, release, err = n.acceptAuthority(ctx, n.Identity.ID, model.Request{Method: method, Params: paramsJSON, Delegation: grant.ID, Delegations: model.Delegations(ctx)})
+				ctx, release, err = n.acceptAuthority(ctx, n.Identity.ID, model.Request{Method: method, Params: paramsJSON, Delegation: grant.ID})
 				if err != nil {
 					return nil, err
 				}
@@ -650,6 +653,12 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 	case "nodes.select":
 		return n.selectNode(ctx, args)
 	case "node.describe":
+		var q struct {
+			View string `json:"view"`
+		}
+		if json.Unmarshal(args, &q) == nil && q.View == "concurrency" {
+			return map[string]any{"concurrency": n.concurrencySnapshot()}, nil
+		}
 		agents, servers := []string{}, []string{}
 		for name := range n.Config.Agents {
 			agents = append(agents, name)

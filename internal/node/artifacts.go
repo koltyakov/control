@@ -505,6 +505,16 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 		defer func() { _ = f.Close() }()
 		return n.importArtifact(ctx, f, filepath.Base(q.Path))
 	case "artifacts.list":
+		if q.ID != "" {
+			a, err := n.storedArtifact(q.ID)
+			if errors.Is(err, os.ErrNotExist) || err == nil && (a.Deleting || !a.visibleTo(n.artifactOwner(ctx), n.Identity.ID)) {
+				return []model.Artifact{}, nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			return []model.Artifact{a.Artifact}, nil
+		}
 		dir := filepath.Join(n.Config.DataDir, "artifacts")
 		entries, err := os.ReadDir(dir)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {

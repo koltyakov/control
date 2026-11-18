@@ -197,7 +197,7 @@ func TestTombstoneCompactionFailureBlocksAppends(t *testing.T) {
 		}
 	}
 	n.journalReplace = store.Bytes
-	if err := n.pruneTasks(time.Now()); err != nil || n.journalDirty || appends != 2 {
+	if err := n.pruneTasks(time.Now()); err != nil || n.journalDirty || appends != 3 {
 		t.Fatal("recovery did not resume pruning", err, n.journalDirty, appends)
 	}
 	cfg := n.Config

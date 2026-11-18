@@ -14,13 +14,21 @@ const MaxFrame = 8 << 20
 
 var ErrFrameTooLarge = errors.New("control message exceeds 8 MiB")
 
-// BoundResponse lets both peer and local API callers receive an actionable
-// error even when a provider returns more than the control protocol can carry.
-func BoundResponse(response model.Response) model.Response {
-	if len(model.JSON(response)) <= MaxFrame {
-		return response
+// EncodeResponse bounds the exact bytes sent on either API.
+func EncodeResponse(response model.Response) ([]byte, error) {
+	b, err := json.Marshal(response)
+	if err != nil || len(b) <= MaxFrame {
+		return b, err
 	}
-	return model.ErrorResponse(&model.RPCError{Code: "result_too_large", Outcome: "unknown", Message: "response exceeds 8 MiB; the operation may have completed; use a task with an artifact result"})
+	return json.Marshal(model.ErrorResponse(&model.RPCError{Code: "result_too_large", Outcome: "unknown", Message: "response exceeds 8 MiB; the operation may have completed; use a task with an artifact result"}))
+}
+
+func WriteResponse(w io.Writer, response model.Response) error {
+	b, err := EncodeResponse(response)
+	if err != nil {
+		return err
+	}
+	return writeBytes(w, b)
 }
 
 func WriteFrame(w io.Writer, value any) error {
@@ -28,13 +36,17 @@ func WriteFrame(w io.Writer, value any) error {
 	if err != nil {
 		return err
 	}
+	return writeBytes(w, b)
+}
+
+func writeBytes(w io.Writer, b []byte) error {
 	if len(b) > MaxFrame {
 		return ErrFrameTooLarge
 	}
 	// One write keeps the prefix and body in one multiplexer frame and packet.
 	frame := make([]byte, 4, 4+len(b))
 	binary.BigEndian.PutUint32(frame, uint32(len(b)))
-	_, err = w.Write(append(frame, b...))
+	_, err := w.Write(append(frame, b...))
 	return err
 }
 

@@ -1,14 +1,98 @@
 package node
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/store"
 )
+
+func TestCleanupCompletionAppendRecovery(t *testing.T) {
+	for _, partial := range []bool{true, false} {
+		n := localNode(t, func(c *Config) { c.TaskRetentionHours = 1 })
+		addExpiredTask(t, n, "expired")
+		writes := 0
+		n.journalAppend = func(path string, b []byte) error {
+			writes++
+			if writes == 1 {
+				return store.Append(path, b)
+			}
+			if partial {
+				b = b[:len(b)/2]
+			}
+			if err := store.Append(path, b); err != nil {
+				return err
+			}
+			return errInjectedJournal
+		}
+		if err := n.pruneTasks(time.Now()); !errors.Is(err, errTaskCleanupPersistence) || !n.journalDirty || !n.tombstones["expired"].CleanupPending {
+			t.Fatal("uncertain completion forgot intent", err)
+		}
+		cfg := n.Config
+		if err := n.Close(); err != nil {
+			t.Fatal(err)
+		}
+		n = openLocalNode(t, cfg)
+		if n.tombstones["expired"].CleanupPending != partial {
+			t.Fatal("restart adopted incorrect completion", partial)
+		}
+		if err := n.pruneTasks(time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		assertPrunedDeduplicated(t, n, "expired")
+	}
+}
+
+func TestSmallCleanupDoesNotReplaceHistory(t *testing.T) {
+	n := localNode(t, func(c *Config) { c.TaskRetentionHours = 1 })
+	addExpiredTask(t, n, "first")
+	if err := n.pruneTasks(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(n.tombstonePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.journalReplace = func(string, []byte, os.FileMode) error { return errInjectedJournal }
+	addExpiredTask(t, n, "second")
+	if err = n.pruneTasks(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	all, err := os.ReadFile(n.tombstonePath())
+	if err != nil || !bytes.HasPrefix(all, first) || bytes.Count(all, []byte{'\n'}) != 4 {
+		t.Fatal("expected two append-only intent/completion pairs", err)
+	}
+}
+
+func TestCompletedCleanupPairWithSurvivingTaskFile(t *testing.T) {
+	n := localNode(t, func(c *Config) { c.TaskRetentionHours = 1 })
+	addExpiredTask(t, n, "survivor")
+	record, err := os.ReadFile(n.taskPath("survivor"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = n.pruneTasks(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// Model a directory removal that did not survive restart.
+	if err = store.Bytes(n.taskPath("survivor"), record, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := n.Config
+	if err = n.Close(); err != nil {
+		t.Fatal(err)
+	}
+	n = openLocalNode(t, cfg)
+	got, err := n.ownedTask("owner", "survivor")
+	if err != nil || got.Pruned || !model.SameJSON(record, model.JSON(got)) {
+		t.Fatal("earlier intent shadowed the retained record", err)
+	}
+}
 
 func TestDirtyJournalPreservesAdoptedCleanupIntent(t *testing.T) {
 	n := localNode(t, func(c *Config) { c.TaskRetentionHours = 1 })

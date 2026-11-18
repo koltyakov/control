@@ -15,68 +15,17 @@ import (
 
 type WorkflowStep = model.WorkflowStep
 
-// maxWorkflowParallel bounds concurrently running workflow steps.
-const maxWorkflowParallel = 16
-
 func (n *Node) workflowRun(ctx context.Context, args json.RawMessage, e Execution) (any, error) {
-	var workflow struct {
-		Steps []WorkflowStep `json:"steps"`
-		// MaxParallel runs up to this many ready steps at once. Zero or one keeps
-		// strictly sequential execution in dependency order.
-		MaxParallel int `json:"maxParallel"`
-	}
+	var workflow model.WorkflowPlan
 	if err := json.Unmarshal(args, &workflow); err != nil {
 		return nil, err
 	}
-	if len(workflow.Steps) == 0 || len(workflow.Steps) > 100 {
-		return nil, errors.New("workflow requires 1..100 steps")
+	ordered, err := workflow.Ordered()
+	if err != nil {
+		return nil, err
 	}
 	if workflow.MaxParallel == 0 {
 		workflow.MaxParallel = 1
-	}
-	if workflow.MaxParallel < 1 || workflow.MaxParallel > maxWorkflowParallel {
-		return nil, fmt.Errorf("maxParallel must be 1..%d", maxWorkflowParallel)
-	}
-	known := map[string]bool{}
-	for _, step := range workflow.Steps {
-		if step.Name == "" || known[step.Name] {
-			return nil, errors.New("workflow step names must be nonempty and unique")
-		}
-		known[step.Name] = true
-	}
-	for _, step := range workflow.Steps {
-		if step.Task.Capability == "workflow.run" {
-			return nil, errors.New("nested workflows are not supported")
-		}
-		for _, dep := range step.Needs {
-			if !known[dep] {
-				return nil, fmt.Errorf("unknown dependency %s", dep)
-			}
-		}
-		for _, input := range step.Inputs {
-			if !known[input.Step] || input.Artifact < 0 {
-				return nil, errors.New("invalid workflow input")
-			}
-		}
-	}
-	// Validate the complete graph before submitting any side effects.
-	ordered := []WorkflowStep{}
-	sorted := map[string]bool{}
-	for len(ordered) < len(workflow.Steps) {
-		progress := false
-		for _, step := range workflow.Steps {
-			if sorted[step.Name] {
-				continue
-			}
-			if ready(step, sorted) {
-				ordered = append(ordered, step)
-				sorted[step.Name] = true
-				progress = true
-			}
-		}
-		if !progress {
-			return nil, errors.New("workflow dependency cycle")
-		}
 	}
 	// Reorder only unstarted ready steps, up to the parallel limit. After a
 	// failure no further step starts; steps already running finish on their own
@@ -123,7 +72,7 @@ func (n *Node) workflowRun(ctx context.Context, args json.RawMessage, e Executio
 			candidates = workflowReadySteps(ordered, started, succeeded)
 		}
 		var reports map[string]*model.NodeConcurrency
-		if workflow.MaxParallel > 1 && len(candidates) > 1 {
+		if workflow.MaxParallel > 1 && capacityCanReorder(candidates) {
 			reports = workflowCapacityReports(ctx, candidates, n.workflowCapacity)
 		}
 		for len(candidates) > 0 && running < workflow.MaxParallel {
@@ -137,7 +86,7 @@ func (n *Node) workflowRun(ctx context.Context, args json.RawMessage, e Executio
 				break
 			}
 			index := 0
-			if workflow.MaxParallel > 1 {
+			if reports != nil {
 				index = workflowNextStep(candidates, reports, active)
 			}
 			step := candidates[index]
@@ -164,20 +113,6 @@ func (n *Node) workflowRun(ctx context.Context, args json.RawMessage, e Executio
 		record(<-outcomes)
 	}
 	return results, failure
-}
-
-func ready(step WorkflowStep, completed map[string]bool) bool {
-	for _, dep := range step.Needs {
-		if !completed[dep] {
-			return false
-		}
-	}
-	for _, input := range step.Inputs {
-		if !completed[input.Step] {
-			return false
-		}
-	}
-	return true
 }
 
 func (n *Node) runWorkflowStep(ctx context.Context, step WorkflowStep, upstream map[string]model.Task, log io.Writer) (model.Task, error) {

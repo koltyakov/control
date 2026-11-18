@@ -23,6 +23,7 @@ const (
 	// Tombstones keep pruned task IDs from being executed again by a retried
 	// submission. They are small and outlive the full records by far.
 	maxTombstones = 50000
+	journalSlack  = 1024
 	tombstoneTTL  = 180 * 24 * time.Hour
 )
 
@@ -153,29 +154,19 @@ func (n *Node) loadTombstones() error {
 			}
 			stale = true
 		}
-		if task := n.tasks[t.ID]; task != nil {
-			if task.Owner != t.Owner || specDigest(task.Spec) != t.Spec {
-				return fmt.Errorf("task %s conflicts with its tombstone", t.ID)
-			}
-			if t.CleanupPending {
-				delete(n.tasks, t.ID)
-			} else {
-				stale = true
-				continue
-			}
-		}
-		if !t.CleanupPending && now.Sub(t.Pruned) > tombstoneTTL {
-			stale = true
-			continue
-		}
 		if prior, duplicate := n.tombstones[t.ID]; duplicate {
 			if prior.Owner != t.Owner || prior.Spec != t.Spec {
 				return fmt.Errorf("conflicting task tombstone at line %d", line)
 			}
-			stale = true
-		}
-		if err := n.reserveTaskIDLocked(t.ID); err != nil {
-			return fmt.Errorf("task tombstone at line %d; preserve task records and the journal and recover conflicting IDs before starting: %w", line, err)
+			// A synced completion supersedes its pending intent. Both use
+			// the existing checksummed format, including for older readers.
+			expected := prior
+			expected.CleanupPending, expected.Checksum = false, t.Checksum
+			if prior.CleanupPending && expected == t {
+				n.journalExtra++
+			} else {
+				stale = true
+			}
 		}
 		n.tombstones[t.ID] = t
 		if !bytes.HasSuffix(raw, []byte{'\n'}) {
@@ -185,7 +176,36 @@ func (n *Node) loadTombstones() error {
 	if err = scanner.Err(); err != nil {
 		return err
 	}
-	if stale || len(n.tombstones) > maxTombstones {
+	// Resolve task-file precedence and expiry against the final intent.
+	// An earlier pending line must not hide a surviving full record after a
+	// completed cleanup, or resurrect an expired tombstone.
+	completed := 0
+	for id, t := range n.tombstones {
+		if task := n.tasks[id]; task != nil {
+			if task.Owner != t.Owner || n.taskDigestLocked(task) != t.Spec {
+				return fmt.Errorf("task %s conflicts with its tombstone", id)
+			}
+			if !t.CleanupPending {
+				delete(n.tombstones, id)
+				stale = true
+				continue
+			}
+			delete(n.tasks, id)
+			delete(n.coldTasks, id)
+		}
+		if !t.CleanupPending && now.Sub(t.Pruned) > tombstoneTTL {
+			delete(n.tombstones, id)
+			stale = true
+			continue
+		}
+		if err := n.reserveTaskIDLocked(id); err != nil {
+			return fmt.Errorf("task tombstone %s; preserve task records and the journal and recover conflicting IDs before starting: %w", id, err)
+		}
+		if !t.CleanupPending {
+			completed++
+		}
+	}
+	if stale || completed > maxTombstones+journalSlack || n.journalNeedsCompaction() {
 		// Windows refuses replacement while the read handle is open. Finish
 		// reading and close it before atomically rewriting the same journal.
 		if err := f.Close(); err != nil {
@@ -194,6 +214,13 @@ func (n *Node) loadTombstones() error {
 		return n.compactTombstones()
 	}
 	return nil
+}
+
+// Amortize replacements even for a busy node near the history limit.
+// Pending intents survive every compaction. Only new completions can make
+// progress toward reclaiming the space they occupy.
+func (n *Node) journalNeedsCompaction() bool {
+	return n.journalExtra >= journalSlack || n.journalExtra > 0 && len(n.tombstones) > maxTombstones+journalSlack
 }
 
 // compactTombstones rewrites the file with the newest retained entries.
@@ -207,7 +234,13 @@ func (n *Node) compactTombstones() error {
 	for _, t := range n.tombstones {
 		entries = append(entries, t)
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Pruned.After(entries[j].Pruned) })
+	n.mu.Unlock()
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Pruned.Equal(entries[j].Pruned) {
+			return entries[i].ID < entries[j].ID
+		}
+		return entries[i].Pruned.After(entries[j].Pruned)
+	})
 	kept := entries[:0]
 	for _, t := range entries {
 		if len(kept) < maxTombstones || t.CleanupPending {
@@ -215,7 +248,6 @@ func (n *Node) compactTombstones() error {
 		}
 	}
 	entries = kept
-	n.mu.Unlock()
 	var b bytes.Buffer
 	for i := len(entries) - 1; i >= 0; i-- {
 		entries[i].Checksum = entries[i].checksum()
@@ -230,6 +262,7 @@ func (n *Node) compactTombstones() error {
 		return err
 	}
 	n.journalDirty = false
+	n.journalExtra = 0
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	old := n.tombstones
@@ -285,7 +318,7 @@ func (n *Node) pruneTasks(now time.Time) error {
 	var victims []taskTombstone
 	for i, task := range candidates {
 		if i < excess || (retention > 0 && now.Sub(task.Updated) > retention) {
-			victims = append(victims, taskTombstone{ID: task.ID, Owner: task.Owner, Spec: specDigest(task.Spec), Capability: task.Spec.Capability, State: task.State, Error: task.Error, Created: task.Created, Updated: task.Updated, Pruned: now.UTC(), CleanupPending: true})
+			victims = append(victims, taskTombstone{ID: task.ID, Owner: task.Owner, Spec: n.taskDigestLocked(task), Capability: task.Spec.Capability, State: task.State, Error: task.Error, Created: task.Created, Updated: task.Updated, Pruned: now.UTC(), CleanupPending: true})
 		}
 	}
 	n.mu.Unlock()
@@ -309,10 +342,15 @@ func (n *Node) pruneTasks(now time.Time) error {
 		return errors.Join(cleanupErr, fmt.Errorf("%w: append task tombstones: %w", errTaskCleanupPersistence, err))
 	}
 	removed := make([]string, 0, len(victims))
+	var detached []*coldTask
 	n.mu.Lock()
 	for _, t := range victims {
 		if task := n.tasks[t.ID]; task != nil && task.Terminal() {
 			delete(n.tasks, t.ID)
+			if c := n.coldTasks[t.ID]; c != nil {
+				detached = append(detached, c)
+				delete(n.coldTasks, t.ID)
+			}
 			n.tombstones[t.ID] = t
 			removed = append(removed, t.ID)
 		}
@@ -321,6 +359,9 @@ func (n *Node) pruneTasks(now time.Time) error {
 		n.rebuildRecentTasksLocked()
 	}
 	n.mu.Unlock()
+	for _, c := range detached {
+		c.readers.Wait()
+	}
 	slog.Debug("pruned task records", "count", len(removed))
 	return n.retryTaskCleanup()
 }
@@ -337,7 +378,8 @@ func (n *Node) retryTaskCleanup() error {
 	}
 	n.mu.Unlock()
 	var failures []error
-	changed := false
+	var completed []taskTombstone
+	var records bytes.Buffer
 	for _, t := range pending {
 		var err error
 		for _, path := range []string{n.taskPath(t.ID), n.logPath(t.ID)} {
@@ -350,22 +392,27 @@ func (n *Node) retryTaskCleanup() error {
 			failures = append(failures, fmt.Errorf("cleanup task %s: %w", t.ID, err))
 			continue
 		}
-		n.mu.Lock()
 		t.CleanupPending = false
 		t.Checksum = t.checksum()
-		n.tombstones[t.ID] = t
-		n.mu.Unlock()
-		changed = true
+		completed = append(completed, t)
+		records.Write(model.JSON(t))
+		records.WriteByte('\n')
 	}
-	if changed {
-		if err := n.compactTombstones(); err != nil {
-			// Keep retry intent in memory until the journal replacement commits.
-			n.mu.Lock()
-			for _, t := range pending {
-				n.tombstones[t.ID] = t
+	if len(completed) > 0 {
+		if err := n.journalAppend(n.tombstonePath(), records.Bytes()); err != nil {
+			n.journalDirty = true
+			return errors.Join(errors.Join(failures...), fmt.Errorf("%w: append cleanup completions: %w", errTaskCleanupPersistence, err))
+		}
+		n.mu.Lock()
+		for _, t := range completed {
+			n.tombstones[t.ID] = t
+		}
+		n.mu.Unlock()
+		n.journalExtra += len(completed)
+		if n.journalNeedsCompaction() {
+			if err := n.compactTombstones(); err != nil {
+				failures = append(failures, fmt.Errorf("%w: %w", errTaskCleanupPersistence, err))
 			}
-			n.mu.Unlock()
-			failures = append(failures, fmt.Errorf("%w: %w", errTaskCleanupPersistence, err))
 		}
 	}
 	return errors.Join(failures...)

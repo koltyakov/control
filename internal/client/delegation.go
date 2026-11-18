@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/koltyakov/control/internal/identity"
@@ -38,11 +39,16 @@ func prepareDelegations(ctx context.Context, peer *transport.Peer, target, metho
 			cleanupDelegations(ctx, peer, grants)
 		}
 	}()
-	issue := func(destination string, q model.Delegation) error {
+	requestGrant := func(destination string, q model.Delegation) (model.Delegation, error) {
 		q.Subject = coordinator.ID
 		q.Alias = destination
 		var grant model.Delegation
-		if err := peerCall(ctx, peer, destination, "access.grant", q, &grant); err != nil {
+		err := peerCall(ctx, peer, destination, "access.grant", q, &grant)
+		return grant, err
+	}
+	issue := func(destination string, q model.Delegation) error {
+		grant, err := requestGrant(destination, q)
+		if err != nil {
 			return err
 		}
 		grants = append(grants, grant)
@@ -102,22 +108,16 @@ func prepareDelegations(ctx context.Context, peer *transport.Peer, target, metho
 		}
 		args = model.JSON(q)
 	case "workflow.run":
-		var workflow struct {
-			Steps       []model.WorkflowStep `json:"steps"`
-			MaxParallel int                  `json:"maxParallel,omitempty"`
-		}
+		var workflow model.WorkflowPlan
 		if err = json.Unmarshal(args, &workflow); err != nil {
 			return nil, grants, err
 		}
-		if len(workflow.Steps) == 0 || len(workflow.Steps) > 100 {
-			return nil, grants, errors.New("workflow requires 1..100 steps")
+		if _, err = workflow.Ordered(); err != nil {
+			return nil, grants, err
 		}
 		byName := map[string]int{}
 		for i := range workflow.Steps {
 			step := &workflow.Steps[i]
-			if _, exists := byName[step.Name]; exists || step.Name == "" {
-				return nil, grants, errors.New("workflow step names must be nonempty and unique")
-			}
 			byName[step.Name] = i
 			destination, lookupErr := peer.Lookup(ctx, step.Target)
 			if lookupErr != nil {
@@ -131,25 +131,21 @@ func prepareDelegations(ctx context.Context, peer *transport.Peer, target, metho
 				}
 			}
 		}
-		for _, step := range workflow.Steps {
-			q := model.Delegation{Method: "tasks.start", Params: model.JSON(step.Task)}
+		plans := make([]model.Delegation, len(workflow.Steps))
+		for i, step := range workflow.Steps {
+			plans[i].Method, plans[i].Params = "tasks.start", model.JSON(step.Task)
 			for _, input := range step.Inputs {
-				index, exists := byName[input.Step]
-				if !exists || input.Artifact < 0 {
-					return nil, grants, errors.New("invalid workflow input")
-				}
-				q.InputsFrom = append(q.InputsFrom, model.DelegatedInput{Node: workflow.Steps[index].Target, Path: input.Path, TaskID: workflow.Steps[index].Task.ID, Artifact: input.Artifact})
+				index := byName[input.Step]
+				upstream := workflow.Steps[index]
+				plans[i].InputsFrom = append(plans[i].InputsFrom, model.DelegatedInput{Node: upstream.Target, Path: input.Path, TaskID: upstream.Task.ID, Artifact: input.Artifact})
+				plans[index].DeliverTo = append(plans[index].DeliverTo, step.Target)
 			}
-			for _, consumer := range workflow.Steps {
-				for _, input := range consumer.Inputs {
-					if input.Step == step.Name {
-						q.DeliverTo = append(q.DeliverTo, consumer.Target)
-					}
-				}
-			}
-			if err = issue(step.Target, q); err != nil {
-				return nil, grants, err
-			}
+		}
+		grants, err = workflowGrants(ctx, len(plans), func(i int) (model.Delegation, error) {
+			return requestGrant(workflow.Steps[i].Target, plans[i])
+		})
+		if err != nil {
+			return nil, grants, err
 		}
 		args = model.JSON(workflow)
 	}
@@ -162,7 +158,10 @@ func prepareDelegations(ctx context.Context, peer *transport.Peer, target, metho
 			return nil, grants, err
 		}
 		var artifacts []model.Artifact
-		if err = peerCall(ctx, peer, target, "artifacts.list", map[string]any{}, &artifacts); err != nil {
+		if q.ID == "" {
+			return nil, grants, errors.New("artifact ID required")
+		}
+		if err = peerCall(ctx, peer, target, "artifacts.list", map[string]string{"id": q.ID}, &artifacts); err != nil {
 			return nil, grants, err
 		}
 		found := false
@@ -185,6 +184,48 @@ func prepareDelegations(ctx context.Context, peer *transport.Peer, target, metho
 		params = args
 	}
 	return params, grants, nil
+}
+
+// Stop assigning steps on the first failure, but let in-flight grants return
+// their IDs for cleanup. Preserve plan order independently of network timing.
+func workflowGrants(ctx context.Context, count int, issue func(int) (model.Delegation, error)) ([]model.Delegation, error) {
+	all := make([]model.Delegation, count)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var failure error
+	next := 0
+	for range min(8, count) {
+		wg.Go(func() {
+			for {
+				mu.Lock()
+				if next == count || failure != nil || ctx.Err() != nil {
+					mu.Unlock()
+					return
+				}
+				i := next
+				next++
+				mu.Unlock()
+				grant, err := issue(i)
+				if err != nil {
+					mu.Lock()
+					if failure == nil {
+						failure = err
+					}
+					mu.Unlock()
+					return
+				}
+				all[i] = grant
+			}
+		})
+	}
+	wg.Wait()
+	acked := all[:0]
+	for _, grant := range all {
+		if grant.ID != "" {
+			acked = append(acked, grant)
+		}
+	}
+	return acked, errors.Join(failure, ctx.Err())
 }
 
 // A receipt is evidence only about this submission, not about an earlier

@@ -9,9 +9,9 @@ import (
 )
 
 func TestOversizedResponseStillHasAReadableOutcome(t *testing.T) {
-	response := BoundResponse(model.Response{Result: model.JSON(strings.Repeat("x", MaxFrame))})
+	response := model.Response{Result: model.JSON(strings.Repeat("x", MaxFrame))}
 	var stream bytes.Buffer
-	if err := WriteFrame(&stream, response); err != nil {
+	if err := WriteResponse(&stream, response); err != nil {
 		t.Fatal(err)
 	}
 	var decoded model.Response

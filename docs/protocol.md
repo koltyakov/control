@@ -359,7 +359,7 @@ For the local HTTP API, `TOKEN` is that node's configured token, not the saved a
 | `leases.release` | `id`; fails while its tasks remain active |
 | `leases.get` | `{}` |
 | `artifacts.export` | `path` relative to `workDir` |
-| `artifacts.list` | `{}`; artifacts held by the caller's task owner, plus shared records; the node's own identity sees all |
+| `artifacts.list` | `{}` lists artifacts held by the caller's task owner, plus shared records; the node's own identity sees all. `{"id":"SHA256"}` reads one metadata record and returns an array of zero or one visible artifact. Older workers ignore this filter; clients must match the returned ID. |
 | `artifacts.delete` | `id`; releases the caller's hold. Final deletion rejects retained-task references, active readers and live grants. Durable deletion intent allows failed cleanup to retry |
 | `artifacts.grant` | `id`, recipient `target`, optional `ttlSeconds` |
 | `artifacts.pull` | Full `artifact` reference; resumes an existing partial |
@@ -513,11 +513,15 @@ Active tasks also expose a `phase`, such as waiting for an input staging slot, f
 
 ## Workflow ready ordering
 
+The client validates the dependency graph before issuing grants. It requests up to eight step grants concurrently and joins outstanding requests before sending the workflow. If preparation fails, it attempts to revoke acknowledged grants without repeating uncertain requests. The coordinator receives the downstream instructions issued for its identity. A child status request carries the selected grant ID; the destination checks that ID against its own instruction record.
+
 `workflow.run` validates the complete dependency graph before starting work. `needs` and upstream artifact inputs must succeed before a step becomes ready. Omitted `maxParallel`, or `1`, preserves sequential dependency order without capacity probes. Values 2..16 permit capacity-aware ordering of unstarted ready steps. Use dependencies for required effect ordering, not list position among parallel-ready steps.
 
 Each refill considers the first 32 unstarted ready steps in validated dependency order. It probes at most the first eight distinct destinations once each, concurrently through discovery-authorized `node.describe`, under one shared one-second deadline. Local destinations use the coordinator's own counters. Probes are joined before selection, never run in the background, and occur only when filling available workflow slots, not while all slots are occupied. A failed, denied, missing or legacy reading stays unknown; no broader observation or execution grant is requested.
 
 Selection prefers reported free provider capacity, then unknown capacity, then busy capacity. Equal ranks retain plan order. Built-in I/O uses `operations`, and other providers use `execution`. For `desktop.run`, ordering conservatively checks both `desktop` and `execution`, because descriptions do not distinguish the optional built-in adapter from custom providers using that name. Its in-flight children also count against both pools. Steps with direct or upstream artifact inputs check `inputStaging`. Missing readings stay unknown. Publication capacity, CPU, memory and leases are not placement signals. In-flight children targeting the same pool conservatively subtract from reported headroom for their entire lifetime, even if the report already counts them. Each newly selected child consumes this same headroom before selecting another child from the batch.
+
+When all candidates have the same destination and pool requirements, they stay in plan order without a probe. Other probes request `node.describe` with `{"view":"concurrency"}`. Current workers return just `{"concurrency":...}`; older workers may return the full description.
 
 Reports are advisory, not reservations. The scheduler never waits for capacity to become free: it submits the best remaining candidate even when every reading is busy or unknown. Unprobed destinations and ready steps beyond the lookahead have no availability guarantee. The destination still enforces admission, leases, authority and maintenance. `maxParallel` counts all started unfinished children, including destination queues, staging and publication. Already accepted children are never moved, cancelled to free capacity, or resubmitted by ordering. Prepared targets, task IDs, specifications and grants stay unchanged.
 
@@ -541,6 +545,8 @@ Task ownership, accepted-work admission, delegation activity, lease ownership an
 
 `node.describe.concurrency` and authorized `activities.list` snapshots return `execution`, `operations`, `desktop`, `inputStaging` and `outputPublication`, each with numeric `limit`, `inUse` and `queued`. Client/local-API `activities.pool`, MCP `control_activities` and dashboard JSON preserve these peer reports. Gateway-only health summaries do not include them.
 
+To request only the pool counters: `control call worker node.describe '{"view":"concurrency"}'`.
+
 `inUse` counts admitted work holding that pool's slots. It includes an admitted desktop invocation waiting for another profile's desktop lock, not just batches already acting on the desktop. `queued` counts requests currently waiting for that pool's admission. An input-transfer lock wait counts in `inputStaging.inUse`, and an output-artifact lock wait counts in `outputPublication.inUse`, not in provider usage. Acceptance persistence and cross-profile desktop lock waits are not local pool queues. Acquisition, release and cancellation update each pool's counters together. Reports contain no arguments, results, credentials or lock paths and are independent copies. Values are advisory snapshots across pools, not capacity reservations or resource-isolation guarantees.
 
 Older workers may omit `concurrency`, individual stage/desktop pools or `queued`; missing readings remain unknown, not zero. Pool exhaustion waits with cancellation; task timeouts include that wait and the total accepted unfinished-task bound remains 256 across all stages. That bound also limits tasks retaining provider results while awaiting publication. These are concurrency/count bounds, not process-memory or workspace-byte quotas. This change does not introduce an unbounded retained scheduling queue or change synchronous request lifetimes.
@@ -548,6 +554,10 @@ Older workers may omit `concurrency`, individual stage/desktop pools or `queued`
 Use `control exec NODE --detach --id ID -- COMMAND ARG...` or MCP `control_task_start` to submit long work without blocking the caller. Submit independent tasks before waiting for results; use distinct IDs and avoid shared mutable paths or application sessions unless coordinated. Do not acquire a lease merely because work is long-running.
 
 ## Bounded task results and recovery
+
+After a successful terminal write, the worker keeps task metadata, the specification digest and artifact references in memory. Full task reads, including duplicate submissions, read the persisted payload after checking ownership. Pruning waits for existing file readers. A failed terminal write keeps the failure record in memory rather than reading an older outcome from disk.
+
+Successful cleanup appends a checksummed tombstone with `cleanupPending` cleared. The latest entry for the same task supersedes the prior intent. The worker compacts after 1,024 superseded entries or when completion takes history beyond the 50,000 target plus 1,024 entries of slack. Pending intents survive compaction. An uncertain journal write still requires a synced replacement before the next append.
 
 New task specifications allow at most 1 MiB of arguments, 128 inputs, 128 outputs and 2 MiB total JSON. Task errors are capped at 4 KiB. Results above 1 MiB are stored as JSON in `resultArtifact`; `result` is omitted and output artifact indexes retain their meaning. Download the reference with the artifact API. Legacy retained task records are not rewritten automatically.
 

@@ -47,7 +47,12 @@ func (n *Node) Handler() http.Handler {
 			response = model.ErrorResponse(err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(wire.BoundResponse(response))
+		body, err := wire.EncodeResponse(response)
+		if err != nil {
+			http.Error(w, "invalid RPC response", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(body)
 	})
 	mux.HandleFunc("POST /v1/download", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)

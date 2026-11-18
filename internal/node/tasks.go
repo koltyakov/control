@@ -79,7 +79,7 @@ func (n *Node) loadTasks() error {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	taskPaths := make(map[string]string, len(entries))
+	taskPaths := make(map[string]string)
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -96,7 +96,11 @@ func (n *Node) loadTasks() error {
 			return fmt.Errorf("load task %s; preserve task records and tombstones and recover conflicting IDs before starting: %w", path, err)
 		}
 		n.tasks[task.ID] = &task
-		taskPaths[task.ID] = path
+		if task.Terminal() {
+			n.evictTaskLocked(&task, path, specDigest(task.Spec))
+		} else {
+			taskPaths[task.ID] = path
+		}
 	}
 	if err := n.loadTombstones(); err != nil {
 		return err
@@ -109,6 +113,7 @@ func (n *Node) loadTasks() error {
 			if err = store.Write(taskPaths[task.ID], task); err != nil {
 				return err
 			}
+			n.evictTaskLocked(task, taskPaths[task.ID], specDigest(task.Spec))
 		}
 	}
 	n.rebuildRecentTasksLocked()
@@ -172,20 +177,20 @@ func specDigest(spec model.TaskSpec) string {
 
 // Called with n.mu held. Reports a previous submission of this ID, including a
 // pruned one, so a retry never executes the same task twice.
-func (n *Node) submittedLocked(id, owner, digest string) (model.Task, bool, error) {
+func (n *Node) submittedLocked(id, owner, digest string) (taskPayload, bool, error) {
 	if old := n.tasks[id]; old != nil {
-		if old.Owner != owner || specDigest(old.Spec) != digest {
-			return model.Task{}, true, errors.New("task ID already used with a different owner or specification")
+		if old.Owner != owner || n.taskDigestLocked(old) != digest {
+			return taskPayload{}, true, errors.New("task ID already used with a different owner or specification")
 		}
-		return cloneTask(old), true, nil
+		return n.payloadLocked(old), true, nil
 	}
 	if pruned, ok := n.tombstones[id]; ok {
 		if pruned.Owner != owner || pruned.Spec != digest {
-			return model.Task{}, true, errors.New("task ID already used with a different owner or specification")
+			return taskPayload{}, true, errors.New("task ID already used with a different owner or specification")
 		}
-		return pruned.task(), true, nil
+		return taskPayload{task: pruned.task()}, true, nil
 	}
-	return model.Task{}, false, nil
+	return taskPayload{}, false, nil
 }
 
 func (n *Node) startTaskContext(parent context.Context, owner string, spec model.TaskSpec) (model.Task, error) {
@@ -251,8 +256,9 @@ func (n *Node) startTaskContext(parent context.Context, owner string, spec model
 			n.mu.Unlock()
 			if err == nil {
 				status = "existing"
+				return task.load()
 			}
-			return task, err
+			return model.Task{}, err
 		}
 		pending := n.accepting[spec.ID]
 		if pending == nil {
@@ -375,12 +381,19 @@ func (n *Node) updateTask(id string, change func(*model.Task)) (model.Task, erro
 	n.mu.Unlock()
 	change(&next)
 	err := store.Write(n.taskPath(id), next)
+	var digest string
+	if err == nil && next.Terminal() {
+		digest = specDigest(next.Spec)
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if err != nil {
 		return next, err
 	}
 	*n.tasks[id] = next
+	if digest != "" {
+		n.evictTaskLocked(n.tasks[id], n.taskPath(id), digest)
+	}
 	n.recordRecentTaskLocked(&next)
 	return next, nil
 }
@@ -532,9 +545,9 @@ func (n *Node) taskMethod(ctx context.Context, owner, method string, args json.R
 		return nil, err
 	}
 	terminal := record.Terminal()
-	var task model.Task
+	var payload taskPayload
 	if method != "tasks.logs" {
-		task = cloneTask(record)
+		payload = n.payloadLocked(record)
 	}
 	if method == "tasks.cancel" {
 		if cancel := n.cancels[query.ID]; cancel != nil {
@@ -543,10 +556,8 @@ func (n *Node) taskMethod(ctx context.Context, owner, method string, args json.R
 	}
 	n.mu.Unlock()
 	switch method {
-	case "tasks.get":
-		return task, nil
-	case "tasks.cancel":
-		return task, nil
+	case "tasks.get", "tasks.cancel":
+		return payload.load()
 	case "tasks.logs":
 		if query.Offset < 0 {
 			return nil, errors.New("invalid log offset")
@@ -568,14 +579,17 @@ func (n *Node) taskMethod(ctx context.Context, owner, method string, args json.R
 	return nil, errors.New("unknown task method")
 }
 
-// Called with n.mu held. Pruned tasks remain visible to their owner as
-// terminal tombstones.
-func (n *Node) ownedTaskLocked(owner, id string) (model.Task, error) {
+// Pruned tasks remain visible to their owner as terminal tombstones.
+func (n *Node) ownedTask(owner, id string) (model.Task, error) {
+	n.mu.Lock()
 	task, err := n.ownedTaskRecordLocked(owner, id)
 	if err != nil {
+		n.mu.Unlock()
 		return model.Task{}, err
 	}
-	return cloneTask(task), nil
+	payload := n.payloadLocked(task)
+	n.mu.Unlock()
+	return payload.load()
 }
 
 // The returned record may alias node state and must only be read under n.mu.
@@ -604,12 +618,18 @@ func (n *Node) waitTask(ctx context.Context, owner, id string, wait time.Duratio
 		wait = min(wait, time.Until(deadline)-time.Second)
 	}
 	n.mu.Lock()
-	task, err := n.ownedTaskLocked(owner, id)
+	task, err := n.ownedTaskRecordLocked(owner, id)
 	notifier := n.notifiers[id]
-	n.mu.Unlock()
-	if err != nil || task.Terminal() || notifier == nil || wait <= 0 {
-		return task, err
+	if err != nil {
+		n.mu.Unlock()
+		return model.Task{}, err
 	}
+	if task.Terminal() || notifier == nil || wait <= 0 {
+		payload := n.payloadLocked(task)
+		n.mu.Unlock()
+		return payload.load()
+	}
+	n.mu.Unlock()
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
@@ -618,9 +638,7 @@ func (n *Node) waitTask(ctx context.Context, owner, id string, wait time.Duratio
 	case <-ctx.Done():
 	case <-n.ctx.Done():
 	}
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return n.ownedTaskLocked(owner, id)
+	return n.ownedTask(owner, id)
 }
 
 func (n *Node) WaitTask(ctx context.Context, target, id string) (model.Task, error) {

@@ -150,6 +150,9 @@ func newLifetimeFixture(t *testing.T, relay, system bool, filter func(*model.Res
 		if err := n.Register(provider{
 			cap: model.Capability{Name: "test.lifetime", InputSchema: model.JSON(map[string]any{"type": "object"})},
 			run: func(ctx context.Context, args json.RawMessage, e Execution) (any, error) {
+				if len(model.Delegations(ctx)) != 0 {
+					return nil, errors.New("leaf provider received downstream grant instructions")
+				}
 				f.calls.Add(1)
 				var q struct{ Block, Fail, Output bool }
 				if err := json.Unmarshal(args, &q); err != nil {

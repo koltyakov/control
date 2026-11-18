@@ -710,6 +710,8 @@ Force cannot steal another registration, revoke a redeemed enrollment, bypass a 
 
 ## D075: Bounded task data and durable cleanup
 
+The cleanup-completion rewrite is superseded by [D155](#d155-read-terminal-payloads-on-demand-and-append-cleanup-outcomes). The journal still records intent before file removal.
+
 Reject corrupt complete tombstone records instead of skipping them and allowing task-ID reuse. Add checksums to new records while accepting valid legacy records. Keep durable cleanup intent through failed removals and restart, exempting pending entries from tombstone eviction. Compaction updates the in-memory index only after its file replacement succeeds.
 
 Add `tasks.page` with bounded metadata and stable task-ID cursors. Keep legacy listings array-shaped but summary-only, rejecting more than 100 records. Bound new task specifications and store results above 1 MiB as separate JSON result artifacts, preserving workflow output indexes. Oversized RPC responses return a bounded structured error with unknown outcome. Neither transport errors nor reconciliation trigger automatic replay. See [protocol limits and recovery](protocol.md#bounded-task-results-and-recovery).
@@ -1371,3 +1373,13 @@ Platform and kernel versions are read once per collector, and only uptime is rea
 A Hybrid System profile without a saved `metricsIntervalSeconds` now uses D112's 60-second default when loaded. Previously, only newly converted profiles got 60 seconds, so earlier companions kept sampling every 15 seconds. An explicit value, including 15, is preserved. `nvidia-smi` remains a bounded per-sample command where installed.
 
 WebRTC peers disable pion's multicast DNS. Its default query-only mode bound UDP 5353 on all IPv4 and IPv6 interfaces and joined the mDNS group for every ICE agent, only to resolve `.local` host candidates. Control peers never gather those, and no browser peer connects to a node. Disabling it removes one socket pair and LAN multicast processing per connection. A node that receives a `.local` candidate from an unexpected peer ignores it and uses its other candidates or the relay. On Windows, those wildcard sockets also raised firewall prompts for executables without Control's rules. Unanswered prompts left "Query User" Block rules, which a real test run on a worker reproduced; after this change it bound only loopback and created no rules.
+
+## D155: Read terminal payloads on demand and append cleanup outcomes
+
+Use the existing durable task file for full terminal reads. Keep active work, failed-persistence diagnostics, ownership, artifact references and duplicate detection in memory. This trades a local file read on completed-task inspection for memory proportional to history metadata rather than result bytes. A reader admitted before pruning may finish; later readers see the tombstone.
+
+Write cleanup completion using the existing checksummed tombstone format instead of replacing the journal on every batch. Bound superseded entries with periodic compaction and retain the dirty-journal recovery barrier. This refines D058 and D075; see [limits and recovery](protocol.md#bounded-task-results-and-recovery).
+
+## D156: Narrow workflow traffic without changing authority
+
+Forward grant instructions to the coordinator named as their subject. A leaf RPC needs the selected ID because the destination already holds and checks the exact instruction. Prepare grants concurrently only after graph validation; keep plan order and collect acknowledged grants for cleanup on failure. Capacity and artifact metadata queries use optional filters on existing methods so access rules and older peers remain compatible. See [workflow ordering](protocol.md#workflow-ready-ordering).

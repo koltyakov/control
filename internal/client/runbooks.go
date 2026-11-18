@@ -154,6 +154,12 @@ func (c Client) discoverRunbooks(ctx context.Context, target string, description
 }
 
 func (c Client) describeWithRunbooks(ctx context.Context, target string, params, result any) error {
+	var q struct {
+		View string `json:"view"`
+	}
+	if json.Unmarshal(model.JSON(params), &q) == nil && q.View == "concurrency" {
+		return c.call(ctx, target, "node.describe", params, result)
+	}
 	var description map[string]json.RawMessage
 	if err := c.call(ctx, target, "node.describe", params, &description); err != nil {
 		return err
