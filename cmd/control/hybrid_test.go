@@ -42,7 +42,7 @@ func TestHybridSystemConfigPreservesProfile(t *testing.T) {
 		t.Fatal("unknown or restrictive settings lost", string(updated))
 	}
 	fields["listen"] = json.RawMessage(`"127.0.0.1:7339"`)
-	delete(fields, "metricsIntervalSeconds")
+	fields["metricsIntervalSeconds"] = json.RawMessage(`15`)
 	updated, err = json.Marshal(fields)
 	if err != nil {
 		t.Fatal(err)
@@ -54,8 +54,8 @@ func TestHybridSystemConfigPreservesProfile(t *testing.T) {
 	if err != nil || cfg.Listen != "127.0.0.1:7339" {
 		t.Fatal("recovery changed an existing companion API port", cfg, err)
 	}
-	if cfg.MetricsIntervalSeconds == hybridSystemMetricsSeconds {
-		t.Fatal("recovery changed an existing companion's sampling interval")
+	if cfg.MetricsIntervalSeconds != 15 {
+		t.Fatal("recovery changed an existing companion's explicit sampling interval", cfg.MetricsIntervalSeconds)
 	}
 }
 

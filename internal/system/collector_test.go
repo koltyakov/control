@@ -89,3 +89,28 @@ func TestPeriodicAndRequestedSampling(t *testing.T) {
 		})
 	}
 }
+
+// Static OS details are read once and retained; uptime is refreshed.
+func TestStaticHostDetailsPersistAcrossSamples(t *testing.T) {
+	c := New([]string{t.TempDir()}, 0)
+	first, err := c.Refresh(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.hostLoaded {
+		t.Skip("host platform details unavailable:", first.Errors)
+	}
+	if first.Platform == "" || first.KernelVersion == "" {
+		t.Fatal("static host details were not reported", first)
+	}
+	second, err := c.Refresh(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Platform != first.Platform || second.PlatformVersion != first.PlatformVersion || second.KernelVersion != first.KernelVersion {
+		t.Fatal("static host details changed between samples", first, second)
+	}
+	if second.UptimeSeconds < first.UptimeSeconds || !second.SampledAt.After(first.SampledAt) {
+		t.Fatal("uptime or sample time was not refreshed", first.UptimeSeconds, second.UptimeSeconds)
+	}
+}

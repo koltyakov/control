@@ -40,9 +40,14 @@ func sampleGPUDevices(ctx context.Context, devices []gpuDevice) []model.GPUInfo 
 		if device.native && device.info.Displayable() && device.info.MemoryTotalBytes > 0 {
 			// AdapterMemory is node-wide. GPUProcessMemory and DXGI process
 			// budgets would incorrectly show only this Control process's usage.
-			data, err := gpuPowerShell(ctx, `ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory | Select-Object Name,DedicatedUsage)`)
-			if err == nil {
-				memory = parseWindowsGPUMemory(data)
+			// Read it in process; PowerShell costs a process start and WMI work
+			// per sample, so it is only a fallback when PDH is unavailable.
+			var err error
+			if memory, err = gpuMemoryCounters.sample(); err != nil {
+				data, err := gpuPowerShell(ctx, `ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory | Select-Object Name,DedicatedUsage)`)
+				if err == nil {
+					memory = parseWindowsGPUMemory(data)
+				}
 			}
 			break
 		}

@@ -114,7 +114,7 @@ Fleet JSON includes the machine's own `updateState`, such as `waiting-idle`, `wa
 
 Owner reports expire after 20 seconds without receipt and disappear on disconnect or gateway restart. An older node or gateway may provide only registration-time metrics. Update both to enable health reports. Fresh reports use JSON status `summary`; authorized peer observations use `ready`. Both display `idle` or `busy`. The first CPU sample is a baseline, so CPU becomes available after the next collection, normally within 15 seconds of startup.
 
-Hybrid System companions default to sampling every 60 seconds instead of 15, because grouped host displays use their telemetry while the User context is offline. A node reports its interval in `intervalSeconds`, and an explicit refresh always samples immediately. Existing companions keep their saved setting.
+Hybrid System companions default to sampling every 60 seconds instead of 15, because grouped host displays use their telemetry while the User context is offline. A companion profile without `metricsIntervalSeconds`, including one converted before this default existed, uses 60 seconds; an explicitly saved value is kept. A node reports its interval in `intervalSeconds`, and an explicit refresh always samples immediately.
 
 Polling is bounded and concurrent, with up to eight nodes at a time. Each node request has a six-second deadline within a ten-second aggregation deadline. A failing node does not discard snapshots from healthy peers. The dashboard reads periodic snapshots rather than consuming a continuous event stream.
 
@@ -124,7 +124,7 @@ The gateway samples its host on startup and every 15 seconds. Status requests on
 
 Each node collects system information locally using cross-platform Go APIs:
 
-- OS, architecture, distribution/version, kernel version, and uptime.
+- OS, architecture, distribution/version, kernel version, and uptime. Distribution and kernel versions are read once per process; uptime is read every sample.
 - CPU model, physical and logical CPU counts, and utilization averaged across logical CPUs.
 - Total and used RAM, plus available RAM. Available RAM includes memory the OS can reclaim, rather than only completely unused pages.
 - Total, used, and free space on the filesystems containing `workDir` and `dataDir`. Those paths may refer to the same filesystem; their capacities should not be summed.
@@ -138,7 +138,7 @@ Collection happens on startup, periodically, after execution/agent tasks or othe
 }
 ```
 
-Omitting the setting or using zero selects the 15-second default. Values from 1 to 3600 select a periodic interval in seconds. `-1` disables periodic sampling; startup, completion-triggered, and requested sampling still work.
+Omitting the setting or using zero selects the 15-second default, or 60 seconds for a Hybrid System companion. Values from 1 to 3600 select a periodic interval in seconds. `-1` disables periodic sampling; startup, completion-triggered, and requested sampling still work.
 
 Read the cache or request a new sample:
 
@@ -160,7 +160,7 @@ Resource samples include optional `gpus`, with up to 16 GPU/NPU entries. `system
 | --- | --- |
 | NVIDIA with `nvidia-smi` on the node service's PATH | Model, utilization, and dedicated-memory total/used, where supported by the driver |
 | Linux AMD/Intel/NVIDIA DRM devices | Inventory from `/sys/class/drm`; AMD and other supporting drivers can also expose `gpu_busy_percent` and `mem_info_vram_total` / `mem_info_vram_used`. Recognizable model families determine GPU kind; ambiguous names remain unclassified |
-| Windows 10 version 2004+ with DXCore | Hardware/integrated/NPU flags, model, native adapter identity, and 64-bit dedicated-memory capacity. Windows GPU Adapter Memory counters provide node-wide dedicated-memory usage, matched by adapter LUID rather than name or display order. Works with supporting AMD, Intel, and NVIDIA drivers; compute utilization still needs NVIDIA support |
+| Windows 10 version 2004+ with DXCore | Hardware/integrated/NPU flags, model, native adapter identity, and 64-bit dedicated-memory capacity. Windows GPU Adapter Memory counters provide node-wide dedicated-memory usage, matched by adapter LUID rather than name or display order. The node reads them in process through PDH, keeping one query open between samples; it starts PowerShell for `Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory` only for a sample where PDH fails. Works with supporting AMD, Intel, and NVIDIA drivers; compute utilization still needs NVIDIA support |
 | Older Windows or unavailable DXCore | Model/vendor inventory through Windows PowerShell and `Win32_VideoController`; recognizable model families determine kind. `AdapterRAM` is not used because it truncates modern VRAM capacities |
 | Linux NPUs | Inventory for `intel_vpu`/`ivpu`, `amdxdna`, and `qaic` devices in `/sys/class/accel`; memory and utilization remain unknown |
 | macOS | Model/vendor inventory through `system_profiler`; Apple GPUs are classified integrated. Discrete GPU model families can be identified, but memory/utilization and NPU inventory are not collected |

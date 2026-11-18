@@ -67,3 +67,25 @@ func TestRemovedRPANotRegistered(t *testing.T) {
 		t.Fatal("removed RPA capability was callable")
 	}
 }
+
+// Companions converted before the 60-second default have no saved interval.
+func TestConfigHybridSystemMetricsDefault(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		cfg    Config
+		expect int
+	}{
+		{"user", Config{}, 15},
+		{"companion", Config{InstructionOnly: true, HybridSystem: true}, HybridSystemMetricsSeconds},
+		{"explicit companion", Config{InstructionOnly: true, HybridSystem: true, MetricsIntervalSeconds: 15}, 15},
+		{"disabled companion", Config{InstructionOnly: true, HybridSystem: true, MetricsIntervalSeconds: -1}, -1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := test.cfg
+			cfg.Name, cfg.Gateway, cfg.Token, cfg.DataDir, cfg.WorkDir = "worker", "https://gateway.test", "token", t.TempDir(), t.TempDir()
+			if err := cfg.defaults(); err != nil || cfg.MetricsIntervalSeconds != test.expect {
+				t.Fatalf("metricsIntervalSeconds = %d, error = %v; want %d", cfg.MetricsIntervalSeconds, err, test.expect)
+			}
+		})
+	}
+}

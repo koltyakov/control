@@ -32,3 +32,32 @@ func TestWindowsDXCoreInventoryAndMemory(t *testing.T) {
 		}
 	}
 }
+
+// The persistent PDH query must remain usable across samples.
+func TestWindowsGPUMemoryCounters(t *testing.T) {
+	first, err := gpuMemoryCounters.sample()
+	if err != nil {
+		t.Skip("GPU memory counters unavailable:", err)
+	}
+	second, err := gpuMemoryCounters.sample()
+	if err != nil {
+		t.Fatal("reused GPU memory query failed:", err)
+	}
+	for key := range second {
+		if _, ok := first[key]; !ok {
+			t.Logf("adapter %s appeared between samples", key)
+		}
+	}
+	t.Logf("GPU memory counters: %v", second)
+}
+
+func BenchmarkWindowsGPUMemoryCounters(b *testing.B) {
+	if _, err := gpuMemoryCounters.sample(); err != nil {
+		b.Skip("GPU memory counters unavailable:", err)
+	}
+	for b.Loop() {
+		if _, err := gpuMemoryCounters.sample(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

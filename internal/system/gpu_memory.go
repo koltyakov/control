@@ -13,16 +13,23 @@ func windowsGPUKey(high, low uint32) string {
 	return fmt.Sprintf("luid_0x%08x_0x%08x", high, low)
 }
 
+type gpuMemoryRow struct {
+	Name           string
+	DedicatedUsage *uint64
+}
+
 // Counter instances identify the native adapter by LUID, not by display order
 // or model name. DedicatedUsage is the adapter-wide resident memory gauge.
 func parseWindowsGPUMemory(data []byte) map[string]uint64 {
-	var rows []struct {
-		Name           string
-		DedicatedUsage *uint64
-	}
+	var rows []gpuMemoryRow
 	if json.Unmarshal(bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf}), &rows) != nil {
 		return nil
 	}
+	return windowsGPUMemory(rows)
+}
+
+// Linked physical adapters are summed per LUID. Rows without a value are skipped.
+func windowsGPUMemory(rows []gpuMemoryRow) map[string]uint64 {
 	result := map[string]uint64{}
 	invalid := map[string]bool{}
 	for _, row := range rows {

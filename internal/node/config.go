@@ -41,6 +41,11 @@ type BrowserConfig struct {
 	Config string `json:"config,omitempty"`
 }
 
+// HybridSystemMetricsSeconds is a Hybrid System companion's default sampling
+// interval. Grouped host displays use companion telemetry only while User is
+// offline, so it samples less often. Explicit refreshes stay immediate.
+const HybridSystemMetricsSeconds = 60
+
 type Config struct {
 	Name    string `json:"name"`
 	Gateway string `json:"gateway"`
@@ -68,7 +73,9 @@ type Config struct {
 	MaxTaskStaging         int                `json:"maxTaskStaging,omitempty"`
 	MaxTaskPublications    int                `json:"maxTaskPublications,omitempty"`
 	MaxDelegationsPerOwner int                `json:"maxDelegationsPerOwner,omitempty"`
-	MetricsIntervalSeconds int                `json:"metricsIntervalSeconds,omitempty"`
+	// MetricsIntervalSeconds zero selects 15 seconds, or HybridSystemMetricsSeconds
+	// for a Hybrid System companion; -1 disables periodic sampling.
+	MetricsIntervalSeconds int `json:"metricsIntervalSeconds,omitempty"`
 	// TaskRetentionHours keeps terminal task records, logs, and workspaces for
 	// reconciliation. Zero selects 168 hours; -1 disables age-based pruning.
 	TaskRetentionHours int `json:"taskRetentionHours,omitempty"`
@@ -198,9 +205,14 @@ func (c *Config) defaults() error {
 	}
 	if c.MetricsIntervalSeconds == 0 {
 		c.MetricsIntervalSeconds = 15
+		if c.HybridSystem {
+			// Profiles converted before the companion default existed have no
+			// saved interval. An explicit value, including 15, is preserved.
+			c.MetricsIntervalSeconds = HybridSystemMetricsSeconds
+		}
 	}
 	if c.MetricsIntervalSeconds < -1 || c.MetricsIntervalSeconds > 3600 {
-		return errors.New("metricsIntervalSeconds must be -1 or 1..3600; zero selects the 15-second default")
+		return errors.New("metricsIntervalSeconds must be -1 or 1..3600; zero selects the 15-second default, or 60 seconds for a Hybrid System companion")
 	}
 	if c.TaskRetentionHours == 0 {
 		c.TaskRetentionHours = 168

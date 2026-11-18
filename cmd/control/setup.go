@@ -373,10 +373,8 @@ func enrollCLI(ctx context.Context, args []string, config string) error {
 }
 
 const (
-	hybridSystemListen = "127.0.0.1:7332"
-	// The console shows System telemetry only while User is offline, so sample
-	// less often than the User context. Explicit refreshes stay immediate.
-	hybridSystemMetricsSeconds = 60
+	hybridSystemListen         = "127.0.0.1:7332"
+	hybridSystemMetricsSeconds = node.HybridSystemMetricsSeconds
 )
 
 func configureHybridSystem(config string) (node.Config, error) {

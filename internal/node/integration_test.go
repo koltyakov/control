@@ -28,6 +28,11 @@ const testToken = "integration-test-token-123456789"
 
 func cluster(t *testing.T, relayOnly bool, configure func(int, *Config), peerOptions ...transport.Options) (*Node, *Node, *Node) {
 	t.Helper()
+	if len(peerOptions) == 0 {
+		// Host LAN candidates add nothing to same-host peers. On Windows they
+		// also open UDP sockets that raise firewall prompts for test binaries.
+		peerOptions = []transport.Options{transporttest.Loopback()}
+	}
 	g, err := gateway.New(t.TempDir(), testToken, gateway.Options{SuperuserKey: testAccount})
 	if err != nil {
 		t.Fatal(err)

@@ -14,6 +14,7 @@ import (
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/transport"
+	"github.com/koltyakov/control/internal/transport/transporttest"
 )
 
 const testAccount = "node-test-account-key-1234567890123456"
@@ -30,6 +31,9 @@ var testOrchestrators sync.Map
 
 func prepareTestOrchestrator(t *testing.T, ctx context.Context, gateway, token, user string, relay bool, peerOptions ...transport.Options) *orchestratorFixture {
 	t.Helper()
+	if len(peerOptions) == 0 {
+		peerOptions = []transport.Options{transporttest.Loopback()}
+	}
 	cfg := client.StandaloneConfig{Gateway: client.Admin{URL: gateway, Key: token}, StateDir: t.TempDir(), RelayOnly: relay, AccountRouting: true, PeerOptions: peerOptions}
 	owner, err := identity.Load(filepath.Join(cfg.StateDir, identity.ID([]byte(strings.TrimRight(gateway, "/")+"\x00"+user))))
 	if err != nil {

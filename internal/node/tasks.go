@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -24,7 +23,7 @@ import (
 	"github.com/koltyakov/control/internal/store"
 )
 
-var safeID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
+var safeID = model.TaskIDPattern
 
 // maxTaskWait bounds one blocking tasks.get. Callers loop for longer waits.
 const maxTaskWait = time.Minute

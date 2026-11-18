@@ -492,6 +492,10 @@ func submit(ctx context.Context, c client.Client, target string, spec model.Task
 	if spec.ID == "" {
 		spec.ID = identity.NewID()
 	}
+	// Reject locally so the error does not suggest a submission may exist.
+	if !model.TaskIDPattern.MatchString(spec.ID) {
+		return fmt.Errorf("invalid task ID %q: use 1-128 letters, digits, '_' or '-'; nothing was submitted", spec.ID)
+	}
 	fmt.Fprintln(os.Stderr, "task", spec.ID)
 	var task model.Task
 	if err := c.Call(ctx, target, "tasks.start", spec, &task); err != nil {

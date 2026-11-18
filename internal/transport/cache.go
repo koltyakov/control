@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/model"
+	"github.com/pion/ice/v4"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -84,6 +85,11 @@ func webRTCSettings(direct time.Duration, trickle bool) webrtc.SettingEngine {
 	}
 	settings.SetSTUNGatherTimeout(gather)
 	settings.SetSCTPMaxReceiveBufferSize(maxSCTPReceive)
+	// Control peers never gather .local mDNS candidates, so pion's default
+	// query-only mode only opened a multicast UDP 5353 listener on all
+	// interfaces for every connection attempt. On Windows that also prompts
+	// for firewall access for any executable without a rule.
+	settings.SetICEMulticastDNSMode(ice.MulticastDNSModeDisabled)
 	return settings
 }
 

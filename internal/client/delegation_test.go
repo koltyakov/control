@@ -16,6 +16,7 @@ import (
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/node"
 	"github.com/koltyakov/control/internal/transport"
+	"github.com/koltyakov/control/internal/transport/transporttest"
 )
 
 type taskFileProvider struct{}
@@ -44,7 +45,7 @@ func delegationCluster(t *testing.T, relay bool) (context.Context, Client, []*no
 
 func delegationClusterWithTimeout(t *testing.T, relay bool, timeout time.Duration, instructionOnly ...bool) (context.Context, Client, []*node.Node, Admin) {
 	t.Helper()
-	return delegationClusterWithTransport(t, relay, timeout, transport.Options{}, instructionOnly...)
+	return delegationClusterWithTransport(t, relay, timeout, transporttest.Loopback(), instructionOnly...)
 }
 
 func delegationClusterWithTransport(t *testing.T, relay bool, timeout time.Duration, peerOptions transport.Options, instructionOnly ...bool) (context.Context, Client, []*node.Node, Admin) {

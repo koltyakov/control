@@ -25,6 +25,8 @@ type Collector struct {
 	trigger  chan struct{}
 	previous *cpu.TimesStat
 	gpu      gpuCollector
+	// Static OS details are read once; Refresh calls are serialized by gate.
+	hostLoaded bool
 }
 
 func New(paths []string, interval time.Duration) *Collector {
@@ -122,10 +124,21 @@ func (c *Collector) Refresh(ctx context.Context) (model.SystemInfo, error) {
 		report("physical CPUs", err)
 		s.PhysicalCPUs = count
 	}
-	if info, err := host.InfoWithContext(ctx); err == nil {
-		s.Platform, s.PlatformVersion, s.KernelVersion, s.UptimeSeconds = info.Platform, info.PlatformVersion, info.KernelVersion, info.Uptime
+	// Platform and kernel versions change only with a restart. host.Info would
+	// also enumerate every process and, on macOS, start sw_vers each sample.
+	hostLoaded := c.hostLoaded
+	if !hostLoaded {
+		platform, _, version, platformErr := host.PlatformInformationWithContext(ctx)
+		report("OS", platformErr)
+		kernel, kernelErr := host.KernelVersionWithContext(ctx)
+		report("OS kernel", kernelErr)
+		s.Platform, s.PlatformVersion, s.KernelVersion = platform, version, kernel
+		hostLoaded = platformErr == nil && kernelErr == nil
+	}
+	if uptime, err := host.UptimeWithContext(ctx); err == nil {
+		s.UptimeSeconds = uptime
 	} else {
-		report("OS", err)
+		report("OS uptime", err)
 	}
 	if times, err := cpu.TimesWithContext(ctx, false); err == nil && len(times) > 0 {
 		if c.previous != nil {
@@ -159,6 +172,7 @@ func (c *Collector) Refresh(ctx context.Context) (model.SystemInfo, error) {
 	c.mu.Lock()
 	c.latest = s
 	c.mu.Unlock()
+	c.hostLoaded = hostLoaded
 	return c.Snapshot(), nil
 }
 
