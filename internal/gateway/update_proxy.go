@@ -81,6 +81,11 @@ func (g *Gateway) coordinateProxyRollout(d *update.Deployment, peers []rolloutPe
 		}
 		parents = append(parents, parent)
 		g.proxyBlocks[parent] = true
+		// A prepare may already have fenced the listener. Release that fence
+		// if the preflight fails, but never undo an outstanding commit.
+		if p.fresh && !p.proxyWorkIdle && p.status.ID == d.ID && p.status.Paused && !slices.Contains(d.InFlight, parent) {
+			send(parent, "update.resume", update.Command{ID: d.ID})
+		}
 		for _, child := range children {
 			// Legacy children must gain the negotiated drain support first.
 			if byID[child].status.ProxyDrain {
@@ -109,13 +114,11 @@ func (g *Gateway) coordinateProxyRollout(d *update.Deployment, peers []rolloutPe
 				}
 			}
 		}
-		if !group.releasing && !p.fresh {
-			// A proxy commit may disconnect normally. Before that durable intent,
-			// losing the proxy aborts the group instead of stranding children.
-			if !slices.Contains(d.InFlight, group.parent) {
-				group.releasing = true
-				group.lastHint = time.Time{}
-			}
+		// Once committed, the proxy can disconnect normally. Before then a
+		// lost report or unrelated proxy workload makes holding children futile.
+		if !group.releasing && (!p.fresh || !p.proxyWorkIdle) && !slices.Contains(d.InFlight, group.parent) {
+			group.releasing = true
+			group.lastHint = time.Time{}
 		}
 		if group.releasing {
 			g.releaseProxyGroup(group, byID, send, now)
@@ -125,7 +128,7 @@ func (g *Gateway) coordinateProxyRollout(d *update.Deployment, peers []rolloutPe
 	if group == nil && !now.Before(g.proxyRetryAt) {
 		for _, parent := range parents {
 			p := byID[parent]
-			if !p.fresh || p.status.ID != d.ID || !stagedStatus(p.status) || p.status.State == "restarting" ||
+			if !p.fresh || !p.proxyWorkIdle || p.status.ID != d.ID || !stagedStatus(p.status) || p.status.State == "restarting" ||
 				!g.nodeMayUpdate(d, p.status, gatewayCurrent) || slices.Contains(d.InFlight, parent) {
 				continue
 			}

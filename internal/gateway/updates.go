@@ -327,9 +327,25 @@ func (g *Gateway) control(id, kind string, command update.Command) bool {
 }
 
 type rolloutPeer struct {
-	node   model.Node
-	status update.Status
-	fresh  bool
+	node          model.Node
+	status        update.Status
+	fresh         bool
+	proxyWorkIdle bool
+}
+
+// Caller holds mu. Both reports must belong to the same live connection.
+func (g *Gateway) snapshotRolloutPeer(id string, now time.Time) rolloutPeer {
+	c := g.peers[id]
+	status, ok := g.updateStatus[id]
+	return rolloutPeer{
+		node:   g.nodes[id],
+		status: status,
+		fresh:  c != nil && ok && now.Sub(status.SeenAt) < updateStatusFreshness,
+		// ActiveCount includes application tunnels and tasks, but not the
+		// listener's CONNECT sockets that child parking is meant to drain.
+		proxyWorkIdle: c != nil && c.health != nil && now.Sub(c.healthAt) < model.NodeHealthTTL &&
+			c.health.ActiveCount == 0 && !c.health.Leased,
+	}
 }
 
 func (g *Gateway) rolloutPeers(d *update.Deployment) []rolloutPeer {
@@ -355,12 +371,12 @@ func (g *Gateway) rolloutPeers(d *update.Deployment) []rolloutPeer {
 	// Each snapshot includes full node and update metadata. Growing this slice
 	// repeatedly copies and abandons much more storage than the ID index.
 	peers := make([]rolloutPeer, 0, len(ids))
+	now := time.Now()
 	for id := range ids {
 		if g.clientOwners[id] {
 			continue
 		}
-		status, ok := g.updateStatus[id]
-		peers = append(peers, rolloutPeer{g.nodes[id], status, g.peers[id] != nil && ok && time.Since(status.SeenAt) < updateStatusFreshness})
+		peers = append(peers, g.snapshotRolloutPeer(id, now))
 	}
 	slices.SortFunc(peers, func(a, b rolloutPeer) int { return strings.Compare(a.node.ID, b.node.ID) })
 	return peers

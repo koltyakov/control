@@ -46,6 +46,8 @@ func newProxyRolloutFixture(t *testing.T) *proxyRolloutFixture {
 	parent := g.nodes[f.parent]
 	parent.ProxyEndpoints = []model.ProxyEndpoint{{URL: "http://10.0.0.1:3128", Managed: true}}
 	g.nodes[f.parent] = parent
+	g.peers[f.parent].health = &model.NodeHealth{}
+	g.peers[f.parent].healthAt = f.now
 	s := g.updateStatus[f.parent]
 	s.Busy = true
 	g.updateStatus[f.parent] = s
@@ -61,8 +63,7 @@ func newProxyRolloutFixture(t *testing.T) *proxyRolloutFixture {
 func (f *proxyRolloutFixture) snapshot() []rolloutPeer {
 	var peers []rolloutPeer
 	for _, id := range append([]string{f.parent}, f.children...) {
-		n, s := f.g.nodes[id], f.g.updateStatus[id]
-		peers = append(peers, rolloutPeer{node: n, status: s, fresh: f.g.peers[id] != nil && f.now.Sub(s.SeenAt) < updateStatusFreshness})
+		peers = append(peers, f.g.snapshotRolloutPeer(id, f.now))
 	}
 	return peers
 }
@@ -130,6 +131,14 @@ func TestProxyRolloutReservesDrainsProxyFirstThenResumesChildren(t *testing.T) {
 			t.Fatal("child resumed or updated before proxy confirmation")
 		}
 	}
+	// Health is not a restart acknowledgement. After durable intent the
+	// proxy may reconnect without a health report while still reserved.
+	f.g.peers[f.parent].health = nil
+	f.tick(t)
+	if f.has(f.parent, "update.resume") || f.has(f.children[0], "update.resume") ||
+		!slices.Contains(f.g.updates.Current().InFlight, f.parent) {
+		t.Fatal("missing health interrupted a committed proxy update", f.sent)
+	}
 	s.Software, s.State = f.info, "applied"
 	f.g.updateStatus[f.parent] = s
 	f.tick(t)
@@ -192,6 +201,70 @@ func TestProxyRolloutWaitsForBusyStaleOfflineAndLegacyChildren(t *testing.T) {
 			}
 			if name == "legacy" && !f.has(child, "update.prepare") {
 				t.Fatal("legacy child cannot bootstrap drain support")
+			}
+		})
+	}
+}
+
+func TestProxyRolloutWaitsForParentWorkAcrossRetryWindows(t *testing.T) {
+	f := newProxyRolloutFixture(t)
+	c := f.g.peers[f.parent]
+	c.health = &model.NodeHealth{ActiveCount: 2, Tunnels: &model.TunnelCounts{Forward: 2}}
+	for range 4 {
+		f.now = f.now.Add(proxyAttemptWindow + time.Minute)
+		c.healthAt = f.now
+		for id, status := range f.g.updateStatus {
+			status.SeenAt = f.now
+			f.g.updateStatus[id] = status
+		}
+		f.tick(t)
+		if len(f.sent) != 0 || f.g.proxyRollout != nil || len(f.g.maintenance.peerDrains) != 0 {
+			t.Fatal("coordinator disturbed the group while the proxy had application tunnels", f.sent)
+		}
+	}
+	// Only the children's CONNECT sockets remain. The parent's aggregate
+	// update status is still busy, but draining the children can now help.
+	c.health = &model.NodeHealth{}
+	f.tick(t)
+	if !f.has(f.children[0], "update.proxy-prepare") || f.has(f.parent, "update.prepare") {
+		t.Fatal("group did not start a proxy-first drain when the tunnels closed", f.sent)
+	}
+}
+
+func TestProxyRolloutAbortsOnParentWorkOrUnknownHealth(t *testing.T) {
+	for _, name := range []string{"work", "lease", "stale", "reconnected"} {
+		t.Run(name, func(t *testing.T) {
+			f := newProxyRolloutFixture(t)
+			f.tick(t)
+			f.reserveChildren()
+			f.tick(t)
+			if !f.has(f.children[0], "update.proxy-park") {
+				t.Fatal("fixture did not start parking children", f.sent)
+			}
+			c := f.g.peers[f.parent]
+			switch name {
+			case "work":
+				c.health.ActiveCount = 1
+			case "lease":
+				c.health.Leased = true
+			case "stale":
+				c.healthAt = f.now.Add(-model.NodeHealthTTL)
+			case "reconnected":
+				f.g.peers[f.parent] = &connection{userID: "fleet", out: make(chan *protocol.Packet, 8)}
+			}
+			// A fresh update heartbeat cannot stand in for the health report.
+			s := f.g.updateStatus[f.parent]
+			s.Busy, s.Paused, s.State, s.LeaseUntil = false, true, "ready", f.now.Add(time.Minute)
+			f.g.updateStatus[f.parent] = s
+			f.tick(t)
+			if !f.has(f.parent, "update.resume") || len(f.g.maintenance.peerDrains) != 0 ||
+				f.has(f.parent, "update.prepare") || f.has(f.parent, "update.commit") {
+				t.Fatal("pre-commit abort left relay admission fenced or advanced the proxy", f.sent)
+			}
+			for _, child := range f.children {
+				if !f.has(child, "update.resume") || f.has(child, "update.proxy-park") || f.has(child, "update.prepare") {
+					t.Fatal("did not release the parked group on the next tick", f.sent)
+				}
 			}
 		})
 	}

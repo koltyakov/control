@@ -1383,3 +1383,7 @@ Write cleanup completion using the existing checksummed tombstone format instead
 ## D156: Narrow workflow traffic without changing authority
 
 Forward grant instructions to the coordinator named as their subject. A leaf RPC needs the selected ID because the destination already holds and checks the exact instruction. Prepare grants concurrently only after graph validation; keep plan order and collect acknowledged grants for cleanup on failure. Capacity and artifact metadata queries use optional filters on existing methods so access rules and older peers remain compatible. See [workflow ordering](protocol.md#workflow-ready-ordering).
+
+## D157: Check proxy workload before reserving children
+
+[D149](#d149-coordinated-proxy-first-managed-rollouts) allows parking idle children to drain their gateway CONNECT sockets. Parking cannot drain an application tunnel on the proxy. Start a group only when the proxy's current connection reports fresh aggregate health with no active operations or lease. Release pre-commit holds if this changes. This reuses health from existing proxies without collecting operation details or introducing a version-specific command. Health only controls when to try the drain; the proxy's own socket fence and durable commit still govern restart. See [proxy updates](gateway-proxy.md#updates).
