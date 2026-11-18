@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/koltyakov/control/internal/buildinfo"
@@ -75,9 +76,22 @@ func build() error {
 	if err != nil {
 		return err
 	}
+	windowsCompiler := sync.OnceValues(func() (bundleCompiler, error) {
+		return windowsBuildCompiler(overlay)
+	})
+	compile := func(path string, asset update.Asset) error {
+		compiler := bundleCompiler{overlay: overlay}
+		if asset.OS == "windows" {
+			var err error
+			compiler, err = windowsCompiler()
+			if err != nil {
+				return err
+			}
+		}
+		return compiler.build(path, asset.OS, asset.Arch, ldflags)
+	}
 	if *binary != "" {
-		a := manifest.Assets[0]
-		return buildBinary(*binary, a.OS, a.Arch, ldflags, overlay)
+		return compile(*binary, manifest.Assets[0])
 	}
 	if err := os.MkdirAll(*dir, 0700); err != nil {
 		return err
@@ -87,7 +101,7 @@ func build() error {
 		a := &manifest.Assets[i]
 		path := filepath.Join(*dir, a.File)
 		fmt.Fprintln(os.Stderr, "building", a.OS+"/"+a.Arch)
-		if err := buildBinary(path, a.OS, a.Arch, ldflags, overlay); err != nil {
+		if err := compile(path, *a); err != nil {
 			return err
 		}
 		f, err := os.Open(path)
@@ -113,14 +127,41 @@ func build() error {
 	return os.WriteFile(filepath.Join(*dir, "control-manifest.json"), append(b, '\n'), 0600)
 }
 
-func buildBinary(path, osName, arch, ldflags, overlay string) error {
+type bundleCompiler struct {
+	overlay            string
+	privateGOROOT      string
+	checkWindowsMemory bool
+}
+
+func (c bundleCompiler) command(args ...string) *exec.Cmd {
+	if c.privateGOROOT == "" {
+		return exec.Command("go", args...)
+	}
+	goName := "go"
+	if runtime.GOOS == "windows" {
+		goName += ".exe"
+	}
+	cmd := exec.Command(filepath.Join(c.privateGOROOT, "bin", goName), args...)
+	// Use the selected toolchain's copy without auto-selecting the cached
+	// original again. Keep the same module cache for project dependencies.
+	cmd.Env = append(os.Environ(), "GOROOT="+c.privateGOROOT, "GOTOOLCHAIN=local")
+	return cmd
+}
+
+func (c bundleCompiler) build(path, osName, arch, ldflags string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	cmd := exec.Command("go", "build", "-overlay", overlay, "-trimpath", "-ldflags", ldflags, "-o", path, "./cmd/control")
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+osName, "GOARCH="+arch)
+	cmd := c.command("build", "-overlay", c.overlay, "-trimpath", "-ldflags", ldflags, "-o", path, "./cmd/control")
+	cmd.Env = append(cmd.Environ(), "CGO_ENABLED=0", "GOOS="+osName, "GOARCH="+arch)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	if c.checkWindowsMemory {
+		return checkWindowsImageMemory(path)
+	}
+	return nil
 }
 
 func checkBundle(dir string) error {

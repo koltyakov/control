@@ -2005,12 +2005,13 @@ async function refresh(manual = false) {
             : "Waiting for the machine to reconnect and report System context…";
     }
     if (session !== state.session || page !== state.page || generation !== auditGeneration) return;
+    if (machineDrag) return;
     // Resource refreshes preserve focus. Never replace an in-progress password form.
-    if (page !== "account" && !machineDrag) {
+    if (page !== "account") {
       render();
       state.updatedAt = snapshot.observedAt;
-      banner("");
     }
+    banner("");
   } catch (error) {
     if (session === state.session && generation === auditGeneration) banner(errorMessage(error));
   } finally {

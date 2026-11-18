@@ -458,6 +458,27 @@ async function assertAuxiliaryRefreshTimestamp(page, snapshot) {
   }
 }
 
+async function assertAccountRefreshRecovery(page) {
+  const statusURL = "**/console/api/status";
+  const unavailable = (route) => route.abort();
+  const banner = page.locator("#stale-banner");
+  const confirmation = page.locator("#account-form input[name=confirm]");
+  await confirmation.focus();
+  const input = await confirmation.elementHandle();
+  const value = await confirmation.inputValue();
+  await page.route(statusURL, unavailable);
+  try {
+    await refreshPage(page);
+    assert.equal(await banner.isVisible(), true, "A network failure shows the warning");
+  } finally {
+    await page.unroute(statusURL, unavailable);
+  }
+  await refreshPage(page);
+  assert.equal(await banner.isHidden(), true, "Account refresh clears the warning after recovery");
+  assert.equal(await confirmation.inputValue(), value, "Refresh preserves the pending password");
+  assert.equal(await input.evaluate((field) => field === document.activeElement), true, "Refresh preserves the original focused input");
+}
+
 async function assertOverviewFullFleet(page, snapshot) {
   const online = Array.from({ length: 12 }, (_, i) => ({
     ...snapshot.nodes[0],
@@ -2634,6 +2655,7 @@ try {
   await page
     .locator("#account-form input[name=confirm]")
     .fill("new isolated browser password");
+  await assertAccountRefreshRecovery(page);
   await page.locator("#account-form button[type=submit]").click();
   await page.locator("#login").waitFor({ state: "visible" });
   await login(page, "browser-owner", "new isolated browser password");
