@@ -30,7 +30,7 @@ help:
 	@echo "  make cov                - Generate coverage profile and HTML"
 	@echo "  make test-cov-check      - Enforce $(COVERAGE_MIN)% coverage"
 	@echo "  make bench              - Run Go benchmarks"
-	@echo "  make build / install    - Build / install the native CLI"
+	@echo "  make build / install    - Build the native CLI / install it and refresh managed skills"
 	@echo "  make build-all / bundle - Build all six platform binaries and a manifest"
 	@echo "  make release-local      - Build and verify a local release bundle"
 	@echo "  make release-check      - Verify the existing bundle in $(DIST_DIR)"
@@ -109,7 +109,7 @@ build:
 	$(GO) run ./cmd/control-bundle --binary "$(BIN_DIR)/control$(EXE)" $(if $(VERSION),--version "$(VERSION)",)
 
 install: build
-	"$(BIN_DIR)/control$(EXE)" install-self
+	"$(BIN_DIR)/control$(EXE)" install-self --refresh-skills
 
 uninstall:
 ifeq ($(OS),Windows_NT)

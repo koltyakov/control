@@ -137,11 +137,71 @@ func InstallAgent(ctx context.Context, agent, project, binary, config string, mc
 		fmt.Fprintln(os.Stderr, "MCP configured for", agent)
 	}
 	if skill {
-		if err = installSkill(ctx, paths.Skill); err != nil {
-			return err
-		}
-		fmt.Fprintln(os.Stderr, "Skill installed:", paths.Skill)
+		return installAgentSkill(ctx, paths.Skill)
 	}
+	return nil
+}
+
+// InstallHostSkills installs the default OpenCode skill and optionally refreshes
+// the existing Control-managed global skills for other supported clients.
+func InstallHostSkills(ctx context.Context, refresh bool) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	clients := []string{"opencode"}
+	if refresh {
+		clients = append(clients, "claude", "cursor", "copilot", "codex", "windsurf", "antigravity", "agents")
+	}
+	var result error
+	for _, agent := range clients {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(result, err)
+		}
+		paths, err := AgentLocations(agent, home, "")
+		if err != nil {
+			return errors.Join(result, err)
+		}
+		if agent != "opencode" {
+			managed, err := existingManagedSkill(paths.Skill)
+			if err != nil {
+				result = errors.Join(result, err)
+			}
+			if !managed {
+				continue
+			}
+		}
+		if err := installAgentSkill(ctx, paths.Skill); err != nil {
+			result = errors.Join(result, err)
+		}
+	}
+	return result
+}
+
+func existingManagedSkill(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	// Don't adopt symlinked or special core files during automatic discovery.
+	if !info.Mode().IsRegular() {
+		return false, nil
+	}
+	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil && hasManagedMarker(b), err
+}
+
+func installAgentSkill(ctx context.Context, path string) error {
+	if err := installSkill(ctx, path); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, "Skill installed:", path)
 	return nil
 }
 

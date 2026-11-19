@@ -215,12 +215,7 @@ func run(ctx context.Context, args []string) error {
 		})
 		return secretsCLI(ctx, args[1:], *profile, override)
 	case "install-self":
-		path, err := installation.InstallSelf(ctx)
-		if err != nil {
-			return err
-		}
-		fmt.Println("Installed", path)
-		return installAgent(ctx, "opencode", "", path, *profile, false, true)
+		return installSelfCLI(ctx, args[1:])
 	case "setup":
 		return setupCLI(ctx, args[1:], *profile)
 	case "enroll":

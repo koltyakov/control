@@ -46,6 +46,82 @@ func TestOpenCodeSkillInstall(t *testing.T) {
 	}
 }
 
+func TestInstallHostSkillsRefreshesOnlyManagedGlobalCopies(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+	stale := "<!-- Managed by control -->\nstale\n"
+	writeSkill := func(path, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := InstallHostSkills(t.Context(), false); err != nil {
+		t.Fatal(err)
+	}
+	for _, agent := range []string{"claude", "cursor", "copilot", "codex", "windsurf", "antigravity", "agents"} {
+		paths, err := AgentLocations(agent, home, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = os.Stat(paths.Skill); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("default install touched %s: %v", paths.Skill, err)
+		}
+	}
+	global := map[string]string{
+		".claude/skills/control/SKILL.md":                   stale,
+		".codeium/windsurf/skills/control/SKILL.md":         stale,
+		".gemini/antigravity/skills/control/SKILL.md":       stale,
+		".agents/skills/control/SKILL.md":                   stale,
+		".codex/skills/control/SKILL.md":                    stale,
+		".cursor/skills/control/SKILL.md":                   "user instructions\n",
+		"xdg/opencode/skills/control/SKILL.md":              stale,
+		"project/.opencode/skills/control/SKILL.md":         stale,
+		".codex/skills/control/references/desktop.md":       "user reference\n",
+		".claude/skills/control/references/desktop.md":      stale,
+		".claude/skills/control/references/custom-notes.md": "user notes\n",
+	}
+	for name, content := range global {
+		writeSkill(filepath.Join(home, filepath.FromSlash(name)), content)
+	}
+
+	err := InstallHostSkills(t.Context(), true)
+	if err == nil || !strings.Contains(err.Error(), filepath.Join(home, ".codex", "skills", "control", "references", "desktop.md")) {
+		t.Fatalf("managed bundle reference conflict not reported: %v", err)
+	}
+	for _, name := range []string{
+		".claude/skills/control/SKILL.md",
+		".codeium/windsurf/skills/control/SKILL.md",
+		".gemini/antigravity/skills/control/SKILL.md",
+		".agents/skills/control/SKILL.md",
+		"xdg/opencode/skills/control/SKILL.md",
+	} {
+		assertSkillBundle(t, filepath.Join(home, filepath.FromSlash(name)))
+	}
+	for _, name := range []string{
+		".codex/skills/control/SKILL.md", ".codex/skills/control/references/desktop.md",
+		".cursor/skills/control/SKILL.md", "project/.opencode/skills/control/SKILL.md",
+		".claude/skills/control/references/custom-notes.md",
+	} {
+		path := filepath.Join(home, filepath.FromSlash(name))
+		if got, err := os.ReadFile(path); err != nil || string(got) != global[name] {
+			t.Errorf("previous contents of %s not preserved: %v", path, err)
+		}
+	}
+	for _, name := range []string{".copilot", ".cursor/mcp.json", ".claude.json", ".codex/config.toml", "xdg/opencode/opencode.json"} {
+		path := filepath.Join(home, filepath.FromSlash(name))
+		if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("unexpected installation at %s: %v", path, err)
+		}
+	}
+}
+
 func assertSkillBundle(t *testing.T, path string) {
 	t.Helper()
 	err := fs.WalkDir(skills.ControlFiles, "control", func(name string, entry fs.DirEntry, err error) error {

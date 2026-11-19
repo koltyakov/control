@@ -21,13 +21,18 @@ func writeManaged(path string, content []byte) error {
 }
 
 func checkManaged(path string) error {
-	if old, err := os.ReadFile(path); err == nil && !bytes.Contains(old, []byte("Managed by control")) {
+	if old, err := os.ReadFile(path); err == nil && !hasManagedMarker(old) {
 		return errors.New("existing service file is not managed by control: " + path)
 	} else if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
 }
+
+func hasManagedMarker(content []byte) bool {
+	return bytes.Contains(content, []byte("Managed by control"))
+}
+
 func InstallSelf(ctx context.Context) (string, error) {
 	return installSelf(ctx, true)
 }

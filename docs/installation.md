@@ -71,6 +71,8 @@ The scripts download a prebuilt binary from GitHub Releases. They check its SHA-
 
 The release scripts, `make install`, and `control install-self` also install the bundled Control skill at `~/.config/opencode/skills/control/SKILL.md`, or under `XDG_CONFIG_HOME` when set, together with its sibling `references/` directory. OpenCode does not need to be installed yet. Reinstallation refreshes Control-managed skill files and refuses to overwrite an unmanaged core or bundled reference file. This needs no gateway login or local node and does not configure MCP. Restart OpenCode to load the skill; use `control install-mcp opencode` separately if needed.
 
+`make install` also refreshes existing Control-managed global skill bundles for other supported clients using the new build. It skips missing or unmanaged copies and leaves project-local skills alone. To refresh a project-local copy, run `control install-skill CLIENT --project DIR`.
+
 Set `CONTROL_INSTALL_DIR` to change the executable directory, `CONTROL_VERSION` to select a release tag, or `CONTROL_RELEASE_REPO` to select another repository. The scripts require published release assets. Before publishing a release, use `make build` and run `bin/control setup` from a checkout.
 
 After installation, run `control update` to update the CLI in place, or `control upgrade` as an alias. `control update --version TAG` selects a release. This command needs no gateway login; running nodes use the gateway's separate managed rollout. Older binaries without this command need a current build or a one-time reinstall. See [CLI updates](updates.md#update-the-local-cli).

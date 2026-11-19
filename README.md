@@ -166,6 +166,8 @@ make check
 make test-compose
 ```
 
+Run `make install` to install the local build and refresh your installed Control skill bundles. This installs the OpenCode skill by default and refreshes existing managed global copies for other supported clients.
+
 Compose tests run a gateway, three nodes, and an FFmpeg workflow over WebRTC and relay. Docker supplies dependencies. See `make help` and [testing](docs/testing.md) for other targets and benchmarks.
 
 ## Updates
