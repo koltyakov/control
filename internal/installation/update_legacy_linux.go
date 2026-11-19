@@ -28,7 +28,7 @@ func legacyUnixBinding(ctx context.Context, profile UpdateStartup) (func() error
 		if err != nil {
 			return nil, err
 		}
-		name, flags = "control-node.service", []string{"--user"}
+		name, flags = userSystemdService, []string{"--user"}
 		expected = userSystemdUnit(profile.Binary, profile.Config)
 	case "system":
 		if os.Geteuid() != 0 {

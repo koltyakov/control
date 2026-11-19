@@ -13,7 +13,7 @@ func retiredSystemdService(p installedNode) (string, string, []string, error) {
 		return filepath.Join("/etc/systemd/system", name), name, nil, nil
 	}
 	path, err := servicePath()
-	return path, "control-node.service", []string{"--user"}, err
+	return path, userSystemdService, []string{"--user"}, err
 }
 
 func launchRetiredUninstall(ctx context.Context, helper string, args []string, p installedNode) error {
@@ -24,7 +24,12 @@ func launchRetiredUninstall(ctx context.Context, helper string, args []string, p
 	if err != nil {
 		return err
 	}
-	owned, err := checkRetiredServiceFile(path, "--config "+systemdQuote(p.Config))
+	var owned bool
+	if p.Mode == "system" {
+		owned, err = checkRetiredServiceFile(path, "--config "+systemdQuote(p.Config))
+	} else {
+		owned, err = checkUserSystemdUnit(path, p.Config)
+	}
 	if err != nil {
 		return err
 	}
@@ -51,6 +56,9 @@ func launchRetiredSystemdUninstall(ctx context.Context, helper string, args []st
 func removeRetiredStartup(ctx context.Context, p installedNode) error {
 	if p.Mode == "process" {
 		return nil
+	}
+	if p.Mode != "system" {
+		return uninstallService(ctx, p.Config)
 	}
 	path, name, flags, err := retiredSystemdService(p)
 	if err != nil {

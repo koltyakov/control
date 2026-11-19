@@ -109,6 +109,15 @@ host 'jq -e ".metricsIntervalSeconds == 60" /var/lib/control/hybrid/*/node.json'
 host 'jq -e ".listen == \"127.0.0.1:7332\"" /var/lib/control/hybrid/*/node.json' || fail "companion uses the wrong API port"
 [ "$(host 'stat -c %a /var/lib/control/hybrid/*/node.json' | tr -d '\r')" = 600 ] || fail "companion profile is readable by others"
 
+echo "== Uninstalling a different User profile cannot remove the Hybrid User service"
+as_user 'mkdir -p ~/other-control && echo "{\"listen\":\"127.0.0.1:7333\"}" > ~/other-control/node.json'
+if other_output=$(as_user '$HOME/.local/bin/control --config "$HOME/other-control/node.json" service uninstall' 2>&1); then
+    fail "wrong-profile uninstall succeeded"
+fi
+printf '%s\n' "$other_output" | grep -q 'startup registration belongs to another profile' || fail "wrong-profile uninstall did not report the conflict"
+as_user 'systemctl --user is-enabled --quiet control-node.service && systemctl --user is-active --quiet control-node.service' || fail "wrong-profile uninstall changed User startup"
+online workstation || fail "wrong-profile uninstall disconnected User context"
+
 echo "== A completed pair's command is spent"
 if as_user "curl -fsS $(printf '%s\n' "$command" | sed -n "s/.*curl -fsSL \('[^']*'\).*/\1/p")" >/dev/null 2>&1; then fail "completed invitation is still downloadable"; fi
 
