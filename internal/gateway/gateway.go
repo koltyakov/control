@@ -354,16 +354,21 @@ func (g *Gateway) list(w http.ResponseWriter, r *http.Request) {
 	if w.Header().Get("Cache-Control") == "" {
 		w.Header().Set("Cache-Control", "private, no-cache")
 	}
-	w.Header().Set("Vary", "Authorization, Cookie")
+	w.Header().Set("Vary", "Authorization, Cookie, Accept-Encoding")
+	compress := acceptsGzip(r)
 	if etag != "" {
+		// A compressed body is a different byte representation of the same
+		// directory, so its validator is weak. Conditions ignore W/ prefixes.
+		if compress {
+			etag = "W/" + etag
+		}
 		w.Header().Set("ETag", etag)
 	}
 	if unchanged {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(nodes)
+	writeMetadataJSON(w, nodes, compress)
 }
 
 // sameEnrollment reports whether two registrations carry the same durable

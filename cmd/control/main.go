@@ -498,6 +498,13 @@ func submit(ctx context.Context, c client.Client, target string, spec model.Task
 	}
 	fmt.Fprintln(os.Stderr, "task", spec.ID)
 	var task model.Task
+	if wait {
+		// Overlap the blocking-wait lane setup with submission. Cancelling it
+		// on return cannot affect the task.
+		prepare, stopPrepare := context.WithCancel(ctx)
+		defer stopPrepare()
+		go c.PrepareTaskWait(prepare, target)
+	}
 	if err := c.Call(ctx, target, "tasks.start", spec, &task); err != nil {
 		return fmt.Errorf("submit task %s; query this ID before retrying: %w", spec.ID, err)
 	}

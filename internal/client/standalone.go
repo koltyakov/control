@@ -200,6 +200,7 @@ func (r *routing) start(ctx context.Context) error {
 		Node:      model.Node{ID: sessionID.ID, Name: "cli-" + id.ID[:16], PublicKey: sessionID.Public, OS: runtime.GOOS},
 		RelayOnly: r.cfg.RelayOnly, ICEServers: r.cfg.ICEServers,
 		RequireDelegation: r.cfg.AccountRouting,
+		NameHints:         &nameHints{path: filepath.Join(dir, "names.json")},
 	}, nil, r.cfg.PeerOptions...)
 	peer.SetSoftware(buildinfo.Current())
 	// No listener, providers, health reporting, or update handler is installed.

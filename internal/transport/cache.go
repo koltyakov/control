@@ -29,6 +29,17 @@ const (
 	reconnectFastAttempts = 10
 )
 
+// SCTP congestion floors for the sending side. Pion otherwise collapses the
+// window to one MTU after each retransmission timeout, which held a lossy
+// 170 ms path to about 1 Mbps and let bulk writes stall long enough to hit the
+// multiplexer write timeout. A 64 KiB floor is a few TCP initial windows: it
+// bounds recovery time without removing loss backoff.
+const (
+	sctpMinCwnd    = 64 << 10
+	sctpFastRtxWnd = 64 << 10
+	sctpCwndCAStep = 4 * 1228 // Four default SCTP MTUs per avoidance step.
+)
+
 type lookupEntry struct {
 	node    model.Node
 	expires time.Time
@@ -85,6 +96,9 @@ func webRTCSettings(direct time.Duration, trickle bool) webrtc.SettingEngine {
 	}
 	settings.SetSTUNGatherTimeout(gather)
 	settings.SetSCTPMaxReceiveBufferSize(maxSCTPReceive)
+	settings.SetSCTPMinCwnd(sctpMinCwnd)
+	settings.SetSCTPFastRtxWnd(sctpFastRtxWnd)
+	settings.SetSCTPCwndCAStep(sctpCwndCAStep)
 	// Control peers never gather .local mDNS candidates, so pion's default
 	// query-only mode only opened a multicast UDP 5353 listener on all
 	// interfaces for every connection attempt. On Windows that also prompts

@@ -121,6 +121,24 @@ func (c Client) call(ctx context.Context, target, method string, params any, res
 	return json.Unmarshal(response.Result, result)
 }
 
+// PrepareTaskWait overlaps setup of the lane used by blocking task reads with a
+// submission in flight. It sends no request and cannot affect acceptance;
+// setup errors are ignored because Wait reports its own failures.
+func (c Client) PrepareTaskWait(ctx context.Context, target string) {
+	peer, err := c.backend(ctx)
+	if err != nil || peer == nil || target == "" {
+		return
+	}
+	if c.routing.cfg.AccountRouting {
+		destination, err := peer.Lookup(ctx, target)
+		if err != nil {
+			return
+		}
+		target = destination.ID
+	}
+	_ = peer.Prepare(ctx, target, transport.InteractiveLane)
+}
+
 // taskWaitSeconds asks the worker to hold tasks.get until the task finishes.
 const taskWaitSeconds = 30
 

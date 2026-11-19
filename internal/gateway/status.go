@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"encoding/json"
 	"net/http"
 	"slices"
 	"strings"
@@ -99,7 +98,7 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 		}
 		result.Nodes = append(result.Nodes, snapshot)
 	}
-	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(result)
+	w.Header().Set("Vary", "Accept-Encoding")
+	writeMetadataJSON(w, result, acceptsGzip(r))
 }

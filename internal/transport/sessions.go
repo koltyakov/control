@@ -159,6 +159,16 @@ func (p *Peer) OpenLane(ctx context.Context, target string, lane Lane) (net.Conn
 	return p.openStream(ctx, s)
 }
 
+// Prepare establishes or reuses a lane session without opening a stream or
+// sending a request, so callers can overlap connection setup with other work.
+func (p *Peer) Prepare(ctx context.Context, target string, lane Lane) error {
+	if lane != ControlLane && lane != BulkLane && lane != InteractiveLane {
+		return errors.New("invalid outgoing traffic lane")
+	}
+	_, err := p.session(ctx, target, lane)
+	return err
+}
+
 func (p *Peer) session(ctx context.Context, target string, lane Lane) (*peerSession, error) {
 	p.mu.Lock()
 	if p.closed || p.ctx == nil || p.ctx.Err() != nil {

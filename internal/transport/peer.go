@@ -48,6 +48,17 @@ type Config struct {
 	// Route carries every gateway request: authentication, WebSocket,
 	// directory, policy, and placement reads. The zero value is direct.
 	Route gatewayroute.Route
+	// NameHints optionally remembers routing-name identities across short-lived
+	// clients so a name lookup can read one gateway record, not the directory.
+	NameHints NameHints
+}
+
+// NameHints suggests the stable identity last seen for a routing name. A hint
+// is never authority: lookups accept it only when the gateway's current record
+// for that identity still carries the requested name.
+type NameHints interface {
+	Hint(name string) string
+	Remember(nodes []model.Node)
 }
 
 type link struct {
@@ -1080,34 +1091,25 @@ func (p *Peer) Lookup(ctx context.Context, name string) (model.Node, error) {
 
 func (p *Peer) lookup(ctx context.Context, name string, clientSessions bool, userID string, generation uint64) (model.Node, error) {
 	if clientSessions && len(name) == 64 {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, gateway.URL(p.cfg.Gateway, "/v1/peers/"+url.PathEscape(name)), nil)
-		if err != nil {
-			return model.Node{}, err
-		}
-		req.Header.Set("Authorization", "Bearer "+p.cfg.Token)
-		resp, err := p.cfg.Route.Client(15*time.Second, true).Do(req)
-		if err != nil {
-			return model.Node{}, gatewayNetworkError(err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode == http.StatusOK {
-			var peer model.Node
-			if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&peer); err != nil {
-				return model.Node{}, err
+		return p.lookupID(ctx, name, userID)
+	}
+	hints := p.cfg.NameHints
+	if clientSessions && hints != nil {
+		// A hint only selects which gateway record to read. The gateway's
+		// current record for that identity must still carry the requested
+		// name; renames, retirements and errors fall back to the directory.
+		if id := hints.Hint(name); len(id) == 64 {
+			if peer, err := p.lookupID(ctx, id, userID); err == nil && peer.Name == name {
+				return peer, nil
 			}
-			if peer.ID != name || userID == "" || peer.UserID != userID {
-				return model.Node{}, errors.New("gateway returned a peer outside the authenticated fleet")
-			}
-			return peer, nil
 		}
-		if resp.StatusCode != http.StatusNotFound {
-			return model.Node{}, directoryStatusError("peer directory", resp)
-		}
-		return model.Node{}, fmt.Errorf("unknown node %q", name)
 	}
 	nodes, err := p.Nodes(ctx)
 	if err != nil {
 		return model.Node{}, err
+	}
+	if hints != nil {
+		hints.Remember(nodes)
 	}
 	// One directory read answers later name lookups for every listed machine.
 	now := time.Now()
@@ -1124,6 +1126,34 @@ func (p *Peer) lookup(ctx context.Context, name string, clientSessions bool, use
 		}
 	}
 	return model.Node{}, fmt.Errorf("unknown node %q", name)
+}
+
+// lookupID reads one identity's scoped gateway record without the directory.
+func (p *Peer) lookupID(ctx context.Context, id, userID string) (model.Node, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, gateway.URL(p.cfg.Gateway, "/v1/peers/"+url.PathEscape(id)), nil)
+	if err != nil {
+		return model.Node{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+p.cfg.Token)
+	resp, err := p.cfg.Route.Client(15*time.Second, true).Do(req)
+	if err != nil {
+		return model.Node{}, gatewayNetworkError(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusOK {
+		var peer model.Node
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&peer); err != nil {
+			return model.Node{}, err
+		}
+		if peer.ID != id || userID == "" || peer.UserID != userID {
+			return model.Node{}, errors.New("gateway returned a peer outside the authenticated fleet")
+		}
+		return peer, nil
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		return model.Node{}, directoryStatusError("peer directory", resp)
+	}
+	return model.Node{}, fmt.Errorf("unknown node %q", id)
 }
 
 func (p *Peer) Resolve(ctx context.Context, name string) (model.Node, error) {
