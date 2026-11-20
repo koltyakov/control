@@ -58,7 +58,7 @@ For a command, use `control exec NAME -- COMMAND ARG...`. The CLI prints a task 
 
 `files.*` paths start at `workDir`. An `exec.run` relative `dir` starts at the invocation workspace, `workDir/tasks/ID` for tracked tasks. Use a verified absolute path or an explicit task-relative path, not a `files.*` path copied into `dir`. Declared outputs stay relative to the original task workspace.
 
-When task creation is prohibited, use direct `files.read`/`files.list` calls, not tracked read tasks. Reads wrapped in `tasks.start` still create tasks. Respect leases; if no permitted read route exists, report the blocker.
+When task creation is prohibited, use direct `files.read`/`files.list` calls, not tracked read tasks. Pass `"encoding":"text"` to `files.read` or `http.request` to receive valid UTF-8 as text instead of base64; check the returned `encoding`. Reads wrapped in `tasks.start` still create tasks. Respect leases; if no permitted read route exists, report the blocker.
 
 For isolated file tasks with task creation authorized, prefer one tracked inline command that validates inputs, hashes protected files, computes the result, creates output without overwriting, then reads/hashes it and checks protected files are unchanged. Report failed checks and partial effects. Avoid separate probes or listings when that command can establish the same facts. This does not permit batching dependent UI actions, credential operations, or uncertain-effect retries.
 

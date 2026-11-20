@@ -11,7 +11,13 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const gatewayHeartbeatInterval = 5 * time.Second
+const (
+	gatewayHeartbeatInterval = 5 * time.Second
+	gatewayHeartbeatTimeout  = 10 * time.Second
+	// gatewayProbeTimeout bounds an early check requested by a reconnecting
+	// identity. A healthy connection answers well within it.
+	gatewayProbeTimeout = 3 * time.Second
+)
 
 // WebSocket proxies can answer transport-level pings without reaching a node.
 // Application challenges must reach its packet reader. Waiting for their echo
@@ -23,7 +29,7 @@ func (c *connection) writePackets(ctx context.Context) {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	timer := time.NewTimer(10 * time.Second)
+	timer := time.NewTimer(gatewayHeartbeatTimeout)
 	timer.Stop()
 	defer timer.Stop()
 	var deadline <-chan time.Time
@@ -85,24 +91,44 @@ func (c *connection) writePackets(ctx context.Context) {
 			if pending != "" {
 				continue
 			}
-			if c.heartbeat {
-				pending = identity.NewID()
-				if err := c.writePacket(ctx, &protocol.Packet{Kind: "gateway.ping", From: update.GatewaySender, Session: pending}); err != nil {
-					return
-				}
-				timer.Reset(10 * time.Second)
-				timerDeadline = time.Now().Add(10 * time.Second)
+			if !c.checkLiveness(ctx, &pending, gatewayHeartbeatTimeout) {
+				return
+			}
+			if pending != "" {
+				timer.Reset(gatewayHeartbeatTimeout)
+				timerDeadline = time.Now().Add(gatewayHeartbeatTimeout)
 				deadline = timer.C
-			} else {
-				ping, cancel := context.WithTimeout(ctx, 10*time.Second)
-				err := c.ws.Ping(ping)
-				cancel()
-				if err != nil {
+			}
+		case <-c.probe:
+			if pending == "" {
+				if !c.checkLiveness(ctx, &pending, gatewayProbeTimeout) {
 					return
 				}
+			} else if time.Until(timerDeadline) <= gatewayProbeTimeout {
+				continue
+			}
+			// An outstanding challenge also proves liveness; only shorten its wait.
+			if pending != "" {
+				timer.Reset(gatewayProbeTimeout)
+				timerDeadline = time.Now().Add(gatewayProbeTimeout)
+				deadline = timer.C
 			}
 		}
 	}
+}
+
+// checkLiveness sends an application challenge and records it in pending; the
+// read loop delivers its echo through pong. Older nodes without application
+// heartbeats get a synchronous WebSocket ping and leave pending empty. It
+// returns false when the write or ping fails.
+func (c *connection) checkLiveness(ctx context.Context, pending *string, timeout time.Duration) bool {
+	if !c.heartbeat {
+		ping, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		return c.ws.Ping(ping) == nil
+	}
+	*pending = identity.NewID()
+	return c.writePacket(ctx, &protocol.Packet{Kind: "gateway.ping", From: update.GatewaySender, Session: *pending}) == nil
 }
 
 // maxRetainedWriteBytes matches wsio's ordinary relay packet storage.

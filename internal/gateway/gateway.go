@@ -111,6 +111,15 @@ type connection struct {
 	lifecycleAt       time.Time
 	lifecycleRevision uint64
 	machineStatePush  bool
+	probe             chan struct{} // Requests an early liveness check.
+}
+
+// requestProbe asks the writer to check liveness promptly. It never blocks.
+func (c *connection) requestProbe() {
+	select {
+	case c.probe <- struct{}{}:
+	default:
+	}
 }
 
 // Gateway manages fleet membership and connectivity for nodes and clients.
@@ -564,7 +573,12 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			}
 		}
 	}
-	if _, exists := g.peers[n.ID]; exists {
+	if existing, exists := g.peers[n.ID]; exists {
+		// A proof-verified reconnect usually means the previous socket died on
+		// an old network path. Probe it now so a stale registration clears in
+		// seconds instead of after a full heartbeat period; a live duplicate
+		// still answers and keeps its registration.
+		existing.requestProbe()
 		g.mu.Unlock()
 		_ = ws.Close(websocket.StatusPolicyViolation, "identity already connected")
 		return
@@ -575,7 +589,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		return
 	}
 	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, relayQueuePackets),
-		keyID: p.KeyID, userID: p.UserID, heartbeat: hello.GatewayHeartbeat, relayDrain: hello.RelayDrain, pong: make(chan string, 1), lanDiscovery: n.LANDiscovery, machineStatePush: n.MachineStatePush && !client, relay: newRelayScheduler(),
+		keyID: p.KeyID, userID: p.UserID, heartbeat: hello.GatewayHeartbeat, relayDrain: hello.RelayDrain, pong: make(chan string, 1), probe: make(chan struct{}, 1), lanDiscovery: n.LANDiscovery, machineStatePush: n.MachineStatePush && !client, relay: newRelayScheduler(),
 		queues: &packetQueues{local: packetBudget{limit: relayQueueBytes}, global: &g.admission.packets, account: &reservation.account.packets, rejected: g.admission}}
 	defer c.closeQueues()
 	n.Online = true

@@ -186,6 +186,8 @@ func (p *Peer) resetNetwork() {
 		setup.cancel()
 	}
 	p.mu.Unlock()
+	// Pooled gateway connections may still be bound to the previous network.
+	p.cfg.Route.CloseIdleConnections()
 	if ws != nil {
 		_ = ws.CloseNow() // Wakes the existing, bounded gateway reconnect loop.
 	}

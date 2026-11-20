@@ -6,6 +6,7 @@ import (
 
 	"github.com/koltyakov/control/internal/model"
 	"github.com/pion/ice/v4"
+	"github.com/pion/interceptor"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -82,7 +83,15 @@ func newWebRTCAPI(direct time.Duration, trickle bool, options ...Options) *webrt
 			option.ConfigureWebRTC(&settings)
 		}
 	}
-	return webrtc.NewAPI(webrtc.WithSettingEngine(settings))
+	return dataChannelAPI(settings)
+}
+
+// dataChannelAPI builds an API for data-channel-only peer connections. Pion's
+// default API registers media codecs and RTP/RTCP interceptors, whose NACK and
+// report loops tick on every connection although Control never sends media.
+// Those timers were most idle wakeups on a connected worker.
+func dataChannelAPI(settings webrtc.SettingEngine) *webrtc.API {
+	return webrtc.NewAPI(webrtc.WithSettingEngine(settings), webrtc.WithMediaEngine(&webrtc.MediaEngine{}), webrtc.WithInterceptorRegistry(&interceptor.Registry{}))
 }
 
 func webRTCSettings(direct time.Duration, trickle bool) webrtc.SettingEngine {

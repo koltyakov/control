@@ -141,6 +141,16 @@ func (r Route) baseTransport() http.RoundTripper {
 	return t
 }
 
+// CloseIdleConnections drops pooled gateway connections without interrupting
+// requests in flight. After a network change or a lost gateway socket, pooled
+// connections may be bound to an abandoned path; reusing one would stall the
+// next request until its timeout instead of dialing over the current path.
+func (r Route) CloseIdleConnections() {
+	if t, ok := r.baseTransport().(interface{ CloseIdleConnections() }); ok {
+		t.CloseIdleConnections()
+	}
+}
+
 // Client builds a gateway client preserving the caller's timeout and redirect
 // policy. A zero timeout leaves deadlines to the request context.
 func (r Route) Client(timeout time.Duration, followRedirects bool) *http.Client {

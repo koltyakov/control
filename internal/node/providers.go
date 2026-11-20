@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/koltyakov/control/internal/commandexec"
 	"github.com/koltyakov/control/internal/model"
@@ -35,13 +36,14 @@ func schema(properties map[string]any, required ...string) json.RawMessage {
 func (n *Node) registerProviders() error {
 	text := map[string]any{"type": "string"}
 	object := map[string]any{"type": "object"}
+	encodingSchema := map[string]any{"type": "string", "enum": []string{encodingBase64, encodingText}, "description": "Requested result encoding. text returns valid UTF-8 directly and falls back to base64 otherwise; default base64."}
 	builtins := []provider{
 		{model.Capability{Name: "network.wake", Description: "Send Wake-on-LAN magic packets to an offline registered machine using an automatically verified LAN relationship and live interfaces. Success means sent, not awake. Never retries.", InputSchema: schema(map[string]any{"target": text}, "target")}, n.wake},
 		{model.Capability{Name: "exec.run", Description: "Run an executable with arguments and environment. envSecrets maps environment variable names to worker-local secret names; stdinSecret supplies one secret as exact stdin bytes instead of stdin. References resolve at execution, never into task specs or argv. Secret-bearing output and errors are masked; logs are delayed until complete output can be masked. Files and arbitrary transformations are not masked. Ordinary descendants are terminated before completion; use an OS service manager for persistent services. A relative dir resolves against the invocation workspace, workDir/tasks/ID for a tracked task, not the files.* workDir root. An absolute dir is used unchanged. Declared task outputs still resolve against the original task workspace. Use a task for long-running work.", InputSchema: schema(map[string]any{"command": text, "args": map[string]any{"type": "array", "items": text}, "env": object, "envSecrets": map[string]any{"type": "object", "maxProperties": 32, "propertyNames": map[string]any{"pattern": "^[a-zA-Z_][a-zA-Z0-9_]{0,127}$"}, "additionalProperties": map[string]any{"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"}, "description": "Environment variable to worker-local secret name. Names must be unique and cannot overlap env, ignoring case. Overrides inherited environment only for this invocation."}, "dir": map[string]any{"type": "string", "description": "Absolute working directory or path relative to the invocation workspace; tracked tasks use workDir/tasks/ID. Unlike files.* paths, this is not relative to workDir."}, "stdin": text, "stdinSecret": map[string]any{"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$", "description": "Worker-local secret supplying exact stdin bytes, without an added newline. Mutually exclusive with stdin, including an empty stdin."}}, "command")}, n.execRun},
 		{model.Capability{Name: "agent.run", Description: "Run a configured AI CLI with a prompt on stdin; collect its output and terminate ordinary descendants before completion.", InputSchema: schema(map[string]any{"agent": text, "prompt": text}, "agent", "prompt")}, n.agentRun},
-		{model.Capability{Name: "http.request", Description: "Make an HTTP request using this machine's network and DNS. headerSecrets maps header names to {secret, prefix}; references resolve only on this worker. Secret-bearing requests never follow redirects. Returned text masks configured secret values.", InputSchema: schema(map[string]any{"url": text, "method": text, "headers": object, "headerSecrets": map[string]any{"type": "object", "maxProperties": 32, "additionalProperties": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"secret"}, "properties": map[string]any{"secret": map[string]any{"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"}, "prefix": text}}}, "body": text}, "url")}, n.httpRequest},
+		{model.Capability{Name: "http.request", Description: "Make an HTTP request using this machine's network and DNS. headerSecrets maps header names to {secret, prefix}; references resolve only on this worker. Secret-bearing requests never follow redirects. Returned text masks configured secret values. The body is base64 unless encoding is text and it is valid UTF-8; check the returned encoding.", InputSchema: schema(map[string]any{"url": text, "method": text, "encoding": encodingSchema, "headers": object, "headerSecrets": map[string]any{"type": "object", "maxProperties": 32, "additionalProperties": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"secret"}, "properties": map[string]any{"secret": map[string]any{"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"}, "prefix": text}}}, "body": text}, "url")}, n.httpRequest},
 		{model.Capability{Name: "files.list", Description: "List a directory relative to the configured filesystem root. Rejects non-directory targets, including special files.", InputSchema: schema(map[string]any{"path": text})}, n.filesList},
-		{model.Capability{Name: "files.read", Description: "Read up to 1 MiB at an offset; returns base64 bytes.", InputSchema: schema(map[string]any{"path": text, "offset": map[string]any{"type": "integer"}, "limit": map[string]any{"type": "integer"}}, "path")}, n.filesRead},
+		{model.Capability{Name: "files.read", Description: "Read up to 1 MiB at an offset; returns base64 bytes, or UTF-8 text when encoding is text and the bytes are valid text. Text never splits a character; continue from the returned offset and check the returned encoding.", InputSchema: schema(map[string]any{"path": text, "offset": map[string]any{"type": "integer"}, "limit": map[string]any{"type": "integer"}, "encoding": encodingSchema}, "path")}, n.filesRead},
 		{model.Capability{Name: "files.write", Description: "Write base64 bytes at an offset to a regular file. Creates missing files and rejects special files. Set truncate for replacement.", InputSchema: schema(map[string]any{"path": text, "data": text, "offset": map[string]any{"type": "integer"}, "truncate": map[string]any{"type": "boolean"}}, "path", "data")}, n.filesWrite},
 		{model.Capability{Name: "mcp.call", Description: "Invoke a tool on a configured local MCP server. Tool-reported isError fails execution; tracked tasks retain the original result, including partial output. Failure does not authorize replay.", InputSchema: schema(map[string]any{"server": text, "tool": text, "arguments": object}, "server", "tool")}, n.mcpCall},
 		{model.Capability{Name: "mcp.request", Description: "Read MCP resources or prompts on a configured server.", InputSchema: schema(map[string]any{"server": text, "method": text, "params": object}, "server", "method")}, n.mcpRequest},
@@ -169,6 +171,7 @@ func (n *Node) httpRequest(ctx context.Context, args json.RawMessage, e Executio
 	var input struct {
 		URL           string            `json:"url"`
 		Method        string            `json:"method"`
+		Encoding      string            `json:"encoding"`
 		Headers       map[string]string `json:"headers"`
 		Body          string            `json:"body"`
 		HeaderSecrets map[string]struct {
@@ -181,6 +184,9 @@ func (n *Node) httpRequest(ctx context.Context, args json.RawMessage, e Executio
 	}
 	if len(input.HeaderSecrets) > 32 {
 		return nil, errors.New("at most 32 secret headers are allowed")
+	}
+	if err := validEncoding(input.Encoding); err != nil {
+		return nil, err
 	}
 	values, err := n.secretValues()
 	if err != nil {
@@ -246,7 +252,43 @@ func (n *Node) httpRequest(ctx context.Context, args json.RawMessage, e Executio
 	} else {
 		b = []byte(redactor.Text(string(b)))
 	}
-	return map[string]any{"status": resp.StatusCode, "headers": cleanHeaders, "body": base64.StdEncoding.EncodeToString(b), "encoding": "base64"}, nil
+	body, encoding := encodeBytes(b, input.Encoding)
+	return map[string]any{"status": resp.StatusCode, "headers": cleanHeaders, "body": body, "encoding": encoding}, nil
+}
+
+const (
+	encodingBase64 = "base64"
+	encodingText   = "text"
+)
+
+func validEncoding(encoding string) error {
+	if encoding != "" && encoding != encodingBase64 && encoding != encodingText {
+		return errors.New("encoding must be base64 or text")
+	}
+	return nil
+}
+
+// encodeBytes returns text only when requested and lossless. Base64 remains
+// the default, so callers that always decode it keep working.
+func encodeBytes(b []byte, requested string) (string, string) {
+	if requested == encodingText && utf8.Valid(b) {
+		return string(b), encodingText
+	}
+	return base64.StdEncoding.EncodeToString(b), encodingBase64
+}
+
+// completeText trims at most one incomplete trailing UTF-8 sequence from a
+// chunk that ended before EOF, so a text read never splits a character.
+func completeText(b []byte) []byte {
+	for n := 1; n < utf8.UTFMax && n <= len(b); n++ {
+		if utf8.RuneStart(b[len(b)-n]) {
+			if !utf8.FullRune(b[len(b)-n:]) {
+				return b[:len(b)-n]
+			}
+			break
+		}
+	}
+	return b
 }
 
 func (n *Node) filesList(ctx context.Context, args json.RawMessage, e Execution) (any, error) {
@@ -290,15 +332,19 @@ func (n *Node) filesList(ctx context.Context, args json.RawMessage, e Execution)
 
 func (n *Node) filesRead(ctx context.Context, args json.RawMessage, e Execution) (any, error) {
 	var q struct {
-		Path   string `json:"path"`
-		Offset int64  `json:"offset"`
-		Limit  int64  `json:"limit"`
+		Path     string `json:"path"`
+		Offset   int64  `json:"offset"`
+		Limit    int64  `json:"limit"`
+		Encoding string `json:"encoding"`
 	}
 	if err := json.Unmarshal(args, &q); err != nil {
 		return nil, err
 	}
 	if q.Offset < 0 || q.Limit < 0 || q.Limit > 1<<20 {
 		return nil, errors.New("invalid offset or limit")
+	}
+	if err := validEncoding(q.Encoding); err != nil {
+		return nil, err
 	}
 	if q.Limit == 0 {
 		q.Limit = 64 * 1024
@@ -315,7 +361,13 @@ func (n *Node) filesRead(ctx context.Context, args json.RawMessage, e Execution)
 		return nil, err
 	}
 	b, err := io.ReadAll(io.LimitReader(f, q.Limit))
-	return map[string]any{"data": base64.StdEncoding.EncodeToString(b), "offset": q.Offset + int64(len(b)), "size": info.Size(), "encoding": "base64"}, err
+	if q.Encoding == encodingText && int64(len(b)) == q.Limit && q.Offset+int64(len(b)) < info.Size() {
+		if trimmed := completeText(b); len(trimmed) != 0 && utf8.Valid(trimmed) {
+			b = trimmed
+		}
+	}
+	data, encoding := encodeBytes(b, q.Encoding)
+	return map[string]any{"data": data, "offset": q.Offset + int64(len(b)), "size": info.Size(), "encoding": encoding}, err
 }
 
 func (n *Node) filesWrite(ctx context.Context, args json.RawMessage, e Execution) (any, error) {

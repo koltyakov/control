@@ -38,7 +38,7 @@ func TestRelayReprobePreservesStreamsAndSharesFailureBackoff(t *testing.T) {
 			// No TCP ICE mux exists, so this carrier cannot find a usable route.
 			var settings webrtc.SettingEngine
 			settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeTCP4})
-			p.trickleAPI = webrtc.NewAPI(webrtc.WithSettingEngine(settings))
+			p.trickleAPI = dataChannelAPI(settings)
 		}
 		if err := p.Start(ctx); err != nil {
 			t.Fatal(err)

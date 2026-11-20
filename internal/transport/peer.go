@@ -498,6 +498,8 @@ func (p *Peer) run(ws *websocket.Conn) {
 		for _, c := range broken {
 			_ = c.Close()
 		}
+		// A lost socket often means a dead path; never reuse its pooled peers.
+		p.cfg.Route.CloseIdleConnections()
 		// Jitter keeps nodes from reconnecting in lockstep after a gateway
 		// restart. Persistent failures, such as a rejected credential, back off.
 		delay, failures := reconnectInitial, 0

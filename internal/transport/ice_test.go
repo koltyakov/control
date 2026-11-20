@@ -24,7 +24,7 @@ func loopbackWebRTCAPI(direct time.Duration, trickle bool) *webrtc.API {
 	settings.SetIncludeLoopbackCandidate(true)
 	settings.SetIPFilter(func(ip net.IP) bool { return ip.IsLoopback() })
 	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
-	return webrtc.NewAPI(webrtc.WithSettingEngine(settings))
+	return dataChannelAPI(settings)
 }
 
 func TestTrickleICEConnectsBeforeSlowGatheringAndLegacyFallback(t *testing.T) {
