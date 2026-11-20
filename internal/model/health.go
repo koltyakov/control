@@ -4,6 +4,11 @@ import "time"
 
 const NodeHealthInterval = 5 * time.Second
 const NodeHealthTTL = 20 * time.Second
+
+// UnchangedTelemetryInterval is how often a node resends unchanged health and
+// update status to a gateway advertising telemetryLiveness. Heartbeat echoes
+// keep them fresh in between; changes are still sent at the regular cadence.
+const UnchangedTelemetryInterval = 30 * time.Second
 const MaxNodeHealthBytes = 16 << 10
 
 // NodeHealth reports aggregate machine health to the fleet owner. It contains

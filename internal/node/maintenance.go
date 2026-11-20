@@ -108,6 +108,13 @@ func (n *Node) ConfigureUpdates(info buildinfo.Info, apply func(string) error) e
 		Report: func(ctx context.Context, status update.Status) error {
 			return n.Peer.SendControl(ctx, "update.status", model.JSON(status))
 		},
+		UnchangedInterval: func() time.Duration {
+			if n.Peer.TelemetryLiveness() {
+				return model.UnchangedTelemetryInterval
+			}
+			return 0
+		},
+		Session: n.Peer.GatewaySession,
 	}
 	if proxy := n.Config.GatewayProxy; proxy != nil {
 		options.ProxyWorker, options.ProxyURL = proxy.Worker, proxy.URL

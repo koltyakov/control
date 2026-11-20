@@ -66,6 +66,7 @@ type Node struct {
 	Peer                *transport.Peer
 	ctx                 context.Context
 	cancel              context.CancelFunc
+	lastHealth          healthReport
 	root                *os.Root
 	providers           map[string]Provider
 	mu                  sync.Mutex

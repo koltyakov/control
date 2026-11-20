@@ -132,6 +132,8 @@ type Peer struct {
 	proxySlots          chan struct{}
 	secretSlots         chan struct{}
 	nodeHealth          bool
+	telemetryLiveness   atomic.Bool
+	gatewaySession      atomic.Uint64
 	clientSessions      bool
 	machineStatePush    atomic.Bool
 	machineStateWake    chan struct{}
@@ -146,8 +148,8 @@ func New(cfg Config, handler func(string, net.Conn), options ...Options) *Peer {
 	if cfg.DirectTimeout == 0 {
 		cfg.DirectTimeout = 5 * time.Second
 	}
-	return &Peer{
-		cfg: cfg, handler: handler, log: slog.Default(), api: newWebRTCAPI(cfg.DirectTimeout, false, options...), trickleAPI: newWebRTCAPI(cfg.DirectTimeout, true, options...),
+	p := &Peer{
+		cfg: cfg, handler: handler, log: slog.Default(),
 		writes: make(chan *gatewayWrite, 64), priorityWrites: make(chan *gatewayWrite, 32),
 		reconnectWake: make(chan struct{}, 1), gatewayConnected: make(chan struct{}, 1), machineStateWake: make(chan struct{}, 1),
 		lanSlots: make(chan struct{}, 4), lanInbound: map[string]time.Time{},
@@ -166,6 +168,9 @@ func New(cfg Config, handler func(string, net.Conn), options ...Options) *Peer {
 			ControlLane: make(chan struct{}, 256), BulkLane: make(chan struct{}, 64), InteractiveLane: make(chan struct{}, 192),
 		},
 	}
+	p.api = newWebRTCAPI(cfg.DirectTimeout, false, &p.stats.udpBuffers, options...)
+	p.trickleAPI = newWebRTCAPI(cfg.DirectTimeout, true, &p.stats.udpBuffers, options...)
+	return p
 }
 
 // SetCapabilities updates registration metadata before Start.
@@ -219,6 +224,14 @@ func (p *Peer) SetProxyEndpoints(endpoints []model.ProxyEndpoint) {
 func (p *Peer) SendControl(ctx context.Context, kind string, data []byte) error {
 	return p.send(ctx, &protocol.Packet{Kind: kind, Data: data})
 }
+
+// TelemetryLiveness reports whether the current gateway keeps unchanged
+// health and update status fresh through heartbeat echoes.
+func (p *Peer) TelemetryLiveness() bool { return p.telemetryLiveness.Load() }
+
+// GatewaySession changes after each successful gateway connection. Telemetry
+// that suppresses unchanged reports must send them again to a new connection.
+func (p *Peer) GatewaySession() uint64 { return p.gatewaySession.Load() }
 
 // SupportsNodeHealth prevents new reports from disconnecting older gateways.
 func (p *Peer) SupportsNodeHealth() bool {
@@ -294,21 +307,22 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		return nil, gatewayResponseError(resp.StatusCode, "gateway authentication")
 	}
 	var scope struct {
-		UserID           string   `json:"userId"`
-		NodeHealth       bool     `json:"nodeHealth"`
-		ClientSessions   bool     `json:"clientSessions"`
-		ClientOwners     bool     `json:"clientOwners"`
-		PeerChannels     bool     `json:"peerChannels"`
-		Delegation       bool     `json:"delegation"`
-		LargePackets     bool     `json:"largePackets"`
-		NodeBytes        bool     `json:"nodeBytes"`
-		MachineStatePush bool     `json:"machineStatePush"`
-		LANDiscovery     bool     `json:"lanDiscovery"`
-		GatewayHeartbeat bool     `json:"gatewayHeartbeat"`
-		RelayDrain       bool     `json:"relayDrain"`
-		GatewayProtocol  int      `json:"gatewayProtocol"`
-		TrickleICE       bool     `json:"trickleICE"`
-		STUNServers      []string `json:"stunServers"`
+		UserID            string   `json:"userId"`
+		NodeHealth        bool     `json:"nodeHealth"`
+		ClientSessions    bool     `json:"clientSessions"`
+		ClientOwners      bool     `json:"clientOwners"`
+		PeerChannels      bool     `json:"peerChannels"`
+		Delegation        bool     `json:"delegation"`
+		LargePackets      bool     `json:"largePackets"`
+		NodeBytes         bool     `json:"nodeBytes"`
+		MachineStatePush  bool     `json:"machineStatePush"`
+		LANDiscovery      bool     `json:"lanDiscovery"`
+		GatewayHeartbeat  bool     `json:"gatewayHeartbeat"`
+		TelemetryLiveness bool     `json:"telemetryLiveness"`
+		RelayDrain        bool     `json:"relayDrain"`
+		GatewayProtocol   int      `json:"gatewayProtocol"`
+		TrickleICE        bool     `json:"trickleICE"`
+		STUNServers       []string `json:"stunServers"`
 	}
 	err = json.NewDecoder(io.LimitReader(resp.Body, 8192)).Decode(&scope)
 	_ = resp.Body.Close()
@@ -348,6 +362,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	}
 	p.userID = scope.UserID
 	p.nodeHealth = scope.NodeHealth
+	p.telemetryLiveness.Store(scope.TelemetryLiveness && scope.GatewayHeartbeat && !p.cfg.Client)
 	p.clientSessions = scope.ClientSessions
 	p.cfg.Node.UserID = scope.UserID
 	// Negotiate this optional signed field so new machines still connect to old
@@ -457,6 +472,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		_ = ws.CloseNow()
 		return nil, errors.New("peer stopped during connection")
 	}
+	p.gatewaySession.Add(1)
 	p.mu.Unlock()
 	select {
 	case p.gatewayConnected <- struct{}{}:
@@ -871,7 +887,7 @@ func (p *Peer) bindReliableChannel(l *link, dc *webrtc.DataChannel) {
 		return
 	}
 	low := make(chan struct{}, 1)
-	dc.SetBufferedAmountLowThreshold(256 * 1024)
+	dc.SetBufferedAmountLowThreshold(channelBufferedLow)
 	dc.OnBufferedAmountLow(func() {
 		select {
 		case low <- struct{}{}:
@@ -879,7 +895,7 @@ func (p *Peer) bindReliableChannel(l *link, dc *webrtc.DataChannel) {
 		}
 	})
 	l.conn.send = func(ctx context.Context, b []byte) error {
-		for dc.BufferedAmount() > 1024*1024 {
+		for dc.BufferedAmount() > channelBufferedMax {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()

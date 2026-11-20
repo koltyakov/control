@@ -340,3 +340,38 @@ func TestUpdaterReportsRetryFailureAndSuppressUnchangedSuccess(t *testing.T) {
 		t.Fatalf("heartbeat or changed state wasn't sent: %d", calls)
 	}
 }
+
+func TestUpdaterRelaxedUnchangedIntervalStillReportsNewConnections(t *testing.T) {
+	calls, session := 0, uint64(1)
+	interval := 30 * time.Second
+	a := &Updater{options: UpdaterOptions{
+		Busy:              func() bool { return false },
+		Report:            func(context.Context, Status) error { calls++; return nil },
+		UnchangedInterval: func() time.Duration { return interval },
+		Session:           func() uint64 { return session },
+	}}
+	a.report(t.Context())
+	a.lastAt = time.Now().Add(-6 * time.Second)
+	a.report(t.Context())
+	if calls != 1 {
+		t.Fatalf("relaxed gateway still received a five-second heartbeat: %d", calls)
+	}
+	session++
+	a.report(t.Context())
+	if calls != 2 {
+		t.Fatal("a new gateway connection did not receive current status")
+	}
+	a.lastAt = time.Now().Add(-interval)
+	a.report(t.Context())
+	a.set("staged", nil)
+	a.report(t.Context())
+	if calls != 4 {
+		t.Fatalf("relaxed heartbeat or changed state wasn't sent: %d", calls)
+	}
+	interval = 0 // An older gateway keeps the five-second default.
+	a.lastAt = time.Now().Add(-6 * time.Second)
+	a.report(t.Context())
+	if calls != 5 {
+		t.Fatalf("default heartbeat wasn't restored: %d", calls)
+	}
+}

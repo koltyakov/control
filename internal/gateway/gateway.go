@@ -107,7 +107,10 @@ type connection struct {
 	queues            *packetQueues
 	keyID             string
 	health            *model.NodeHealth
-	healthAt          time.Time
+	healthAt          time.Time // Last report or heartbeat confirmation.
+	healthReceived    time.Time // Last health report on this connection.
+	statusAt          time.Time // Last update status on this connection; protected by mu.
+	challenge         atomic.Pointer[string]
 	lifecycleAt       time.Time
 	lifecycleRevision uint64
 	machineStatePush  bool
@@ -746,6 +749,10 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			select {
 			case c.pong <- p.Session:
 			default:
+			}
+			// Only the echo of the outstanding challenge confirms telemetry.
+			if want := c.challenge.Load(); !client && want != nil && *want == p.Session && c.challenge.CompareAndSwap(want, nil) {
+				g.refreshTelemetry(n.ID, c)
 			}
 			continue
 		}

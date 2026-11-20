@@ -44,33 +44,100 @@ func networkProbe(ctx context.Context, host, port string) func() (string, error)
 			targets = append(targets, &net.UDPAddr{IP: address.IP, Zone: address.Zone, Port: number})
 		}
 	}
-	return func() (string, error) {
-		interfaces, err := net.Interfaces()
-		if err != nil {
+	sampler := &networkSampler{targets: targets, interfaces: sampleInterfaces, route: routeSource, now: time.Now}
+	return sampler.sample
+}
+
+// networkInterfaceRefresh bounds reuse of an interface inventory while every
+// route keeps its source address. Enumeration is the expensive part of a
+// sample: on Windows each interface's addresses cost another adapter query,
+// together milliseconds of CPU every poll on an idle node.
+const networkInterfaceRefresh = 30 * time.Second
+
+// networkSampler resolves routes on every poll and re-enumerates interfaces
+// only when a source address changes, the cached inventory cannot place a
+// source, or the inventory is older than networkInterfaceRefresh. A changed
+// source still alters the fingerprint immediately. Address-only changes on an
+// unchanged source, such as a subnet edit, are noticed within the refresh.
+type networkSampler struct {
+	targets    []*net.UDPAddr
+	interfaces func() ([]networkInterface, error)
+	route      func(*net.UDPAddr) net.IP
+	now        func() time.Time
+
+	cached     []networkInterface
+	sources    string
+	enumerated time.Time
+}
+
+func (s *networkSampler) sample() (string, error) {
+	if len(s.targets) == 0 {
+		return "", nil
+	}
+	routes := make([]networkRoute, 0, len(s.targets))
+	sources := make([]string, 0, len(s.targets))
+	for _, target := range s.targets {
+		source := s.route(target)
+		routes = append(routes, networkRoute{target: target, source: source})
+		sources = append(sources, source.String())
+	}
+	key := strings.Join(sources, ",")
+	now := s.now()
+	fresh := false
+	if s.cached == nil || key != s.sources || now.Sub(s.enumerated) >= networkInterfaceRefresh {
+		if err := s.enumerate(now); err != nil {
 			return "", err
 		}
-		var networks []networkInterface
-		for _, iface := range interfaces {
-			if iface.Flags&net.FlagUp == 0 {
-				continue
-			}
-			addresses, err := iface.Addrs()
-			if err != nil {
-				return "", err
-			}
-			networks = append(networks, networkInterface{Interface: iface, addresses: addresses})
-		}
-		var routes []networkRoute
-		for _, target := range targets {
-			route := networkRoute{target: target}
-			if conn, err := net.DialUDP("udp", nil, target); err == nil {
-				route.source = conn.LocalAddr().(*net.UDPAddr).IP
-				_ = conn.Close()
-			}
-			routes = append(routes, route)
-		}
-		return networkFingerprint(networks, routes)
+		fresh = true
 	}
+	s.sources = key
+	fingerprint, err := networkFingerprint(s.cached, routes)
+	if err != nil && !fresh {
+		// The cached inventory may predate a new address on the same source.
+		if err := s.enumerate(now); err != nil {
+			return "", err
+		}
+		fingerprint, err = networkFingerprint(s.cached, routes)
+	}
+	return fingerprint, err
+}
+
+func (s *networkSampler) enumerate(now time.Time) error {
+	interfaces, err := s.interfaces()
+	if err != nil {
+		return err
+	}
+	s.cached, s.enumerated = interfaces, now
+	return nil
+}
+
+func sampleInterfaces() ([]networkInterface, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	networks := []networkInterface{}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addresses, err := iface.Addrs()
+		if err != nil {
+			return nil, err
+		}
+		networks = append(networks, networkInterface{Interface: iface, addresses: addresses})
+	}
+	return networks, nil
+}
+
+// routeSource returns nil when the target is unreachable.
+func routeSource(target *net.UDPAddr) net.IP {
+	conn, err := net.DialUDP("udp", nil, target)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = conn.Close() }()
+	return conn.LocalAddr().(*net.UDPAddr).IP
 }
 
 func networkFingerprint(interfaces []networkInterface, routes []networkRoute) (string, error) {

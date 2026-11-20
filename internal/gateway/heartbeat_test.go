@@ -192,3 +192,119 @@ func TestWriterReleasesOversizedMarshalStorageAfterWrite(t *testing.T) {
 		t.Fatal("failed write retained oversized marshal storage")
 	}
 }
+
+func TestHeartbeatEchoConfirmsTelemetryOnItsConnection(t *testing.T) {
+	g, server := installationFixture(t)
+	user, admin := createTestUser(t, server, "telemetry-user")
+	id, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/v1/connect", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + admin.Key}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ws.CloseNow() }()
+	_, challenge, err := ws.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := Hello{Version: model.Version, Node: model.Node{ID: id.ID, Name: "worker", PublicKey: id.Public, UserID: user.ID}, GatewayHeartbeat: true}
+	h.Signature = ed25519.Sign(id.Private, h.Message(challenge))
+	if err := ws.Write(ctx, websocket.MessageBinary, model.JSON(h)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ready, err := ws.Read(ctx); err != nil || string(ready) != "ready" {
+		t.Fatal("registration failed", string(ready), err)
+	}
+	send := func(kind, session string, data []byte) {
+		t.Helper()
+		packet, _ := proto.Marshal(&protocol.Packet{Kind: kind, Session: session, Data: data})
+		if err := ws.Write(ctx, websocket.MessageBinary, packet); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send("node.health", "", model.JSON(model.NodeHealth{ActiveCount: 1}))
+	send("update.status", "", model.JSON(update.Status{State: "idle"}))
+	g.mu.Lock()
+	c := g.peers[id.ID]
+	g.mu.Unlock()
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		for !ok() {
+			select {
+			case <-ctx.Done():
+				t.Fatal(what)
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}
+	waitFor("reports not received", func() bool {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		return c.health != nil && !c.statusAt.IsZero()
+	})
+	// Age both reports without making them stale, then answer a challenge.
+	age := func(reported time.Duration) (time.Time, time.Time) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		old := time.Now().UTC().Add(-3 * time.Second)
+		c.healthAt, c.healthReceived, c.statusAt = old, time.Now().UTC().Add(-reported), time.Now().UTC().Add(-reported)
+		status := g.updateStatus[id.ID]
+		status.SeenAt = old
+		g.updateStatus[id.ID] = status
+		return c.healthAt, status.SeenAt
+	}
+	ping := func() string {
+		t.Helper()
+		c.requestProbe()
+		for {
+			_, data, err := ws.Read(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var packet protocol.Packet
+			if proto.Unmarshal(data, &packet) == nil && packet.Kind == "gateway.ping" {
+				return packet.Session
+			}
+		}
+	}
+	read := func() (time.Time, time.Time) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		return c.healthAt, g.updateStatus[id.ID].SeenAt
+	}
+
+	healthBefore, statusBefore := age(time.Second)
+	nonce := ping()
+	send("gateway.pong", strings.Repeat("0", 32), nil)
+	time.Sleep(50 * time.Millisecond)
+	if health, status := read(); !health.Equal(healthBefore) || !status.Equal(statusBefore) {
+		t.Fatal("a wrong challenge echo confirmed telemetry")
+	}
+	send("gateway.pong", nonce, nil)
+	waitFor("matched echo did not confirm reports", func() bool {
+		health, status := read()
+		return health.After(healthBefore) && status.After(statusBefore)
+	})
+
+	// Reports older than the confirmation limit must be sent again.
+	healthBefore, statusBefore = age(telemetryReportLimit + time.Second)
+	send("gateway.pong", ping(), nil)
+	time.Sleep(50 * time.Millisecond)
+	if health, status := read(); !health.Equal(healthBefore) || !status.Equal(statusBefore) {
+		t.Fatal("heartbeat revived reports beyond the confirmation limit")
+	}
+
+	// A report received on a previous connection is never confirmed.
+	g.mu.Lock()
+	other := &connection{statusAt: time.Now(), health: c.health, healthReceived: time.Now()}
+	g.mu.Unlock()
+	healthBefore, statusBefore = age(time.Second)
+	g.refreshTelemetry(id.ID, other)
+	if health, status := read(); !health.Equal(healthBefore) || !status.Equal(statusBefore) {
+		t.Fatal("superseded connection confirmed telemetry")
+	}
+}

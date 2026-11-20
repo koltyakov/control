@@ -127,8 +127,10 @@ func (c *connection) checkLiveness(ctx context.Context, pending *string, timeout
 		defer cancel()
 		return c.ws.Ping(ping) == nil
 	}
-	*pending = identity.NewID()
-	return c.writePacket(ctx, &protocol.Packet{Kind: "gateway.ping", From: update.GatewaySender, Session: *pending}) == nil
+	nonce := identity.NewID()
+	*pending = nonce
+	c.challenge.Store(&nonce)
+	return c.writePacket(ctx, &protocol.Packet{Kind: "gateway.ping", From: update.GatewaySender, Session: nonce}) == nil
 }
 
 // maxRetainedWriteBytes matches wsio's ordinary relay packet storage.

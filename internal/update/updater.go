@@ -37,6 +37,11 @@ type UpdaterOptions struct {
 	ProxyURL      string
 	ParkGateway   func(time.Time) bool
 	ResumeGateway func()
+	// UnchangedInterval, when set, returns how long unchanged status may go
+	// unsent; zero keeps the five-second default. Session changes with each
+	// gateway connection, which always receives the current status.
+	UnchangedInterval func() time.Duration
+	Session           func() uint64
 }
 
 type queuedCommand struct {
@@ -57,6 +62,7 @@ type Updater struct {
 	nextAttempt time.Time
 	lastReport  Status
 	lastAt      time.Time
+	lastSession uint64
 	reported    bool
 }
 
@@ -113,19 +119,29 @@ func (a *Updater) set(state string, err error) {
 
 // report sends changed status immediately and unchanged status after at least
 // five seconds. The two-second Run tick bounds the usual heartbeat at six
-// seconds, within the gateway's eight-second freshness window.
+// seconds, within the gateway's eight-second freshness window. A gateway with
+// telemetry liveness keeps reports fresh through heartbeats, so the node may
+// supply a longer unchanged interval; each new connection is still reported.
 func (a *Updater) report(ctx context.Context) {
 	snapshot := a.Snapshot()
 	comparable := snapshot
 	comparable.SeenAt = time.Time{}
+	interval := 5 * time.Second
+	if a.options.UnchangedInterval != nil {
+		interval = max(interval, a.options.UnchangedInterval())
+	}
+	var session uint64
+	if a.options.Session != nil {
+		session = a.options.Session()
+	}
 	a.mu.Lock()
-	changed := !a.reported || comparable != a.lastReport
-	due := time.Since(a.lastAt) >= 5*time.Second
+	changed := !a.reported || comparable != a.lastReport || session != a.lastSession
+	due := time.Since(a.lastAt) >= interval
 	a.mu.Unlock()
 	if changed || due {
 		if err := a.options.Report(ctx, snapshot); err == nil {
 			a.mu.Lock()
-			a.lastReport, a.lastAt, a.reported = comparable, time.Now(), true
+			a.lastReport, a.lastAt, a.lastSession, a.reported = comparable, time.Now(), session, true
 			a.mu.Unlock()
 		}
 	}

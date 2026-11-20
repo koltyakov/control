@@ -1,7 +1,9 @@
 package node
 
 import (
+	"bytes"
 	"context"
+	"sync"
 	"time"
 
 	"github.com/koltyakov/control/internal/model"
@@ -77,6 +79,29 @@ func later(a, b time.Time) time.Time {
 	return a
 }
 
+// healthReport is the last health report accepted for sending.
+type healthReport struct {
+	mu      sync.Mutex
+	data    []byte
+	session uint64
+	at      time.Time
+}
+
+// unchanged reports whether data repeats the last report on this gateway
+// connection recently enough that the gateway still treats it as fresh.
+func (r *healthReport) unchanged(data []byte, session uint64, now time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Ticks are not exact; resend a little early rather than one tick late.
+	return session == r.session && bytes.Equal(data, r.data) && now.Sub(r.at) < model.UnchangedTelemetryInterval-model.NodeHealthInterval/2
+}
+
+func (r *healthReport) sent(data []byte, session uint64, now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.data, r.session, r.at = data, session, now
+}
+
 func (n *Node) reportHealth(ctx context.Context) {
 	if !n.Peer.SupportsNodeHealth() {
 		return
@@ -85,9 +110,17 @@ func (n *Node) reportHealth(ctx context.Context) {
 	if len(data) > model.MaxNodeHealthBytes {
 		return
 	}
+	// Older gateways need every interval's report to keep health fresh.
+	relaxed := n.Peer.TelemetryLiveness()
+	session, now := n.Peer.GatewaySession(), time.Now()
+	if relaxed && n.lastHealth.unchanged(data, session, now) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(ctx, model.NodeHealthInterval)
 	defer cancel()
-	_ = n.Peer.SendControl(ctx, "node.health", data)
+	if n.Peer.SendControl(ctx, "node.health", data) == nil {
+		n.lastHealth.sent(data, session, now)
+	}
 }
 
 func (n *Node) runHealth(ctx context.Context) {

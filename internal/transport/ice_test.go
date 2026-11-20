@@ -20,7 +20,7 @@ import (
 
 // Keep timing fixtures independent of VPN adapters and unreachable host routes.
 func loopbackWebRTCAPI(direct time.Duration, trickle bool) *webrtc.API {
-	settings := webRTCSettings(direct, trickle)
+	settings := webRTCSettings(direct, trickle, nil)
 	settings.SetIncludeLoopbackCandidate(true)
 	settings.SetIPFilter(func(ip net.IP) bool { return ip.IsLoopback() })
 	settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})

@@ -34,7 +34,9 @@ func (n *Node) connectionTest(ctx context.Context, args json.RawMessage) (any, e
 	}
 	defer release()
 	result, err := n.Peer.TestConnection(ctx, q.Target, q.ConnectionTestOptions)
-	result.Source = n.Config.Name
+	// Report the routing name callers used, not a configured name a fleet
+	// rename left behind, even after the test itself timed out.
+	result.Source = n.fleetName(context.WithoutCancel(ctx))
 	return result, err
 }
 

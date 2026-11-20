@@ -71,6 +71,7 @@ func (g *Gateway) receiveUpdateStatus(n model.Node, c *connection, data []byte) 
 		}
 	}
 	g.updateStatus[n.ID] = status
+	c.statusAt = status.SeenAt
 	g.publishTelemetry(n.ID)
 	return true
 }

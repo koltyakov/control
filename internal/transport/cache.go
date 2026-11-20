@@ -41,6 +41,15 @@ const (
 	sctpCwndCAStep = 4 * 1228 // Four default SCTP MTUs per avoidance step.
 )
 
+// Data-channel bytes a sender may queue before waiting. Pion counts bytes
+// until they are acknowledged, so this caps in-flight data per channel. A
+// 1 MiB cap held a 141 ms path near 40 Mbps even without loss; matching the
+// receiver's SCTP window removes that ceiling. The low mark refills early.
+const (
+	channelBufferedMax = maxSCTPReceive
+	channelBufferedLow = channelBufferedMax / 4
+)
+
 type lookupEntry struct {
 	node    model.Node
 	expires time.Time
@@ -56,6 +65,7 @@ type transportStats struct {
 	lookupHits            atomic.Int64
 	lookupMisses          atomic.Int64
 	lastOverflowLog       atomic.Int64
+	udpBuffers            udpBufferStats
 }
 
 // Stats reports cumulative transport counters for local diagnostics.
@@ -69,6 +79,7 @@ func (p *Peer) Stats() model.TransportStats {
 		LinkOverflows:          p.stats.linkOverflows.Load(),
 		LookupHits:             p.stats.lookupHits.Load(),
 		LookupMisses:           p.stats.lookupMisses.Load(),
+		UDPReceiveBufferBytes:  p.stats.udpBuffers.value(),
 	}
 }
 
@@ -76,8 +87,8 @@ func (p *Peer) Stats() model.TransportStats {
 // budget, so one unreachable STUN server cannot force every session onto the
 // relay. A larger SCTP window raises the per-carrier throughput ceiling on
 // high-latency paths, where it limits all lanes sharing the carrier.
-func newWebRTCAPI(direct time.Duration, trickle bool, options ...Options) *webrtc.API {
-	settings := webRTCSettings(direct, trickle)
+func newWebRTCAPI(direct time.Duration, trickle bool, buffers *udpBufferStats, options ...Options) *webrtc.API {
+	settings := webRTCSettings(direct, trickle, buffers)
 	for _, option := range options {
 		if option.ConfigureWebRTC != nil {
 			option.ConfigureWebRTC(&settings)
@@ -94,9 +105,14 @@ func dataChannelAPI(settings webrtc.SettingEngine) *webrtc.API {
 	return webrtc.NewAPI(webrtc.WithSettingEngine(settings), webrtc.WithMediaEngine(&webrtc.MediaEngine{}), webrtc.WithInterceptorRegistry(&interceptor.Registry{}))
 }
 
-func webRTCSettings(direct time.Duration, trickle bool) webrtc.SettingEngine {
+func webRTCSettings(direct time.Duration, trickle bool, buffers *udpBufferStats) webrtc.SettingEngine {
 	var settings webrtc.SettingEngine
 	settings.DetachDataChannels()
+	// Without this, pion uses operating-system UDP buffer defaults. Options may
+	// still replace the network, for example with a virtual test network.
+	if network, err := newBufferedNet(buffers); err == nil {
+		settings.SetNet(network)
+	}
 	gather := max(minSTUNGather, min(maxSTUNGather, direct*2/5))
 	if trickle {
 		// Gathering no longer delays SDP. Keep slow candidates available while

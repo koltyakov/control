@@ -467,3 +467,108 @@ func TestDisconnectedCarrierRetiresEveryLaneAfterGrace(t *testing.T) {
 		}
 	})
 }
+
+func TestNetworkSamplerReusesInterfacesUntilRoutesChange(t *testing.T) {
+	wifi := testNetworkInterface(t, 4, "en0", "192.168.0.10/24")
+	vpn := testNetworkInterface(t, 9, "utun3", "10.8.0.2/24")
+	inventory := []networkInterface{wifi}
+	var enumerations int
+	var failure error
+	source := net.ParseIP("192.168.0.10")
+	now := time.Unix(1000, 0)
+	s := &networkSampler{
+		targets: []*net.UDPAddr{{IP: net.ParseIP("192.0.2.1"), Port: 443}},
+		interfaces: func() ([]networkInterface, error) {
+			enumerations++
+			if failure != nil {
+				return nil, failure
+			}
+			return slices.Clone(inventory), nil
+		},
+		route: func(*net.UDPAddr) net.IP { return source },
+		now:   func() time.Time { return now },
+	}
+	sample := func() string {
+		t.Helper()
+		fingerprint, err := s.sample()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fingerprint
+	}
+	baseline := sample()
+	for range 5 {
+		now = now.Add(2 * time.Second)
+		if sample() != baseline {
+			t.Fatal("stable route changed its fingerprint")
+		}
+	}
+	if enumerations != 1 {
+		t.Fatalf("stable routes enumerated interfaces %d times, want 1", enumerations)
+	}
+
+	// A new source address re-enumerates at once and reports the switch.
+	inventory, source = []networkInterface{wifi, vpn}, net.ParseIP("10.8.0.2")
+	if sample() == baseline || enumerations != 2 {
+		t.Fatalf("source change: enumerations=%d", enumerations)
+	}
+
+	// An unchanged source is re-checked after the refresh interval, for
+	// example to notice a different subnet on the same address.
+	inventory = []networkInterface{wifi, testNetworkInterface(t, 9, "utun3", "10.8.0.2/16")}
+	now = now.Add(networkInterfaceRefresh - time.Second)
+	before := sample()
+	if enumerations != 2 {
+		t.Fatal("inventory refreshed before its interval")
+	}
+	now = now.Add(time.Second)
+	if sample() == before || enumerations != 3 {
+		t.Fatalf("refresh did not observe subnet change: enumerations=%d", enumerations)
+	}
+
+	// Failed enumeration is a failed sample, not a switch, and the next
+	// sample retries it.
+	source, failure = net.ParseIP("192.168.0.10"), errors.New("adapter query failed")
+	if _, err := s.sample(); err == nil {
+		t.Fatal("enumeration failure was hidden")
+	}
+	failure, inventory = nil, []networkInterface{wifi}
+	if sample() != baseline {
+		t.Fatal("recovered sample differs from the original network")
+	}
+}
+
+func TestNetworkSamplerReenumeratesWhenCacheCannotPlaceSource(t *testing.T) {
+	wifi := testNetworkInterface(t, 4, "en0", "192.168.0.10/24")
+	inventory := []networkInterface{wifi}
+	var enumerations int
+	sources := []net.IP{net.ParseIP("192.168.0.10"), net.ParseIP("192.168.0.10")}
+	s := &networkSampler{
+		targets: []*net.UDPAddr{{IP: net.ParseIP("192.0.2.1"), Port: 443}, {IP: net.ParseIP("2001:db8:ffff::1"), Port: 443}},
+		interfaces: func() ([]networkInterface, error) {
+			enumerations++
+			return slices.Clone(inventory), nil
+		},
+		route: func(target *net.UDPAddr) net.IP {
+			if target.IP.To4() != nil {
+				return sources[0]
+			}
+			return sources[1]
+		},
+		now: func() time.Time { return time.Unix(1000, 0) },
+	}
+	if _, err := s.sample(); err != nil {
+		t.Fatal(err)
+	}
+	// Same source set, but the cached inventory predates an address that the
+	// IPv6 route now uses: retry with a fresh inventory instead of failing.
+	sources[1] = net.ParseIP("2001:db8:1::5")
+	inventory = []networkInterface{testNetworkInterface(t, 4, "en0", "192.168.0.10/24", "2001:db8:1::5/64")}
+	s.sources = "192.168.0.10,2001:db8:1::5"
+	if _, err := s.sample(); err != nil || enumerations != 2 {
+		t.Fatalf("enumerations=%d, err=%v", enumerations, err)
+	}
+	if _, err := (&networkSampler{route: routeSource, interfaces: sampleInterfaces, now: time.Now}).sample(); err != nil {
+		t.Fatal("a sampler without targets must not fail")
+	}
+}
