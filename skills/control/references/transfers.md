@@ -14,6 +14,8 @@ After interruption or an uncertain reply, inspect `control upload status WORKER 
 
 ## Move results directly
 
+List a node's artifacts with `control artifact list NODE` or MCP `control_artifacts`: newest-first compact pages with total count and bytes. Continue with `nextCursor`; `--all` prints every full reference.
+
 Export files from their source with `control artifact export SOURCE PATH`, then request recipient-bound access with `control call SOURCE artifacts.grant '{"id":"ARTIFACT_ID","target":"DESTINATION"}'`. Pass the granted reference, including `grant`, as a task input so the destination can fetch it directly. Planned workflow inputs prepare their signed grants automatically. Use `control artifact deliver SOURCE ARTIFACT_ID DESTINATION` for peer-to-peer delivery. Download through the host only when the user needs a local copy:
 
 ```sh

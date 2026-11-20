@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,6 +147,13 @@ func (n *Node) pruneArtifacts(ctx context.Context, now time.Time) error {
 		return err
 	}
 	var failures []error
+	retention := time.Duration(n.Config.ArtifactRetentionHours) * time.Hour
+	expiredCount := 0
+	defer func() {
+		if expiredCount > 0 {
+			slog.Info("artifact retention removed expired artifacts", "count", expiredCount, "retentionHours", n.Config.ArtifactRetentionHours)
+		}
+	}()
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -158,8 +166,14 @@ func (n *Node) pruneArtifacts(ctx context.Context, now time.Time) error {
 				return err
 			}
 			a, err := n.storedArtifact(id)
-			if err == nil && a.Deleting && !n.artifactReferenced(id) && !n.artifactReading(id) && !n.artifactGranted(id) {
+			// Age-based expiry is opt-in and only adds candidates; the same
+			// reference, reader and grant checks protect content still in use.
+			expired := retention > 0 && !a.Created.IsZero() && now.Sub(a.Created) >= retention
+			if err == nil && (a.Deleting || expired) && !n.artifactReferenced(id) && !n.artifactReading(id) && !n.artifactGranted(id) {
 				err = n.deleteArtifactLocked(a)
+				if err == nil && !a.Deleting {
+					expiredCount++
+				}
 			}
 			unlock()
 			if err != nil && !errors.Is(err, os.ErrNotExist) {

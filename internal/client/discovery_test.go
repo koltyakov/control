@@ -59,6 +59,9 @@ func TestMachineDiscoveryProjection(t *testing.T) {
 	if summaries[1].Online || !summaries[1].Disabled || !summaries[1].ControlPending || !summaries[1].InstructionOnly || summaries[1].HybridID != "pair-id" || summaries[1].HybridRole != "system" || summaries[1].RunAs != "system" || summaries[1].Arch != "arm64" {
 		t.Fatal("compact listing lost policy, pairing or fallback architecture", summaries[1])
 	}
+	if !summaries[0].LastSeen.IsZero() || summaries[1].LastSeen.IsZero() || strings.Count(string(got), `"lastSeen":`) != 1 {
+		t.Fatal("compact lastSeen must describe only offline machines", string(got))
+	}
 	if summaries[2].Arch != "" || summaries[2].RunAs != "" || summaries[2].HybridRole != "" {
 		t.Fatal("legacy metadata was invented", summaries[2])
 	}

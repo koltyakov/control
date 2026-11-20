@@ -83,14 +83,19 @@ type Config struct {
 	// disables count-based pruning.
 	MaxRetainedTasks int `json:"maxRetainedTasks,omitempty"`
 	// Zero preserves unlimited artifact storage; a positive value caps blobs,
-	// import staging and resumable partials together. Owned content is never evicted.
-	MaxArtifactBytes      int64  `json:"maxArtifactBytes,omitempty"`
-	ArtifactReserveBytes  uint64 `json:"artifactReserveBytes,omitempty"`
-	PartialRetentionHours int    `json:"partialRetentionHours,omitempty"`
-	MaxUploadStagingBytes int64  `json:"maxUploadStagingBytes,omitempty"`
-	MaxUploadOwnerBytes   int64  `json:"maxUploadOwnerBytes,omitempty"`
-	UploadReserveBytes    uint64 `json:"uploadReserveBytes,omitempty"`
-	UploadRetentionHours  int    `json:"uploadRetentionHours,omitempty"`
+	// import staging and resumable partials together. The budget never evicts
+	// content; age-based expiry is ArtifactRetentionHours.
+	MaxArtifactBytes int64 `json:"maxArtifactBytes,omitempty"`
+	// ArtifactRetentionHours zero keeps published artifacts until explicit
+	// removal; 1..87600 deletes artifacts older than that age once no retained
+	// task, grant or reader still uses them.
+	ArtifactRetentionHours int    `json:"artifactRetentionHours,omitempty"`
+	ArtifactReserveBytes   uint64 `json:"artifactReserveBytes,omitempty"`
+	PartialRetentionHours  int    `json:"partialRetentionHours,omitempty"`
+	MaxUploadStagingBytes  int64  `json:"maxUploadStagingBytes,omitempty"`
+	MaxUploadOwnerBytes    int64  `json:"maxUploadOwnerBytes,omitempty"`
+	UploadReserveBytes     uint64 `json:"uploadReserveBytes,omitempty"`
+	UploadRetentionHours   int    `json:"uploadRetentionHours,omitempty"`
 	// Allow maps caller IDs, names, *, or @orchestrator to method glob patterns.
 	// An omitted map permits same-fleet discovery and account-client execution.
 	// An empty map denies incoming calls without a valid instruction/artifact grant.
@@ -228,6 +233,9 @@ func (c *Config) defaults() error {
 	}
 	if c.MaxArtifactBytes < 0 {
 		return errors.New("maxArtifactBytes must be nonnegative")
+	}
+	if c.ArtifactRetentionHours < 0 || c.ArtifactRetentionHours > 87600 {
+		return errors.New("artifactRetentionHours must be 0..87600; zero keeps artifacts until removed")
 	}
 	if c.ArtifactReserveBytes == 0 {
 		c.ArtifactReserveBytes = 256 << 20

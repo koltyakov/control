@@ -55,6 +55,18 @@ func (c Client) MCPServer() *mcp.Server {
 			if err := json.Unmarshal(request.Params.Arguments, &args); err != nil {
 				return toolError(err), nil
 			}
+			// The caller already holds the submitted specification. Repeating
+			// it, including inline scripts, on every acceptance and wait only
+			// consumes agent context; control_task_get can request it.
+			omitSpec := taskResultTools[name]
+			if raw, ok := args["includeSpec"]; ok && name == "control_task_get" {
+				var include bool
+				if err := json.Unmarshal(raw, &include); err != nil {
+					return toolError(err), nil
+				}
+				omitSpec = !include
+				delete(args, "includeSpec")
+			}
 			for _, key := range required {
 				if _, ok := args[key]; !ok {
 					return toolError(fmt.Errorf("missing required field %s", key)), nil
@@ -73,6 +85,9 @@ func (c Client) MCPServer() *mcp.Server {
 			var result json.RawMessage
 			if err = c.Call(ctx, target, actualMethod, params, &result); err != nil {
 				return toolError(err), nil
+			}
+			if omitSpec {
+				result = WithoutTaskSpec(result)
 			}
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: toolText(result)}}}, nil
 		})
@@ -101,17 +116,17 @@ func (c Client) MCPServer() *mcp.Server {
 	}
 	add("control_activities", "Read a pool-wide activity snapshot, including all registered machines, availability, tasks from all owners, concurrency pool limits/usage/queues, transfers, tunnels, direct/TURN/gateway-relay connection counts, and cached system metrics. Unavailable nodes are reported individually; missing older pool readings mean unknown. Requires activities.list permission on the observed nodes.", "activities.pool", map[string]any{"nodes": map[string]any{"type": "array", "items": text}, "recent": map[string]any{"type": "integer", "minimum": 0, "maximum": 64}}, nil, normal)
 	add("control_system", "Read OS, architecture, CPU, RAM, disk, and optional GPU/NPU inventory from a node's cached system sample. system.os and system.arch describe the node runtime; prefer native target builds and verify the native host if emulation is suspected. GPU kind identifies discrete, integrated, virtual, or npu hardware; absent kind is unknown. Utilization and dedicated-memory used/total depend on driver support; absent readings are unknown, not zero. Set refresh to request a new sample.", "system.info", map[string]any{"node": text, "refresh": map[string]any{"type": "boolean"}}, []string{"node"}, normal)
-	add("control_describe", "Inspect capability schemas, target system.os and system.arch, concurrency pool limits, inUse and queued counts, and runbooks from project/global and authorized worker stores. Prefer native target builds, not the orchestrator's platform; verify the native host if emulation is suspected. Busy does not mean unavailable for independent work. Read matching shared or machine-specific runbooks before ad-hoc probing or asking which application or secret names to use. Source errors do not mean no runbooks exist. For GUI work, check configured desktop.run backends; full CLI mode loads upstream version, desktop/platform skills and status through control_desktop. Presence is not desktop permission.", "node.describe", map[string]any{"node": text}, []string{"node"}, normal)
+	add("control_describe", "Inspect capability schemas, target system.os and system.arch, concurrency pool limits, inUse and queued counts, and runbooks from project/global and authorized worker stores. Prefer native target builds, not the orchestrator's platform; verify the native host if emulation is suspected. Busy does not mean unavailable for independent work. Read matching shared or machine-specific runbooks before ad-hoc probing or asking which application or secret names to use. Source errors do not mean no runbooks exist. For GUI work, check configured desktop.run backends; full CLI mode loads upstream version, desktop/platform skills and status through control_desktop. Presence is not desktop permission.", "node.describe", map[string]any{"node": text, "view": map[string]any{"type": "string", "enum": []string{"full"}, "description": "full adds live connections, sessions and transport counters, which control_diagnostics also reports."}}, []string{"node"}, normal)
 	add("control_select", "Select an online enabled machine by capability, labels and fresh resources. Excludes known leases and update reservations. Resource constraints require fresh health; selection does not reserve capacity.", "nodes.select", map[string]any{"labels": object, "capability": text, "minMemoryBytes": map[string]any{"type": "integer", "minimum": 0}, "minDiskBytes": map[string]any{"type": "integer", "minimum": 0}, "maxCpuPercent": map[string]any{"type": "number", "minimum": 0, "maximum": 100}, "requireFresh": map[string]any{"type": "boolean"}}, nil, normal)
 	add("control_diagnostics", "Read bounded task cleanup, artifact budget, MCP startup and transport diagnostics. Uses cached system samples and excludes task arguments and credentials.", "diagnostics.get", map[string]any{"node": text}, []string{"node"}, normal)
-	add("control_call", "Call a node method or capability with structured params. Discover capabilities first. exec.run envSecrets maps application environment variables to worker-local secret names; stdinSecret supplies exact stdin bytes instead of literal stdin. Secret-bearing output/errors and completion-delayed logs are masked, files are not. Without references, exec.run output is not secret-masked. Use names, never literal credential values or shell secret retrieval. Also supports artifacts.list/pull/grant, tasks.list, and mcp.request. For GUI work prefer control_desktop, with native secret references for credential input.", "", map[string]any{"node": text, "method": text, "params": object}, []string{"method"}, nested("params"))
-	add("control_task_start", "Submit a tracked task and return after durable acceptance without waiting for completion. Independent tasks can run on the same worker in parallel; busy is not an exclusion. task has capability, args, optional id, timeoutSeconds, inputs [{artifact,path}], and outputs [relative paths]. Reuse the task ID to reconcile an uncertain submission.", "tasks.start", map[string]any{"node": text, "task": object}, []string{"node", "task"}, nested("task"))
+	add("control_call", "Call a node method or capability with structured params. Discover capabilities first. exec.run envSecrets maps application environment variables to worker-local secret names; stdinSecret supplies exact stdin bytes instead of literal stdin. Secret-bearing output/errors and completion-delayed logs are masked, files are not. Without references, exec.run output is not secret-masked. Use names, never literal credential values or shell secret retrieval. Also supports artifacts.pull/grant, tasks.list, and mcp.request; list artifacts with control_artifacts. For GUI work prefer control_desktop, with native secret references for credential input.", "", map[string]any{"node": text, "method": text, "params": object}, []string{"method"}, nested("params"))
+	add("control_task_start", "Submit a tracked task and return after durable acceptance without waiting for completion. Independent tasks can run on the same worker in parallel; busy is not an exclusion. task has capability, args, optional id, timeoutSeconds, inputs [{artifact,path}], and outputs [relative paths]. Reuse the task ID to reconcile an uncertain submission. The result omits the submitted spec.", "tasks.start", map[string]any{"node": text, "task": object}, []string{"node", "task"}, nested("task"))
 	add("control_delegate", "Execute one orchestrator-authorized JSON instruction on target through worker node. Prepares a destination-owned, instruction-bound grant. Worker credentials alone cannot execute peer commands. Use tasks.start with an explicit ID for durable child work; synchronous instructions are single-use.", "peers.call", map[string]any{"node": text, "target": text, "method": text, "params": object}, []string{"node", "target", "method", "params"}, normal)
 	add("control_access_list", "List this orchestrator owner's instruction-bound grants at node, including idle expiry. Does not list other owners' grants.", "access.list", map[string]any{"node": text}, []string{"node"}, normal)
 	add("control_access_revoke", "Revoke this owner's grant at node and cancel associated tasks and streams. Cannot undo completed effects. Idempotent when the grant is absent.", "access.revoke", map[string]any{"node": text, "id": text}, []string{"node", "id"}, normal)
-	add("control_task_get", "Read task status, result, and artifact references. Set waitSeconds (up to 60) to wait for completion instead of polling; a non-terminal result means the wait elapsed. Older nodes answer immediately.", "tasks.get", map[string]any{"node": text, "id": text, "waitSeconds": map[string]any{"type": "integer", "minimum": 0, "maximum": 60}}, []string{"node", "id"}, normal)
-	add("control_tasks", "List bounded task summaries. Continue with nextCursor. Use tasks.get for arguments, results and artifact references.", "tasks.page", map[string]any{"node": text, "cursor": text, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 200}}, []string{"node"}, normal)
-	add("control_task_cancel", "Cancel a queued or running task.", "tasks.cancel", map[string]any{"node": text, "id": text}, []string{"node", "id"}, normal)
+	add("control_task_get", "Read task status, result, and artifact references. Set waitSeconds (up to 60) to wait for completion instead of polling; a non-terminal result means the wait elapsed. Older nodes answer immediately. The submitted spec is omitted unless includeSpec is true.", "tasks.get", map[string]any{"node": text, "id": text, "waitSeconds": map[string]any{"type": "integer", "minimum": 0, "maximum": 60}, "includeSpec": map[string]any{"type": "boolean"}}, []string{"node", "id"}, normal)
+	add("control_tasks", "List bounded task summaries. Continue with nextCursor. Use control_task_get for results and artifact references, with includeSpec for arguments.", "tasks.page", map[string]any{"node": text, "cursor": text, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 200}}, []string{"node"}, normal)
+	add("control_task_cancel", "Cancel a queued or running task. The result omits the submitted spec.", "tasks.cancel", map[string]any{"node": text, "id": text}, []string{"node", "id"}, normal)
 	add("control_task_logs", "Read task logs from a byte offset. Returns the next offset.", "tasks.logs", map[string]any{"node": text, "id": text, "offset": map[string]any{"type": "integer"}}, []string{"node", "id"}, normal)
 	add("control_mcp_discover", "List configured MCP servers, or discover a server's tools and input schemas. Requires execution authority; selecting a server may start its configured process or remote session.", "mcp.discover", map[string]any{"node": text, "server": text}, []string{"node"}, normal)
 	add("control_mcp_call", "Invoke an installed MCP tool on the selected node. Tool-reported isError is a failure with unknown effects, not permission to retry. Use a tracked mcp.call task to retain the full result, including partial output on failure.", "mcp.call", map[string]any{"node": text, "server": text, "tool": text, "arguments": object}, []string{"node", "server", "tool"}, normal)
@@ -169,6 +184,15 @@ func (c Client) MCPServer() *mcp.Server {
 			q.Node = *input.Node
 		}
 		return c.Machines(ctx, q)
+	})
+	local("control_artifacts", "List a node's visible artifacts newest first as compact summaries with total count and bytes. Continue with nextCursor; limit 1..200, default 50. An artifact ID is its SHA-256 digest. Use control_call artifacts.list with id for a full reference.", map[string]any{"node": text, "cursor": text, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": model.MaxArtifactPage}}, []string{"node"}, func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var q ArtifactQuery
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&q); err != nil {
+			return nil, err
+		}
+		return c.Artifacts(ctx, q)
 	})
 	local("control_browser_view", "Forward an already started agent-browser dashboard on the worker to a local loopback URL. This is interactive access to every session in that dashboard namespace, not read-only viewing. Does not start a browser/dashboard or verify readiness. The forward survives this tool call until control_forward_stop or MCP exit; stopping it does not close the worker browser/dashboard. The URL is on this MCP server host. Live frames and user input are not redacted or recorded by Control. Read https://github.com/koltyakov/control/blob/main/docs/browser.md#mcp-workflow before dashboard setup, human takeover or cleanup.", map[string]any{"node": text, "port": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535}, "listen": text}, []string{"node"}, func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var spec BrowserViewSpec
@@ -314,6 +338,43 @@ func (c Client) MCPServer() *mcp.Server {
 		return map[string]bool{"disposed": true}, nil
 	})
 	return server
+}
+
+// taskResultTools return a task record whose spec repeats the caller's input.
+var taskResultTools = map[string]bool{"control_task_start": true, "control_task_get": true, "control_task_cancel": true}
+
+// WithoutTaskSpec drops a task record's submitted specification, which the
+// caller already holds, so CLI and MCP results do not repeat inline scripts.
+func WithoutTaskSpec(data json.RawMessage) json.RawMessage {
+	return withoutField(data, "spec")
+}
+
+// withoutField removes one top-level member while preserving the order and
+// bytes of the others. Non-object results are returned unchanged.
+func withoutField(data json.RawMessage, field string) json.RawMessage {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return data
+	}
+	out := []byte{'{'}
+	for decoder.More() {
+		token, err := decoder.Token()
+		key, ok := token.(string)
+		var value json.RawMessage
+		if err != nil || !ok || decoder.Decode(&value) != nil {
+			return data
+		}
+		if key == field {
+			continue
+		}
+		if len(out) > 1 {
+			out = append(out, ',')
+		}
+		out = append(out, model.JSON(key)...)
+		out = append(out, ':')
+		out = append(out, value...)
+	}
+	return append(out, '}')
 }
 
 func toolError(err error) *mcp.CallToolResult {

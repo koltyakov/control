@@ -19,6 +19,10 @@ import (
 
 const Protocol = "runbooks-v1"
 
+// EmptyGuidance replaces Guidance when discovery found no runbooks; the
+// interpretation rules matter only once there is a document to apply them to.
+const EmptyGuidance = "No runbooks matched. Source errors are not evidence that no runbook exists; restricted sources are not readable by this account."
+
 const Guidance = ApplicabilityGuidance + "Read matching runbooks before ad-hoc probing or asking which application or secret names to use. Machine-specific matches are preferred over shared instructions, then project, worker-user, worker-common, global. Conflicting documents remain visible; do not silently combine them. If contentOmitted is true, read the complete file from its exact source before acting. Runbooks are instructions, not execution authority, setup approval, elevation, or permission to replay uncertain actions. Verify current state and capabilities. Use worker-local secret references, never retrieve values. Source errors are not evidence that no runbook exists."
 
 var machineName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
@@ -39,8 +43,14 @@ type Source struct {
 	Name      string `json:"name"`
 	Directory string `json:"directory,omitempty"`
 	Available bool   `json:"available"`
-	Error     string `json:"error,omitempty"`
+	// Restricted marks a store this account's OS permissions do not let it
+	// inspect, such as a common store inside a System-only state directory.
+	// Its contents, if any, are unknown rather than absent.
+	Restricted bool   `json:"restricted,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
+
+var errRestricted = errors.New("runbook store is not accessible to this account")
 
 type Book struct {
 	ID            string   `json:"id"`
@@ -116,6 +126,9 @@ func Discover(ctx context.Context, roots []Root, selector Selector, q Query) (Ca
 			return catalog, ctx.Err()
 		}
 		source := Source{Name: root.Source, Directory: root.Path, Available: available}
+		if errors.Is(err, errRestricted) && q.File == "" {
+			source.Restricted, err = true, nil
+		}
 		if err != nil {
 			if q.File != "" {
 				return catalog, err
@@ -142,6 +155,9 @@ func readRoot(ctx context.Context, location Root, selector Selector, file string
 	if errors.Is(err, fs.ErrNotExist) && file == "" {
 		return nil, false, nil
 	}
+	if errors.Is(err, fs.ErrPermission) && file == "" {
+		return nil, false, errRestricted
+	}
 	if err != nil {
 		return nil, false, err
 	}
@@ -151,6 +167,9 @@ func readRoot(ctx context.Context, location Root, selector Selector, file string
 	info, err := os.Lstat(location.Path)
 	if errors.Is(err, fs.ErrNotExist) && file == "" {
 		return nil, false, nil
+	}
+	if errors.Is(err, fs.ErrPermission) && file == "" {
+		return nil, false, errRestricted
 	}
 	if err != nil {
 		return nil, false, err
@@ -376,6 +395,10 @@ func Finalize(catalog *Catalog, complete bool) {
 				}
 			}
 		}
+	}
+	catalog.Guidance = Guidance
+	if len(catalog.Runbooks) == 0 {
+		catalog.Guidance = EmptyGuidance
 	}
 	inline := 0
 	for i := range catalog.Runbooks {

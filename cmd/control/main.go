@@ -452,26 +452,39 @@ func run(ctx context.Context, args []string) error {
 		if len(args) < 4 {
 			return errors.New("task ID or specification is required")
 		}
+		if method == "logs" {
+			return logsCLI(ctx, c, target, args[3:])
+		}
+		f := flag.NewFlagSet("task "+method, flag.ContinueOnError)
+		includeSpec := f.Bool("spec", false, "include the submitted specification")
+		if err := f.Parse(args[4:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 {
+			return fmt.Errorf("unexpected task %s arguments", method)
+		}
 		if method == "wait" {
 			task, err := c.Wait(ctx, target, args[3])
 			if err != nil {
 				return err
 			}
-			printJSON(task)
+			printTask(task, *includeSpec)
 			if task.State != "succeeded" {
 				return errors.New(task.Error)
 			}
 			return nil
 		}
-		if method == "logs" {
-			return logsCLI(ctx, c, target, args[3:])
-		}
 		switch method {
-		case "get", "cancel", "logs":
+		case "get", "cancel":
 		default:
 			return errors.New("unknown task command")
 		}
-		return callPrint(ctx, c, target, "tasks."+method, map[string]any{"id": args[3]})
+		var task json.RawMessage
+		if err := c.Call(ctx, target, "tasks."+method, map[string]any{"id": args[3]}, &task); err != nil {
+			return err
+		}
+		printTask(task, *includeSpec)
+		return nil
 	case "artifact":
 		return artifactCLI(ctx, c, args[1:])
 	case "upload":
@@ -483,7 +496,7 @@ func run(ctx context.Context, args []string) error {
 	}
 }
 
-func submit(ctx context.Context, c client.Client, target string, spec model.TaskSpec, wait bool) error {
+func submit(ctx context.Context, c client.Client, target string, spec model.TaskSpec, wait, includeSpec bool) error {
 	if spec.ID == "" {
 		spec.ID = identity.NewID()
 	}
@@ -509,12 +522,12 @@ func submit(ctx context.Context, c client.Client, target string, spec model.Task
 			if observed.ID != "" {
 				task = observed
 			}
-			printJSON(task)
+			printTask(task, includeSpec)
 			return fmt.Errorf("wait for task %s; last known state printed; query this ID before proceeding, do not resubmit automatically: %w", spec.ID, err)
 		}
 		task = observed
 	}
-	printJSON(task)
+	printTask(task, includeSpec)
 	if task.Terminal() && task.State != "succeeded" {
 		return errors.New(task.Error)
 	}
@@ -527,7 +540,25 @@ func artifactCLI(ctx context.Context, c client.Client, args []string) error {
 	}
 	method, target := args[0], args[1]
 	if method == "list" {
-		return callPrint(ctx, c, target, "artifacts.list", map[string]any{})
+		f := flag.NewFlagSet("artifact list", flag.ContinueOnError)
+		limit := f.Int("limit", model.DefaultArtifactPage, "maximum artifact summaries, 1..200")
+		cursor := f.String("cursor", "", "nextCursor from the previous page")
+		all := f.Bool("all", false, "print every visible artifact as a full reference")
+		if err := f.Parse(args[2:]); err != nil {
+			return err
+		}
+		if f.NArg() != 0 {
+			return errors.New("unexpected artifact list arguments")
+		}
+		if *all {
+			return callPrint(ctx, c, target, "artifacts.list", map[string]any{})
+		}
+		page, err := c.Artifacts(ctx, client.ArtifactQuery{Node: target, Cursor: *cursor, Limit: *limit})
+		if err != nil {
+			return err
+		}
+		printJSON(page)
+		return nil
 	}
 	if len(args) < 3 {
 		return errors.New("artifact path or ID is required")
@@ -544,8 +575,10 @@ func artifactCLI(ctx context.Context, c client.Client, args []string) error {
 	if method != "get" {
 		return errors.New("unknown artifact command")
 	}
+	// Older workers ignore the ID filter and return every artifact; the loop
+	// still selects the requested one.
 	var artifacts []model.Artifact
-	if err := c.Call(ctx, target, "artifacts.list", map[string]any{}, &artifacts); err != nil {
+	if err := c.Call(ctx, target, "artifacts.list", map[string]any{"id": args[2]}, &artifacts); err != nil {
 		return err
 	}
 	for _, a := range artifacts {
@@ -598,6 +631,16 @@ func callPrint(ctx context.Context, c client.Client, target, method string, para
 	}
 	printJSON(result)
 	return nil
+}
+
+// printTask omits the submitted specification unless requested; the caller
+// already supplied it, and inline scripts would otherwise repeat on each read.
+func printTask(task any, includeSpec bool) {
+	data := model.JSON(task)
+	if !includeSpec {
+		data = client.WithoutTaskSpec(data)
+	}
+	printJSON(data)
 }
 
 func printJSON(value any) { b, _ := json.MarshalIndent(value, "", "  "); fmt.Println(string(b)) }
@@ -696,13 +739,13 @@ Environment: CONTROL_API, CONTROL_TOKEN
                                        Forward a worker browser dashboard to a local URL
     --source SOURCE --file FILE         Read one complete runbook from its exact origin
   exec NODE [--detach] [--id ID] [--timeout DURATION] [--] COMMAND [ARG...]
-  task start NODE JSON|@file [--wait]   Submit a durable task; optionally wait for its result
-  task get|wait|cancel|logs NODE ID      Inspect or manage a task
+  task start NODE JSON|@file [--wait] [--spec]  Submit a durable task; optionally wait for its result
+  task get|wait|cancel NODE ID [--spec] Inspect or manage a task; --spec adds its specification
   task logs NODE ID [--follow] [--offset BYTES]
   task list NODE [--limit N --cursor ID] Page through task summaries
   task reconcile NODE ID               Inspect a workflow and its stable child IDs
   diagnostics NODE                     Read bounded operational counters
-  artifact list NODE
+  artifact list NODE [--limit N --cursor C | --all]  Newest-first summaries, or every full reference
   artifact export NODE PATH
   artifact deliver NODE ID DEST_NODE   Peer-to-peer transfer
   artifact get NODE ID LOCAL_PATH      Resumable, checksum-verified download

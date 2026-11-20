@@ -15,12 +15,13 @@ import (
 )
 
 func taskStartCLI(ctx context.Context, c client.Client, args []string) error {
-	const usage = "usage: control task start NODE JSON|@file [--wait]"
+	const usage = "usage: control task start NODE JSON|@file [--wait] [--spec]"
 	if len(args) < 2 {
 		return errors.New(usage)
 	}
 	f := flag.NewFlagSet("task start", flag.ContinueOnError)
 	wait := f.Bool("wait", false, "wait for the task result after durable acceptance")
+	includeSpec := f.Bool("spec", false, "include the submitted specification in the printed task")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -43,7 +44,7 @@ func taskStartCLI(ctx context.Context, c client.Client, args []string) error {
 	if err = json.Unmarshal(b, &spec); err != nil {
 		return err
 	}
-	return submit(ctx, c, args[0], spec, *wait)
+	return submit(ctx, c, args[0], spec, *wait, *includeSpec)
 }
 
 func execCLI(ctx context.Context, c client.Client, args []string) error {
@@ -62,7 +63,7 @@ func execCLI(ctx context.Context, c client.Client, args []string) error {
 	}
 	command := f.Args()
 	spec := model.TaskSpec{ID: *id, Capability: "exec.run", TimeoutSeconds: int(*timeout / time.Second), Args: model.JSON(map[string]any{"command": command[0], "args": command[1:]})}
-	return submit(ctx, c, args[0], spec, !*detach)
+	return submit(ctx, c, args[0], spec, !*detach, false)
 }
 
 func logsCLI(ctx context.Context, c client.Client, target string, args []string) error {

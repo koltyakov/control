@@ -153,6 +153,10 @@ func (c Client) discoverRunbooks(ctx context.Context, target string, description
 	return catalog, nil
 }
 
+// describeTransportFields are per-connection diagnostics, which grow with each
+// connected client and are also reported by diagnostics.get.
+var describeTransportFields = []string{"connections", "sessions", "transport"}
+
 func (c Client) describeWithRunbooks(ctx context.Context, target string, params, result any) error {
 	var q struct {
 		View string `json:"view"`
@@ -166,6 +170,13 @@ func (c Client) describeWithRunbooks(ctx context.Context, target string, params,
 	}
 	if description == nil {
 		return errors.New("worker returned an invalid node description")
+	}
+	if q.View != "full" {
+		// Live transport state belongs to diagnostics.get and costs agents
+		// context on every discovery; view "full" keeps the raw fields.
+		for _, field := range describeTransportFields {
+			delete(description, field)
+		}
 	}
 	// Keep the protocol advertisement distinct from the enriched catalog.
 	protocol := description["runbooks"]

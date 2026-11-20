@@ -131,6 +131,11 @@ func TestTaskStartWait(t *testing.T) {
 				value = "@" + path
 			}
 			args := []string{"--api", server.URL, "task", "start", "worker"}
+			// Printed tasks omit the caller's specification unless requested.
+			includeSpec := tc.before
+			if includeSpec {
+				args = append(args, "--spec")
+			}
 			if tc.before {
 				args = append(args, tc.flags...)
 			}
@@ -152,8 +157,11 @@ func TestTaskStartWait(t *testing.T) {
 				t.Fatal(err)
 			}
 			var task model.Task
-			if err := json.Unmarshal([]byte(output), &task); err != nil || task.State != state || task.Spec.LeaseID != spec.LeaseID {
+			if err := json.Unmarshal([]byte(output), &task); err != nil || task.State != state {
 				t.Fatalf("result lost: %+v, %v, %s", task, err, output)
+			}
+			if printed := strings.Contains(output, `"spec"`); printed != includeSpec || (includeSpec && task.Spec.LeaseID != spec.LeaseID) {
+				t.Fatalf("spec printing (requested %v) wrong: %s", includeSpec, output)
 			}
 			if task.Terminal() && !strings.Contains(string(task.Result), "delivered_unverified") {
 				t.Fatalf("partial result omitted: %s", output)
@@ -230,7 +238,7 @@ func TestTaskStartWaitUncertainOutcome(t *testing.T) {
 			t.Cleanup(server.Close)
 			c := client.Client{URL: server.URL}
 			output, err := captureUpdatePushOutput(t, func() error {
-				return taskStartCLI(ctx, c, []string{"worker", `{"id":"uncertain-task","capability":"desktop.run","leaseId":"current-lease","args":{"command":"click","ref":"@snapshot:e1"}}`, "--wait"})
+				return taskStartCLI(ctx, c, []string{"worker", `{"id":"uncertain-task","capability":"desktop.run","leaseId":"current-lease","args":{"command":"click","ref":"@snapshot:e1"}}`, "--wait", "--spec"})
 			})
 			if err == nil || !strings.Contains(err.Error(), retained.ID) || !strings.Contains(err.Error(), "query this ID") {
 				t.Fatalf("missing reconciliation guidance: %v", err)

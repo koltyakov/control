@@ -489,6 +489,10 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 		Artifact    model.Artifact `json:"artifact"`
 		TTLSeconds  int            `json:"ttlSeconds"`
 		OutputIndex *int           `json:"outputIndex"`
+		// Limit or Cursor selects a compact newest-first page instead of
+		// the legacy complete array of full references.
+		Limit  int    `json:"limit"`
+		Cursor string `json:"cursor"`
 	}
 	if err := json.Unmarshal(args, &q); err != nil {
 		return nil, err
@@ -520,9 +524,13 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
-		return listArtifacts(entries, n.artifactOwner(ctx), n.Identity.ID, func(name string, dst *storedArtifact) error {
+		artifacts, err := listArtifacts(entries, n.artifactOwner(ctx), n.Identity.ID, func(name string, dst *storedArtifact) error {
 			return store.Read(filepath.Join(dir, name), dst)
 		})
+		if err != nil || (q.Limit == 0 && q.Cursor == "") {
+			return artifacts, err
+		}
+		return model.PageArtifacts(n.Identity.ID, artifacts, q.Cursor, q.Limit)
 	case "artifacts.delete":
 		if !digestID.MatchString(q.ID) {
 			return nil, errors.New("invalid artifact ID")

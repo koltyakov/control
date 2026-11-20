@@ -97,7 +97,7 @@ func assertTransport(t *testing.T, ctx context.Context, c client.Client) {
 	var description struct {
 		Connections map[string]string `json:"connections"`
 	}
-	call(t, ctx, c, "worker", "node.describe", map[string]any{}, &description)
+	call(t, ctx, c, "worker", "node.describe", map[string]any{"view": "full"}, &description)
 	for _, name := range []string{"source", "consumer"} {
 		if actual := description.Connections[pool[name].ID]; actual != expected {
 			t.Fatalf("worker → %s used %q, expected %q", name, actual, expected)

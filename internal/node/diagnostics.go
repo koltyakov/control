@@ -20,7 +20,7 @@ func (n *Node) diagnostics() map[string]any {
 	n.mcpMu.Unlock()
 	return map[string]any{
 		"tasks":     map[string]any{"retained": tasks, "active": active, "tombstones": tombstones, "cleanupPending": pending},
-		"artifacts": map[string]any{"usedBytes": used, "maxBytes": n.Config.MaxArtifactBytes, "reserveBytes": n.Config.ArtifactReserveBytes, "imports": staging},
+		"artifacts": map[string]any{"usedBytes": used, "maxBytes": n.Config.MaxArtifactBytes, "reserveBytes": n.Config.ArtifactReserveBytes, "retentionHours": n.Config.ArtifactRetentionHours, "imports": staging},
 		"mcp":       map[string]int{"sessions": sessions, "starting": starting},
 		"transport": n.Peer.Stats(), "sessions": n.Peer.SessionStats(), "system": n.healthSnapshot().System,
 	}

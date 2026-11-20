@@ -668,7 +668,11 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		}
 		sort.Strings(agents)
 		sort.Strings(servers)
-		return map[string]any{"id": n.Identity.ID, "name": n.Config.Name, "capabilities": n.Capabilities(), "concurrency": n.concurrencySnapshot(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "transport": n.Peer.Stats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot(), "fileUpload": n.uploads.Description(), "clipboard": map[string]any{"protocol": clipboard.Protocol, "methods": []string{clipboard.OpenMethod, clipboard.PasteMethod}}, "connectionTest": map[string]any{"protocol": model.ConnectionTestProtocol, "methods": []string{model.ConnectionTestMethod, model.ConnectionOpenMethod}, "maxBytes": 256 << 20, "maxSamples": 100, "timeoutSeconds": 120}, "runbooks": map[string]any{"protocol": runbooks.Protocol, "methods": []string{"runbooks.list", "runbooks.read"}}}, nil
+		description := map[string]any{"id": n.Identity.ID, "name": n.fleetName(ctx), "capabilities": n.Capabilities(), "concurrency": n.concurrencySnapshot(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "transport": n.Peer.Stats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot(), "fileUpload": n.uploads.Description(), "clipboard": map[string]any{"protocol": clipboard.Protocol, "methods": []string{clipboard.OpenMethod, clipboard.PasteMethod}}, "connectionTest": map[string]any{"protocol": model.ConnectionTestProtocol, "methods": []string{model.ConnectionTestMethod, model.ConnectionOpenMethod}, "maxBytes": 256 << 20, "maxSamples": 100, "timeoutSeconds": 120}, "runbooks": map[string]any{"protocol": runbooks.Protocol, "methods": []string{"runbooks.list", "runbooks.read"}}}
+		if description["name"] != n.Config.Name {
+			description["configuredName"] = n.Config.Name
+		}
+		return description, nil
 	case "capabilities.list":
 		return n.Capabilities(), nil
 	case "tasks.start":
@@ -721,4 +725,17 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 
 func (n *Node) selectNode(ctx context.Context, args json.RawMessage) (any, error) {
 	return n.Peer.Select(ctx, args)
+}
+
+// fleetName returns the gateway-owned routing name, which a fleet rename can
+// change without rewriting the installation's configured name. Lookups reuse
+// the transport's short cache; an unavailable gateway falls back to the
+// configured name rather than delaying discovery.
+func (n *Node) fleetName(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if self, err := n.Peer.Lookup(ctx, n.Identity.ID); err == nil && self.ID == n.Identity.ID && self.Name != "" {
+		return self.Name
+	}
+	return n.Config.Name
 }

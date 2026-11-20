@@ -18,12 +18,14 @@ type MachineQuery struct {
 }
 
 type machineSummary struct {
-	ID              string    `json:"id"`
-	Name            string    `json:"name"`
-	OS              string    `json:"os"`
-	Arch            string    `json:"arch,omitempty"`
-	Online          bool      `json:"online"`
-	LastSeen        time.Time `json:"lastSeen"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	OS     string `json:"os"`
+	Arch   string `json:"arch,omitempty"`
+	Online bool   `json:"online"`
+	// LastSeen is reported only for offline machines. For an online machine
+	// the gateway's value is its connection time, not recent activity.
+	LastSeen        time.Time `json:"lastSeen,omitzero"`
 	Disabled        bool      `json:"disabled"`
 	ControlPending  bool      `json:"controlPending"`
 	RunAs           string    `json:"runAs,omitempty"`
@@ -75,9 +77,13 @@ func (q MachineQuery) project(data json.RawMessage) (json.RawMessage, error) {
 		if n.System != nil && n.System.Arch != "" {
 			arch = n.System.Arch
 		}
+		lastSeen := n.LastSeen
+		if n.Online {
+			lastSeen = time.Time{}
+		}
 		summaries = append(summaries, machineSummary{
 			ID: n.ID, Name: n.Name, OS: n.OS, Arch: arch, Online: n.Online,
-			LastSeen: n.LastSeen, Disabled: n.Disabled, ControlPending: n.ControlPending,
+			LastSeen: lastSeen, Disabled: n.Disabled, ControlPending: n.ControlPending,
 			RunAs: n.RunAs, InstructionOnly: n.InstructionOnly,
 			HybridID: n.HybridID, HybridRole: n.HybridRole, Version: n.Software.Version,
 		})

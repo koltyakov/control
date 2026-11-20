@@ -248,7 +248,10 @@ func waitStopped(ctx context.Context, cfg node.Config) error {
 }
 
 func ready(ctx context.Context, c client.Client, cfg node.Config) error {
-	var description struct{ ID, Name string }
+	var description struct {
+		ID, Name       string
+		ConfiguredName string `json:"configuredName"`
+	}
 	if err := c.Call(ctx, "", "node.describe", map[string]any{}, &description); err != nil {
 		return err
 	}
@@ -256,7 +259,12 @@ func ready(ctx context.Context, c client.Client, cfg node.Config) error {
 	if err != nil {
 		return err
 	}
-	if description.ID != id.ID || description.Name != cfg.Name {
+	// A fleet rename changes the reported name; configuredName keeps the profile's.
+	configured := description.Name
+	if description.ConfiguredName != "" {
+		configured = description.ConfiguredName
+	}
+	if description.ID != id.ID || configured != cfg.Name {
 		return errors.New("local API belongs to another node")
 	}
 	var nodes []model.Node

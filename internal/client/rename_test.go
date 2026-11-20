@@ -77,6 +77,19 @@ func TestRenameRoutesNewAndReusedAliasesWithoutClosingStreams(t *testing.T) {
 					t.Fatal("renamed routing", target, described, err)
 				}
 			}
+			// Descriptions report the fleet routing name and keep the profile's.
+			var names struct{ Name, ConfiguredName string }
+			nameDeadline := time.Now().Add(3 * time.Second)
+			for {
+				err := c.Call(ctx, "alias", "node.describe", map[string]any{}, &names)
+				if err == nil && names.Name == "alias" && names.ConfiguredName == "original" {
+					break
+				}
+				if time.Now().After(nameDeadline) {
+					t.Fatal("description did not report the fleet name", names, err)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
 			// The notification is asynchronous. Wait for the authenticated cache
 			// invalidation before asserting that a reused name routes elsewhere.
 			deadline := time.Now().Add(3 * time.Second)
