@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/koltyakov/control/internal/model"
@@ -18,6 +19,8 @@ const legacyUser = "legacy"
 
 // SQLite is authoritative. Maps are a process-local cache protected by g.mu;
 // each mutation commits before its HTTP/registration acknowledgement.
+const databasePragmas = "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)"
+
 func (g *Gateway) openDatabase(dir string) error {
 	path := filepath.Join(dir, "gateway.db")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
@@ -27,12 +30,17 @@ func (g *Gateway) openDatabase(dir string) error {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	g.db, err = sql.Open("sqlite", path)
+	// The driver applies DSN pragmas to every connection, so a replaced pooled
+	// connection keeps foreign keys, durability and busy handling.
+	if strings.Contains(path, "?") {
+		return errors.New("gateway state directory must not contain '?'")
+	}
+	g.db, err = sql.Open("sqlite", path+"?"+databasePragmas)
 	if err != nil {
 		return err
 	}
 	g.db.SetMaxOpenConns(1)
-	if _, err = g.db.Exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;`); err != nil {
+	if err = g.db.Ping(); err != nil {
 		return err
 	}
 	var version int

@@ -33,3 +33,29 @@ func TestMaintenanceWaitsForAcceptedTasksAndBlocksNewWork(t *testing.T) {
 	worker.work.Resume()
 	call(t, source, "worker", "files.write", map[string]any{"path": "resumed", "data": "YQ=="}, nil)
 }
+
+func TestTaskAdmissionHonoursCallerDeadlineDuringMaintenance(t *testing.T) {
+	_, worker, _ := cluster(t, true, func(i int, cfg *Config) { cfg.MaxTasks = 1 })
+	if !worker.pauseForUpdate() {
+		t.Fatal("idle worker did not pause")
+	}
+	defer worker.work.Resume()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	spec := model.TaskSpec{ID: "admission-expired", Capability: "exec.run", Args: model.JSON(executable(t, "sleep"))}
+	if _, err := worker.startTaskContext(ctx, worker.Identity.ID, spec); err == nil {
+		t.Fatal("accepted a task while reserved")
+	}
+	if waited := time.Since(start); waited > 5*time.Second {
+		t.Fatal("admission ignored the caller deadline", waited)
+	}
+	worker.work.Resume()
+	worker.mu.Lock()
+	_, recorded := worker.tasks[spec.ID]
+	_, reserved := worker.accepting[spec.ID]
+	worker.mu.Unlock()
+	if recorded || reserved {
+		t.Fatal("expired admission left task state", recorded, reserved)
+	}
+}

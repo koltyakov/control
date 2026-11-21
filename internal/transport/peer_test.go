@@ -125,3 +125,72 @@ func TestGatewayRestartAndDirectSessionContinuity(t *testing.T) {
 		})
 	}
 }
+
+func TestRegistrationRepublishKeepsDirectStreams(t *testing.T) {
+	t.Parallel()
+	const token = "republish-test-token-123456"
+	g, err := gateway.New(t.TempDir(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(g.Handler())
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { _ = g.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	makePeer := func(name string) *Peer {
+		id, err := identity.Load(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := New(Config{Gateway: server.URL, Token: token, Identity: id, Node: model.Node{ID: id.ID, Name: name, PublicKey: id.Public}}, func(remote string, conn net.Conn) { _, _ = io.Copy(conn, conn) })
+		p.api, p.trickleAPI = loopbackWebRTCAPI(p.cfg.DirectTimeout, false), loopbackWebRTCAPI(p.cfg.DirectTimeout, true)
+		p.networkSnapshot = func() (string, error) { return "unchanged", nil }
+		if err = p.Start(ctx); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = p.Close() })
+		return p
+	}
+	a, _ := makePeer("alpha"), makePeer("beta")
+	stream, err := a.Open(ctx, "beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	if mode := stream.(*sessionStream).mode; mode != "webrtc" {
+		t.Fatalf("expected webrtc, got %s", mode)
+	}
+	echo := func(phase string) {
+		t.Helper()
+		_ = stream.SetDeadline(time.Now().Add(3 * time.Second))
+		if _, err := stream.Write([]byte("ping")); err != nil {
+			t.Fatal(phase, err)
+		}
+		var b [4]byte
+		if _, err := io.ReadFull(stream, b[:]); err != nil || string(b[:]) != "ping" {
+			t.Fatalf("%s: echo %q %v", phase, b, err)
+		}
+	}
+	echo("before republish")
+	<-a.GatewayConnected()
+	a.mu.Lock()
+	generation := a.networkGeneration
+	a.mu.Unlock()
+	a.republishRegistration()
+	select {
+	case <-a.GatewayConnected():
+	case <-ctx.Done():
+		t.Fatal("gateway did not re-register", ctx.Err())
+	}
+	if a.Stats().GatewayReconnects == 0 {
+		t.Fatal("expected a gateway reconnect")
+	}
+	a.mu.Lock()
+	sessions, current := len(a.allSessions), a.networkGeneration
+	a.mu.Unlock()
+	if sessions == 0 || current != generation {
+		t.Fatalf("republish retired direct sessions: sessions=%d generation %d->%d", sessions, generation, current)
+	}
+	echo("after republish")
+}

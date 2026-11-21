@@ -206,3 +206,55 @@ func TestWorkflowStatusReadSurvivesGatewayReconnect(t *testing.T) {
 		})
 	}
 }
+
+// Cancelling a workflow while a child's acceptance reply is in flight still
+// cancels that child by its stable ID, without resubmitting it.
+func TestWorkflowCancelDuringChildSubmissionCancelsChild(t *testing.T) {
+	for _, relay := range []bool{false, true} {
+		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
+			t.Parallel()
+			accepted := make(chan struct{})
+			unblock := make(chan struct{})
+			var once atomic.Bool
+			f := newLifetimeFixture(t, relay, false, func(r *model.Response) bool {
+				if r.Submission != nil && r.Submission.TaskID == "child-a" && once.CompareAndSwap(false, true) {
+					close(accepted)
+					<-unblock
+					return false
+				}
+				return true
+			})
+			t.Cleanup(func() {
+				select {
+				case <-unblock:
+				default:
+					close(unblock)
+				}
+			})
+			spec := lifetimeWorkflow()
+			spec.Args = model.JSON(map[string]any{"steps": []model.WorkflowStep{
+				{Name: "a", Target: "second", Task: lifetimeTask("child-a", true)},
+			}})
+			if err := f.client.Call(f.ctx, "first", "tasks.start", spec, nil); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-accepted:
+			case <-f.ctx.Done():
+				t.Fatal("child submission did not reach the worker", f.ctx.Err())
+			}
+			f.waitEntered(t)
+			if err := f.client.Call(f.ctx, "first", "tasks.cancel", map[string]string{"id": spec.ID}, nil); err != nil {
+				t.Fatal(err)
+			}
+			child, err := f.client.Wait(f.ctx, "second", "child-a")
+			close(unblock)
+			if err != nil || child.State != "cancelled" {
+				t.Fatal("in-flight child was not cancelled", child.State, err)
+			}
+			if f.calls.Load() != 1 {
+				t.Fatal("child was resubmitted", f.calls.Load())
+			}
+		})
+	}
+}

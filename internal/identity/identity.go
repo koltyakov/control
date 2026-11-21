@@ -55,6 +55,12 @@ func Generate() (*Identity, error) {
 	return fromKey(key)
 }
 
+// RFC 5280 reserves 99991231235959Z for certificates without a meaningful expiry.
+var (
+	certNotBefore = time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
+	certNotAfter  = time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC)
+)
+
 func fromKey(b []byte) (*Identity, error) {
 	if len(b) != ed25519.PrivateKeySize {
 		return nil, errors.New("invalid identity key")
@@ -66,9 +72,12 @@ func fromKey(b []byte) (*Identity, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Trust comes from the pinned key, not the validity window. A fixed wide
+	// window keeps older peers, which still check it, tolerant of clock skew
+	// and process uptimes longer than a year.
 	template := &x509.Certificate{
 		SerialNumber: serial, Subject: pkix.Name{CommonName: i.ID},
-		NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().AddDate(1, 0, 0),
+		NotBefore: certNotBefore, NotAfter: certNotAfter,
 		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 	}
@@ -96,9 +105,8 @@ func (i *Identity) TLS(peerID string) *tls.Config {
 			if !ok || ID(pub) != peerID {
 				return errors.New("peer identity mismatch")
 			}
-			if time.Now().Before(cert.NotBefore) || time.Now().After(cert.NotAfter) {
-				return errors.New("expired peer certificate")
-			}
+			// TLS 1.3 CertificateVerify proves possession of the pinned key.
+			// Validity dates add no trust and would fail on clock skew.
 			return nil
 		},
 	}

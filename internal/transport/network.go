@@ -210,6 +210,27 @@ func (p *Peer) monitorNetwork(sample func() (string, error), ticks <-chan time.T
 	}
 }
 
+// republishRegistration reconnects only the gateway socket so the next signed
+// registration carries fresh metadata. Unlike resetNetwork, it keeps direct
+// sessions, carriers, and directory caches. Relay links share the socket and
+// close as in any gateway reconnect; their streams are not replayed.
+func (p *Peer) republishRegistration() {
+	p.mu.Lock()
+	if p.closed || p.ctx.Err() != nil {
+		p.mu.Unlock()
+		return
+	}
+	ws := p.ws
+	select {
+	case p.reconnectWake <- struct{}{}:
+	default:
+	}
+	p.mu.Unlock()
+	if ws != nil {
+		_ = ws.CloseNow() // The run loop clears state and re-registers.
+	}
+}
+
 func (p *Peer) resetNetwork() {
 	p.mu.Lock()
 	if p.closed || p.ctx.Err() != nil {

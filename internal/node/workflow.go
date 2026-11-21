@@ -134,6 +134,12 @@ func (n *Node) runWorkflowStep(ctx context.Context, step WorkflowStep, upstream 
 	_, _ = fmt.Fprintf(log, "step %s: target=%s task=%s\n", step.Name, step.Target, step.Task.ID)
 	var task model.Task
 	if err := n.Call(ctx, step.Target, "tasks.start", step.Task, &task); err != nil {
+		if ctx.Err() != nil {
+			// The worker may have accepted the child before cancellation
+			// interrupted its reply. Cancel by the stable ID; an unknown ID
+			// is harmless and nothing is resubmitted.
+			n.cancelWorkflowChild(ctx, step.Target, step.Task.ID)
+		}
 		// Never resubmit: the outcome may be uncertain. The stable ID lets the
 		// orchestrator reconcile it.
 		return model.Task{}, fmt.Errorf("submit %s (task %s on %s): %w", step.Name, step.Task.ID, step.Target, err)
@@ -146,9 +152,7 @@ func (n *Node) runWorkflowStep(ctx context.Context, step WorkflowStep, upstream 
 		if ctx.Err() != nil {
 			// Workflow cancellation, timeout or grant revocation stops its
 			// children. Report the last observation with the child's identity.
-			cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			_ = n.Call(cancelCtx, step.Target, "tasks.cancel", map[string]any{"id": task.ID}, nil)
-			cancel()
+			n.cancelWorkflowChild(ctx, step.Target, task.ID)
 			return observed, err
 		}
 		// A permanent observation failure says nothing about the child. Keep
@@ -161,6 +165,14 @@ func (n *Node) runWorkflowStep(ctx context.Context, step WorkflowStep, upstream 
 		return observed, fmt.Errorf("step %s: %s", step.Name, observed.Error)
 	}
 	return observed, nil
+}
+
+// cancelWorkflowChild makes one bounded best-effort cancel after the
+// workflow's own context ended. Cancellation is idempotent.
+func (n *Node) cancelWorkflowChild(ctx context.Context, target, id string) {
+	cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_ = n.Call(cancelCtx, target, "tasks.cancel", map[string]any{"id": id}, nil)
 }
 
 // observeWorkflowChild waits for an accepted child to become terminal. Only

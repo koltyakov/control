@@ -49,10 +49,12 @@ func (p *Peer) watchLAN() {
 		}
 		if enabled && time.Since(refreshed) >= 10*time.Second {
 			refreshed = time.Now()
-			// Reconnection republishes changed MAC/address metadata. A failed
-			// interface sample must never erase the last successful registration.
+			// Gateway re-registration republishes changed MAC/address metadata.
+			// Wake adapters, such as container or VM bridges, are not gateway
+			// paths, so healthy direct sessions stay up. A failed interface
+			// sample must never erase the last successful registration.
 			if current, err := p.localWakeInterfaces(); err == nil && !slices.Equal(current, local) {
-				p.resetNetwork()
+				p.republishRegistration()
 				candidates = nil
 			} else {
 				ctx, cancel := context.WithTimeout(p.ctx, 3*time.Second)

@@ -285,7 +285,13 @@ func (n *Node) startTaskContext(parent context.Context, owner string, spec model
 		n.mu.Unlock()
 		close(reservation.done)
 	}()
-	release, err := n.work.Enter(n.ctx)
+	// Admission waits for both the request and the node. The returned ticket
+	// does not depend on either context and moves to the accepted task.
+	admission, stopAdmission := context.WithCancel(parent)
+	stopNode := context.AfterFunc(n.ctx, stopAdmission)
+	release, err := n.work.Enter(admission)
+	stopNode()
+	stopAdmission()
 	if err != nil {
 		return model.Task{}, err
 	}
