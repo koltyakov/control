@@ -156,7 +156,7 @@ For other MCP clients, configure a stdio server running `/absolute/path/to/contr
 
 ## Build and test
 
-Requires Go 1.27.3 or newer. No CGO dependency.
+Requires Go 1.27.4 or newer. No CGO dependency.
 
 ```sh
 make build

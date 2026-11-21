@@ -450,51 +450,8 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	defer cancel()
 	handshake, done := context.WithTimeout(ctx, 10*time.Second)
 	defer done()
-	challenge := make([]byte, 32)
-	if _, err = rand.Read(challenge); err != nil {
-		return
-	}
-	if err = ws.Write(handshake, websocket.MessageBinary, challenge); err != nil {
-		return
-	}
-	_, data, err := ws.Read(handshake)
-	if err != nil {
-		return
-	}
-	var hello Hello
-	if json.Unmarshal(data, &hello) != nil {
-		return
-	}
-	n, err := hello.RegisteredNode()
-	if err != nil {
-		return
-	}
-	if hello.Client != client || hello.Version != model.Version || !validName.MatchString(n.Name) || len(n.PublicKey) != ed25519.PublicKeySize || identity.ID(n.PublicKey) != n.ID {
-		return
-	}
-	// Sign both the fresh challenge and registration metadata.
-	if wol.Validate(n.WakeInterfaces) != nil || (client && (len(n.WakeInterfaces) != 0 || n.LANDiscovery || len(n.LANPeers) != 0 || len(n.ProxyEndpoints) != 0)) || (n.RunAs != "" && n.RunAs != "system" && n.RunAs != "user") || model.ValidateProxyEndpoints(n.ProxyEndpoints) != nil {
-		return
-	}
-	if model.ValidateGatewayProxy(n.GatewayProxy) != nil || (n.GatewayProxy != nil && (client || len(n.ProxyEndpoints) != 0)) {
-		return
-	}
-	if !ed25519.Verify(n.PublicKey, hello.Message(challenge), hello.Signature) {
-		return
-	}
-	if len(n.SecretManagementKey) != 0 && (client || !secrets.ValidManagementKey(n.SecretManagementKey)) {
-		return
-	}
-	ownerID := n.ID
-	if client && len(hello.OwnerKey) != 0 {
-		if len(hello.OwnerKey) != ed25519.PublicKeySize || !ed25519.Verify(hello.OwnerKey, hello.OwnerMessage(challenge), hello.OwnerSignature) {
-			return
-		}
-		ownerID = identity.ID(hello.OwnerKey)
-		if n.ClientOwner != ownerID || n.ID == ownerID {
-			return
-		}
-	} else if n.ClientOwner != "" || len(hello.OwnerSignature) != 0 || (!client && len(hello.OwnerKey) != 0) {
+	hello, n, ownerID, ok := verifyHello(handshake, ws, client)
+	if !ok {
 		return
 	}
 	// Only proof-verified handshakes hydrate identity caches. In particular,
@@ -745,6 +702,112 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		c.writePackets(ctx)
 	}()
 	defer func() { cancel(); _ = ws.CloseNow(); <-writerDone }()
+	g.servePackets(ctx, ws, c, n, client)
+}
+
+func (g *Gateway) Close() error {
+	if g.hybridCancel != nil {
+		g.hybridCancel()
+		g.hybridWG.Wait()
+	}
+	if g.metricsCancel != nil {
+		g.metricsCancel()
+		g.metricsWG.Wait()
+	}
+	if g.updateCancel != nil {
+		g.updateCancel()
+		g.updateWG.Wait()
+	}
+	if g.presenceCancel != nil {
+		g.presenceCancel()
+		g.presenceWG.Wait()
+	}
+	g.mu.Lock()
+	var sessionErr error
+	if !g.closed {
+		sessionErr = g.checkpointConsoleSessions()
+	}
+	g.closed = true
+	peers := make([]*connection, 0, len(g.peers))
+	for _, c := range g.peers {
+		peers = append(peers, c)
+	}
+	g.mu.Unlock()
+	for _, c := range peers {
+		_ = c.ws.CloseNow()
+	}
+	g.wg.Wait()
+	if g.db != nil {
+		// Disconnects during shutdown leave last-seen times to persist.
+		g.mu.Lock()
+		g.flushPresenceLocked()
+		g.mu.Unlock()
+		_ = g.db.Close()
+	}
+	_ = g.lock.Close()
+	return sessionErr
+}
+
+// verifyHello runs the gateway challenge and validates the signed
+// registration: names, keys, optional metadata, and the owner proof for
+// concurrent clients. It reports false for any rejection; the caller closes
+// the socket.
+func verifyHello(handshake context.Context, ws *websocket.Conn, client bool) (Hello, model.Node, string, bool) {
+	challenge := make([]byte, 32)
+	if _, err := rand.Read(challenge); err != nil {
+		return Hello{}, model.Node{}, "", false
+	}
+	if err := ws.Write(handshake, websocket.MessageBinary, challenge); err != nil {
+		return Hello{}, model.Node{}, "", false
+	}
+	_, data, err := ws.Read(handshake)
+	if err != nil {
+		return Hello{}, model.Node{}, "", false
+	}
+	var hello Hello
+	if json.Unmarshal(data, &hello) != nil {
+		return Hello{}, model.Node{}, "", false
+	}
+	n, err := hello.RegisteredNode()
+	if err != nil {
+		return Hello{}, model.Node{}, "", false
+	}
+	if hello.Client != client || hello.Version != model.Version || !validName.MatchString(n.Name) || len(n.PublicKey) != ed25519.PublicKeySize || identity.ID(n.PublicKey) != n.ID {
+		return Hello{}, model.Node{}, "", false
+	}
+	// Sign both the fresh challenge and registration metadata.
+	if wol.Validate(n.WakeInterfaces) != nil || (client && (len(n.WakeInterfaces) != 0 || n.LANDiscovery || len(n.LANPeers) != 0 || len(n.ProxyEndpoints) != 0)) || (n.RunAs != "" && n.RunAs != "system" && n.RunAs != "user") || model.ValidateProxyEndpoints(n.ProxyEndpoints) != nil {
+		return Hello{}, model.Node{}, "", false
+	}
+	if model.ValidateGatewayProxy(n.GatewayProxy) != nil || (n.GatewayProxy != nil && (client || len(n.ProxyEndpoints) != 0)) {
+		return Hello{}, model.Node{}, "", false
+	}
+	if !ed25519.Verify(n.PublicKey, hello.Message(challenge), hello.Signature) {
+		return Hello{}, model.Node{}, "", false
+	}
+	if len(n.SecretManagementKey) != 0 && (client || !secrets.ValidManagementKey(n.SecretManagementKey)) {
+		return Hello{}, model.Node{}, "", false
+	}
+	ownerID := n.ID
+	if client && len(hello.OwnerKey) != 0 {
+		if len(hello.OwnerKey) != ed25519.PublicKeySize || !ed25519.Verify(hello.OwnerKey, hello.OwnerMessage(challenge), hello.OwnerSignature) {
+			return Hello{}, model.Node{}, "", false
+		}
+		ownerID = identity.ID(hello.OwnerKey)
+		if n.ClientOwner != ownerID || n.ID == ownerID {
+			return Hello{}, model.Node{}, "", false
+		}
+	} else if n.ClientOwner != "" || len(hello.OwnerSignature) != 0 || (!client && len(hello.OwnerKey) != 0) {
+		return Hello{}, model.Node{}, "", false
+	}
+	return hello, n, ownerID, true
+}
+
+// servePackets reads an established connection's packets: gateway liveness
+// and reports addressed to the gateway itself, then relay and signaling
+// packets routed within the sender's fleet. It returns when the connection
+// fails or sends anything malformed.
+func (g *Gateway) servePackets(ctx context.Context, ws *websocket.Conn, c *connection, n model.Node, client bool) {
 	// Sessions whose data was dropped for a full destination queue. Only this
 	// read loop touches it, and the sender's close packet clears an entry.
 	overflowed := map[string]bool{}
@@ -879,49 +942,6 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			g.counters.relayDropped.Add(1)
 		}
 	}
-}
-
-func (g *Gateway) Close() error {
-	if g.hybridCancel != nil {
-		g.hybridCancel()
-		g.hybridWG.Wait()
-	}
-	if g.metricsCancel != nil {
-		g.metricsCancel()
-		g.metricsWG.Wait()
-	}
-	if g.updateCancel != nil {
-		g.updateCancel()
-		g.updateWG.Wait()
-	}
-	if g.presenceCancel != nil {
-		g.presenceCancel()
-		g.presenceWG.Wait()
-	}
-	g.mu.Lock()
-	var sessionErr error
-	if !g.closed {
-		sessionErr = g.checkpointConsoleSessions()
-	}
-	g.closed = true
-	peers := make([]*connection, 0, len(g.peers))
-	for _, c := range g.peers {
-		peers = append(peers, c)
-	}
-	g.mu.Unlock()
-	for _, c := range peers {
-		_ = c.ws.CloseNow()
-	}
-	g.wg.Wait()
-	if g.db != nil {
-		// Disconnects during shutdown leave last-seen times to persist.
-		g.mu.Lock()
-		g.flushPresenceLocked()
-		g.mu.Unlock()
-		_ = g.db.Close()
-	}
-	_ = g.lock.Close()
-	return sessionErr
 }
 
 // presenceFlushInterval bounds how much last-seen history a crash can lose.

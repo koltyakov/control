@@ -2,12 +2,10 @@ package transport
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"strings"
 	"time"
 
-	"github.com/hashicorp/yamux"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/pion/webrtc/v4"
 )
@@ -154,24 +152,19 @@ func (p *Peer) acceptChannel(l *link) {
 	}()
 	ctx, cancel := context.WithTimeout(p.ctx, 15*time.Second)
 	defer cancel()
-	secure := tls.Server(l.conn, p.cfg.Identity.TLS(l.remote))
-	if err := secure.HandshakeContext(ctx); err != nil {
-		return
-	}
-	mux, err := yamux.Server(newFrameConn(secure, l.conn), muxConfig(IncomingLane))
+	s, err := p.secureSession(ctx, l, l.id, l.remote, "webrtc", IncomingLane)
 	if err != nil {
 		return
 	}
-	s := &peerSession{mux: mux, link: l, id: l.id, remote: l.remote, mode: "webrtc", lane: IncomingLane, outgoing: make(chan struct{}, 128), incoming: make(chan struct{}, 128)}
 	if !p.registerSession(s) {
-		_ = mux.Close()
+		_ = s.mux.Close()
 		return
 	}
 	// Release the setup reservation before serving this long-lived channel.
 	// The callback's reservation is released by its caller, so serve separately.
 	handedOver = p.worker(func() { p.serve(s); _ = l.conn.Close() })
 	if !handedOver {
-		_ = mux.Close()
+		_ = s.mux.Close()
 	}
 }
 
@@ -198,13 +191,5 @@ func (p *Peer) dialChannel(ctx context.Context, carrier *rtcCarrier, lane Lane) 
 	case <-l.conn.ctx.Done():
 		return nil, errors.New("peer closed data channel")
 	}
-	secure := tls.Client(l.conn, p.cfg.Identity.TLS(carrier.remote))
-	if err := secure.HandshakeContext(ctx); err != nil {
-		return nil, err
-	}
-	mux, err := yamux.Client(newFrameConn(secure, l.conn), muxConfig(lane))
-	if err != nil {
-		return nil, err
-	}
-	return &peerSession{mux: mux, link: l, id: id, remote: carrier.remote, mode: "webrtc", lane: lane, outgoing: make(chan struct{}, 128), incoming: make(chan struct{}, 128)}, nil
+	return p.secureSession(ctx, l, id, carrier.remote, "webrtc", lane)
 }
