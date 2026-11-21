@@ -11,7 +11,7 @@ proxy_url=http://172.31.250.10:8888
 managed=${CONTROL_TEST_MANAGED_PROXY:-false}
 
 compose() {
-    docker compose --project-name "$project" -f "$root/compose.proxy.yaml" "$@"
+    docker compose --project-name "$project" -f "$root/tests/compose/compose.proxy.yaml" "$@"
 }
 
 cleanup() {

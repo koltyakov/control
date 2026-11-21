@@ -7,7 +7,8 @@ x-node-build: &node-build
 
 x-node-env: &node-env
   CONTROL_TOKEN: control-compose-test-only-token
-  CONTROL_RELAY_ONLY: "false"
+  # tests/compose/test.sh sets these for the relay-only run.
+  CONTROL_RELAY_ONLY: "${CONTROL_RELAY_ONLY:-false}"
 
 x-node: &node
   image: control-test-node
@@ -96,7 +97,7 @@ services:
     environment:
       CONTROL_TOKEN: control-compose-test-only-token
       CONTROL_API: http://source:7331
-      CONTROL_EXPECT_TRANSPORT: webrtc
+      CONTROL_EXPECT_TRANSPORT: ${CONTROL_EXPECT_TRANSPORT:-webrtc}
       CONTROL_GATEWAY: http://gateway:7330
       CONTROL_SUPERUSER_KEY: control-compose-superuser-only-test-key-0001
       CONTROL_TEST_SUITE: "${CONTROL_TEST_SUITE:-all}"

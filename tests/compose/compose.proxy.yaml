@@ -11,7 +11,7 @@ name: control-proxy-test
 x-proxy-host: &proxy-host
   image: control-test-proxy-host
   build:
-    context: .
+    context: ../..
     dockerfile: tests/compose/Dockerfile
     target: proxy-host
   init: true
@@ -71,7 +71,7 @@ services:
   child:
     image: control-test-restricted-child
     build:
-      context: .
+      context: ../..
       dockerfile: tests/compose/Dockerfile
       target: restricted-child
     init: true

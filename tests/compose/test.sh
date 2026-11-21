@@ -7,10 +7,11 @@ project=
 mode=
 
 compose() {
+    # Set both explicitly so an inherited environment cannot change the mode.
     if [ "$mode" = relay ]; then
-        docker compose --project-name "$project" -f "$root/compose.yaml" -f "$root/compose.relay.yaml" "$@"
+        CONTROL_RELAY_ONLY=true CONTROL_EXPECT_TRANSPORT=relay docker compose --project-name "$project" -f "$root/compose.yaml" "$@"
     else
-        docker compose --project-name "$project" -f "$root/compose.yaml" "$@"
+        CONTROL_RELAY_ONLY=false CONTROL_EXPECT_TRANSPORT=webrtc docker compose --project-name "$project" -f "$root/compose.yaml" "$@"
     fi
 }
 

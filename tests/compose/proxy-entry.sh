@@ -1,5 +1,5 @@
 #!/bin/sh
-# Roles for compose.proxy.yaml. Every role trusts only the generated test CA
+# Roles for tests/compose/compose.proxy.yaml. Every role trusts only the generated test CA
 # through the system store; certificate verification is never disabled.
 set -eu
 

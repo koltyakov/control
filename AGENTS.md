@@ -56,11 +56,11 @@ Group independent read-only checks in the same tool round when supported. Load i
 | `internal/store` | Atomic metadata writes and platform-specific directory sync |
 | `examples` | Node configurations, task specifications, subprocess provider |
 | `tests/compose` | Container images, test lifecycle scripts, cross-container tests |
-| `compose.yaml`, `compose.relay.yaml` | Isolated test pool and relay-only override |
+| `compose.yaml` | Isolated test pool; `tests/compose/test.sh` selects WebRTC or relay-only mode |
 
 ## Implementation rules
 
-- Keep the core in Go, using the Go 1.27.3 minimum in `go.mod` and the three supported operating systems. Preserve CGO-free builds.
+- Keep the core in Go, using the Go 1.27.4 minimum in `go.mod` and the three supported operating systems. Preserve CGO-free builds.
 - Keep execution in nodes and connection handling in the transport package. Add application integrations through providers or MCP.
 - Share client behavior through `internal/client`; keep CLI and MCP adapters consistent.
 - Propagate contexts and cancellation. Bound queues and buffers, and shut down owned goroutines, streams, subprocesses, and files.

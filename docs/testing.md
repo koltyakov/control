@@ -216,7 +216,7 @@ make test-compose-proxy
 CONTROL_TEST_MANAGED_PROXY=true make test-compose-proxy
 ```
 
-[`compose.proxy.yaml`](../compose.proxy.yaml) builds a separate topology on two internal networks:
+[`tests/compose/compose.proxy.yaml`](../tests/compose/compose.proxy.yaml) builds a separate topology on two internal networks:
 
 ```text
 child ── restricted ── bridge ── gateway-net ── gateway
@@ -248,7 +248,7 @@ These are fixture names, not fixed runtime types. `source` takes the orchestrato
 
 For this isolated fixture, node APIs listen on all container interfaces so the test runner can reach them. The pool uses a fixed test-only token. This configuration is for testing; normal deployment keeps each local API on loopback.
 
-Gateway and node health checks gate test startup. The [relay override](../compose.relay.yaml) switches every node to relay-only mode and changes the expected transport in the runner.
+Gateway and node health checks gate test startup. For the relay run, the runner sets `CONTROL_RELAY_ONLY=true` and `CONTROL_EXPECT_TRANSPORT=relay`, which `compose.yaml` passes to every node and to the test runner.
 
 ## Upload verification
 
@@ -514,7 +514,7 @@ docker compose exec source control call worker node.describe
 For relay-only testing, use the same override on each Compose command:
 
 ```sh
-docker compose -f compose.yaml -f compose.relay.yaml up --build --abort-on-container-exit --exit-code-from tests tests
+CONTROL_RELAY_ONLY=true CONTROL_EXPECT_TRANSPORT=relay docker compose -f compose.yaml up --build --abort-on-container-exit --exit-code-from tests tests
 ```
 
 Remove the test deployment and its data when finished:
@@ -539,7 +539,7 @@ Separate jobs cover:
 - Both Compose transport modes.
 - govulncheck, also run by itself every Monday at 06:00 UTC.
 
-Linux containers on Docker Desktop do not verify Windows process handling or macOS filesystem behavior, so container testing complements the native matrix. The Compose image uses Go 1.27.3. Keep its version synchronized with `go.mod` when updating Go.
+Linux containers on Docker Desktop do not verify Windows process handling or macOS filesystem behavior, so container testing complements the native matrix. The Compose image uses Go 1.27.4. Keep its version synchronized with `go.mod` when updating Go.
 
 ## Local development commands
 
