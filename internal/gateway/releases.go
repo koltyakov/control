@@ -74,6 +74,11 @@ func (g *Gateway) fetchReleaseVerified(ctx context.Context, verify func(context.
 	if current != nil && (current.Manifest.Version == latest.Tag || !latest.Published.After(current.Manifest.CreatedAt)) {
 		return current, nil
 	}
+	// Publication dates are unsigned. A republished older release keeps its
+	// valid signature, so also require a version above every prior selection.
+	if current != nil && !update.AboveReleaseFloor(latest.Tag, current.Floor()) {
+		return current, nil
+	}
 	assets := map[string]string{}
 	for _, asset := range latest.Assets {
 		assets[asset.Name] = asset.URL

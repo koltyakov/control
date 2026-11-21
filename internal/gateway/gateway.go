@@ -166,8 +166,13 @@ type Gateway struct {
 	metrics          *system.Collector
 	metricsCancel    context.CancelFunc
 	metricsWG        sync.WaitGroup
-	startedAt        time.Time
-	machineStates    map[string]model.MachineState
+	// presenceDirty holds nodes whose last-seen time changed on disconnect but
+	// is not yet persisted. Caller holds g.mu.
+	presenceDirty  map[string]bool
+	presenceCancel context.CancelFunc
+	presenceWG     sync.WaitGroup
+	startedAt      time.Time
+	machineStates  map[string]model.MachineState
 	// proxyDependencies keeps managed proxy listeners active for enrolled and
 	// retiring children, keyed by child identity. Protected by mu.
 	proxyDependencies map[string]proxyDependency
@@ -311,6 +316,13 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 		defer g.metricsWG.Done()
 		_, _ = g.metrics.Refresh(metricsCtx)
 		g.metrics.Run(metricsCtx)
+	}()
+	presenceCtx, presenceCancel := context.WithCancel(context.Background())
+	g.presenceCancel = presenceCancel
+	g.presenceWG.Add(1)
+	go func() {
+		defer g.presenceWG.Done()
+		g.runPresenceFlush(presenceCtx)
 	}()
 	hybridCtx, hybridCancel := context.WithCancel(context.Background())
 	g.hybridCancel = hybridCancel
@@ -684,17 +696,29 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		g.routeMu.Unlock()
 		g.forgetRelays(c)
 		delete(g.clients, n.ID)
+		restartGrace := false
 		if latest, exists := g.nodes[n.ID]; exists {
 			latest.Online = false
 			latest.LastSeen = time.Now().UTC()
 			if status := g.updateStatus[n.ID]; status.State == "restarting" && !latest.UpdateUntil.IsZero() {
 				latest.UpdateUntil = latest.LastSeen.Add(time.Minute)
+				restartGrace = true
 			}
 			g.nodes[n.ID] = latest
 		}
 		if !client {
-			if err := g.commit(change{nodes: []string{n.ID}}); err != nil {
-				slog.Warn("persist machine disconnect", "node", n.ID, "error", err)
+			// Last-seen times are flushed in batches so a burst of
+			// disconnects does not serialize one fsync per node under g.mu.
+			// An update restart grace still commits immediately.
+			if restartGrace {
+				if err := g.commit(change{nodes: []string{n.ID}}); err != nil {
+					slog.Warn("persist machine disconnect", "node", n.ID, "error", err)
+				}
+			} else {
+				if g.presenceDirty == nil {
+					g.presenceDirty = map[string]bool{}
+				}
+				g.presenceDirty[n.ID] = true
 			}
 			// Presence is volatile even if last-seen persistence failed.
 			g.publishObservations(n.ID)
@@ -870,6 +894,10 @@ func (g *Gateway) Close() error {
 		g.updateCancel()
 		g.updateWG.Wait()
 	}
+	if g.presenceCancel != nil {
+		g.presenceCancel()
+		g.presenceWG.Wait()
+	}
 	g.mu.Lock()
 	var sessionErr error
 	if !g.closed {
@@ -886,10 +914,55 @@ func (g *Gateway) Close() error {
 	}
 	g.wg.Wait()
 	if g.db != nil {
+		// Disconnects during shutdown leave last-seen times to persist.
+		g.mu.Lock()
+		g.flushPresenceLocked()
+		g.mu.Unlock()
 		_ = g.db.Close()
 	}
 	_ = g.lock.Close()
 	return sessionErr
+}
+
+// presenceFlushInterval bounds how much last-seen history a crash can lose.
+const presenceFlushInterval = 30 * time.Second
+
+func (g *Gateway) runPresenceFlush(ctx context.Context) {
+	ticker := time.NewTicker(presenceFlushInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			g.mu.Lock()
+			if !g.closed {
+				g.flushPresenceLocked()
+			}
+			g.mu.Unlock()
+		}
+	}
+}
+
+// flushPresenceLocked persists batched last-seen changes in one transaction.
+// A failed write keeps them for the next attempt. Caller holds g.mu.
+func (g *Gateway) flushPresenceLocked() {
+	if len(g.presenceDirty) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(g.presenceDirty))
+	for id := range g.presenceDirty {
+		if _, exists := g.nodes[id]; exists {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) != 0 {
+		if err := g.commit(change{nodes: ids}); err != nil {
+			slog.Warn("persist machine last-seen times", "nodes", len(ids), "error", err)
+			return
+		}
+	}
+	clear(g.presenceDirty)
 }
 
 func URL(base, path string) string {

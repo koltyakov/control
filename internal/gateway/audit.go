@@ -41,11 +41,14 @@ const auditSchema = `CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY
 CREATE INDEX IF NOT EXISTS audit_user ON audit_events(user_id, id);
 CREATE INDEX IF NOT EXISTS audit_action ON audit_events(action, id);`
 
-// Retention keeps the newest events. Failed sign-ins have their own smaller
-// budget so a password-guessing burst cannot push out management history.
+// Retention keeps the newest events. Each fleet has its own budget so one
+// tenant's activity cannot push out another fleet's history; the gateway-wide
+// ceiling bounds the database. Failed sign-ins have their own smaller budget
+// so a password-guessing burst cannot push out management history.
 const (
-	maxAuditEvents   = 50000
-	maxAuditFailures = 2000
+	maxAuditEvents      = 100000
+	maxAuditFleetEvents = 10000
+	maxAuditFailures    = 2000
 )
 
 const auditSignInFailed = "session.signin_failed"
@@ -57,9 +60,16 @@ func writeAudit(tx *sql.Tx, events []AuditEvent) error {
 		return nil
 	}
 	failed := false
+	fleets := map[string]bool{}
 	for _, e := range events {
 		failed = failed || e.Action == auditSignInFailed
+		fleets[e.UserID] = true
 		if _, err := tx.Exec(`INSERT INTO audit_events(user_id,action,data) VALUES(?,?,?)`, e.UserID, e.Action, model.JSON(e)); err != nil {
+			return err
+		}
+	}
+	for fleet := range fleets {
+		if _, err := tx.Exec(`DELETE FROM audit_events WHERE user_id=? AND id <= (SELECT id FROM audit_events WHERE user_id=? ORDER BY id DESC LIMIT 1 OFFSET ?)`, fleet, fleet, maxAuditFleetEvents); err != nil {
 			return err
 		}
 	}
@@ -135,8 +145,12 @@ func (g *Gateway) listAudit(w http.ResponseWriter, r *http.Request) {
 	if p.Role == "superuser" {
 		fleet = ""
 	}
-	rows, err := g.db.QueryContext(r.Context(), `SELECT id, data FROM audit_events WHERE (?='' OR user_id=?) AND (?=0 OR id<?) AND (?='' OR action LIKE ? || '.%') ORDER BY id DESC LIMIT ?`,
-		fleet, fleet, before, before, category, category, limit+1)
+	// Separate statements let tenant pages use the (user_id, id) index.
+	statement, args := `SELECT id, data FROM audit_events WHERE (?=0 OR id<?) AND (?='' OR action LIKE ? || '.%') ORDER BY id DESC LIMIT ?`, []any{before, before, category, category, limit + 1}
+	if fleet != "" {
+		statement, args = `SELECT id, data FROM audit_events WHERE user_id=? AND (?=0 OR id<?) AND (?='' OR action LIKE ? || '.%') ORDER BY id DESC LIMIT ?`, append([]any{fleet}, args...)
+	}
+	rows, err := g.db.QueryContext(r.Context(), statement, args...)
 	if err != nil {
 		http.Error(w, "could not read audit log", http.StatusInternalServerError)
 		return

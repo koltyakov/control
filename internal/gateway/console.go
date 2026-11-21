@@ -272,36 +272,65 @@ func (g *Gateway) consoleWhoami(w http.ResponseWriter, r *http.Request) {
 	consoleJSON(w, map[string]any{"username": c.Username, "role": c.Role, "userId": c.UserID, "csrf": s.CSRF})
 }
 
+// Login limits count failed verifications over a 15-minute window.
+const (
+	consoleUserFailures   = 10
+	consoleSourceFailures = 60
+	consoleGlobalFailures = 120
+	consoleAttemptEntries = 4090
+	// consoleUserSessions bounds one username's sessions so a single account
+	// cannot exhaust the gateway-wide session table.
+	consoleUserSessions = 32
+)
+
+// consoleLoginAllowed checks failure budgets before password verification.
 // Admission state is bounded and independent of the gateway mutation lock.
+// A username without recent failures is never locked out by shared source or
+// global budgets that other clients exhausted.
 func (g *Gateway) consoleLoginAllowed(r *http.Request, username string) bool {
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	now := time.Now()
 	g.console.mu.Lock()
 	defer g.console.mu.Unlock()
-	for key, attempt := range g.console.attempts {
-		if now.After(attempt.Until) {
-			delete(g.console.attempts, key)
-		}
-	}
-	keys := []string{"global", "ip:" + host, "user:" + username}
-	limits := []int{120, 60, 10}
-	if len(g.console.attempts) > 4090 {
+	g.pruneConsoleAttemptsLocked(now)
+	user, recorded := g.console.attempts["user:"+username]
+	if user.Count >= consoleUserFailures {
 		return false
 	}
-	for i, key := range keys {
-		if g.console.attempts[key].Count >= limits[i] {
-			return false
-		}
+	// A full table cannot record new usernames, so an unrecorded name only
+	// proves a clean history while there is room.
+	if !recorded && len(g.console.attempts) < consoleAttemptEntries {
+		return true
 	}
-	for _, key := range keys {
-		a := g.console.attempts[key]
+	return g.console.attempts["ip:"+host].Count < consoleSourceFailures && g.console.attempts["global"].Count < consoleGlobalFailures
+}
+
+// consoleLoginFailed records one failed verification.
+func (g *Gateway) consoleLoginFailed(r *http.Request, username string) {
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	now := time.Now()
+	g.console.mu.Lock()
+	defer g.console.mu.Unlock()
+	g.pruneConsoleAttemptsLocked(now)
+	for _, key := range []string{"global", "ip:" + host, "user:" + username} {
+		a, ok := g.console.attempts[key]
+		if !ok && len(g.console.attempts) >= consoleAttemptEntries {
+			continue
+		}
 		if a.Count == 0 {
 			a.Until = now.Add(15 * time.Minute)
 		}
 		a.Count++
 		g.console.attempts[key] = a
 	}
-	return true
+}
+
+func (g *Gateway) pruneConsoleAttemptsLocked(now time.Time) {
+	for key, attempt := range g.console.attempts {
+		if now.After(attempt.Until) {
+			delete(g.console.attempts, key)
+		}
+	}
 }
 
 func (g *Gateway) consoleVerifier(w http.ResponseWriter) bool {
@@ -345,6 +374,7 @@ func (g *Gateway) consoleLogin(w http.ResponseWriter, r *http.Request) {
 	match := passwordMatches(q.Password, p)
 	if !match || !exists || u.Disabled || u.ID == "" || (p.Role == "superuser" && g.superuser == "") {
 		g.counters.authFailures.Add(1)
+		g.consoleLoginFailed(r, q.Username)
 		g.mu.Lock()
 		// A failed write must not change the response an attacker observes.
 		_ = g.commit(change{audit: []AuditEvent{signInEvent(r, q.Username, p.UserID, false)}})
@@ -375,6 +405,23 @@ func (g *Gateway) consoleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if cookie, err := r.Cookie(g.consoleCookieName(r)); err == nil {
 		remove(tokenHash(cookie.Value))
+	}
+	// Replace this username's oldest sessions instead of refusing sign-in.
+	for {
+		oldest, count := "", 0
+		for key, session := range g.console.sessions {
+			if session.Username != q.Username {
+				continue
+			}
+			count++
+			if oldest == "" || session.Created.Before(g.console.sessions[oldest].Created) {
+				oldest = key
+			}
+		}
+		if count < consoleUserSessions {
+			break
+		}
+		remove(oldest)
 	}
 	defer func() {
 		for key, session := range removed {
@@ -447,6 +494,7 @@ func (g *Gateway) consolePasswordHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if browser && c.Username == username && (!passwordMatches(q.CurrentPassword, old) || c.Revision != old.Revision) {
+		g.consoleLoginFailed(r, username)
 		http.Error(w, "current password is incorrect", http.StatusForbidden)
 		return
 	}

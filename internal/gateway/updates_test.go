@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -252,5 +253,70 @@ func TestRolloutSkipsSameVersionWhileBusy(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+// A republished older signed release has a newer, unsigned publication date.
+// The persisted floor keeps it from rolling the fleet back, even after a
+// development push replaced the GitHub selection.
+func TestReleaseFetchRejectsRepublishedOlderRelease(t *testing.T) {
+	data := []byte("release executable fixture")
+	sum := sha256.Sum256(data)
+	asset := update.Asset{OS: "linux", Arch: "amd64", File: update.AssetName("linux", "amd64"), Size: int64(len(data)), SHA256: hex.EncodeToString(sum[:])}
+	signer := testutil.NewReleaseSigner(t)
+	keys := update.ReleaseKeyring{"owner/repo": {signer.KeyID: signer.PublicKey()}}
+	var mu sync.Mutex
+	tag, published := "v0.2.0", time.Now().Add(-2*time.Hour).UTC()
+	var base string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		currentTag, currentPublished := tag, published
+		mu.Unlock()
+		manifest := update.Manifest{Version: currentTag, Assets: []update.Asset{asset}}
+		switch r.URL.Path {
+		case "/repos/owner/repo/releases/latest":
+			_ = json.NewEncoder(w).Encode(release{Tag: currentTag, Published: currentPublished, Assets: []releaseAsset{{"control-manifest.json", base + "/manifest"}, {"control-manifest.sig", base + "/proof"}, {asset.File, base + "/binary"}}})
+		case "/proof":
+			body, err := json.Marshal(manifest)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_, _ = w.Write(signer.Sign(t, "owner/repo", currentTag, append(body, '\n')))
+		case "/manifest":
+			_ = json.NewEncoder(w).Encode(manifest)
+		case "/binary":
+			_, _ = w.Write(data)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	base = server.URL
+	dir := t.TempDir()
+	g, err := New(dir, commonKey, Options{SuperuserKey: superKey, Software: buildinfo.Info{OS: "linux", Arch: "amd64"}, ReleaseRepo: "owner/repo", ReleaseAPI: base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = g.Close() }()
+	d, err := g.fetchReleaseVerified(t.Context(), keys.Verify)
+	if err != nil || d.Manifest.Version != "v0.2.0" || d.ReleaseFloor != "v0.2.0" {
+		t.Fatal("initial release not selected with its floor", d, err)
+	}
+	dev, err := g.updates.Publish(update.Manifest{Version: "dev-test", CreatedAt: time.Now().Add(-time.Hour).UTC(), Assets: []update.Asset{asset}}, "development")
+	if err != nil || dev.ReleaseFloor != "v0.2.0" {
+		t.Fatal("development push lost the release floor", dev, err)
+	}
+	mu.Lock()
+	tag, published = "v0.1.0", time.Now().UTC()
+	mu.Unlock()
+	if d, err = g.fetchReleaseVerified(t.Context(), keys.Verify); err != nil || d.ID != dev.ID {
+		t.Fatal("republished older release replaced the deployment", d, err)
+	}
+	mu.Lock()
+	tag = "v0.3.0"
+	mu.Unlock()
+	if d, err = g.fetchReleaseVerified(t.Context(), keys.Verify); err != nil || d.Manifest.Version != "v0.3.0" || d.ReleaseFloor != "v0.3.0" {
+		t.Fatal("newer release was not selected", d, err)
 	}
 }

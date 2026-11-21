@@ -130,6 +130,12 @@ func (r *Repository) Publish(manifest Manifest, source string) (*Deployment, err
 		}
 	}
 	d := &Deployment{ID: id, Manifest: manifest, Source: source, Phase: "staging", Contract: 2, UpdatedAt: time.Now().UTC()}
+	if r.current != nil {
+		d.ReleaseFloor = r.current.Floor()
+	}
+	if _, ok := ParseReleaseVersion(manifest.Version); ok && d.GitHubSource() && CompareReleaseVersions(manifest.Version, d.ReleaseFloor) > 0 {
+		d.ReleaseFloor = manifest.Version
+	}
 	if err := store.Write(filepath.Join(r.dir, "deployment.json"), d); err != nil {
 		return nil, err
 	}

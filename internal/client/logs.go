@@ -52,7 +52,7 @@ func (c Client) FollowLogs(ctx context.Context, target, id string, offset int64,
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.Token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := localAPIClient.Do(req)
 	if err != nil {
 		return err
 	}

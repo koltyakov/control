@@ -43,6 +43,25 @@ type Deployment struct {
 	Contract     int       `json:"contract,omitempty"`
 	InFlight     []string  `json:"inFlight,omitempty"`
 	GatewayState string    `json:"gatewayState,omitempty"`
+	// ReleaseFloor is the newest version ever selected from GitHub. It
+	// survives development pushes so a republished older signed release
+	// cannot roll the fleet back.
+	ReleaseFloor string `json:"releaseFloor,omitempty"`
+}
+
+// GitHubSource reports whether the deployment came from a GitHub release.
+func (d *Deployment) GitHubSource() bool { return strings.HasPrefix(d.Source, "github:") }
+
+// Floor returns the release rollback floor, treating a GitHub-sourced
+// deployment recorded before floors existed as its own floor.
+func (d *Deployment) Floor() string {
+	if d.ReleaseFloor != "" {
+		return d.ReleaseFloor
+	}
+	if _, ok := ParseReleaseVersion(d.Manifest.Version); ok && d.GitHubSource() {
+		return d.Manifest.Version
+	}
+	return ""
 }
 
 // Selection exposes software metadata without cross-fleet rollout identities.

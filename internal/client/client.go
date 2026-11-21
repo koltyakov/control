@@ -63,7 +63,7 @@ func (c Client) request(ctx context.Context, path string, value any) (*http.Resp
 	}
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	req.Header.Set("Content-Type", "application/json")
-	return http.DefaultClient.Do(req)
+	return localAPIClient.Do(req)
 }
 
 func (c Client) Call(ctx context.Context, target, method string, params any, result any) error {
@@ -224,7 +224,7 @@ func (c Client) Tunnel(ctx context.Context, target, address string) (net.Conn, e
 	} else {
 		u := strings.TrimRight(c.URL, "/") + "/v1/tunnel?" + url.Values{"target": {target}, "address": {address}, "duplex": {"1"}}.Encode()
 		u = strings.Replace(strings.Replace(u, "https://", "wss://", 1), "http://", "ws://", 1)
-		ws, response, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + c.Token}}})
+		ws, response, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPClient: localAPIClient, HTTPHeader: http.Header{"Authorization": {"Bearer " + c.Token}}})
 		if err != nil {
 			return nil, err
 		}

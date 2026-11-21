@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -384,4 +385,65 @@ func TestConsolePasswordPersistenceAndRollback(t *testing.T) {
 	b.URL = s.URL
 	b.request(t, "GET", "/console/api/session", nil, 401)
 	browserLogin(t, s.URL, "alice", browserPassword)
+}
+
+func TestConsoleLoginLimitsCountFailuresAndProtectCleanUsers(t *testing.T) {
+	g, s := installationFixture(t)
+	_, a := createTestUser(t, s, "alice")
+	provisionBrowser(t, a, "")
+	_, bob := createTestUser(t, s, "bob")
+	provisionBrowser(t, bob, "")
+	// Successful logins do not consume the username's failure budget.
+	for range consoleUserFailures + 1 {
+		browserLogin(t, s.URL, "alice", browserPassword)
+	}
+	b := testBrowser{URL: s.URL}
+	// An anonymous client exhausts the shared global and source budgets.
+	g.console.mu.Lock()
+	until := time.Now().Add(time.Minute)
+	g.console.attempts["global"] = consoleAttempt{Count: consoleGlobalFailures, Until: until}
+	g.console.attempts["ip:127.0.0.1"] = consoleAttempt{Count: consoleSourceFailures, Until: until}
+	g.console.mu.Unlock()
+	browserLogin(t, s.URL, "bob", browserPassword) // A clean username still signs in.
+	b.request(t, "POST", "/console/api/login", map[string]string{"username": "bob", "password": "wrong"}, 401)
+	// After its own failure, bob shares the exhausted budgets.
+	b.request(t, "POST", "/console/api/login", map[string]string{"username": "bob", "password": browserPassword}, 429)
+	g.console.mu.Lock()
+	failures := g.console.attempts["user:bob"].Count
+	g.console.mu.Unlock()
+	if failures != 1 {
+		t.Fatal("unexpected bob failure count", failures)
+	}
+}
+
+func TestConsoleSessionsPerUserEvictOldest(t *testing.T) {
+	g, s := installationFixture(t)
+	_, a := createTestUser(t, s, "alice")
+	provisionBrowser(t, a, "")
+	first := browserLogin(t, s.URL, "alice", browserPassword)
+	g.mu.Lock()
+	oldestKey := tokenHash(first.Cookie.Value)
+	oldest := g.console.sessions[oldestKey]
+	oldest.Created = time.Now().Add(-time.Hour)
+	g.console.sessions[oldestKey] = oldest
+	for i := range consoleUserSessions - 1 {
+		session := oldest
+		session.Created = time.Now().Add(-time.Duration(30-i%30) * time.Minute)
+		g.console.sessions[fmt.Sprintf("fixture-%d", i)] = session
+	}
+	g.mu.Unlock()
+	browserLogin(t, s.URL, "alice", browserPassword)
+	g.mu.Lock()
+	count := 0
+	for _, session := range g.console.sessions {
+		if session.Username == "alice" {
+			count++
+		}
+	}
+	_, kept := g.console.sessions[oldestKey]
+	g.mu.Unlock()
+	if count != consoleUserSessions || kept {
+		t.Fatalf("sessions=%d oldestKept=%v", count, kept)
+	}
+	first.request(t, "GET", "/console/api/session", nil, 401)
 }

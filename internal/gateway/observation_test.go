@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -38,14 +39,6 @@ func TestOfflineNotificationFollowsObservationPublication(t *testing.T) {
 	worker := rawPeer(t, s.URL, commonKey, "worker", legacyUser, workerID)
 	defer func() { _ = worker.CloseNow() }()
 
-	// Occupy the sole database connection so disconnect persistence must wait.
-	// Directory reads still return the previous committed online record.
-	dbConn, err := g.db.Conn(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = dbConn.Close() }()
-	waits := g.db.Stats().WaitCount
 	notified := make(chan error, 1)
 	go func() {
 		_, data, err := observer.Read(ctx)
@@ -59,21 +52,6 @@ func TestOfflineNotificationFollowsObservationPublication(t *testing.T) {
 		notified <- err
 	}()
 	_ = worker.CloseNow()
-	for g.db.Stats().WaitCount == waits {
-		select {
-		case <-ctx.Done():
-			t.Fatal("disconnect did not reach persistence", ctx.Err())
-		case <-time.After(time.Millisecond):
-		}
-	}
-	select {
-	case err := <-notified:
-		t.Fatal("notification preceded offline publication", err)
-	case <-time.After(100 * time.Millisecond):
-	}
-	if err := dbConn.Close(); err != nil {
-		t.Fatal(err)
-	}
 	select {
 	case err := <-notified:
 		if err != nil {
@@ -81,6 +59,22 @@ func TestOfflineNotificationFollowsObservationPublication(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("offline notification not delivered", ctx.Err())
+	}
+	// Disconnects batch last-seen persistence; the flush makes it durable.
+	g.mu.Lock()
+	pending := g.presenceDirty[workerID.ID]
+	g.flushPresenceLocked()
+	g.mu.Unlock()
+	if !pending {
+		t.Fatal("disconnect did not queue last-seen persistence")
+	}
+	var data []byte
+	if err := g.db.QueryRow(`SELECT data FROM nodes WHERE id=?`, workerID.ID).Scan(&data); err != nil {
+		t.Fatal(err)
+	}
+	var stored model.Node
+	if err := json.Unmarshal(data, &stored); err != nil || stored.Online || stored.LastSeen.IsZero() {
+		t.Fatal("flushed record lacks offline last-seen state", stored, err)
 	}
 	for _, n := range g.directory(legacyUser) {
 		if n.ID == workerID.ID && n.Online {
@@ -179,5 +173,49 @@ func TestRelayQueueConcurrentByteBound(t *testing.T) {
 	c = &connection{outData: make(chan *protocol.Packet, 1)}
 	if !c.enqueue(&protocol.Packet{Kind: "data", Data: []byte("a")}) || c.enqueue(&protocol.Packet{Kind: "data", Data: []byte("b")}) || c.queued.Load() != 1 {
 		t.Fatal("full packet queue leaked its byte reservation")
+	}
+}
+
+func TestGracefulCloseFlushesBatchedLastSeen(t *testing.T) {
+	dir := t.TempDir()
+	g, err := New(dir, commonKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := httptest.NewServer(g.Handler())
+	workerID, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := rawPeer(t, s.URL, commonKey, "worker", legacyUser, workerID)
+	before := time.Now().UTC()
+	_ = worker.CloseNow()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		g.mu.Lock()
+		pending := g.presenceDirty[workerID.ID]
+		g.mu.Unlock()
+		if pending {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("disconnect was not queued")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	s.Close()
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := New(dir, commonKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	reopened.mu.Lock()
+	n := reopened.nodes[workerID.ID]
+	reopened.mu.Unlock()
+	if n.LastSeen.Before(before) {
+		t.Fatal("graceful close lost the last-seen time", n.LastSeen, before)
 	}
 }

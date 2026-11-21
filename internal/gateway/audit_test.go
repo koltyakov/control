@@ -260,3 +260,32 @@ func TestClearAuditLeavesARecordInEachFleet(t *testing.T) {
 		t.Fatalf("clear records = %v, want one each for alice and bob", fleets)
 	}
 }
+
+func TestAuditRetentionIsPerFleet(t *testing.T) {
+	g, _ := installationFixture(t)
+	commit := func(events []AuditEvent) {
+		t.Helper()
+		g.mu.Lock()
+		err := g.commit(change{audit: events})
+		g.mu.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit([]AuditEvent{{At: time.Now(), UserID: "quiet-fleet", Action: "key.create"}})
+	flood := make([]AuditEvent, 0, maxAuditFleetEvents+50)
+	for range maxAuditFleetEvents + 50 {
+		flood = append(flood, AuditEvent{At: time.Now(), UserID: "busy-fleet", Action: "machine.rename"})
+	}
+	commit(flood)
+	count := func(fleet string) int {
+		var n int
+		if err := g.db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE user_id=?`, fleet).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if busy, quiet := count("busy-fleet"), count("quiet-fleet"); busy != maxAuditFleetEvents || quiet != 1 {
+		t.Fatalf("busy fleet kept %d events, quiet fleet kept %d", busy, quiet)
+	}
+}

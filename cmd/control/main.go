@@ -170,11 +170,18 @@ func run(ctx context.Context, args []string) error {
 				explicitToken = true
 			}
 		})
-		if !explicitAPI && os.Getenv("CONTROL_API") == "" && cfg.Name != "" {
+		userAPI := explicitAPI || os.Getenv("CONTROL_API") != ""
+		if !userAPI && cfg.Name != "" {
 			c.URL = installation.API(cfg)
 		}
 		if !explicitToken && os.Getenv("CONTROL_TOKEN") == "" {
-			c.Token = cfg.Token
+			// The node token is a fleet credential. Send it implicitly only to
+			// this host's own API or over HTTPS, never to another plain-HTTP host.
+			if !userAPI || client.SafeCredentialURL(c.URL) {
+				c.Token = cfg.Token
+			} else if cfg.Token != "" {
+				fmt.Fprintln(os.Stderr, "control: not sending this host's node token to non-loopback plain-HTTP API", c.URL+"; pass --token or CONTROL_TOKEN explicitly")
+			}
 		}
 		switch args[0] {
 		case "mcp", "system", "call", "exec", "task", "artifact", "upload", "tunnel", "session", "clipboard", "dashboard", "speedtest", "diagnostics", "wake", "runbooks", "browser":

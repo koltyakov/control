@@ -77,7 +77,7 @@ func (c Client) openClipboard(ctx context.Context, target, method string, q clip
 		u := strings.TrimRight(c.URL, "/") + "/v1/clipboard?" + url.Values{"target": {target}, "method": {method}}.Encode()
 		u = strings.Replace(strings.Replace(u, "https://", "wss://", 1), "http://", "ws://", 1)
 		var ws *websocket.Conn
-		ws, _, err = websocket.Dial(ctx, u, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + c.Token}}})
+		ws, _, err = websocket.Dial(ctx, u, &websocket.DialOptions{HTTPClient: localAPIClient, HTTPHeader: http.Header{"Authorization": {"Bearer " + c.Token}}})
 		if err == nil {
 			ws.SetReadLimit(wire.MaxFrame)
 			conn = websocket.NetConn(ctx, ws, websocket.MessageBinary)

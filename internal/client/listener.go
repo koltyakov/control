@@ -27,7 +27,7 @@ func (c Client) reverseListener(ctx context.Context, target, listen string) (net
 	} else {
 		u := strings.TrimRight(c.URL, "/") + "/v1/listener?" + url.Values{"target": {target}, "listen": {listen}}.Encode()
 		u = strings.Replace(strings.Replace(u, "https://", "wss://", 1), "http://", "ws://", 1)
-		ws, response, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + c.Token}}})
+		ws, response, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPClient: localAPIClient, HTTPHeader: http.Header{"Authorization": {"Bearer " + c.Token}}})
 		if err != nil {
 			return nil, err
 		}
