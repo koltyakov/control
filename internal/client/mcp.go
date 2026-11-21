@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/koltyakov/control/internal/browser"
@@ -53,7 +56,10 @@ func (c Client) MCPServer() *mcp.Server {
 		server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: input}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args := map[string]json.RawMessage{}
 			if err := json.Unmarshal(request.Params.Arguments, &args); err != nil {
-				return toolError(err), nil
+				return inputError(err), nil
+			}
+			if err := knownFields(args, properties); err != nil {
+				return inputError(err), nil
 			}
 			// The caller already holds the submitted specification. Repeating
 			// it, including inline scripts, on every acceptance and wait only
@@ -62,28 +68,38 @@ func (c Client) MCPServer() *mcp.Server {
 			if raw, ok := args["includeSpec"]; ok && name == "control_task_get" {
 				var include bool
 				if err := json.Unmarshal(raw, &include); err != nil {
-					return toolError(err), nil
+					return inputError(err), nil
 				}
 				omitSpec = !include
 				delete(args, "includeSpec")
 			}
 			for _, key := range required {
 				if _, ok := args[key]; !ok {
-					return toolError(fmt.Errorf("missing required field %s", key)), nil
+					return inputError(fmt.Errorf("missing required field %s", key)), nil
 				}
 			}
 			target, params, err := transform(args)
 			if err != nil {
-				return toolError(err), nil
+				return inputError(err), nil
 			}
 			actualMethod := method
 			if method == "" {
 				if err = json.Unmarshal(args["method"], &actualMethod); err != nil {
-					return toolError(err), nil
+					return inputError(err), nil
 				}
 			}
 			var result json.RawMessage
-			if err = c.Call(ctx, target, actualMethod, params, &result); err != nil {
+			if actualMethod == "tasks.start" && method != "" {
+				// Assign the ID before sending, as the CLI does, so a lost
+				// reply can be reconciled instead of resubmitted.
+				spec, err := decodeTaskSpec(params)
+				if err != nil {
+					return inputError(err), nil
+				}
+				if _, err = c.StartTask(ctx, target, spec, &result); err != nil {
+					return toolError(err), nil
+				}
+			} else if err = c.Call(ctx, target, actualMethod, params, &result); err != nil {
 				return toolError(err), nil
 			}
 			if omitSpec {
@@ -158,6 +174,15 @@ func (c Client) MCPServer() *mcp.Server {
 			input["required"] = required
 		}
 		server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: input}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			fields := map[string]json.RawMessage{}
+			if len(request.Params.Arguments) != 0 {
+				if err := json.Unmarshal(request.Params.Arguments, &fields); err != nil {
+					return inputError(err), nil
+				}
+			}
+			if err := knownFields(fields, properties); err != nil {
+				return inputError(err), nil
+			}
 			ctx = context.WithValue(ctx, uploadProgressKey{}, request)
 			result, err := call(ctx, request.Params.Arguments)
 			if err != nil {
@@ -282,7 +307,7 @@ func (c Client) MCPServer() *mcp.Server {
 		}
 		return c.TestConnection(ctx, spec)
 	})
-	local("control_clipboard_paste", "Paste this machine's clipboard onto a remote node. Text goes to its desktop clipboard; copied regular files stream into an existing dir relative to the worker's workDir, default '.'. Set reverse to paste the remote clipboard onto this machine, with dir then a local directory. Transfer happens only on this explicit call. Does not delete source files, overwrite files, or sync automatically. Requires clipboard.paste permission, or clipboard.open for reverse. The serving node must be unleased, including for the lease owner and reverse reads. Both desktops need clipboard access for text. Returns metadata only, never clipboard text. Do not read or transfer a user's clipboard without their request, and do not retry an uncertain paste.", map[string]any{"node": text, "dir": text, "reverse": map[string]any{"type": "boolean"}}, []string{"node"}, func(ctx context.Context, args json.RawMessage) (any, error) {
+	local("control_clipboard_paste", "Paste this machine's clipboard onto a remote node. Text goes to its desktop clipboard; copied regular files stream into an existing dir relative to the worker's workDir, default '.'. Set reverse to paste the remote clipboard onto this machine, with dir then a local directory. Transfer happens only on this explicit call. Does not delete source files, overwrite files, or sync automatically. Requires clipboard.paste permission, or clipboard.open for reverse. The serving node must be unleased, including for the lease owner and reverse reads. Both desktops need clipboard access for text. Returns metadata only, never clipboard text. Do not read or transfer a user's clipboard without their request, and do not retry an uncertain paste.", map[string]any{"node": text, "dir": text, "reverse": map[string]any{"type": "boolean"}, "timeoutSeconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 86400}}, []string{"node"}, func(ctx context.Context, args json.RawMessage) (any, error) {
 		var spec ClipboardSpec
 		if err := json.Unmarshal(args, &spec); err != nil {
 			return nil, err
@@ -377,6 +402,55 @@ func withoutField(data json.RawMessage, field string) json.RawMessage {
 	return append(out, '}')
 }
 
+// toolError reports a failure whose effects may be uncertain. Errors that
+// already carry a delivery outcome keep it.
 func toolError(err error) *mcp.CallToolResult {
-	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: toolText(model.JSON(model.OperationError(err, "unknown")))}}}
+	e := *model.OperationError(err, "unknown")
+	var submit *TaskSubmitError
+	if errors.As(err, &submit) {
+		e.Message = submit.Error() // Keep the ID to reconcile.
+	}
+	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: toolText(model.JSON(&e))}}}
+}
+
+// inputError reports a request rejected before anything was sent.
+func inputError(err error) *mcp.CallToolResult {
+	return toolError(model.OperationError(err, "not_sent"))
+}
+
+// knownFields rejects arguments a tool's schema does not declare, so a
+// misspelled option fails instead of silently taking its default.
+func knownFields(args map[string]json.RawMessage, properties map[string]any) error {
+	var unknown []string
+	for key := range args {
+		if _, ok := properties[key]; !ok {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	allowed := make([]string, 0, len(properties))
+	for key := range properties {
+		allowed = append(allowed, key)
+	}
+	sort.Strings(allowed)
+	return fmt.Errorf("unknown argument %s; allowed: %s", strings.Join(unknown, ", "), strings.Join(allowed, ", "))
+}
+
+// decodeTaskSpec rejects unknown task fields, such as a misspelled timeout,
+// before submission.
+func decodeTaskSpec(params any) (model.TaskSpec, error) {
+	raw, ok := params.(json.RawMessage)
+	if !ok {
+		raw = model.JSON(params)
+	}
+	var spec model.TaskSpec
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&spec); err != nil {
+		return model.TaskSpec{}, fmt.Errorf("invalid task: %w", err)
+	}
+	return spec, nil
 }

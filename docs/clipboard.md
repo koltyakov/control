@@ -23,7 +23,7 @@ control clipboard paste worker --reverse --dir ./downloads
 
 In reverse mode, text replaces the local OS clipboard and files go into the selected local directory. The default directory is `.`. File pastes write files rather than putting file references onto the destination OS clipboard. They do not simulate a keyboard shortcut or paste text into the focused application.
 
-The CLI deadline defaults to one hour. Use `--timeout 4h` for a longer transfer, up to 24 hours. Cancellation closes the stream. These are explicit, process-owned operations, not durable tasks or a background clipboard bridge. They work through a local node API or a standalone authenticated client, over WebRTC or the encrypted relay. Upgrade the receiving node and any local API node before use; unsupported versions fail without fallback or replay.
+The deadline defaults to one hour for both the CLI and MCP. Use `--timeout 4h` or MCP `timeoutSeconds` for a longer transfer, up to 24 hours. Cancellation closes the stream. These are explicit, process-owned operations, not durable tasks or a background clipboard bridge. They work through a local node API or a standalone authenticated client, over WebRTC or the encrypted relay. Upgrade the receiving node and any local API node before use; unsupported versions fail without fallback or replay.
 
 ## MCP
 

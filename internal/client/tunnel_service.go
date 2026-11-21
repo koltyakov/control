@@ -208,24 +208,16 @@ func (m *tunnelService) create(ctx context.Context, spec PersistentTunnelSpec) (
 	if err := validatePersistentTunnel(spec); err != nil {
 		return PersistentTunnelInfo{}, err
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.ctx.Err() != nil {
-		return PersistentTunnelInfo{}, errors.New("tunnel service is stopping")
+	// Answer a repeated request without a gateway lookup.
+	if info, done, err := m.existing(spec); done {
+		return info, err
 	}
-	if e := m.entries[spec.ID]; e != nil {
-		if e.info.PersistentTunnelSpec != spec {
-			return PersistentTunnelInfo{}, errors.New("tunnel ID already has a different specification")
-		}
-		return e.info, nil
-	}
-	if len(m.entries) >= maxForwards {
-		return PersistentTunnelInfo{}, errors.New("retained tunnel limit reached")
-	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// Resolve the target without holding the lock, so list and tunnel state
+	// updates are not blocked by a slow gateway. Recheck under the lock.
+	lookup, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var nodes []model.Node
-	if err := m.cfg.Gateway.JSON(ctx, http.MethodGet, "/v1/nodes", nil, &nodes); err != nil {
+	if err := m.cfg.Gateway.JSON(lookup, http.MethodGet, "/v1/nodes", nil, &nodes); err != nil {
 		return PersistentTunnelInfo{}, err
 	}
 	var target model.Node
@@ -240,6 +232,11 @@ func (m *tunnelService) create(ctx context.Context, spec PersistentTunnelSpec) (
 	}
 	if !target.InstructionDelegation || !target.ClientOwners || !target.ClientSessions {
 		return PersistentTunnelInfo{}, errors.New("target needs an upgrade for account-client tunnels")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if info, done, err := m.existingLocked(spec); done {
+		return info, err
 	}
 	for _, e := range m.entries {
 		if e.info.Listen == spec.Listen && e.info.Reverse == spec.Reverse && (!spec.Reverse || e.info.NodeID == target.ID) {
@@ -259,6 +256,30 @@ func (m *tunnelService) create(ctx context.Context, spec PersistentTunnelSpec) (
 	}
 	m.start(e)
 	return e.info, nil
+}
+
+// existing reports a stopping service, an identical retained tunnel, a
+// conflicting ID or a full table. done is false when creation may proceed.
+func (m *tunnelService) existing(spec PersistentTunnelSpec) (PersistentTunnelInfo, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.existingLocked(spec)
+}
+
+func (m *tunnelService) existingLocked(spec PersistentTunnelSpec) (PersistentTunnelInfo, bool, error) {
+	if m.ctx.Err() != nil {
+		return PersistentTunnelInfo{}, true, errors.New("tunnel service is stopping")
+	}
+	if e := m.entries[spec.ID]; e != nil {
+		if e.info.PersistentTunnelSpec != spec {
+			return PersistentTunnelInfo{}, true, errors.New("tunnel ID already has a different specification")
+		}
+		return e.info, true, nil
+	}
+	if len(m.entries) >= maxForwards {
+		return PersistentTunnelInfo{}, true, errors.New("retained tunnel limit reached")
+	}
+	return PersistentTunnelInfo{}, false, nil
 }
 
 func (m *tunnelService) dispose(id string) error {
@@ -317,7 +338,8 @@ func (m *tunnelService) run(e *retainedTunnel) {
 		c := (Client{}).WithStandalone(e.ctx, m.cfg)
 		setup, cancel := context.WithTimeout(e.ctx, 15*time.Second)
 		var description struct{ ID string }
-		err := c.Call(setup, e.info.NodeID, "node.describe", map[string]any{}, &description)
+		// The identity check needs no runbook catalog.
+		err := c.call(setup, e.info.NodeID, "node.describe", map[string]any{}, &description)
 		var forward *Forward
 		if err == nil && description.ID != e.info.NodeID {
 			err = errors.New("tunnel target identity changed")

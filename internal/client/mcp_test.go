@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/skills"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -419,5 +420,85 @@ func TestMCPRoutesCommandSecrets(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("command secret request was not routed")
 		}
+	}
+}
+
+func TestMCPTaskStartAssignsIDAndRejectsUnknownArguments(t *testing.T) {
+	requests := make(chan map[string]json.RawMessage, 4)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requests <- request
+		// Simulate a lost acceptance reply.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"error":"stream closed","code":"operation_failed","outcome":"unknown"}`))
+	}))
+	defer httpServer.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := (Client{URL: httpServer.URL, Token: "test"}).MCPServer().Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = serverSession.Close() }()
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Close() }()
+	toolFailure := func(result *mcp.CallToolResult) model.RPCError {
+		t.Helper()
+		if !result.IsError || len(result.Content) != 1 {
+			t.Fatal("expected a tool error", result)
+		}
+		var e model.RPCError
+		if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &e); err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "control_task_start", Arguments: map[string]any{
+		"node": "worker", "task": map[string]any{"capability": "exec.run", "args": map[string]any{"command": "true"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := toolFailure(result)
+	var sent struct{ ID string }
+	select {
+	case request := <-requests:
+		if err := json.Unmarshal(request["params"], &sent); err != nil || sent.ID == "" {
+			t.Fatal("submission was sent without a client-assigned ID", string(request["params"]))
+		}
+	case <-ctx.Done():
+		t.Fatal("task was not submitted")
+	}
+	if failure.Outcome != "unknown" || !strings.Contains(failure.Message, sent.ID) {
+		t.Fatal("uncertain submission error does not name its ID", failure)
+	}
+	for _, call := range []*mcp.CallToolParams{
+		{Name: "control_task_start", Arguments: map[string]any{"node": "worker", "task": map[string]any{"capability": "exec.run", "timeout": 5}}},
+		{Name: "control_task_start", Arguments: map[string]any{"node": "worker", "task": map[string]any{"id": "bad id", "capability": "exec.run"}}},
+		{Name: "control_task_get", Arguments: map[string]any{"node": "worker", "id": "x", "wait": 5}},
+		{Name: "control_tunnel_start", Arguments: map[string]any{"id": "t", "node": "worker", "ttl": 3600}},
+		{Name: "control_forward_start", Arguments: map[string]any{"node": "worker", "address": "127.0.0.1:1", "revers": true}},
+		{Name: "control_task_get", Arguments: map[string]any{"id": "x"}},
+	} {
+		result, err := session.CallTool(ctx, call)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if failure := toolFailure(result); failure.Outcome != "not_sent" {
+			t.Fatalf("%s %v: outcome %q, want not_sent: %s", call.Name, call.Arguments, failure.Outcome, failure.Message)
+		}
+	}
+	select {
+	case request := <-requests:
+		t.Fatal("rejected input was sent", request)
+	default:
 	}
 }

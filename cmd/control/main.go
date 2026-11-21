@@ -504,6 +504,7 @@ func submit(ctx context.Context, c client.Client, target string, spec model.Task
 	if !model.TaskIDPattern.MatchString(spec.ID) {
 		return fmt.Errorf("invalid task ID %q: use 1-128 letters, digits, '_' or '-'; nothing was submitted", spec.ID)
 	}
+	// Print before sending so an interrupted submission can be reconciled.
 	fmt.Fprintln(os.Stderr, "task", spec.ID)
 	var task model.Task
 	if wait {
@@ -513,8 +514,8 @@ func submit(ctx context.Context, c client.Client, target string, spec model.Task
 		defer stopPrepare()
 		go c.PrepareTaskWait(prepare, target)
 	}
-	if err := c.Call(ctx, target, "tasks.start", spec, &task); err != nil {
-		return fmt.Errorf("submit task %s; query this ID before retrying: %w", spec.ID, err)
+	if _, err := c.StartTask(ctx, target, spec, &task); err != nil {
+		return err
 	}
 	if wait && !task.Terminal() {
 		observed, err := c.Wait(ctx, target, task.ID)

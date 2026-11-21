@@ -21,7 +21,15 @@ type ClipboardSpec struct {
 	Node    string `json:"node"`
 	Reverse bool   `json:"reverse,omitempty"`
 	Dir     string `json:"dir,omitempty"`
+	// TimeoutSeconds bounds the whole paste, including file transfer.
+	// Zero selects DefaultClipboardTimeout.
+	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
 }
+
+const (
+	DefaultClipboardTimeout = time.Hour
+	MaxClipboardTimeout     = 24 * time.Hour
+)
 
 // PasteClipboard copies text to the destination clipboard or streams copied files
 // into an existing directory. Reverse reads the remote clipboard instead.
@@ -31,6 +39,15 @@ func (c Client) PasteClipboard(ctx context.Context, spec ClipboardSpec) (clipboa
 	if spec.Node == "" {
 		return clipboard.Result{}, errors.New("clipboard paste requires a target machine")
 	}
+	timeout := DefaultClipboardTimeout
+	if spec.TimeoutSeconds != 0 {
+		timeout = time.Duration(spec.TimeoutSeconds) * time.Second
+	}
+	if timeout < time.Second || timeout > MaxClipboardTimeout {
+		return clipboard.Result{}, errors.New("clipboard timeout must be between 1s and 24h")
+	}
+	ctx, stop := context.WithTimeout(ctx, timeout)
+	defer stop()
 	if spec.Reverse {
 		return c.receiveClipboard(ctx, spec)
 	}
