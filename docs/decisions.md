@@ -1443,3 +1443,7 @@ GitHub publication dates are unsigned. Someone who can edit releases but does no
 ## D166: Batched disconnect last-seen persistence
 
 Every disconnect used to commit the node's offline state and last-seen time with a full fsync while holding the gateway mutation lock. A network blip that dropped many nodes serialized one commit per node, delaying their reconnects. Startup already resets `online`, so only last-seen history needs durability. Mark disconnected nodes dirty and persist them in one transaction every 30 seconds and during graceful close, after connection handlers finish. A disconnect that starts an update restart grace still commits immediately. A crash can lose up to 30 seconds of last-seen history; presence published to readers is unchanged.
+
+## D167: On-demand MCP desktop guidance
+
+Every MCP session paid about 7.6 KB of desktop-only instructions, roughly a third of the server instructions, even for command or file work. Follow the browser guidance pattern: keep a short unconditional summary with routing and credential safeguards, and return the full workflow guidance through a local `control_guide` tool with `topic: "desktop"`. The skill bundle already loads GUI details on demand. Tests check the same safeguards across the summary and the guide, cap the summary at 130 words, and bound total instruction and tool-definition bytes so new guidance moves behind on-demand topics instead of growing every session.

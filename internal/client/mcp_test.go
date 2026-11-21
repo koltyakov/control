@@ -91,8 +91,18 @@ func TestMCPAndSkillInstructions(t *testing.T) {
 			t.Errorf("skill bundle omits stream lease guidance %q", fragment)
 		}
 	}
+	// Desktop workflow details load on demand; the safeguards they carry are
+	// checked together with the unconditional instructions.
+	guide, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "control_guide", Arguments: map[string]any{"topic": "desktop"}})
+	if err != nil || guide.IsError || len(guide.Content) != 1 {
+		t.Fatal("desktop guide unavailable", guide, err)
+	}
+	var loaded struct{ Guidance string }
+	if err := json.Unmarshal([]byte(guide.Content[0].(*mcp.TextContent).Text), &loaded); err != nil || loaded.Guidance == "" {
+		t.Fatal("desktop guide is empty", err)
+	}
 	for name, text := range map[string]string{
-		"mcp":               session.InitializeResult().Instructions,
+		"mcp":               session.InitializeResult().Instructions + "\n" + loaded.Guidance,
 		"skill bundle LF":   skill,
 		"skill bundle CRLF": strings.ReplaceAll(skill, "\n", "\r\n"),
 	} {
@@ -501,4 +511,56 @@ func TestMCPTaskStartAssignsIDAndRejectsUnknownArguments(t *testing.T) {
 		t.Fatal("rejected input was sent", request)
 	default:
 	}
+}
+
+// Every MCP session pays for the server instructions and tool definitions.
+// Keep workflow details behind on-demand guidance instead of growing them.
+func TestMCPUnconditionalGuidanceBudget(t *testing.T) {
+	if words := len(strings.Fields(desktopSummary)); words > 130 {
+		t.Errorf("unconditional desktop instructions have %d words; keep workflow details in control_guide", words)
+	}
+	for _, required := range []string{
+		"For GUI work only", "control_guide with topic desktop", "control_desktop",
+		"worker-local secret names", "never retrieve secrets through a shell",
+		"explicit user permission", "Never replay uncertain effects",
+		"Skip desktop probes and guidance for command-only or file-only work",
+	} {
+		if !strings.Contains(desktopSummary, required) {
+			t.Errorf("desktop summary omits routing or safety guidance %q", required)
+		}
+	}
+	for _, detailed := range []string{"cursor-overlay enable", "96-byte AdAction", "data.rendered"} {
+		if strings.Contains(desktopSummary, detailed) || strings.Contains(serverInstructions, detailed) {
+			t.Errorf("unconditional instructions still include desktop workflow detail %q", detailed)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := (Client{}).MCPServer().Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = serverSession.Close() }()
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Close() }()
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions, err := json.Marshal(tools.Tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const instructionBudget, toolBudget = 14 << 10, 25 << 10
+	if n := len(session.InitializeResult().Instructions); n > instructionBudget {
+		t.Errorf("server instructions are %d bytes, budget %d", n, instructionBudget)
+	}
+	if n := len(definitions); n > toolBudget {
+		t.Errorf("tool definitions are %d bytes, budget %d", n, toolBudget)
+	}
+	t.Logf("instructions %d bytes, tool definitions %d bytes", len(session.InitializeResult().Instructions), len(definitions))
 }
