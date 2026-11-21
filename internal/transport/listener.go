@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/yamux"
 )
@@ -98,11 +99,25 @@ func ServeTCPListener(ctx context.Context, stream net.Conn, listener net.Listene
 	var wg sync.WaitGroup
 	defer func() { cancel(); <-watchDone; wg.Wait() }()
 	slots := make(chan struct{}, MaxTCPListenerConnections)
+	var backoff time.Duration
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			return err
+			// Closing the listener or session ends serving. Other errors, such
+			// as descriptor exhaustion, are retried with backoff like
+			// net/http so one failure does not drop the port and its sockets.
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return err
+			}
+			backoff = min(max(2*backoff, 5*time.Millisecond), time.Second)
+			select {
+			case <-ctx.Done():
+				return err
+			case <-time.After(backoff):
+			}
+			continue
 		}
+		backoff = 0
 		select {
 		case slots <- struct{}{}:
 		default:

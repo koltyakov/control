@@ -30,7 +30,8 @@ const (
 	managedHandshakeTimeout = 10 * time.Second
 	managedHeaderBytes      = 8 << 10
 	managedDialTimeout      = 10 * time.Second
-	managedProxyStateFile   = "proxy-listeners.json"
+	// legacyProxyStateFile was written by older workers and is ignored.
+	legacyProxyStateFile = "proxy-listeners.json"
 )
 
 type managedEndpoint struct {
@@ -48,7 +49,6 @@ type managedEndpoint struct {
 type managedProxy struct {
 	target           string // Gateway authority host:port, the only CONNECT target.
 	endpoints        map[string]managedEndpoint
-	statePath        string
 	write            func(string, any) error
 	listen           func(context.Context, string) (net.Listener, error)
 	dial             func(context.Context, string, string) (net.Conn, error)
@@ -98,7 +98,7 @@ func newManagedProxy(cfg Config) (*managedProxy, error) {
 		return nil, err
 	}
 	m := &managedProxy{
-		target: target, endpoints: endpoints, statePath: filepath.Join(cfg.DataDir, managedProxyStateFile),
+		target: target, endpoints: endpoints,
 		listeners: map[string]net.Listener{}, failures: map[string]string{}, conns: map[net.Conn]struct{}{},
 		settingsPath: filepath.Join(cfg.DataDir, "proxy-settings.json"),
 		supported:    true,
@@ -108,18 +108,9 @@ func newManagedProxy(cfg Config) (*managedProxy, error) {
 	}
 	m.write = func(path string, value any) error { return store.Write(path, value) }
 	m.dial = (&net.Dialer{Timeout: managedDialTimeout}).DialContext
-	// A missing file means no decision was ever received. An unreadable or
-	// corrupt one must not be mistaken for "no dependencies": that would cut
-	// off offline-restarting children, so refuse to start instead.
-	var saved model.ProxyState
-	if err := store.Read(m.statePath, &saved); err == nil {
-		if len(saved.Listeners) > model.MaxProxyEndpoints {
-			return nil, fmt.Errorf("managed proxy state %s lists too many listeners; repair or remove it", m.statePath)
-		}
-		m.desired = saved.Listeners
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("read managed proxy state %s: %w; repair or remove it, and the gateway decision is restored on the next read", m.statePath, err)
-	}
+	// Desired listeners derive from the profile and proxy-settings.json below.
+	// Older workers also wrote proxy-listeners.json; it is no longer read, so
+	// a corrupt legacy copy cannot block startup.
 	// Explicit profile declarations are enabled independently of dependencies.
 	// The first managed declaration becomes the owner-editable setting.
 	for _, e := range cfg.ProxyEndpoints {
@@ -193,32 +184,20 @@ func (m *managedProxy) start(ctx context.Context) {
 	m.ctx = ctx
 	desired := m.desired
 	m.mu.Unlock()
-	_ = m.apply(desired, false) // Restoring needs no write, so it cannot fail.
+	_ = m.apply(desired)
 }
 
 // apply starts listeners for desired managed endpoints and stops accepting on
 // the rest. Stopping closes only the listening socket; admitted tunnels run
-// until their peers close them or the node shuts down.
-//
-// A changed decision is made durable first. If that write fails, nothing
-// changes in memory or on the sockets and the error is returned, so the next
-// state read retries both: running listeners never diverge from what a
-// restart would restore.
-func (m *managedProxy) apply(desired []string, persist bool) error {
+// until their peers close them or the node shuts down. Desired endpoints come
+// from durable profile and owner settings, so apply itself persists nothing.
+func (m *managedProxy) apply(desired []string) error {
 	if m == nil {
 		return nil
 	}
 	desired = slices.Clone(desired)
 	slices.Sort(desired)
 	desired = slices.Compact(desired)
-	m.mu.Lock()
-	persist = persist && !slices.Equal(m.desired, desired)
-	m.mu.Unlock()
-	if persist {
-		if err := m.write(m.statePath, model.ProxyState{Listeners: desired}); err != nil {
-			return fmt.Errorf("persist managed proxy state: %w", err)
-		}
-	}
 	m.mu.Lock()
 	if m.closed || m.ctx == nil {
 		m.desired = desired

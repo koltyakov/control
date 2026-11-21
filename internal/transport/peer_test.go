@@ -194,3 +194,57 @@ func TestRegistrationRepublishKeepsDirectStreams(t *testing.T) {
 	}
 	echo("after republish")
 }
+
+func TestRefusedSetupFailsDialerFast(t *testing.T) {
+	t.Parallel()
+	for _, relay := range []bool{false, true} {
+		t.Run(fmt.Sprintf("relay=%v", relay), func(t *testing.T) {
+			const token = "refused-setup-token-123456"
+			g, err := gateway.New(t.TempDir(), token)
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewServer(g.Handler())
+			t.Cleanup(server.Close)
+			t.Cleanup(func() { _ = g.Close() })
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			makePeer := func(name string) *Peer {
+				id, err := identity.Load(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				p := New(Config{Gateway: server.URL, Token: token, Identity: id, Node: model.Node{ID: id.ID, Name: name, PublicKey: id.Public}, RelayOnly: relay}, func(remote string, conn net.Conn) { _, _ = io.Copy(conn, conn) })
+				p.api, p.trickleAPI = loopbackWebRTCAPI(p.cfg.DirectTimeout, false), loopbackWebRTCAPI(p.cfg.DirectTimeout, true)
+				p.networkSnapshot = func() (string, error) { return "unchanged", nil }
+				if err = p.Start(ctx); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = p.Close() })
+				return p
+			}
+			a, b := makePeer("alpha"), makePeer("beta")
+			// Occupy every incoming setup slot on beta.
+			for range cap(b.setups) {
+				b.setups <- struct{}{}
+			}
+			start := time.Now()
+			stream, err := a.Open(ctx, "beta")
+			if err == nil {
+				_ = stream.Close()
+				t.Fatal("setup succeeded without a free slot")
+			}
+			if waited := time.Since(start); waited > 5*time.Second {
+				t.Fatalf("refused setup waited %s: %v", waited, err)
+			}
+			for range cap(b.setups) {
+				<-b.setups
+			}
+			stream, err = a.Open(ctx, "beta")
+			if err != nil {
+				t.Fatal("setup failed after slots were released", err)
+			}
+			_ = stream.Close()
+		})
+	}
+}

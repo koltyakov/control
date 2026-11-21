@@ -36,6 +36,18 @@ type storedArtifact struct {
 	model.Artifact
 	Owners   []string `json:"owners,omitempty"`
 	Deleting bool     `json:"deleting,omitempty"`
+	// Held records the latest hold through import or pull deduplication.
+	// Age-based retention counts from it, so re-exported or re-pulled
+	// content is not expired just after it was handed out.
+	Held time.Time `json:"held,omitempty"`
+}
+
+// retainedSince is the start of an artifact's retention period.
+func (a storedArtifact) retainedSince() time.Time {
+	if a.Held.After(a.Created) {
+		return a.Held
+	}
+	return a.Created
 }
 
 const maxArtifactOwners = 256
@@ -76,13 +88,22 @@ func (n *Node) holdArtifactLocked(a storedArtifact, owner string) error {
 	if a.Deleting {
 		return errors.New("artifact deletion is pending")
 	}
-	if len(a.Owners) == 0 || slices.Contains(a.Owners, owner) {
-		return nil
-	}
-	if len(a.Owners) >= maxArtifactOwners {
-		return errors.New("artifact owner limit reached; existing holds were preserved")
-	} else {
+	changed := false
+	if len(a.Owners) != 0 && !slices.Contains(a.Owners, owner) {
+		if len(a.Owners) >= maxArtifactOwners {
+			return errors.New("artifact owner limit reached; existing holds were preserved")
+		}
 		a.Owners = append(a.Owners, owner)
+		changed = true
+	}
+	// Refreshing the hold only matters with age-based retention; bound the
+	// extra metadata writes for repeated holds.
+	if now := time.Now().UTC(); n.Config.ArtifactRetentionHours > 0 && now.Sub(a.retainedSince()) >= time.Minute {
+		a.Held = now
+		changed = true
+	}
+	if !changed {
+		return nil
 	}
 	return store.Write(n.artifactPath(a.ID)+".json", a)
 }

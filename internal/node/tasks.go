@@ -332,6 +332,10 @@ func (n *Node) startTaskContext(parent context.Context, owner string, spec model
 	// The record is durable before acceptance is visible or acknowledged. The
 	// reservation keeps duplicate submissions and lease changes ordered.
 	if err := store.Write(n.taskPath(task.ID), task); err != nil {
+		// A failed directory sync can leave the renamed record visible.
+		// Acceptance was not acknowledged, so a restart must not recover it
+		// as an interrupted task or block resubmission of its ID.
+		_ = os.Remove(n.taskPath(task.ID))
 		return model.Task{}, err
 	}
 	n.mu.Lock()

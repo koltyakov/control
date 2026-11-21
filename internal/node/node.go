@@ -209,6 +209,12 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 	}
 	n.delegations = map[string]*delegationState{}
 	n.artifactStaging = make(map[string]bool)
+	// Crashed metadata writes leave temporary files nothing else reclaims.
+	for _, dir := range []string{cfg.DataDir, filepath.Join(cfg.DataDir, "tasks"), filepath.Join(cfg.DataDir, "artifacts"), filepath.Join(cfg.DataDir, "uploads")} {
+		if err := store.RemoveStaleTemps(dir, time.Hour); err != nil {
+			slog.Warn("remove stale metadata temporary files", "dir", dir, "error", err)
+		}
+	}
 	n.uploads, err = upload.New(root, cfg.WorkDir, cfg.DataDir, id.ID, upload.Limits{StagingBytes: cfg.MaxUploadStagingBytes, OwnerBytes: cfg.MaxUploadOwnerBytes, ReserveBytes: cfg.UploadReserveBytes, Retention: time.Duration(cfg.UploadRetentionHours) * time.Hour})
 	if err != nil {
 		_ = root.Close()

@@ -12,3 +12,5 @@ func syncDirectory(path string) error {
 	defer func() { _ = dir.Close() }()
 	return dir.Sync()
 }
+
+func replaceFile(from, to string) error { return os.Rename(from, to) }

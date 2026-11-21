@@ -64,6 +64,7 @@ type transportStats struct {
 	linkOverflows         atomic.Int64
 	lookupHits            atomic.Int64
 	lookupMisses          atomic.Int64
+	gatewayIdleCloses     atomic.Int64
 	lastOverflowLog       atomic.Int64
 	udpBuffers            udpBufferStats
 }
@@ -79,6 +80,7 @@ func (p *Peer) Stats() model.TransportStats {
 		LinkOverflows:          p.stats.linkOverflows.Load(),
 		LookupHits:             p.stats.lookupHits.Load(),
 		LookupMisses:           p.stats.lookupMisses.Load(),
+		GatewayIdleCloses:      p.stats.gatewayIdleCloses.Load(),
 		UDPReceiveBufferBytes:  p.stats.udpBuffers.value(),
 	}
 }

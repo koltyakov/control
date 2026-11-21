@@ -116,7 +116,7 @@ func TestProxyCheckRetriesDurableEnabledListenerAfterBindFailure(t *testing.T) {
 	if got := checks.snapshot(time.Now()); len(got) != 1 || got[0].State != model.ProxyReady {
 		t.Fatalf("recovered listener not checked ready: %+v", got)
 	}
-	if err := m.apply(nil, false); err != nil {
+	if err := m.apply(nil); err != nil {
 		t.Fatal(err)
 	}
 	checks.checkAll(t.Context(), "https://gateway.example")
@@ -266,7 +266,8 @@ func TestNativeProxyInterfacesComeFromLiveAssignedAddresses(t *testing.T) {
 }
 
 func TestProxyManagementFailedBindKeepsDurableSettings(t *testing.T) {
-	m, err := newManagedProxy(Config{Gateway: "https://gateway.example", DataDir: t.TempDir()})
+	dataDir := t.TempDir()
+	m, err := newManagedProxy(Config{Gateway: "https://gateway.example", DataDir: dataDir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +279,7 @@ func TestProxyManagementFailedBindKeepsDurableSettings(t *testing.T) {
 	if err := m.configure(q, []model.ProxyInterface{{Name: "nic", Address: q.Address}}); err == nil || m.enabled {
 		t.Fatal("failed bind reported applied")
 	}
-	if m.settingsPath != filepath.Join(filepath.Dir(m.statePath), "proxy-settings.json") {
+	if m.settingsPath != filepath.Join(dataDir, "proxy-settings.json") {
 		t.Fatal("settings not stored under worker data directory")
 	}
 }

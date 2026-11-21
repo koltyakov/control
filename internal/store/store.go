@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 func Write(path string, value any) error {
@@ -21,7 +23,7 @@ func Bytes(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".write-*")
+	f, err := os.CreateTemp(filepath.Dir(path), TempPrefix+"*")
 	if err != nil {
 		return err
 	}
@@ -46,7 +48,7 @@ func Bytes(path string, data []byte, mode os.FileMode) error {
 // RenameInDirectory publishes a synced temporary file in the same directory.
 // A sync failure is returned even though the rename may already be visible.
 func RenameInDirectory(tmp, path string) error {
-	if err := os.Rename(tmp, path); err != nil {
+	if err := replaceFile(tmp, path); err != nil {
 		return err
 	}
 	return syncDirectory(filepath.Dir(path))
@@ -82,4 +84,33 @@ func Append(path string, data []byte) error {
 		err = syncDirectory(filepath.Dir(path))
 	}
 	return err
+}
+
+// TempPrefix names Bytes' temporary files, which a crash can leave behind.
+const TempPrefix = ".write-"
+
+// RemoveStaleTemps deletes this package's temporary files in dir that are
+// older than age. Younger files may belong to a write still in progress.
+func RemoveStaleTemps(dir string, age time.Duration) error {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	cutoff := time.Now().Add(-age)
+	for _, e := range entries {
+		if !e.Type().IsRegular() || !strings.HasPrefix(e.Name(), TempPrefix) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }

@@ -168,7 +168,7 @@ func (n *Node) pruneArtifacts(ctx context.Context, now time.Time) error {
 			a, err := n.storedArtifact(id)
 			// Age-based expiry is opt-in and only adds candidates; the same
 			// reference, reader and grant checks protect content still in use.
-			expired := retention > 0 && !a.Created.IsZero() && now.Sub(a.Created) >= retention
+			expired := retention > 0 && !a.Created.IsZero() && now.Sub(a.retainedSince()) >= retention
 			if err == nil && (a.Deleting || expired) && !n.artifactReferenced(id) && !n.artifactReading(id) && !n.artifactGranted(id) {
 				err = n.deleteArtifactLocked(a)
 				if err == nil && !a.Deleting {

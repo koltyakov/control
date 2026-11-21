@@ -114,35 +114,42 @@ type Peer struct {
 	directoryGeneration uint64
 	networkGeneration   uint64
 	setups              chan struct{}
-	streamSlots         chan struct{}
-	outgoingSlots       map[Lane]chan struct{}
-	closed              bool
-	relayDrainUntil     time.Time
-	relayDrainID        string
-	relayPeerDrains     map[string]peerDrain
-	closeOnce           sync.Once
-	handler             func(string, net.Conn)
-	log                 *slog.Logger
-	wg                  sync.WaitGroup
-	control             func(string, []byte)
-	wake                func([]byte)
-	startup             func([]byte)
-	secrets             func([]byte)
-	proxyManagement     func([]byte)
-	proxySlots          chan struct{}
-	secretSlots         chan struct{}
-	nodeHealth          bool
-	telemetryLiveness   atomic.Bool
-	gatewaySession      atomic.Uint64
-	clientSessions      bool
-	machineStatePush    atomic.Bool
-	machineStateWake    chan struct{}
-	networkSnapshot     func() (string, error)
-	wakeSnapshot        func() ([]model.WakeInterface, error)
-	lanDiscovery        bool
-	lanViewSession      string
-	lanSlots            chan struct{}
-	lanInbound          map[string]time.Time
+	// rejects bounds concurrent close replies to refused setups.
+	rejects           chan struct{}
+	streamSlots       chan struct{}
+	outgoingSlots     map[Lane]chan struct{}
+	closed            bool
+	relayDrainUntil   time.Time
+	relayDrainID      string
+	relayPeerDrains   map[string]peerDrain
+	closeOnce         sync.Once
+	handler           func(string, net.Conn)
+	log               *slog.Logger
+	wg                sync.WaitGroup
+	control           func(string, []byte)
+	wake              func([]byte)
+	startup           func([]byte)
+	secrets           func([]byte)
+	proxyManagement   func([]byte)
+	proxySlots        chan struct{}
+	secretSlots       chan struct{}
+	nodeHealth        bool
+	telemetryLiveness atomic.Bool
+	// gatewayHeartbeat records that the current gateway sends periodic
+	// challenges, so prolonged silence means a dead path.
+	gatewayHeartbeat atomic.Bool
+	// readIdle overrides gatewayReadIdle in tests.
+	readIdle         time.Duration
+	gatewaySession   atomic.Uint64
+	clientSessions   bool
+	machineStatePush atomic.Bool
+	machineStateWake chan struct{}
+	networkSnapshot  func() (string, error)
+	wakeSnapshot     func() ([]model.WakeInterface, error)
+	lanDiscovery     bool
+	lanViewSession   string
+	lanSlots         chan struct{}
+	lanInbound       map[string]time.Time
 }
 
 func New(cfg Config, handler func(string, net.Conn), options ...Options) *Peer {
@@ -161,7 +168,7 @@ func New(cfg Config, handler func(string, net.Conn), options ...Options) *Peer {
 		incomingSetups: map[string]*incomingSetup{}, resolved: map[string]string{},
 		members: map[string]bool{}, memberSeen: map[string]time.Time{}, owners: map[string]string{}, channels: map[string]bool{},
 		largePackets: map[string]bool{}, trickle: map[string]bool{}, directRetry: map[string]time.Time{}, lookups: map[string]lookupEntry{},
-		carriers: map[string]*rtcCarrier{}, setups: make(chan struct{}, 32), streamSlots: make(chan struct{}, 512),
+		carriers: map[string]*rtcCarrier{}, setups: make(chan struct{}, 32), rejects: make(chan struct{}, 8), streamSlots: make(chan struct{}, 512),
 		pendingSlots: map[Lane]chan struct{}{
 			ControlLane: make(chan struct{}, 32), BulkLane: make(chan struct{}, 16), InteractiveLane: make(chan struct{}, 16),
 		},
@@ -365,6 +372,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	p.userID = scope.UserID
 	p.nodeHealth = scope.NodeHealth
 	p.telemetryLiveness.Store(scope.TelemetryLiveness && scope.GatewayHeartbeat && !p.cfg.Client)
+	p.gatewayHeartbeat.Store(scope.GatewayHeartbeat)
 	p.clientSessions = scope.ClientSessions
 	p.cfg.Node.UserID = scope.UserID
 	// Negotiate this optional signed field so new machines still connect to old
@@ -489,19 +497,43 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	return ws, nil
 }
 
+// gatewayReadIdle is six heartbeat intervals without any gateway packet.
+const gatewayReadIdle = 30 * time.Second
+
 func (p *Peer) run(ws *websocket.Conn) {
 	for {
 		var reader wsio.Reader
+		// A heartbeat gateway writes at least every few seconds. Silence
+		// beyond gatewayReadIdle means the path died without a local route
+		// change, so close the socket instead of waiting on TCP timeouts.
+		var watchdog *time.Timer
+		idle := gatewayReadIdle
+		if p.readIdle > 0 {
+			idle = p.readIdle
+		}
+		if p.gatewayHeartbeat.Load() {
+			current := ws
+			watchdog = time.AfterFunc(idle, func() {
+				p.stats.gatewayIdleCloses.Add(1)
+				_ = current.CloseNow()
+			})
+		}
 		for {
 			_, b, err := reader.Read(p.ctx, ws)
 			if err != nil {
 				break
+			}
+			if watchdog != nil {
+				watchdog.Reset(idle)
 			}
 			var msg protocol.Packet
 			if proto.Unmarshal(b, &msg) != nil {
 				break
 			}
 			p.receive(&msg)
+		}
+		if watchdog != nil {
+			watchdog.Stop()
 		}
 		_ = ws.CloseNow()
 		p.mu.Lock()
@@ -708,9 +740,13 @@ func (p *Peer) receive(msg *protocol.Packet) {
 		p.mu.Lock()
 		_, exists := p.links[msg.Session]
 		exists = exists || p.incomingSetups[msg.Session] != nil
-		full := len(p.links) >= 256 || p.closed
+		full := len(p.links) >= maxPeerLinks || p.closed || p.remoteLinksLocked(msg.From) >= maxRemoteLinks
 		p.mu.Unlock()
-		if exists || full {
+		if exists {
+			return
+		}
+		if full {
+			p.rejectSetup(msg)
 			return
 		}
 		select {
@@ -725,7 +761,8 @@ func (p *Peer) receive(msg *protocol.Packet) {
 				cleanup()
 			}
 		default:
-			// Drop excess setup without blocking the gateway reader on a write.
+			// Refuse excess setup without blocking the gateway reader on a write.
+			p.rejectSetup(msg)
 		}
 		return
 	}
@@ -765,6 +802,50 @@ func (p *Peer) receive(msg *protocol.Packet) {
 		}
 	case "close":
 		go func() { _ = l.conn.Close() }()
+	}
+}
+
+const (
+	// maxPeerLinks bounds all incoming and outgoing links.
+	maxPeerLinks = 256
+	// maxRemoteLinks keeps one remote from taking every incoming link.
+	maxRemoteLinks = 64
+)
+
+// remoteLinksLocked counts established links and pending incoming setups
+// with one remote. Caller holds p.mu.
+func (p *Peer) remoteLinksLocked(remote string) int {
+	n := 0
+	for _, l := range p.links {
+		if l.remote == remote {
+			n++
+		}
+	}
+	for _, setup := range p.incomingSetups {
+		if setup.remote == remote {
+			n++
+		}
+	}
+	return n
+}
+
+// rejectSetup answers a refused open with close so the dialer fails fast
+// instead of waiting out its setup timeout. Replies are best effort and
+// bounded; excess refusals are dropped as before.
+func (p *Peer) rejectSetup(msg *protocol.Packet) {
+	select {
+	case p.rejects <- struct{}{}:
+	default:
+		return
+	}
+	reply := &protocol.Packet{Kind: "close", To: msg.From, Session: msg.Session}
+	if !p.worker(func() {
+		defer func() { <-p.rejects }()
+		ctx, cancel := context.WithTimeout(p.ctx, 2*time.Second)
+		defer cancel()
+		_ = p.send(ctx, reply)
+	}) {
+		<-p.rejects
 	}
 }
 
@@ -830,7 +911,7 @@ func (p *Peer) newLink(ctx context.Context, id, remote, mode string, shared ...*
 		}
 		return nil, err
 	}
-	if _, exists := p.links[id]; exists || len(p.links) >= 256 || (l.carrier != nil && (l.carrier.closed || l.carrier.disconnected)) {
+	if _, exists := p.links[id]; exists || len(p.links) >= maxPeerLinks || (l.carrier != nil && (l.carrier.closed || l.carrier.disconnected)) {
 		p.mu.Unlock()
 		l.conn.cancel()
 		if l.pc != nil && len(shared) == 0 {

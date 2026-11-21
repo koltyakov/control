@@ -52,7 +52,6 @@ func managedFixture(t *testing.T, sources ...string) (*managedProxy, *atomic.Int
 	m := &managedProxy{
 		target:    "gateway.test:443",
 		endpoints: map[string]managedEndpoint{managedTestURL: {url: managedTestURL, addr: netip.MustParseAddrPort("10.0.0.5:3128"), sources: prefixes}},
-		statePath: filepath.Join(t.TempDir(), managedProxyStateFile),
 		listeners: map[string]net.Listener{}, failures: map[string]string{}, conns: map[net.Conn]struct{}{},
 	}
 	m.write = func(path string, value any) error { return store.Write(path, value) }
@@ -69,7 +68,7 @@ func managedFixture(t *testing.T, sources ...string) (*managedProxy, *atomic.Int
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { cancel(); m.closeAll() })
 	m.start(ctx)
-	if err := m.apply([]string{managedTestURL}, true); err != nil {
+	if err := m.apply([]string{managedTestURL}); err != nil {
 		t.Fatal(err)
 	}
 	addr := func() string {
@@ -190,7 +189,7 @@ func TestManagedListenerUpdateFenceAndDeactivation(t *testing.T) {
 		t.Fatal("fenced over an active tunnel")
 	}
 	// Losing every dependency stops accepting without cutting the tunnel.
-	if err := m.apply(nil, true); err != nil {
+	if err := m.apply(nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = net.DialTimeout("tcp", address, time.Second); err == nil {
@@ -205,12 +204,8 @@ func TestManagedListenerUpdateFenceAndDeactivation(t *testing.T) {
 	}
 	_ = tunnel.Close()
 	eventuallyTrue(t, func() bool { return !m.busy() })
-	var saved model.ProxyState
-	if err = store.Read(m.statePath, &saved); err != nil || len(saved.Listeners) != 0 {
-		t.Fatalf("deactivation not persisted: %+v %v", saved, err)
-	}
 	// Reactivate, fence while idle: new connections are refused until resume.
-	if err := m.apply([]string{managedTestURL}, true); err != nil {
+	if err := m.apply([]string{managedTestURL}); err != nil {
 		t.Fatal(err)
 	}
 	address = addr()
@@ -255,12 +250,9 @@ func TestManagedListenerShutdownClosesTunnelsAndJoins(t *testing.T) {
 	}
 }
 
-func TestManagedListenerRestoresPersistedDecisionAndReportsBindFailure(t *testing.T) {
+func TestManagedListenerStartsConfiguredEndpointAndReportsBindFailure(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Config{Gateway: "https://Gateway.Example", DataDir: dir, ProxyEndpoints: []model.ProxyEndpoint{{URL: managedTestURL, Managed: true, Sources: []string{"10.0.0.0/24"}}}}
-	if err := store.Write(filepath.Join(dir, managedProxyStateFile), model.ProxyState{Listeners: []string{managedTestURL}}); err != nil {
-		t.Fatal(err)
-	}
 	m, err := newManagedProxy(cfg)
 	if err != nil || m == nil {
 		t.Fatal(err)
@@ -286,7 +278,7 @@ func TestManagedListenerRestoresPersistedDecisionAndReportsBindFailure(t *testin
 		t.Fatalf("readiness %+v", got)
 	}
 	// A stopped listener is unavailable, never selectable as standby.
-	if err := m.apply(nil, true); err != nil {
+	if err := m.apply(nil); err != nil {
 		t.Fatal(err)
 	}
 	checks.checkAll(ctx, cfg.Gateway)
@@ -440,51 +432,14 @@ func TestManagedTunnelsBlockNodeUpdateReservation(t *testing.T) {
 	}
 }
 
-func TestManagedListenerRetriesFailedDecisionPersistence(t *testing.T) {
-	m, _, addr := managedFixture(t, "127.0.0.0/8")
-	address := addr()
-	write := m.write
-	m.write = func(string, any) error { return errors.New("disk unavailable") }
-	if err := m.apply(nil, true); err == nil {
-		t.Fatal("failed persistence was ignored")
-	}
-	if addr() != address || !slices.Equal(m.desired, []string{managedTestURL}) {
-		t.Fatal("failed deactivation changed running or desired listeners")
-	}
-	m.write = write
-	if err := m.apply(nil, true); err != nil {
-		t.Fatal(err)
-	}
-	if addr() != "" {
-		t.Fatal("deactivation was not retried")
-	}
-	m.write = func(string, any) error { return errors.New("disk unavailable") }
-	if err := m.apply([]string{managedTestURL}, true); err == nil {
-		t.Fatal("failed activation persistence was ignored")
-	}
-	if addr() != "" || len(m.desired) != 0 {
-		t.Fatal("activation ran without a durable decision")
-	}
-	m.write = write
-	if err := m.apply([]string{managedTestURL}, true); err != nil {
-		t.Fatal(err)
-	}
-	if addr() == "" {
-		t.Fatal("activation was not retried")
-	}
-	var saved model.ProxyState
-	if err := store.Read(m.statePath, &saved); err != nil || !slices.Equal(saved.Listeners, m.desired) {
-		t.Fatalf("restart state differs: %+v %v", saved, err)
-	}
-}
-
-func TestManagedListenerRejectsCorruptSavedDecision(t *testing.T) {
+func TestManagedListenerIgnoresLegacyDecisionState(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, managedProxyStateFile), []byte("{"), 0600); err != nil {
+	// Older workers wrote this file; a corrupt copy must not block startup.
+	if err := os.WriteFile(filepath.Join(dir, legacyProxyStateFile), []byte("{"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := newManagedProxy(Config{Gateway: "https://gateway.example", DataDir: dir, ProxyEndpoints: []model.ProxyEndpoint{{URL: managedTestURL, Managed: true, Sources: []string{"10.0.0.0/24"}}}})
-	if err == nil {
-		t.Fatal("corrupt saved decision was treated as no dependencies")
+	m, err := newManagedProxy(Config{Gateway: "https://gateway.example", DataDir: dir, ProxyEndpoints: []model.ProxyEndpoint{{URL: managedTestURL, Managed: true, Sources: []string{"10.0.0.0/24"}}}})
+	if err != nil || m == nil || !slices.Equal(m.desired, []string{managedTestURL}) {
+		t.Fatal("legacy proxy state changed startup", m, err)
 	}
 }

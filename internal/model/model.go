@@ -132,6 +132,8 @@ type TransportStats struct {
 	LinkOverflows          int64 `json:"linkOverflows"`
 	LookupHits             int64 `json:"lookupHits"`
 	LookupMisses           int64 `json:"lookupMisses"`
+	// GatewayIdleCloses counts gateway sockets closed after heartbeat silence.
+	GatewayIdleCloses int64 `json:"gatewayIdleCloses,omitempty"`
 	// UDPReceiveBufferBytes is the smallest effective WebRTC UDP receive
 	// buffer the operating system granted; zero means none was opened yet.
 	UDPReceiveBufferBytes int64 `json:"udpReceiveBufferBytes,omitempty"`

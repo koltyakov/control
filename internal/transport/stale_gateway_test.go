@@ -130,3 +130,46 @@ func TestReconnectAfterAbandonedGatewayPathProbesStaleRegistration(t *testing.T)
 		t.Logf("reconnected after %v", elapsed)
 	}
 }
+
+// A path that silently stops delivering, without any local route change, is
+// detected from heartbeat silence and the node reconnects on its own.
+func TestHeartbeatSilenceClosesFrozenGatewayPath(t *testing.T) {
+	t.Parallel()
+	const token = "frozen-path-test-token-123456"
+	g, err := gateway.New(t.TempDir(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = g.Close() })
+	server := httptest.NewServer(g.Handler())
+	t.Cleanup(server.Close)
+	proxy := newFreezingProxy(t, server.Listener.Addr().String())
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	id, err := identity.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := New(Config{Gateway: "http://" + proxy.listener.Addr().String(), Token: token, Identity: id, Node: model.Node{ID: id.ID, Name: "frozen", PublicKey: id.Public}}, func(string, net.Conn) {})
+	p.networkSnapshot = func() (string, error) { return "unchanged", nil }
+	// Slightly more than one heartbeat interval keeps the test short.
+	p.readIdle = 6 * time.Second
+	if err := p.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	<-p.GatewayConnected()
+	if !p.gatewayHeartbeat.Load() {
+		t.Fatal("gateway did not negotiate heartbeats")
+	}
+	proxy.freeze()
+	for p.Stats().GatewayReconnects == 0 {
+		if ctx.Err() != nil {
+			t.Fatal("node never noticed the frozen gateway path")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if p.Stats().GatewayIdleCloses == 0 {
+		t.Fatal("reconnect was not caused by the idle watchdog")
+	}
+}

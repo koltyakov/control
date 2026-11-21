@@ -118,3 +118,37 @@ func TestArtifactRetentionConfigBounds(t *testing.T) {
 		}
 	}
 }
+
+func TestArtifactRetentionCountsFromLatestDeduplicatedHold(t *testing.T) {
+	t.Parallel()
+	n := localNode(t, func(c *Config) { c.ArtifactRetentionHours = 24 })
+	a, err := n.importArtifact(t.Context(), strings.NewReader("shared content"), "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := n.storedArtifact(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.Created = time.Now().Add(-48 * time.Hour)
+	if err = store.Write(n.artifactPath(a.ID)+".json", stored); err != nil {
+		t.Fatal(err)
+	}
+	// Re-exporting identical bytes hands out the same artifact again.
+	again, err := n.importArtifact(t.Context(), strings.NewReader("shared content"), "second")
+	if err != nil || again.ID != a.ID {
+		t.Fatal("identical content was not deduplicated", again.ID, err)
+	}
+	if err := n.pruneArtifacts(t.Context(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := n.storedArtifact(a.ID); err != nil {
+		t.Fatal("retention expired content that was just handed out again", err)
+	}
+	if err := n.pruneArtifacts(t.Context(), time.Now().Add(25*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := n.storedArtifact(a.ID); err == nil {
+		t.Fatal("retention never expired the unused artifact")
+	}
+}
