@@ -55,16 +55,16 @@ func TestLANCandidatesDoNotAssumeSubnetIsEvidence(t *testing.T) {
 	b := model.WakeInterface{Address: "192.168.1.3/24", MAC: "02:00:00:00:00:03"}
 	self := model.Node{ID: "self", WakeInterfaces: []model.WakeInterface{a}}
 	other := model.Node{ID: "other", Online: true, LANDiscovery: true, WakeInterfaces: []model.WakeInterface{b}}
-	nodes := []model.Node{self, other}
-	if got := lanCandidates(self.ID, self.WakeInterfaces, nodes, now); len(got) != 1 {
+	probe, _ := other.LANProbeNode()
+	view := model.LANView{Receiver: self.ID, Nodes: []model.LANNode{probe}}
+	if got := lanCandidates(view, self.WakeInterfaces, now); len(got) != 1 {
 		t.Fatal("automatic candidate needs no labels", got)
 	}
-	self.LANPeers = []model.LANPeer{{ID: other.ID, Local: a, Remote: b, VerifiedAt: now}}
-	nodes[0] = self
-	if got := lanCandidates(self.ID, self.WakeInterfaces, nodes, now); len(got) != 0 {
+	view.LANPeers = []model.LANPeer{{ID: other.ID, Local: a, Remote: b, VerifiedAt: now}}
+	if got := lanCandidates(view, self.WakeInterfaces, now); len(got) != 0 {
 		t.Fatal("fresh evidence reprobed", got)
 	}
-	nodes[0].LANPeers = nil
+	view.LANPeers = nil
 	for _, change := range []func(*model.Node){
 		func(n *model.Node) { n.Online = false },
 		func(n *model.Node) { n.LANDiscovery = false },
@@ -73,8 +73,11 @@ func TestLANCandidatesDoNotAssumeSubnetIsEvidence(t *testing.T) {
 	} {
 		n := other
 		change(&n)
-		nodes[1] = n
-		if got := lanCandidates(self.ID, self.WakeInterfaces, nodes, now); len(got) != 0 {
+		view.Nodes = nil
+		if probe, ok := n.LANProbeNode(); ok {
+			view.Nodes = []model.LANNode{probe}
+		}
+		if got := lanCandidates(view, self.WakeInterfaces, now); len(got) != 0 {
 			t.Fatal("incompatible candidate", got)
 		}
 	}

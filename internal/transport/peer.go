@@ -140,6 +140,7 @@ type Peer struct {
 	networkSnapshot     func() (string, error)
 	wakeSnapshot        func() ([]model.WakeInterface, error)
 	lanDiscovery        bool
+	lanViewSession      string
 	lanSlots            chan struct{}
 	lanInbound          map[string]time.Time
 }
@@ -317,6 +318,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		NodeBytes         bool     `json:"nodeBytes"`
 		MachineStatePush  bool     `json:"machineStatePush"`
 		LANDiscovery      bool     `json:"lanDiscovery"`
+		LANView           bool     `json:"lanView"`
 		GatewayHeartbeat  bool     `json:"gatewayHeartbeat"`
 		TelemetryLiveness bool     `json:"telemetryLiveness"`
 		RelayDrain        bool     `json:"relayDrain"`
@@ -406,6 +408,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	if err == nil && len(challenge) != 32 {
 		err = errors.New("invalid gateway challenge")
 	}
+	var lanViewSession string
 	if err == nil {
 		p.mu.Lock()
 		node := p.cfg.Node
@@ -433,6 +436,9 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 			hello.Node.GatewayProxy = nil
 		}
 		hello.Signature = ed25519.Sign(p.cfg.Identity.Private, hello.Message(challenge))
+		if scope.LANView && node.LANDiscovery && !p.cfg.Client {
+			lanViewSession = gateway.LANViewSession(hello.Signature)
+		}
 		if p.cfg.ClientOwner != nil {
 			hello.OwnerKey = p.cfg.ClientOwner.Public
 			hello.OwnerSignature = ed25519.Sign(p.cfg.ClientOwner.Private, hello.OwnerMessage(challenge))
@@ -457,6 +463,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		return nil, gatewayNetworkError(errors.New("network changed during gateway connection"))
 	}
 	p.ws = ws
+	p.lanViewSession = lanViewSession
 	p.relayDrainUntil, p.relayDrainID = time.Time{}, ""
 	clear(p.relayPeerDrains)
 	p.gatewayWS.Store(ws)
@@ -467,6 +474,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 	p.directoryGeneration++
 	if p.closed || p.ctx.Err() != nil {
 		p.ws = nil
+		p.lanViewSession = ""
 		p.gatewayWS.Store(nil)
 		p.mu.Unlock()
 		_ = ws.CloseNow()
@@ -499,6 +507,7 @@ func (p *Peer) run(ws *websocket.Conn) {
 		p.mu.Lock()
 		if p.ws == ws {
 			p.ws = nil
+			p.lanViewSession = ""
 			p.gatewayWS.Store(nil)
 		}
 		// The gateway closes this connection when it retires the identity, and no

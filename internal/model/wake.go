@@ -27,6 +27,29 @@ type LANPeer struct {
 	VerifiedAt time.Time     `json:"verifiedAt"`
 }
 
+// LANView is discovery input, not a directory for membership or execution.
+// LANPeers contains only the receiver's own verified relationships.
+type LANView struct {
+	UserID   string    `json:"userId"`
+	Receiver string    `json:"receiver"`
+	Nodes    []LANNode `json:"nodes"`
+	LANPeers []LANPeer `json:"lanPeers,omitempty"`
+}
+
+type LANNode struct {
+	ID             string          `json:"id"`
+	PublicKey      []byte          `json:"publicKey"`
+	WakeInterfaces []WakeInterface `json:"wakeInterfaces"`
+}
+
+// LANProbeNode projects the online nodes eligible to participate in discovery.
+func (n Node) LANProbeNode() (LANNode, bool) {
+	if !n.Online || !n.LANDiscovery || len(n.WakeInterfaces) == 0 {
+		return LANNode{}, false
+	}
+	return LANNode{ID: n.ID, PublicKey: n.PublicKey, WakeInterfaces: n.WakeInterfaces}, true
+}
+
 type LANProbe struct {
 	Receiver    string        `json:"receiver"`
 	Sender      string        `json:"sender"`

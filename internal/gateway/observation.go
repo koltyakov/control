@@ -14,17 +14,21 @@ import (
 // Observation reads use a separately locked, committed view. Never take mu
 // while holding observationMu, and never perform persistence under this lock.
 type observation struct {
-	node     model.Node
-	nodeHash [sha256.Size]byte
-	health   *model.NodeHealth
-	healthAt time.Time
-	status   update.Status
+	node         model.Node
+	nodeHash     [sha256.Size]byte
+	lanNodeHash  [sha256.Size]byte
+	lanProofHash [sha256.Size]byte
+	lanProofRev  string
+	health       *model.NodeHealth
+	healthAt     time.Time
+	status       update.Status
 }
 
 type observedFleet struct {
-	nodes map[string]observation
-	order []string
-	etag  string
+	nodes       map[string]observation
+	order       []string
+	etag        string
+	lanTopology string
 }
 
 // publishObservations updates only changed records after a successful commit,
@@ -49,6 +53,9 @@ func (g *Gateway) publishObservations(ids ...string) {
 			if had {
 				fleet.etag = `"` + identity.NewID() + `"`
 			}
+			if previous.lanNodeHash != ([sha256.Size]byte{}) {
+				fleet.lanTopology = identity.NewID()
+			}
 			delete(fleet.nodes, id)
 			for i, entry := range fleet.order {
 				if entry == id {
@@ -65,6 +72,7 @@ func (g *Gateway) publishObservations(ids ...string) {
 		if !had || previous.nodeHash != next.nodeHash {
 			fleet.etag = `"` + identity.NewID() + `"`
 		}
+		publishLANObservation(fleet, previous, &next)
 		if c := g.peers[id]; c != nil {
 			next.health, next.healthAt = c.health, c.healthAt
 		}

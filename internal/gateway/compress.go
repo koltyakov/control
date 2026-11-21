@@ -40,6 +40,22 @@ func acceptsGzip(r *http.Request) bool {
 	return false
 }
 
+func writeConditionalMetadataJSON(w http.ResponseWriter, r *http.Request, value any, etag string, unchanged bool) {
+	compress := acceptsGzip(r)
+	if etag != "" {
+		// The gzip body is a different byte representation of the same view.
+		if compress {
+			etag = "W/" + etag
+		}
+		w.Header().Set("ETag", etag)
+	}
+	if unchanged {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	writeMetadataJSON(w, value, compress)
+}
+
 // writeMetadataJSON encodes a fleet metadata response, compressed when compress
 // is set. Callers set caching headers and validators first.
 func writeMetadataJSON(w http.ResponseWriter, value any, compress bool) {

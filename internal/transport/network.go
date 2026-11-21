@@ -227,6 +227,7 @@ func (p *Peer) resetNetwork() {
 	p.directRetry = map[string]time.Time{}
 	ws := p.ws
 	p.ws = nil
+	p.lanViewSession = ""
 	p.gatewayWS.Store(nil)
 	if p.connectCancel != nil {
 		p.connectCancel()

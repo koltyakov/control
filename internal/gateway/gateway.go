@@ -97,6 +97,7 @@ type connection struct {
 	pong              chan string
 	client            bool
 	lanDiscovery      bool
+	lanViewSession    string
 	userID            string
 	ws                *websocket.Conn
 	out               chan *protocol.Packet
@@ -325,6 +326,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	mux.HandleFunc("GET /v1/nodes", g.auth(g.list))
+	mux.HandleFunc("GET /v1/lan/{id}", g.lanView)
 	mux.HandleFunc("GET /v1/status", g.auth(g.status))
 	mux.HandleFunc("GET /v1/connect", g.auth(g.connect))
 	mux.HandleFunc("GET /v1/client/connect", g.auth(g.connectClient))
@@ -367,20 +369,7 @@ func (g *Gateway) list(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "private, no-cache")
 	}
 	w.Header().Set("Vary", "Authorization, Cookie, Accept-Encoding")
-	compress := acceptsGzip(r)
-	if etag != "" {
-		// A compressed body is a different byte representation of the same
-		// directory, so its validator is weak. Conditions ignore W/ prefixes.
-		if compress {
-			etag = "W/" + etag
-		}
-		w.Header().Set("ETag", etag)
-	}
-	if unchanged {
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-	writeMetadataJSON(w, nodes, compress)
+	writeConditionalMetadataJSON(w, r, nodes, etag, unchanged)
 }
 
 // sameEnrollment reports whether two registrations carry the same durable
@@ -594,6 +583,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, relayQueuePackets),
 		keyID: p.KeyID, userID: p.UserID, heartbeat: hello.GatewayHeartbeat, relayDrain: hello.RelayDrain, pong: make(chan string, 1), probe: make(chan struct{}, 1), lanDiscovery: n.LANDiscovery, machineStatePush: n.MachineStatePush && !client, relay: newRelayScheduler(),
 		queues: &packetQueues{local: packetBudget{limit: relayQueueBytes}, global: &g.admission.packets, account: &reservation.account.packets, rejected: g.admission}}
+	if !client && n.LANDiscovery {
+		c.lanViewSession = LANViewSession(hello.Signature)
+	}
 	defer c.closeQueues()
 	n.Online = true
 	n.LastSeen = time.Now().UTC()

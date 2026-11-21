@@ -20,7 +20,7 @@ import (
 )
 
 type lanCandidate struct {
-	peer          model.Node
+	peer          model.LANNode
 	local, remote model.WakeInterface
 }
 
@@ -41,8 +41,12 @@ func (p *Peer) watchLAN() {
 	for {
 		p.mu.Lock()
 		enabled := p.lanDiscovery && p.ws != nil
+		scope := p.lanDirectoryScopeLocked()
 		local := slices.Clone(p.cfg.Node.WakeInterfaces)
 		p.mu.Unlock()
+		if !enabled || directory.scope != scope {
+			candidates = nil
+		}
 		if enabled && time.Since(refreshed) >= 10*time.Second {
 			refreshed = time.Now()
 			// Reconnection republishes changed MAC/address metadata. A failed
@@ -52,10 +56,11 @@ func (p *Peer) watchLAN() {
 				candidates = nil
 			} else {
 				ctx, cancel := context.WithTimeout(p.ctx, 3*time.Second)
-				nodes, err := directory.poll(ctx, p)
+				view, err := directory.poll(ctx, p)
 				cancel()
+				candidates = nil
 				if err == nil {
-					candidates = lanCandidates(p.IdentityID(), local, nodes, time.Now())
+					candidates = lanCandidates(view, local, time.Now())
 				}
 			}
 		}
@@ -92,82 +97,114 @@ func (p *Peer) watchLAN() {
 // shared with Nodes, Lookup, or membership checks. Even a 304 must recompute
 // candidates so the fifteen-minute proof freshness window continues to age.
 type lanDirectory struct {
-	nodes      []model.Node
-	etag       string
+	view  model.LANView
+	etag  string
+	scope lanDirectoryScope
+}
+
+type lanDirectoryScope struct {
 	userID     string
+	session    string
 	generation uint64
 }
 
-func (d *lanDirectory) poll(ctx context.Context, p *Peer) ([]model.Node, error) {
+func (p *Peer) lanDirectoryScope() lanDirectoryScope {
 	p.mu.Lock()
-	userID, generation := p.userID, p.directoryGeneration
-	p.mu.Unlock()
-	if d.userID != userID || d.generation != generation {
-		*d = lanDirectory{userID: userID, generation: generation}
+	defer p.mu.Unlock()
+	return p.lanDirectoryScopeLocked()
+}
+
+func (p *Peer) lanDirectoryScopeLocked() lanDirectoryScope {
+	if p.lanViewSession != "" {
+		// Unrelated directory notifications do not invalidate this view.
+		return lanDirectoryScope{userID: p.userID, session: p.lanViewSession}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, gateway.URL(p.cfg.Gateway, "/v1/nodes"), nil)
+	return lanDirectoryScope{userID: p.userID, generation: p.directoryGeneration}
+}
+
+func (d *lanDirectory) poll(ctx context.Context, p *Peer) (model.LANView, error) {
+	scope := p.lanDirectoryScope()
+	if d.scope != scope {
+		*d = lanDirectory{scope: scope}
+	}
+	id := p.IdentityID()
+	legacy := scope.session == ""
+	path := "/v1/nodes"
+	if !legacy {
+		path = "/v1/lan/" + id
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, gateway.URL(p.cfg.Gateway, path), nil)
 	if err != nil {
-		return nil, err
+		return model.LANView{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+p.cfg.Token)
+	if !legacy {
+		req.Header.Set(gateway.LANViewSessionHeader, scope.session)
+	}
 	if d.etag != "" {
 		req.Header.Set("If-None-Match", d.etag)
 	}
-	resp, err := p.cfg.Route.Client(15*time.Second, true).Do(req)
+	// Never forward the live session credential on a redirect.
+	resp, err := p.cfg.Route.Client(15*time.Second, legacy).Do(req)
 	if err != nil {
-		return nil, gatewayNetworkError(err)
+		return model.LANView{}, gatewayNetworkError(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotModified {
-		return nil, directoryStatusError("directory", resp)
-	}
-	var nodes []model.Node
-	if resp.StatusCode == http.StatusNotModified {
+	var view model.LANView
+	switch resp.StatusCode {
+	case http.StatusNotModified:
 		if d.etag == "" || resp.Header.Get("ETag") != d.etag {
-			return nil, errors.New("directory returned an unexpected validator")
+			return model.LANView{}, errors.New("LAN directory returned an unexpected validator")
 		}
-		nodes = d.nodes
-	} else {
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&nodes); err != nil {
-			return nil, err
-		}
-		for _, node := range nodes {
-			if userID == "" || node.UserID != userID {
-				return nil, errors.New("directory returned a node outside the authenticated fleet")
+		view = d.view
+	case http.StatusOK:
+		body := io.LimitReader(resp.Body, 8<<20)
+		if legacy {
+			view, err = legacyLANView(body, scope.userID, id)
+		} else {
+			err = json.NewDecoder(body).Decode(&view)
+			if err == nil && (scope.userID == "" || view.UserID != scope.userID || view.Receiver != id) {
+				err = errors.New("LAN view returned a mismatched fleet or receiver")
 			}
 		}
-		// Retain only LAN inputs after validating the entire response. Capability
-		// schemas and system metadata can dominate a fleet's directory size.
-		for i, node := range nodes {
-			nodes[i] = model.Node{
-				ID: node.ID, UserID: node.UserID, PublicKey: node.PublicKey,
-				Online: node.Online, LANDiscovery: node.LANDiscovery,
-				WakeInterfaces: node.WakeInterfaces, LANPeers: node.LANPeers,
-			}
+		if err != nil {
+			return model.LANView{}, err
 		}
+	default:
+		return model.LANView{}, directoryStatusError("LAN directory", resp)
 	}
-	p.mu.Lock()
-	current := userID == p.userID && generation == p.directoryGeneration
-	p.mu.Unlock()
-	if !current {
+	if scope != p.lanDirectoryScope() {
 		*d = lanDirectory{}
-		return nil, errors.New("directory changed during LAN refresh")
+		return model.LANView{}, errors.New("directory changed during LAN refresh")
 	}
-	d.nodes, d.etag = nodes, resp.Header.Get("ETag")
-	return nodes, nil
+	d.view, d.etag = view, resp.Header.Get("ETag")
+	return view, nil
 }
 
-func lanCandidates(id string, local []model.WakeInterface, nodes []model.Node, now time.Time) []lanCandidate {
-	var self model.Node
+func legacyLANView(body io.Reader, user, id string) (model.LANView, error) {
+	var nodes []model.Node
+	if err := json.NewDecoder(body).Decode(&nodes); err != nil {
+		return model.LANView{}, err
+	}
+	view := model.LANView{UserID: user, Receiver: id}
 	for _, node := range nodes {
+		if user == "" || node.UserID != user {
+			return model.LANView{}, errors.New("directory returned a node outside the authenticated fleet")
+		}
 		if node.ID == id {
-			self = node
-			break
+			view.LANPeers = node.LANPeers
+		}
+		if probe, ok := node.LANProbeNode(); ok {
+			view.Nodes = append(view.Nodes, probe)
 		}
 	}
+	return view, nil
+}
+
+func lanCandidates(view model.LANView, local []model.WakeInterface, now time.Time) []lanCandidate {
 	var candidates []lanCandidate
-	for _, node := range nodes {
-		if node.ID == id || !node.Online || !node.LANDiscovery {
+	for _, node := range view.Nodes {
+		if node.ID == view.Receiver {
 			continue
 		}
 		for _, a := range local {
@@ -175,7 +212,7 @@ func lanCandidates(id string, local []model.WakeInterface, nodes []model.Node, n
 				if !wol.SameSubnet(a, b) {
 					continue
 				}
-				fresh := slices.ContainsFunc(self.LANPeers, func(peer model.LANPeer) bool {
+				fresh := slices.ContainsFunc(view.LANPeers, func(peer model.LANPeer) bool {
 					return peer.ID == node.ID && peer.Local == a && peer.Remote == b && !peer.VerifiedAt.After(now) && now.Sub(peer.VerifiedAt) < 15*time.Minute
 				})
 				if !fresh && len(candidates) < 128 {

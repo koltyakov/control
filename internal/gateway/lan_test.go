@@ -99,6 +99,7 @@ func TestLANReportsPersistOnlyVerifiedFleetRelationships(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, beforeTag, _ := g.conditionalLANView(user.ID, a.ID, "")
 	if _, err := g.db.Exec("PRAGMA query_only=ON"); err != nil {
 		t.Fatal(err)
 	}
@@ -113,6 +114,16 @@ func TestLANReportsPersistOnlyVerifiedFleetRelationships(t *testing.T) {
 	g.mu.Unlock()
 	if !before.Equal(after) {
 		t.Fatal("failed commit changed evidence")
+	}
+	if _, _, unchanged := g.conditionalLANView(user.ID, a.ID, beforeTag); !unchanged {
+		t.Fatal("failed commit changed the LAN view")
+	}
+	if !g.receiveLANReport(receiver, conn, model.JSON(proof)) {
+		t.Fatal("valid re-verification rejected")
+	}
+	view, _, unchanged := g.conditionalLANView(user.ID, a.ID, beforeTag)
+	if unchanged || len(view.LANPeers) != 1 || !view.LANPeers[0].VerifiedAt.Equal(proof.IssuedAt) {
+		t.Fatal("committed re-verification did not refresh receiver's view", view)
 	}
 	_ = first.CloseNow()
 	_ = second.CloseNow()
