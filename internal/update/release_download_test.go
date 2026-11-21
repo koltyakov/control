@@ -73,7 +73,8 @@ func TestManagedDownloadPrefersExactSignedReleaseWithGatewayFallback(t *testing.
 						t.Error("gateway fallback lost authentication")
 					}
 					if scenario == "both-unavailable" {
-						http.Error(w, "unavailable", http.StatusServiceUnavailable)
+						// Non-transient; restart-window retries have their own test.
+						http.Error(w, "unavailable", http.StatusInternalServerError)
 						return
 					}
 					_, _ = w.Write(data)

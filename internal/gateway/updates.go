@@ -474,6 +474,7 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 	defer ticker.Stop()
 	var stagedID, stagedPath string
 	var stagedInfo buildinfo.Info
+	var stagedAt time.Time
 	var nextAttempt time.Time
 	var cleanedID string
 	var nextCleanup time.Time
@@ -522,6 +523,7 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 					} else {
 						stagedID, stagedPath = d.ID, path
 						stagedInfo = info
+						stagedAt = time.Now()
 						requestedRestart = false
 					}
 				}
@@ -605,6 +607,10 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 					return
 				}
 			}
+			if gatewayHoldForDownloads(d, peers, stagedAt, time.Now()) {
+				_ = g.updates.SetGatewayState(d.ID, "waiting-downloads")
+				return
+			}
 			if !g.drainGateway(time.Now()) {
 				_ = g.updates.SetGatewayState(d.ID, "waiting-relays")
 				return
@@ -629,6 +635,45 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 			requestedRestart = true
 		}()
 	}
+}
+
+const (
+	// gatewayOfferSettle gives online nodes time to acknowledge a new
+	// deployment and start downloading before the gateway restarts.
+	gatewayOfferSettle = 15 * time.Second
+	// gatewayDownloadHold bounds how long node downloads can postpone the
+	// gateway restart, so a stalled download cannot block it indefinitely.
+	gatewayDownloadHold = 5 * time.Minute
+)
+
+// gatewayHoldForDownloads reports whether the gateway should postpone its own
+// restart so nodes can fetch the selected executable from it first. A restart
+// during a download fails it with a proxy error and sends the node, and any
+// companion waiting on the shared machine cache, into retry backoff.
+func gatewayHoldForDownloads(d *update.Deployment, peers []rolloutPeer, stagedAt, now time.Time) bool {
+	if stagedAt.IsZero() || now.Sub(stagedAt) >= gatewayDownloadHold {
+		return false
+	}
+	for _, peer := range peers {
+		if !peer.fresh || !peer.node.Online {
+			continue
+		}
+		asset, ok := d.Manifest.Asset(peer.node.Software.OS, peer.node.Software.Arch)
+		if !ok || update.IsCurrent(peer.node.Software, d.Manifest.Version, asset) {
+			continue
+		}
+		if peer.status.ID != d.ID {
+			// Not yet acknowledged; wait briefly for it to start.
+			if now.Sub(stagedAt) < gatewayOfferSettle {
+				return true
+			}
+			continue
+		}
+		if peer.status.State == "downloading" {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *Gateway) releaseRestart() {

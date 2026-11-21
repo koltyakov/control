@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -94,9 +95,58 @@ func Download(ctx context.Context, client *http.Client, url, token, path string,
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download update: %s", resp.Status)
+		return &DownloadStatusError{Code: resp.StatusCode, Status: resp.Status}
 	}
 	return SaveBinary(resp.Body, path, asset)
+}
+
+// DownloadStatusError reports a non-OK update download response.
+type DownloadStatusError struct {
+	Code   int
+	Status string
+}
+
+func (e *DownloadStatusError) Error() string { return "download update: " + e.Status }
+
+// gatewayRetryWindow covers a gateway restarting during a rollout. The
+// gateway's reverse proxy answers 502 until the new process listens again.
+const gatewayRetryWindow = 30 * time.Second
+
+// downloadRetrying repeats a gateway download after transient proxy and
+// connection failures within gatewayRetryWindow. A GET of verified bytes has
+// no side effects, so retrying it is safe; checksum and disk errors are not
+// retried. Callers holding the machine cache lock keep it, so a companion
+// context keeps waiting for this download instead of fetching its own.
+func downloadRetrying(ctx context.Context, client *http.Client, url, token, path string, asset Asset) error {
+	deadline := time.Now().Add(gatewayRetryWindow)
+	delay := 500 * time.Millisecond
+	for {
+		err := Download(ctx, client, url, token, path, asset)
+		if err == nil || ctx.Err() != nil || !transientDownload(err) || time.Now().Add(delay).After(deadline) {
+			return err
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay = min(2*delay, 4*time.Second)
+	}
+}
+
+func transientDownload(err error) bool {
+	var status *DownloadStatusError
+	if errors.As(err, &status) {
+		switch status.Code {
+		case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		}
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 func ValidateExecutable(ctx context.Context, path, version string, asset Asset) error {

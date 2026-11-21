@@ -209,7 +209,8 @@ func TestNodeUpdaterCleansOnlyEligibleRetries(t *testing.T) {
 	var downloads atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		downloads.Add(1)
-		w.WriteHeader(http.StatusServiceUnavailable)
+		// A non-transient failure; restart-window errors retry within an attempt.
+		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
 	a, err := NewUpdater(UpdaterOptions{

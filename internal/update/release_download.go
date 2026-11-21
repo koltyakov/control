@@ -47,7 +47,7 @@ func downloadPreferred(ctx context.Context, client *http.Client, repository, ver
 	// Never forward a fleet credential through a redirected binary request.
 	fallback := *client
 	fallback.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return Download(ctx, &fallback, gateway, token, path, asset)
+	return downloadRetrying(ctx, &fallback, gateway, token, path, asset)
 }
 
 func downloadMatchingRelease(ctx context.Context, client *http.Client, repository, version, releases, path string, asset Asset, verify func(context.Context, string, string, []byte, []byte) error) error {
