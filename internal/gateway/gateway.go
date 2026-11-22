@@ -657,7 +657,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		if latest, exists := g.nodes[n.ID]; exists {
 			latest.Online = false
 			latest.LastSeen = time.Now().UTC()
-			if status := g.updateStatus[n.ID]; status.State == "restarting" && !latest.UpdateUntil.IsZero() {
+			if status := g.updateStatus[n.ID]; (status.State == "restarting" || status.ProxyFor != "") && !latest.UpdateUntil.IsZero() {
 				latest.UpdateUntil = latest.LastSeen.Add(time.Minute)
 				restartGrace = true
 			}

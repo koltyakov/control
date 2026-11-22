@@ -60,6 +60,11 @@ func (g *Gateway) receiveUpdateStatus(n model.Node, c *connection, data []byte) 
 			latest.UpdateUntil = status.SeenAt.Add(time.Minute)
 		}
 	}
+	// A proxy child parks its gateway connection while its proxy restarts.
+	// That disconnect is part of the rollout, not loss of the machine.
+	if d != nil && proxyHeld(d, status) && !proxyHeld(d, previous) {
+		latest.UpdateUntil = status.SeenAt.Add(time.Minute)
+	}
 	if updateAppliedAndResumed(d, status) {
 		latest.UpdateUntil = time.Time{}
 	}
@@ -119,6 +124,11 @@ func startupRefreshBlockers(d *update.Deployment, peers []rolloutPeer) int {
 func (g *Gateway) nodeUpdating(n model.Node, now time.Time, d *update.Deployment) bool {
 	status := g.updateStatus[n.ID]
 	return nodeUpdating(n, status, now, d)
+}
+
+// proxyHeld reports a child reservation held for its proxy's rollout.
+func proxyHeld(d *update.Deployment, status update.Status) bool {
+	return d != nil && status.ID == d.ID && status.Paused && status.ProxyFor != ""
 }
 
 func nodeUpdating(n model.Node, status update.Status, now time.Time, d *update.Deployment) bool {
@@ -474,7 +484,10 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 	defer ticker.Stop()
 	var stagedID, stagedPath string
 	var stagedInfo buildinfo.Info
-	var stagedAt time.Time
+	var stagedAt, selectedAt time.Time
+	// gatewayBlocked records a selection whose gateway drain attempt timed
+	// out; its nodes stop waiting for the gateway to go first.
+	var gatewayBlocked string
 	var nextAttempt time.Time
 	var cleanedID string
 	var nextCleanup time.Time
@@ -513,6 +526,7 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 				g.cancelGatewayDrain()
 				clear(lastSent)
 				sentDeployment = d.ID
+				selectedAt = time.Now()
 			}
 			if stagedID != d.ID {
 				if !time.Now().Before(nextAttempt) {
@@ -553,8 +567,12 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 			// The selected gateway code can coordinate compatible node updates
 			// even while its own startup entry still needs supervisor migration.
 			gatewaySoftwareCurrent := hasGateway && update.IsSoftwareCurrent(g.options.Software, d.Manifest.Version, gatewayAsset)
-			g.coordinateProxyRollout(d, peers, gatewaySoftwareCurrent, time.Now(), send)
-			peersApplied, err := g.advanceNodes(d, peers, gatewaySoftwareCurrent, send)
+			holdNodes := hasGateway && !gatewaySoftwareCurrent && gatewayBlocked != d.ID &&
+				gatewayGoesFirst(peers, stagedID == d.ID, stagedPath, stagedInfo, selectedAt, time.Now())
+			if !holdNodes {
+				g.coordinateProxyRollout(d, peers, gatewaySoftwareCurrent, time.Now(), send)
+			}
+			peersApplied, err := g.advanceNodes(d, peers, gatewaySoftwareCurrent, holdNodes, send)
 			if err != nil {
 				return
 			}
@@ -612,6 +630,9 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 				return
 			}
 			if !g.drainGateway(time.Now()) {
+				// Relayed traffic outlasted a drain attempt and may persist
+				// indefinitely; it must not also postpone node updates.
+				gatewayBlocked = d.ID
 				_ = g.updates.SetGatewayState(d.ID, "waiting-relays")
 				return
 			}
@@ -638,16 +659,46 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 }
 
 const (
-	// gatewayOfferSettle gives online nodes time to acknowledge a new
-	// deployment and start downloading before the gateway restarts.
-	gatewayOfferSettle = 15 * time.Second
+	// gatewayFirstWindow bounds how long nodes wait for the gateway to switch
+	// before they update independently. Staging, drain, and a restart normally
+	// take seconds. A timed-out drain attempt releases nodes sooner.
+	gatewayFirstWindow = 2 * time.Minute
 	// gatewayDownloadHold bounds how long node downloads can postpone the
 	// gateway restart, so a stalled download cannot block it indefinitely.
 	gatewayDownloadHold = 5 * time.Minute
 )
 
+// gatewayGoesFirst reports whether node offers wait for the gateway's own
+// switch. Nodes then download from, and commit under, the new gateway, and the
+// gateway restart never interrupts a node download or commit. Nodes that cannot
+// connect to the staged gateway protocol must update first instead.
+func gatewayGoesFirst(peers []rolloutPeer, staged bool, stagedPath string, info buildinfo.Info, selectedAt, now time.Time) bool {
+	if selectedAt.IsZero() || now.Sub(selectedAt) >= gatewayFirstWindow {
+		return false
+	}
+	if !staged {
+		return true // Staging, or retrying a failed stage, within the window.
+	}
+	if stagedPath == "" {
+		return false
+	}
+	for _, peer := range peers {
+		software := peer.status.Software
+		if software.NodeGatewayMax == 0 {
+			software = peer.node.Software
+		}
+		if software.NodeGatewayMax > 0 && !software.SupportsGateway(info.GatewayProtocol) ||
+			software.NodeGatewayMax == 0 && info.GatewayProtocol > 1 {
+			return false
+		}
+	}
+	return true
+}
+
 // gatewayHoldForDownloads reports whether the gateway should postpone its own
-// restart so nodes can fetch the selected executable from it first. A restart
+// restart while nodes fetch the selected executable from it. Gateway-first
+// ordering normally prevents that overlap; it remains possible when a node
+// starts and stages on its own, or after the gateway-first window. A restart
 // during a download fails it with a proxy error and sends the node, and any
 // companion waiting on the shared machine cache, into retry backoff.
 func gatewayHoldForDownloads(d *update.Deployment, peers []rolloutPeer, stagedAt, now time.Time) bool {
@@ -662,14 +713,7 @@ func gatewayHoldForDownloads(d *update.Deployment, peers []rolloutPeer, stagedAt
 		if !ok || update.IsCurrent(peer.node.Software, d.Manifest.Version, asset) {
 			continue
 		}
-		if peer.status.ID != d.ID {
-			// Not yet acknowledged; wait briefly for it to start.
-			if now.Sub(stagedAt) < gatewayOfferSettle {
-				return true
-			}
-			continue
-		}
-		if peer.status.State == "downloading" {
+		if peer.status.ID == d.ID && peer.status.State == "downloading" {
 			return true
 		}
 	}
@@ -696,6 +740,9 @@ func (g *Gateway) nodeMayUpdate(d *update.Deployment, s update.Status, gatewaySo
 }
 
 func (g *Gateway) nodeUpdateProgress(d *update.Deployment, s update.Status, now time.Time) string {
+	if proxyHeld(d, s) {
+		return "waiting-proxy" // Also while parked offline for the proxy restart.
+	}
 	if d == nil || s.ID != d.ID || now.Sub(s.SeenAt) >= updateStatusFreshness {
 		return "awaiting-status"
 	}
@@ -725,7 +772,7 @@ func (g *Gateway) nodeUpdateProgress(d *update.Deployment, s update.Status, now 
 // snapshot. At most two live contexts receive commit intent concurrently.
 // Excess reservations, including those left by an older coordinator, are
 // released. Node-owned admission rechecks work immediately before replacement.
-func (g *Gateway) advanceNodes(d *update.Deployment, peers []rolloutPeer, gatewaySoftwareCurrent bool, send func(string, string, update.Command)) (bool, error) {
+func (g *Gateway) advanceNodes(d *update.Deployment, peers []rolloutPeer, gatewaySoftwareCurrent, holdNodes bool, send func(string, string, update.Command)) (bool, error) {
 	for _, peer := range peers {
 		if peer.fresh && peer.status.ID == d.ID && slices.Contains(d.InFlight, peer.node.ID) &&
 			(updateSoftwareSettled(d, peer.status) || peer.status.State == "error" && !peer.status.Paused) {
@@ -755,6 +802,11 @@ func (g *Gateway) advanceNodes(d *update.Deployment, peers []rolloutPeer, gatewa
 		matching := peer.fresh && s.ID == d.ID
 		applied := matching && update.IsCurrent(s.Software, d.Manifest.Version, asset)
 		allApplied = allApplied && applied && !s.Paused
+		if holdNodes {
+			// The gateway switches first. Nodes receive offers from the new
+			// process; existing commits above still complete normally.
+			continue
+		}
 		command := update.Command{ID: d.ID, Version: d.Manifest.Version, Asset: asset, ReleaseRepo: g.updateReleaseRepo(d)}
 		if g.proxyBlocks[peer.node.ID] && !applied || s.ProxyFor != "" {
 			// Staging may continue, but only the group coordinator releases a

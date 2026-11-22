@@ -299,3 +299,66 @@ func TestResumedUpdateClearsGraceAndRestoresHealthDurably(t *testing.T) {
 		t.Fatal("gateway restart restored cleared update grace")
 	}
 }
+
+func TestProxyParkedChildShowsWaitingForProxy(t *testing.T) {
+	dir := t.TempDir()
+	g, err := New(dir, commonKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = g.Close() })
+	s := httptest.NewServer(g.Handler())
+	t.Cleanup(s.Close)
+	data := []byte("proxy park fixture")
+	sum := sha256.Sum256(data)
+	asset := update.Asset{OS: "linux", Arch: "amd64", File: update.AssetName("linux", "amd64"), Size: int64(len(data)), SHA256: hex.EncodeToString(sum[:])}
+	if err := g.updates.Upload(bytes.NewReader(data), asset); err != nil {
+		t.Fatal(err)
+	}
+	d, err := g.updates.Publish(update.Manifest{Version: "v2", Assets: []update.Asset{asset}}, "development")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := identity.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := rawPeer(t, s.URL, commonKey, "child", legacyUser, id)
+	g.mu.Lock()
+	n := g.nodes[id.ID]
+	n.OS, n.Software = "linux", buildinfo.Info{OS: "linux", Arch: "amd64", Version: "v1"}
+	g.nodes[id.ID] = n
+	c := g.peers[id.ID]
+	g.mu.Unlock()
+	held := update.Status{ID: d.ID, State: "staged", Paused: true, ProxyFor: "proxy", LeaseUntil: time.Now().Add(2 * time.Minute)}
+	if !g.receiveUpdateStatus(n, c, model.JSON(held)) {
+		t.Fatal("proxy reservation status rejected")
+	}
+	g.mu.Lock()
+	if g.nodes[id.ID].UpdateUntil.IsZero() {
+		g.mu.Unlock()
+		t.Fatal("proxy reservation did not start the display grace")
+	}
+	g.mu.Unlock()
+	_ = ws.CloseNow() // The child parks its gateway connection.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		g.mu.Lock()
+		latest, status := g.nodes[id.ID], g.updateStatus[id.ID]
+		g.mu.Unlock()
+		if !latest.Online {
+			now := time.Now()
+			if !nodeUpdating(latest, status, now, d) || g.nodeUpdateProgress(d, status, now) != "waiting-proxy" {
+				t.Fatalf("parked child shows updating=%v progress=%q", nodeUpdating(latest, status, now, d), g.nodeUpdateProgress(d, status, now))
+			}
+			if latest.UpdateUntil.Sub(latest.LastSeen) != time.Minute {
+				t.Fatal("park disconnect did not extend the display grace")
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("child stayed online after closing its connection")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

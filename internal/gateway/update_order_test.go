@@ -39,7 +39,7 @@ func TestIndependentNodeCommitCompatibilityAndBusyPeer(t *testing.T) {
 			peers := g.rolloutPeers(d)
 			peers = append(peers, rolloutPeer{node: model.Node{ID: "busy", OS: "linux", Software: s.Software}, status: update.Status{ID: d.ID, Software: s.Software, State: "staged", Busy: true}, fresh: true})
 			commits := 0
-			_, err := g.advanceNodes(d, peers, test.current, func(id, kind string, command update.Command) {
+			_, err := g.advanceNodes(d, peers, test.current, false, func(id, kind string, command update.Command) {
 				if kind == "update.commit" {
 					if id != "online" || command.ID != d.ID {
 						t.Fatal("committed busy or wrong node")
@@ -75,17 +75,17 @@ func TestNodeCommitIntentSurvivesRestartAndFailedPersistence(t *testing.T) {
 	for i := range peers {
 		peers[i].fresh = false
 	}
-	_, err = g.advanceNodes(g.updates.Current(), peers, true, func(string, string, update.Command) {})
+	_, err = g.advanceNodes(g.updates.Current(), peers, true, false, func(string, string, update.Command) {})
 	if err != nil || len(g.updates.Current().InFlight) != 1 {
 		t.Fatal("stale report cleared commit intent", err)
 	}
 	peers = []rolloutPeer{{node: g.nodes["online"], status: update.Status{ID: d.ID, Software: info, State: "applied", Paused: true}, fresh: true}}
-	_, err = g.advanceNodes(g.updates.Current(), peers, true, func(string, string, update.Command) {})
+	_, err = g.advanceNodes(g.updates.Current(), peers, true, false, func(string, string, update.Command) {})
 	if err != nil || len(g.updates.Current().InFlight) != 1 {
 		t.Fatal("paused report cleared commit intent", err)
 	}
 	peers[0].status.Paused = false
-	_, err = g.advanceNodes(g.updates.Current(), peers, true, func(string, string, update.Command) {})
+	_, err = g.advanceNodes(g.updates.Current(), peers, true, false, func(string, string, update.Command) {})
 	if err != nil || len(g.updates.Current().InFlight) != 0 {
 		t.Fatal("fresh resumed report did not confirm commit", err)
 	}
@@ -99,7 +99,7 @@ func TestNodeCommitIntentSurvivesRestartAndFailedPersistence(t *testing.T) {
 	s := update.Status{ID: d.ID, Software: info, State: "ready", Paused: true, LeaseUntil: time.Now().Add(time.Minute)}
 	s.Software.Version, s.Software.SHA256 = "older", "older"
 	peers[0].status = s
-	_, err = g.advanceNodes(g.updates.Current(), peers, true, func(_ string, kind string, _ update.Command) {
+	_, err = g.advanceNodes(g.updates.Current(), peers, true, false, func(_ string, kind string, _ update.Command) {
 		if kind == "update.commit" {
 			t.Error("failed persistence dispatched a commit")
 		}
@@ -118,7 +118,7 @@ func TestNodeReservationsAreBoundedAndDoNotPauseBusyNodes(t *testing.T) {
 		peers = append(peers, rolloutPeer{node: model.Node{ID: id, OS: info.OS, Software: info, Online: true}, status: s, fresh: true})
 	}
 	prepared := []string{}
-	_, err := g.advanceNodes(d, peers, true, func(id, kind string, _ update.Command) {
+	_, err := g.advanceNodes(d, peers, true, false, func(id, kind string, _ update.Command) {
 		if kind == "update.prepare" {
 			prepared = append(prepared, id)
 		}
@@ -211,7 +211,7 @@ func TestSupervisedNodeBlockersReleaseRolloutCapacity(t *testing.T) {
 		}
 	}
 	prepared := []string{}
-	allApplied, err := g.advanceNodes(g.updates.Current(), peers, gatewaySoftwareCurrent, func(id, kind string, _ update.Command) {
+	allApplied, err := g.advanceNodes(g.updates.Current(), peers, gatewaySoftwareCurrent, false, func(id, kind string, _ update.Command) {
 		t.Error("settled supervised runtime was retried", id, kind)
 	})
 	if err != nil || allApplied || len(g.updates.Current().InFlight) != 0 {
@@ -221,7 +221,7 @@ func TestSupervisedNodeBlockersReleaseRolloutCapacity(t *testing.T) {
 	pending.Software.Version, pending.Software.SHA256 = "older", "older"
 	peers = append(peers, rolloutPeer{node: model.Node{ID: "pending", OS: info.OS, Software: pending.Software, Online: true}, status: pending, fresh: true})
 	prepared = nil
-	allApplied, err = g.advanceNodes(g.updates.Current(), peers, gatewaySoftwareCurrent, func(id, kind string, _ update.Command) {
+	allApplied, err = g.advanceNodes(g.updates.Current(), peers, gatewaySoftwareCurrent, false, func(id, kind string, _ update.Command) {
 		if kind == "update.prepare" {
 			prepared = append(prepared, id)
 		}
@@ -253,7 +253,7 @@ func TestStartupRefreshDoesNotSettleUncertainCommits(t *testing.T) {
 			if err := g.updates.NodeInstall(d.ID, "online", true); err != nil {
 				t.Fatal(err)
 			}
-			_, err := g.advanceNodes(g.updates.Current(), []rolloutPeer{peer}, true, func(string, string, update.Command) {})
+			_, err := g.advanceNodes(g.updates.Current(), []rolloutPeer{peer}, true, false, func(string, string, update.Command) {})
 			if err != nil || len(g.updates.Current().InFlight) != 1 {
 				t.Fatal("uncertain commit was discarded", name, err)
 			}

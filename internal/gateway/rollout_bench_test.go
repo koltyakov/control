@@ -63,7 +63,7 @@ func BenchmarkAppliedRolloutReconciliation(b *testing.B) {
 					b.Fatal(err)
 				}
 				peers := g.rolloutPeers(d)
-				if applied, err := g.advanceNodes(d, peers, true, func(string, string, update.Command) {
+				if applied, err := g.advanceNodes(d, peers, true, false, func(string, string, update.Command) {
 					b.Fatal("applied node received an update command")
 				}); err != nil || !applied {
 					b.Fatal("applied rollout changed", applied, err)

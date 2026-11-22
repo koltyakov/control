@@ -74,7 +74,7 @@ func (f *proxyRolloutFixture) tick(t *testing.T) {
 	send := func(id, kind string, c update.Command) { f.sent = append(f.sent, sentUpdate{id, kind, c}) }
 	peers := f.snapshot()
 	f.g.coordinateProxyRollout(f.g.updates.Current(), peers, true, f.now, send)
-	if _, err := f.g.advanceNodes(f.g.updates.Current(), peers, true, send); err != nil {
+	if _, err := f.g.advanceNodes(f.g.updates.Current(), peers, true, false, send); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -373,7 +373,7 @@ func TestProxyRolloutLeavesUnrelatedNodeCommitsIndependent(t *testing.T) {
 	s := update.Status{ID: f.d.ID, Software: peers[0].status.Software, State: "ready", Paused: true, LeaseUntil: time.Now().Add(time.Minute)}
 	peers = append(peers, rolloutPeer{node: model.Node{ID: id, OS: s.Software.OS, Software: s.Software, Online: true}, status: s, fresh: true})
 	committed := false
-	_, err := f.g.advanceNodes(f.d, peers, true, func(node, kind string, _ update.Command) {
+	_, err := f.g.advanceNodes(f.d, peers, true, false, func(node, kind string, _ update.Command) {
 		if kind == "update.commit" && node == id {
 			committed = true
 		}
