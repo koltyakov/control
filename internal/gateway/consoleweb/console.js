@@ -916,18 +916,25 @@ function statusDetail(node) {
     : "";
 }
 // Host status includes connected contexts and gateway-confirmed restart grace,
-// not just the context selected for metrics and actions. Prefer active work
-// over idle reports and newer observations when statuses match.
+// not just the context selected for metrics and actions. For idle contexts,
+// compare work timestamps before connection recency.
 /** @param {Machine} node @returns {Machine} */
 function hostStatusContext(node) {
   const contexts = node.contexts || [node];
   const active = contexts.filter((context) => context.online || machineState(context) === "Updating"),
     candidates = active.length ? active : contexts,
     priority = ["Updating", "Busy", "Reserved", "Enabling", "Online", "Idle", "Disabling", "Disabled", "Offline"];
-  return [...candidates].sort((a, b) =>
-    priority.indexOf(machineState(a)) - priority.indexOf(machineState(b)) ||
-    (Date.parse(b.lastSeen) || 0) - (Date.parse(a.lastSeen) || 0),
-  )[0];
+  /** @param {Machine} context @returns {number} */
+  function lastWorkTime(context) {
+    const time = known(context.lastActive) ? Date.parse(context.lastActive) : NaN;
+    return Number.isNaN(time) ? -Infinity : time;
+  }
+  return [...candidates].sort((a, b) => {
+    const aState = machineState(a), bState = machineState(b);
+    return priority.indexOf(aState) - priority.indexOf(bState) ||
+      (aState === "Idle" ? lastWorkTime(b) - lastWorkTime(a) : 0) ||
+      (Date.parse(b.lastSeen) || 0) - (Date.parse(a.lastSeen) || 0);
+  })[0];
 }
 /** @param {string | null | undefined} value @returns {value is string} */
 function known(value) {

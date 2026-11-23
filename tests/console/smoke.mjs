@@ -1917,6 +1917,58 @@ async function assertHybridGrouping(page, snapshot) {
   await page.evaluate(() => refresh(true));
 }
 
+async function assertHybridLastWork(page, snapshot) {
+  const now = Date.now(),
+    hoursAgo = (hours) => new Date(now - hours * 3600000).toISOString(),
+    baseNode = { ...snapshot.nodes[0], hybridId: "last-work-pair", status: "summary", online: true, activeCount: 0, leased: false, disabled: false, controlPending: false },
+    user = { ...baseNode, id: "last-work-user", name: "last-work-host", hybridRole: "user", runAs: "user", lastSeen: hoursAgo(3), lastActive: hoursAgo(2.5) },
+    system = { ...baseNode, id: "last-work-system", name: "last-work-host-system", hybridRole: "system", runAs: "system", lastSeen: hoursAgo(2), lastActive: undefined },
+    row = page.locator(".machine-table tbody tr").filter({ has: page.getByRole("button", { name: user.name, exact: true }) }),
+    statusURL = "**/console/api/status",
+    statusRoute = (route) => route.fulfill({ json: { ...snapshot, nodes: [system, user] } });
+  const assertStatus = async (label, details, message) => {
+    assert.equal(await row.locator(".status-column .badge").textContent(), label);
+    assert.deepEqual(await row.locator(".status-column small").allTextContents(), details, message);
+  };
+  await page.route(statusURL, statusRoute);
+  try {
+    await refreshPage(page);
+    await assertStatus("Idle", ["Active 2h ago"], "A newer connection must not hide the other context's last work");
+    await row.getByRole("button", { name: "System", exact: true }).click();
+    await assertStatus("Idle", ["Active 2h ago"], "Chip selection must not change host-wide last work");
+    await row.getByRole("button", { name: user.name, exact: true }).click();
+    const drawer = page.getByRole("dialog", { name: system.name, exact: true });
+    await drawer.waitFor();
+    assert.equal(await drawer.getByText("Last active", { exact: true }).count(), 0, "The drawer must still show only the selected context's work");
+    await drawer.getByRole("button", { name: "Close dialog", exact: true }).click();
+
+    user.lastSeen = hoursAgo(0.5);
+    system.lastActive = hoursAgo(1.5);
+    await pageLink(page, "machines");
+    await refreshPage(page);
+    await assertStatus("Idle", ["Active 1h ago"], "When both report work, show the newer work timestamp rather than the newer connection");
+
+    system.leased = true;
+    system.leaseExpires = new Date(now + 3600000).toISOString();
+    await refreshPage(page);
+    assert.equal(await row.locator(".status-column .badge").textContent(), "Reserved");
+    assert.match(await row.locator(".status-column small").textContent(), /^Until /);
+
+    system.leased = false;
+    system.online = false;
+    await refreshPage(page);
+    await assertStatus("Idle", ["Active 2h ago"], "An offline context must not supply the idle host's last work");
+
+    delete user.lastActive;
+    await refreshPage(page);
+    await assertStatus("Idle", [], "Leave the detail blank when no online idle context reports last work");
+  } finally {
+    await page.unroute(statusURL, statusRoute);
+    await page.locator('.brand[href="#overview"]').click();
+    await refreshPage(page);
+  }
+}
+
 async function assertAcceleratorPresence(page, snapshot) {
   const npu = { name: "Snapdragon(R) X Plus - X1P42100 - Qualcomm(R) Hexagon(TM) NPU", kind: "npu" },
     baseNode = { ...snapshot.nodes[0], status: "summary", activeCount: 0, leased: false, disabled: false, controlPending: false, online: true },
@@ -2637,6 +2689,7 @@ try {
   await assertStartupCommands(page, snapshot);
   await page.locator('.brand[href="#overview"]').click();
   await assertHybridGrouping(page, snapshot);
+  await assertHybridLastWork(page, snapshot);
   await assertAcceleratorPresence(page, snapshot);
   await assertProxyChips(page, snapshot);
   await assertProxyChoicesRecoverInOpenForm(page, snapshot);
