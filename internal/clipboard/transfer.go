@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -229,5 +230,29 @@ func receiveFile(ctx context.Context, root *os.Root, file File, r io.Reader) err
 		return err
 	}
 	// Hard-link publication is atomic and fails if the name already exists.
-	return root.Link(temp, file.Name)
+	err = root.Link(temp, file.Name)
+	if err == nil || errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	return publishWithoutLink(root, temp, file.Name)
+}
+
+// publishWithoutLink serves filesystems without hard links, such as FAT and
+// exFAT. An exclusively created placeholder claims the name, so an existing
+// file is never replaced; renaming the complete file over the placeholder then
+// publishes it. Until the rename, the name holds an empty file.
+func publishWithoutLink(root *os.Root, temp, name string) error {
+	placeholder, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	if err = placeholder.Close(); err != nil {
+		_ = root.Remove(name)
+		return err
+	}
+	if err = root.Rename(temp, name); err != nil {
+		_ = root.Remove(name)
+		return err
+	}
+	return nil
 }

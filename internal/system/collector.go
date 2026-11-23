@@ -84,18 +84,42 @@ func (c *Collector) Run(ctx context.Context) {
 		defer ticker.Stop()
 		ticks = ticker.C
 	}
+	var last time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticks:
 		case <-c.trigger:
+			// A burst of short tasks coalesces into one sample per spacing
+			// interval; periodic and explicit refreshes are not delayed.
+			if wait := triggeredSampleSpacing - time.Since(last); wait > 0 {
+				timer := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+				select {
+				case <-c.trigger:
+				default:
+				}
+			}
 		}
 		_, _ = c.Refresh(ctx)
+		last = time.Now()
 	}
 }
 
+// triggeredSampleSpacing is the minimum time between task-triggered samples.
+const triggeredSampleSpacing = 2 * time.Second
+
+// gpuSampleTimeout bounds optional GPU probes separately from the base sample.
+const gpuSampleTimeout = 3 * time.Second
+
 func (c *Collector) Refresh(ctx context.Context) (model.SystemInfo, error) {
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	select {
@@ -164,9 +188,22 @@ func (c *Collector) Refresh(ctx context.Context) (model.SystemInfo, error) {
 		}
 		s.Disks = append(s.Disks, entry)
 	}
-	s.GPUs = c.gpu.sample(ctx)
 	if err := ctx.Err(); err != nil {
 		return c.Snapshot(), err
+	}
+	// Optional GPU probes get their own budget. A slow probe keeps the previous
+	// GPU readings and never discards the CPU, RAM, and disk sample.
+	gpuCtx, cancelGPU := context.WithTimeout(parent, gpuSampleTimeout)
+	gpus := c.gpu.sample(gpuCtx)
+	gpuErr := gpuCtx.Err()
+	cancelGPU()
+	if err := parent.Err(); err != nil {
+		return c.Snapshot(), err
+	}
+	if gpuErr == nil {
+		s.GPUs = gpus
+	} else {
+		report("GPU", gpuErr)
 	}
 	s.SampledAt = time.Now().UTC()
 	c.mu.Lock()

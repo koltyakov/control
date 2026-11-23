@@ -246,17 +246,24 @@ func TestArtifactResumeGrantAndFilesystemBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The received bytes are hashed in one pass, including a resumed prefix:
-	// a corrupted partial must fail verification and be discarded.
+	// a corrupted partial fails verification and is refetched from offset zero.
 	corrupted := bytes.Clone(payload[:12345])
 	corrupted[0] ^= 0xff
 	if err := os.WriteFile(worker.artifactPath(a.ID)+".partial", corrupted, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := worker.pullArtifact(ctx, granted); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
-		t.Fatal("corrupted resumed prefix accepted", err)
+	healed, err := worker.pullArtifact(ctx, granted)
+	if err != nil {
+		t.Fatal("corrupted resumed prefix was not refetched", err)
+	}
+	if b, err := os.ReadFile(worker.artifactPath(healed.ID)); err != nil || !bytes.Equal(b, payload) {
+		t.Fatal("refetched transfer differs", err)
 	}
 	if _, err := os.Stat(worker.artifactPath(a.ID) + ".partial"); !os.IsNotExist(err) {
 		t.Fatal("corrupted partial retained", err)
+	}
+	if _, err := worker.artifactMethod(t.Context(), worker.Identity.ID, "artifacts.delete", model.JSON(map[string]string{"id": a.ID})); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(worker.artifactPath(a.ID)+".partial", payload[:12345], 0600); err != nil {
 		t.Fatal(err)

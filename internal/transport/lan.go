@@ -38,11 +38,18 @@ func (p *Peer) watchLAN() {
 	var refreshed time.Time
 	directory := lanDirectory{}
 	attempted := map[string]time.Time{}
+	// changed holds an interface sample that differs from the registration.
+	// It is republished only once a later sample confirms it and no relay link
+	// shares the gateway socket, so transient adapters such as a container
+	// bridge cannot cut this node's relay streams.
+	var changed []model.WakeInterface
+	interval := time.Second
 	for {
 		p.mu.Lock()
 		enabled := p.lanDiscovery && p.ws != nil
 		scope := p.lanDirectoryScopeLocked()
 		local := slices.Clone(p.cfg.Node.WakeInterfaces)
+		relaying := p.relayLinksLocked()
 		p.mu.Unlock()
 		if !enabled || directory.scope != scope {
 			candidates = nil
@@ -53,7 +60,11 @@ func (p *Peer) watchLAN() {
 			// Wake adapters, such as container or VM bridges, are not gateway
 			// paths, so healthy direct sessions stay up. A failed interface
 			// sample must never erase the last successful registration.
-			if current, err := p.localWakeInterfaces(); err == nil && !slices.Equal(current, local) {
+			republish := false
+			if current, err := p.localWakeInterfaces(); err == nil {
+				changed, republish = wakeRepublish(current, local, changed, relaying)
+			}
+			if republish {
 				p.republishRegistration()
 				candidates = nil
 			} else {
@@ -87,12 +98,47 @@ func (p *Peer) watchLAN() {
 				break // One bounded probe at a time, independent of execution.
 			}
 		}
+		// Without LAN discovery there is no probing to schedule; only notice
+		// when it is enabled.
+		if next := time.Second; enabled != (interval == next) {
+			if !enabled {
+				next = 10 * time.Second
+			}
+			interval = next
+			ticker.Reset(interval)
+		}
 		select {
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
 		}
 	}
+}
+
+// wakeRepublish debounces registration changes for wake interfaces. A sample
+// that differs from the registration becomes pending; a later identical sample
+// confirms it, and republishing waits while relay links share the socket.
+func wakeRepublish(current, registered, pending []model.WakeInterface, relaying bool) ([]model.WakeInterface, bool) {
+	switch {
+	case slices.Equal(current, registered):
+		return nil, false
+	case !slices.Equal(current, pending):
+		return current, false
+	case relaying:
+		return pending, false
+	}
+	return nil, true
+}
+
+// relayLinksLocked reports whether a relay link shares the gateway socket.
+// Called with p.mu held.
+func (p *Peer) relayLinksLocked() bool {
+	for _, l := range p.links {
+		if l.mode == "relay" {
+			return true
+		}
+	}
+	return false
 }
 
 // lanDirectory belongs to one watchLAN goroutine. Its decoded records are never

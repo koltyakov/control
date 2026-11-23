@@ -87,39 +87,27 @@ func TestLANReportsPersistOnlyVerifiedFleetRelationships(t *testing.T) {
 	if err := foreign.JSON(context.Background(), "GET", "/v1/nodes", nil, &nodes); err != nil || len(nodes) != 1 || nodes[0].ID != c.ID || len(nodes[0].LANPeers) != 0 {
 		t.Fatal("LAN relationship leaked", nodes, err)
 	}
-	// A failed transaction must leave the prior committed evidence untouched.
+	// Re-verification is published at once and persisted with the batched
+	// presence flush; the restart below reads it back.
 	g.mu.Lock()
 	n := g.nodes[a.ID]
 	n.LANPeers = []model.LANPeer{peers[0]}
 	n.LANPeers[0].VerifiedAt = time.Now().Add(-20 * time.Minute)
 	g.nodes[a.ID] = n
 	err = g.commit(change{nodes: []string{a.ID}})
-	before := g.nodes[a.ID].LANPeers[0].VerifiedAt
 	g.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, beforeTag, _ := g.conditionalLANView(user.ID, a.ID, "")
-	if _, err := g.db.Exec("PRAGMA query_only=ON"); err != nil {
-		t.Fatal(err)
-	}
-	if !g.receiveLANReport(receiver, conn, model.JSON(proof)) {
-		t.Fatal("failed commit disconnected node")
-	}
-	if _, err := g.db.Exec("PRAGMA query_only=OFF"); err != nil {
-		t.Fatal(err)
-	}
-	g.mu.Lock()
-	after := g.nodes[a.ID].LANPeers[0].VerifiedAt
-	g.mu.Unlock()
-	if !before.Equal(after) {
-		t.Fatal("failed commit changed evidence")
-	}
-	if _, _, unchanged := g.conditionalLANView(user.ID, a.ID, beforeTag); !unchanged {
-		t.Fatal("failed commit changed the LAN view")
-	}
 	if !g.receiveLANReport(receiver, conn, model.JSON(proof)) {
 		t.Fatal("valid re-verification rejected")
+	}
+	g.mu.Lock()
+	scheduled := g.presenceDirty[a.ID]
+	g.mu.Unlock()
+	if !scheduled {
+		t.Fatal("re-verification was not scheduled for persistence")
 	}
 	view, _, unchanged := g.conditionalLANView(user.ID, a.ID, beforeTag)
 	if unchanged || len(view.LANPeers) != 1 || !view.LANPeers[0].VerifiedAt.Equal(proof.IssuedAt) {

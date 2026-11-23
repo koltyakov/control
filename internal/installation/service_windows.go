@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/koltyakov/control/internal/node"
 	"github.com/koltyakov/control/internal/store"
@@ -366,9 +367,51 @@ func prepareServiceFiles(ctx context.Context, binary, config string, cfg node.Co
 		return err
 	}
 	for _, path := range []string{cfg.DataDir, cfg.WorkDir} {
+		// The recursive grant walks every task workspace and artifact. Once
+		// the directory carries the inheritable grant, new files inherit it,
+		// so later starts skip the walk.
+		if grantsInheritedModify(path, localServiceSID) {
+			continue
+		}
 		if err = run(ctx, "icacls.exe", path, "/grant", "*S-1-5-19:(OI)(CI)(M)", "/T", "/Q"); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+const localServiceSID = "S-1-5-19"
+
+// grantsInheritedModify reports whether path's DACL already allows sid modify
+// access inherited by both files and subdirectories. Any error reports false,
+// so the caller applies the grant.
+func grantsInheritedModify(path, sid string) bool {
+	want, err := windows.StringToSid(sid)
+	if err != nil {
+		return false
+	}
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return false
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		return false
+	}
+	// icacls (M): read, write, execute and delete.
+	const modify = windows.ACCESS_MASK(0x1301bf)
+	const inherit = windows.OBJECT_INHERIT_ACE | windows.CONTAINER_INHERIT_ACE
+	for i := range uint32(dacl.AceCount) {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if windows.GetAce(dacl, i, &ace) != nil || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+			continue
+		}
+		if ace.Header.AceFlags&inherit != inherit || ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 || ace.Mask&modify != modify {
+			continue
+		}
+		if (*windows.SID)(unsafe.Pointer(&ace.SidStart)).Equals(want) {
+			return true
+		}
+	}
+	return false
 }

@@ -8,6 +8,7 @@ import (
 	"net"
 	"path/filepath"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/koltyakov/control/internal/identity"
@@ -177,13 +178,28 @@ func (n *Node) expireDelegations(now time.Time) {
 	}
 }
 
+// runDelegations sweeps grants once a second while any exist, and otherwise
+// sleeps until one is added.
 func (n *Node) runDelegations(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
+		n.delegationMu.Lock()
+		idle := len(n.delegations) == 0
+		n.delegationMu.Unlock()
+		if idle {
+			select {
+			case <-ctx.Done():
+				return
+			case <-n.delegationWake:
+				ticker.Reset(time.Second)
+			}
+			continue
+		}
 		select {
 		case <-ctx.Done():
 			return
+		case <-n.delegationWake:
 		case now := <-ticker.C:
 			n.expireDelegations(now)
 		}
@@ -327,6 +343,10 @@ func (n *Node) addDelegation(s *delegationState) error {
 		return errors.New("delegation ID already exists")
 	}
 	n.delegations[s.grant.ID] = s
+	select {
+	case n.delegationWake <- struct{}{}:
+	default:
+	}
 	return nil
 }
 
@@ -343,10 +363,18 @@ type delegationConn struct {
 	net.Conn
 	node  *Node
 	state *delegationState
+	// touched is this stream's last renewal, in Unix nanoseconds. Renewing
+	// at most once a second keeps the shared lock off the bulk IO path; the
+	// idle timeout is an hour.
+	touched atomic.Int64
 }
 
 func (c *delegationConn) touch(size int) {
 	if size <= 0 {
+		return
+	}
+	now := time.Now().UnixNano()
+	if last := c.touched.Load(); last != 0 && now-last < int64(time.Second) || !c.touched.CompareAndSwap(last, now) {
 		return
 	}
 	c.node.delegationMu.Lock()

@@ -213,7 +213,9 @@ func (m view) updateRegistration(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.busy = true
 				return m, m.poll()
 			}
-		} else {
+		} else if msg.err == nil {
+			// Keep a confirmed redemption across transient status failures;
+			// only a successful answer can withdraw it.
 			w.redeemedID = ""
 		}
 	case tea.PasteMsg:

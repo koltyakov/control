@@ -61,36 +61,40 @@ func (p provider) Run(ctx context.Context, args json.RawMessage, e Execution) (a
 
 // Node owns a machine's capabilities, tasks, artifacts, and peer connections.
 type Node struct {
-	Config              Config
-	Identity            *identity.Identity
-	Peer                *transport.Peer
-	ctx                 context.Context
-	cancel              context.CancelFunc
-	lastHealth          healthReport
-	root                *os.Root
-	providers           map[string]Provider
-	mu                  sync.Mutex
-	tasks               map[string]*model.Task
-	coldTasks           map[string]*coldTask
-	recentTasks         []model.Activity // Newest terminal task metadata, protected by mu.
-	cancels             map[string]context.CancelFunc
-	notifiers           map[string]*taskNotifier
-	accepting           map[string]*acceptance
-	tombstones          map[string]taskTombstone
-	taskIDs             map[string]string // ASCII case-folded retained and pending IDs, protected by mu.
-	pruneMu             sync.Mutex
-	executionPool       *providerPool
-	operationsPool      *providerPool
-	desktopPool         *providerPool
-	inputStagingPool    *providerPool
-	publicationPool     *providerPool
-	wg                  sync.WaitGroup
-	mcpMu               sync.Mutex
-	mcpSessions         map[string]*mcp.ClientSession
-	mcpPending          map[string]*mcpSetup
-	artifactMu          sync.Mutex
-	transfers           map[string]*transferLock
-	artifactBudgetMu    sync.Mutex
+	Config           Config
+	Identity         *identity.Identity
+	Peer             *transport.Peer
+	ctx              context.Context
+	cancel           context.CancelFunc
+	lastHealth       healthReport
+	root             *os.Root
+	providers        map[string]Provider
+	mu               sync.Mutex
+	tasks            map[string]*model.Task
+	coldTasks        map[string]*coldTask
+	recentTasks      []model.Activity // Newest terminal task metadata, protected by mu.
+	cancels          map[string]context.CancelFunc
+	notifiers        map[string]*taskNotifier
+	accepting        map[string]*acceptance
+	tombstones       map[string]taskTombstone
+	taskIDs          map[string]string // ASCII case-folded retained and pending IDs, protected by mu.
+	pruneMu          sync.Mutex
+	executionPool    *providerPool
+	operationsPool   *providerPool
+	desktopPool      *providerPool
+	inputStagingPool *providerPool
+	publicationPool  *providerPool
+	wg               sync.WaitGroup
+	mcpMu            sync.Mutex
+	mcpSessions      map[string]*mcp.ClientSession
+	mcpPending       map[string]*mcpSetup
+	artifactMu       sync.Mutex
+	transfers        map[string]*transferLock
+	artifactBudgetMu sync.Mutex
+	// browserVersion remembers a compatible agent-browser executable.
+	browserVersion browserVersionCache
+	// artifactMetadata caches decoded metadata for artifacts.list.
+	artifactMetadata    artifactMetadataCache
 	artifactUsed        int64
 	artifactStaging     map[string]bool
 	artifactReaders     map[string]int
@@ -128,8 +132,10 @@ type Node struct {
 	managedProxy        *managedProxy
 	delegationMu        sync.Mutex
 	delegations         map[string]*delegationState
-	runbookRoots        []runbooks.Root
-	uploads             *upload.Manager
+	// delegationWake starts the expiry sweep when the first grant arrives.
+	delegationWake chan struct{}
+	runbookRoots   []runbooks.Root
+	uploads        *upload.Manager
 	// journalDirty records that a tombstone journal write failed and the file
 	// may hold uncommitted or torn bytes. Protected by pruneMu. No append may
 	// follow until a complete, directory-synced compaction succeeds.
@@ -208,6 +214,7 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 		n.proxyChecks.reported = func() { n.reportHealth(n.ctx) }
 	}
 	n.delegations = map[string]*delegationState{}
+	n.delegationWake = make(chan struct{}, 1)
 	n.artifactStaging = make(map[string]bool)
 	// Crashed metadata writes leave temporary files nothing else reclaims.
 	for _, dir := range []string{cfg.DataDir, filepath.Join(cfg.DataDir, "tasks"), filepath.Join(cfg.DataDir, "artifacts"), filepath.Join(cfg.DataDir, "uploads")} {

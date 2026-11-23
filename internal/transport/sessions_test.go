@@ -51,7 +51,7 @@ func TestConcurrentLanesShareCarrierAndSurviveSiblingClose(t *testing.T) {
 				if name == "alpha" {
 					// A dependent lane must release setup admission before waiting
 					// for its carrier, even when only one setup slot is available.
-					p.setups = make(chan struct{}, 1)
+					p.dialSetups = make(chan struct{}, 1)
 				}
 				if err := p.Start(ctx); err != nil {
 					t.Fatalf("start peer=%s: %v; sessions=%+v counters=%+v", name, err, p.SessionStats(), p.Stats())

@@ -71,6 +71,8 @@ type view struct {
 	cacheRecent           bool
 	cacheColor            bool
 	cacheStale            bool
+	cacheLines            []string
+	cacheWidest           int
 }
 
 // rendered returns the dashboard body, reusing the render from this view
@@ -84,7 +86,19 @@ func (m view) rendered(now time.Time) (string, view) {
 	body := m.body(now)
 	m.cacheBody, m.cacheGeneration, m.cacheWidth, m.cacheUnix = body, m.generation, m.width, now.Unix()
 	m.cacheDetails, m.cacheRecent, m.cacheColor, m.cacheStale = m.details, m.recent, m.color, stale
+	// Split lines and measure the widest once per render, not per message.
+	m.cacheLines = strings.Split(body, "\n")
+	m.cacheWidest = 0
+	for _, line := range m.cacheLines {
+		m.cacheWidest = max(m.cacheWidest, ansi.StringWidth(line))
+	}
 	return body, m
+}
+
+// renderedLines is rendered split into lines, with the widest line's width.
+func (m view) renderedLines(now time.Time) ([]string, int, view) {
+	_, m = m.rendered(now)
+	return m.cacheLines, m.cacheWidest, m
 }
 
 func Run(ctx context.Context, fetch Fetch, options Options) error {
@@ -138,7 +152,7 @@ func (m view) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateManager(msg)
 		}
 		return m.updateRegistration(msg)
-	case invitationResult, invitationStatusResult, clipboardResult:
+	case invitationResult, invitationStatusResult, proxyWorkersResult, clipboardResult:
 		return m.updateRegistration(msg)
 	case tea.WindowSizeMsg:
 		m.selection = nil
@@ -231,14 +245,9 @@ func (m view) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.poll()
 		}
 	}
-	body, updated := m.rendered(time.Now())
+	lines, widest, updated := m.renderedLines(time.Now())
 	m = updated
-	lines := strings.Split(body, "\n")
 	m.offset = max(0, min(m.offset, len(lines)-m.pageSize()))
-	widest := 0
-	for _, line := range lines {
-		widest = max(widest, ansi.StringWidth(line))
-	}
 	m.xOffset = max(0, min(m.xOffset, max(0, widest-m.width)))
 	return m, nil
 }
@@ -250,8 +259,7 @@ func (m view) contentView() tea.View {
 	if m.wizard != nil {
 		return m.registrationView()
 	}
-	body, _ := m.rendered(time.Now())
-	lines := strings.Split(body, "\n")
+	lines, widest, _ := m.renderedLines(time.Now())
 	page := m.pageSize()
 	offset := max(0, min(m.offset, max(0, len(lines)-page)))
 	visible := []string{}
@@ -284,11 +292,8 @@ func (m view) contentView() tea.View {
 	if len(lines) > page {
 		footer += separator + hint("↑↓", fmt.Sprintf("%d-%d/%d", offset+1, min(len(lines), offset+page), len(lines)))
 	}
-	for _, line := range lines {
-		if ansi.StringWidth(line) > m.width {
-			footer += separator + hint("←→", "scroll")
-			break
-		}
+	if widest > m.width {
+		footer += separator + hint("←→", "scroll")
 	}
 	if m.err != nil {
 		message := (renderOptions{details: m.details}).errorMessage(m.err.Error(), "Gateway refresh")

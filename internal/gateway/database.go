@@ -345,7 +345,7 @@ func (g *Gateway) writeChange(tx *sql.Tx, c change) error {
 		_, err := tx.Exec(query, args...)
 		return err
 	}
-	if err := writeAudit(tx, c.audit); err != nil {
+	if err := g.writeAudit(tx, c.audit); err != nil {
 		return err
 	}
 	for _, username := range c.passwords {

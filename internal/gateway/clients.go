@@ -59,6 +59,10 @@ func (g *Gateway) validateClient(n model.Node, p principal, ownerID string) erro
 // Reserve derived client names even while disconnected so machine enrollment
 // cannot impersonate a client trusted by a receiver's name-based access rule.
 func (g *Gateway) clientNameReserved(user, name string) bool {
+	// Only derived "cli-" plus 16 identity characters can collide.
+	if !strings.HasPrefix(name, "cli-") || len(name) != 20 {
+		return false
+	}
 	for id := range g.clientOwners {
 		if g.owners[id] == user && name == "cli-"+id[:16] {
 			return true
@@ -72,12 +76,23 @@ func (g *Gateway) clientNameReserved(user, name string) bool {
 // metadata disappears on disconnect and is available only within its account.
 func (g *Gateway) lookupPeer(w http.ResponseWriter, r *http.Request) {
 	p := g.authenticate(bearer(r))
-	g.mu.Lock()
-	n, ok := g.nodes[r.PathValue("id")]
-	if !ok {
-		n, ok = g.clients[r.PathValue("id")]
+	// Machines come from the published directory snapshot, so peer
+	// authentication during session setup never waits behind a commit.
+	id := r.PathValue("id")
+	g.observationMu.RLock()
+	var entry observation
+	ok := false
+	if fleet := g.observed[p.UserID]; fleet != nil {
+		entry, ok = fleet.nodes[id]
 	}
-	g.mu.Unlock()
+	g.observationMu.RUnlock()
+	n := entry.node
+	n.ControlPending = false // Directory-only state, absent from the record.
+	if !ok {
+		g.mu.Lock()
+		n, ok = g.clients[id]
+		g.mu.Unlock()
+	}
 	if !ok || n.UserID != p.UserID {
 		http.NotFound(w, r)
 		return

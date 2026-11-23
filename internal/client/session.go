@@ -34,7 +34,9 @@ func (c Client) Session(ctx context.Context) (SessionInfo, error) {
 		Connections map[string]string   `json:"connections"`
 		Sessions    []model.PeerSession `json:"sessions"`
 	}
-	if err := c.Call(ctx, "", "node.describe", json.RawMessage(`{"view":"full"}`), &local); err != nil {
+	// Session needs only identity and transport state, not the runbook catalog
+	// that public node.describe calls assemble.
+	if err := c.call(ctx, "", "node.describe", json.RawMessage(`{"view":"full"}`), &local); err != nil {
 		return info, err
 	}
 	info.Role, info.OwnerID, info.TransportID, info.Connections = "node-api", local.ID, local.ID, local.Connections

@@ -39,6 +39,9 @@ type taskNotifier struct {
 	mu      sync.Mutex
 	changed chan struct{}
 	done    chan struct{}
+	// watched records that someone took changed since it was last closed, so
+	// log writes with no follower do not allocate a channel each.
+	watched bool
 }
 
 func newTaskNotifier() *taskNotifier {
@@ -48,6 +51,7 @@ func newTaskNotifier() *taskNotifier {
 func (t *taskNotifier) next() <-chan struct{} {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.watched = true
 	return t.changed
 }
 
@@ -59,12 +63,16 @@ func (t *taskNotifier) notify(final bool) {
 		return
 	default:
 	}
-	close(t.changed)
 	if final {
+		close(t.changed)
 		close(t.done)
 		return
 	}
-	t.changed = make(chan struct{})
+	if !t.watched {
+		return
+	}
+	close(t.changed)
+	t.changed, t.watched = make(chan struct{}), false
 }
 
 // acceptance reserves a task ID while its record is written outside n.mu.
@@ -233,16 +241,20 @@ func (n *Node) startTaskContext(parent context.Context, owner string, spec model
 		return model.Task{}, err
 	}
 	spec.Args = model.JSON(normalized)
-	if len(spec.Args) > 1<<20 || len(spec.Inputs) > 128 || len(spec.Outputs) > 128 || len(model.JSON(spec)) > 2<<20 {
-		return model.Task{}, errors.New("task specification exceeds limits: 1 MiB arguments, 128 inputs/outputs, 2 MiB total; use artifacts for bulk data")
-	}
 	if spec.TimeoutSeconds == 0 {
 		spec.TimeoutSeconds = 3600
+	}
+	// One encoding of the final specification serves the size bound and the
+	// idempotency digest.
+	encoded := model.JSON(spec)
+	if len(spec.Args) > 1<<20 || len(spec.Inputs) > 128 || len(spec.Outputs) > 128 || len(encoded) > 2<<20 {
+		return model.Task{}, errors.New("task specification exceeds limits: 1 MiB arguments, 128 inputs/outputs, 2 MiB total; use artifacts for bulk data")
 	}
 	if spec.TimeoutSeconds < 1 || spec.TimeoutSeconds > 86400 {
 		return model.Task{}, errors.New("task timeout must be 1..86400 seconds")
 	}
-	digest := specDigest(spec)
+	sum := sha256.Sum256(encoded)
+	digest := hex.EncodeToString(sum[:])
 	// Durable submissions remain reconcilable while a machine is disabled. A
 	// concurrent submission of the same ID waits for the first to settle.
 	reservation := &acceptance{done: make(chan struct{}), leaseID: spec.LeaseID}

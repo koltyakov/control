@@ -25,13 +25,33 @@ type gpuCollector struct {
 	initialized bool
 	devices     []gpuDevice
 	nvidia      string
+	// A failed inventory, such as a slow probe during boot, is retried with
+	// backoff instead of leaving the inventory empty until restart.
+	retryAt time.Time
+	backoff time.Duration
+	// inventory is replaceable in tests.
+	inventory func(context.Context) ([]gpuDevice, error)
 }
 
+const (
+	gpuInventoryRetry    = time.Minute
+	gpuInventoryMaxRetry = 30 * time.Minute
+)
+
 func (g *gpuCollector) sample(ctx context.Context) []model.GPUInfo {
-	if !g.initialized {
-		g.devices = gpuInventory(ctx)
-		g.nvidia, _ = exec.LookPath("nvidia-smi")
-		g.initialized = true
+	if !g.initialized && !time.Now().Before(g.retryAt) {
+		inventory := g.inventory
+		if inventory == nil {
+			inventory = gpuInventory
+		}
+		devices, err := inventory(ctx)
+		if err == nil && ctx.Err() == nil {
+			g.devices, g.initialized = devices, true
+			g.nvidia, _ = exec.LookPath("nvidia-smi")
+		} else {
+			g.backoff = min(max(2*g.backoff, gpuInventoryRetry), gpuInventoryMaxRetry)
+			g.retryAt = time.Now().Add(g.backoff)
+		}
 	}
 	var nvidia []model.GPUInfo
 	if g.nvidia != "" {

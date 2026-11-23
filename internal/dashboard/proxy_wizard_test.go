@@ -36,7 +36,7 @@ func TestRegistrationSelectsProxyWorkerAndExplicitAddress(t *testing.T) {
 		},
 	}
 	apply := func(msg tea.Msg) tea.Cmd {
-		next, cmd := m.updateRegistration(msg)
+		next, cmd := m.Update(msg)
 		m = next.(view)
 		return cmd
 	}
@@ -88,14 +88,14 @@ func TestRegistrationDirectConnectionSendsNoProxy(t *testing.T) {
 			},
 		},
 	}
-	next, load := m.updateRegistration(tea.KeyPressMsg{Code: tea.KeyEnter})
+	next, load := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = next.(view)
 	if load == nil {
 		t.Fatal("available connections were not checked")
 	}
-	next, _ = m.updateRegistration(load())
+	next, _ = m.Update(load())
 	m = next.(view)
-	next, cmd := m.updateRegistration(tea.KeyPressMsg{Code: tea.KeyEnter})
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if next.(view).wizard.step != "creating" || cmd == nil {
 		t.Fatal("direct connection did not create")
 	}
@@ -126,12 +126,12 @@ func TestRegistrationSkipsConnectionChoiceWithoutUsableProxy(t *testing.T) {
 					return enrollment.Link{}, nil
 				},
 			}}
-			next, load := m.updateRegistration(tea.KeyPressMsg{Code: tea.KeyEnter})
+			next, load := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 			m = next.(view)
 			if load == nil || created != 0 {
 				t.Fatal("invitation was not deferred until discovery completed")
 			}
-			next, create := m.updateRegistration(load())
+			next, create := m.Update(load())
 			if next.(view).wizard.step != "creating" || create == nil {
 				t.Fatal("unavailable connection choices were shown")
 			}
@@ -150,7 +150,7 @@ func TestRegistrationDoesNotCreateAfterProxyDiscoveryFailure(t *testing.T) {
 			return enrollment.Link{}, nil
 		},
 	}}
-	next, cmd := m.updateRegistration(proxyWorkersResult{id: 1, err: errors.New("unavailable")})
+	next, cmd := m.Update(proxyWorkersResult{id: 1, err: errors.New("unavailable")})
 	if cmd != nil || next.(view).wizard.step != "context" || next.(view).wizard.err == "" {
 		t.Fatal("discovery failure was hidden")
 	}

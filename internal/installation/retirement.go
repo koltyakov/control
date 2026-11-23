@@ -100,6 +100,7 @@ func ScheduleRetiredUninstall(config, id string) error {
 	}
 	// Reuse one verified helper per executable, including failed-cleanup retries.
 	dir := filepath.Join(cfg.DataDir, "uninstall-"+sha)
+	pruneHelperCopies(cfg.DataDir, "uninstall-", sha)
 	helper := filepath.Join(dir, "control")
 	if runtime.GOOS == "windows" {
 		helper += ".exe"
@@ -332,5 +333,22 @@ func removeInstalledBinary(ctx context.Context, binary string) error {
 			return fmt.Errorf("remove retired executable: %w", err)
 		case <-ticker.C:
 		}
+	}
+}
+
+// pruneHelperCopies removes helper copies made by other executables, which
+// would otherwise remain in the state directory after each upgrade. A copy
+// still running on Windows cannot be removed and stays for a later attempt.
+func pruneHelperCopies(dataDir, prefix, keepSHA string) {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		sha, ok := strings.CutPrefix(entry.Name(), prefix)
+		if !ok || sha == keepSHA || !update.ValidDigest(sha) || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(dataDir, entry.Name()))
 	}
 }

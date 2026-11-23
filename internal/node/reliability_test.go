@@ -337,6 +337,16 @@ func TestArtifactBudgetPinsAndStagingCleanup(t *testing.T) {
 	if _, err = os.Stat(orphan); !os.IsNotExist(err) || n.artifactUsed != 0 {
 		t.Fatal("orphan not reclaimed", err, n.artifactUsed)
 	}
+	// A crash leaves fresh staging that startup removes instead of counting.
+	if err = os.WriteFile(orphan, []byte("crashed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = n.loadArtifactUsage(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(orphan); !os.IsNotExist(err) || n.artifactUsed != 0 {
+		t.Fatal("startup kept or charged crashed import staging", err, n.artifactUsed)
+	}
 }
 
 func TestArtifactCleanupReclaimsRedundantPartialOnly(t *testing.T) {

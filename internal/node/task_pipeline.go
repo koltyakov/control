@@ -56,8 +56,9 @@ func (n *Node) stageTaskInputs(ctx context.Context, id, dir string, inputs []mod
 			return err
 		}
 		// Copy rather than link: a provider may modify its inputs, but never the
-		// immutable artifact. Check cancellation while copying large local files.
-		_, err = io.Copy(dest, contextReader{ctx, source})
+		// immutable artifact. Check cancellation between bounded chunks; each
+		// chunk stays an *os.File copy, so the kernel can copy it directly.
+		err = copyFileChunks(ctx, dest, source)
 		_ = source.Close()
 		closeErr := dest.Close()
 		if err != nil {
@@ -78,9 +79,7 @@ func (n *Node) runTaskProvider(ctx context.Context, task model.Task, dir string,
 		return nil, err
 	}
 	defer release()
-	if _, err := n.updateTask(task.ID, func(t *model.Task) { t.State, t.Updated = "running", time.Now().UTC() }); err != nil {
-		return nil, err
-	}
+	n.markTaskRunning(task.ID)
 	notifier.notify(false)
 	n.taskPhase(task.ID, "preparing workspace")
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -138,4 +137,37 @@ func (n *Node) publishTaskOutputs(ctx context.Context, id string, outputs []stri
 		pins = append(pins, unpin)
 	}
 	return artifacts, pins, nil
+}
+
+// markTaskRunning publishes the queued-to-running transition in memory only.
+// Acceptance is already durable, and restart recovery marks every non-terminal
+// record interrupted whether it was queued or running, so an fsync here would
+// buy nothing. The next durable update writes the running state with it.
+func (n *Node) markTaskRunning(id string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	task := n.tasks[id]
+	if task == nil || task.Terminal() {
+		return
+	}
+	next := cloneTask(task)
+	next.State, next.Updated = "running", time.Now().UTC()
+	*task = next
+	n.recordRecentTaskLocked(&next)
+}
+
+// copyFileChunks copies source to dest in 8 MiB chunks, checking ctx between
+// them. io.CopyN keeps both ends visible as files, so os.File.ReadFrom can
+// use copy_file_range or sendfile instead of copying through user space.
+func copyFileChunks(ctx context.Context, dest, source *os.File) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, err := io.CopyN(dest, source, 8<<20); errors.Is(err, io.EOF) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+	}
 }

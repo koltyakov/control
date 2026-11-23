@@ -285,13 +285,18 @@ func (g *Gateway) proxyDrainHint(group *proxyRollout, resume bool, now time.Time
 		kind = "gateway.resume"
 	}
 	user := g.nodes[group.parent].UserID
+	// Encode each child's request once; every peer gets its own packet, as
+	// queued packets are owned by their connection, but shares the bytes.
+	requests := make([][]byte, len(group.children))
+	for i, child := range group.children {
+		requests[i] = model.JSON(RelayDrainRequest{Until: until, Peer: child})
+	}
 	for _, c := range g.peers {
 		if !c.relayDrain || c.userID != user {
 			continue
 		}
-		for _, child := range group.children {
-			c.enqueue(&protocol.Packet{Kind: kind, From: update.GatewaySender, Session: group.token,
-				Data: model.JSON(RelayDrainRequest{Until: until, Peer: child})})
+		for _, data := range requests {
+			c.enqueue(&protocol.Packet{Kind: kind, From: update.GatewaySender, Session: group.token, Data: data})
 		}
 	}
 }

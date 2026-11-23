@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/koltyakov/control/internal/identity"
@@ -460,6 +461,31 @@ func (n *Node) pullArtifact(ctx context.Context, a model.Artifact) (_ model.Arti
 		return model.Artifact{}, fmt.Errorf("transfer paused at resumable partial: %w", err)
 	}
 	activity.phase("verifying checksum")
+	if hex.EncodeToString(hash.Sum(nil)) != a.SHA256 && offset > 0 {
+		// The retained prefix may not belong to this artifact's bytes, for
+		// example after a producer-side change. Refetch once from offset zero
+		// instead of failing staging on a partial that can never verify.
+		activity.phase("refetching after resumed checksum mismatch")
+		size, err := f.Seek(0, io.SeekEnd)
+		if err == nil {
+			err = f.Truncate(0)
+		}
+		if err == nil {
+			_, err = f.Seek(0, io.SeekStart)
+		}
+		if err != nil {
+			return model.Artifact{}, err
+		}
+		n.artifactBudgetMu.Lock()
+		n.artifactUsed -= size
+		n.artifactBudgetMu.Unlock()
+		hash.Reset()
+		activity.phase("receiving")
+		if err = n.Download(ctx, a, 0, io.MultiWriter(&artifactBudgetWriter{node: n, writer: f}, hash)); err != nil {
+			return model.Artifact{}, fmt.Errorf("transfer paused at resumable partial: %w", err)
+		}
+		activity.phase("verifying checksum")
+	}
 	if hex.EncodeToString(hash.Sum(nil)) != a.SHA256 {
 		_ = f.Close()
 		_ = n.removeArtifactData(partial)
@@ -545,9 +571,7 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
-		artifacts, err := listArtifacts(entries, n.artifactOwner(ctx), n.Identity.ID, func(name string, dst *storedArtifact) error {
-			return store.Read(filepath.Join(dir, name), dst)
-		})
+		artifacts, err := listArtifacts(entries, n.artifactOwner(ctx), n.Identity.ID, n.artifactMetadata.reader(dir, entries))
 		if err != nil || (q.Limit == 0 && q.Cursor == "") {
 			return artifacts, err
 		}
@@ -647,4 +671,64 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 		return delivered, err
 	}
 	return nil, errors.New("unknown artifact method")
+}
+
+// artifactMetadataCache keeps decoded artifact metadata between listings.
+// Metadata is always replaced by an atomic rename, so an entry is reused only
+// while its file is the same file with the same size and modification time.
+type artifactMetadataCache struct {
+	mu      sync.Mutex
+	entries map[string]cachedArtifactMetadata
+}
+
+type cachedArtifactMetadata struct {
+	info   os.FileInfo
+	stored storedArtifact
+}
+
+// reader returns a metadata reader for one listing of dir, and forgets names
+// absent from that listing so the cache stays bounded by the directory.
+func (c *artifactMetadataCache) reader(dir string, entries []os.DirEntry) func(string, *storedArtifact) error {
+	c.mu.Lock()
+	present := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		present[entry.Name()] = true
+	}
+	for name := range c.entries {
+		if !present[name] {
+			delete(c.entries, name)
+		}
+	}
+	c.mu.Unlock()
+	return func(name string, dst *storedArtifact) error {
+		path := filepath.Join(dir, name)
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		c.mu.Lock()
+		cached, ok := c.entries[name]
+		c.mu.Unlock()
+		if ok && os.SameFile(cached.info, info) && cached.info.Size() == info.Size() && cached.info.ModTime().Equal(info.ModTime()) {
+			*dst = cloneStoredArtifact(cached.stored)
+			return nil
+		}
+		var stored storedArtifact
+		if err := store.Read(path, &stored); err != nil {
+			return err
+		}
+		c.mu.Lock()
+		if c.entries == nil {
+			c.entries = map[string]cachedArtifactMetadata{}
+		}
+		c.entries[name] = cachedArtifactMetadata{info: info, stored: cloneStoredArtifact(stored)}
+		c.mu.Unlock()
+		*dst = stored
+		return nil
+	}
+}
+
+func cloneStoredArtifact(a storedArtifact) storedArtifact {
+	a.Owners = slices.Clone(a.Owners)
+	return a
 }

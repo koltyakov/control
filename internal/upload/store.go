@@ -96,28 +96,11 @@ func New(root *os.Root, workDir, dataDir, nodeID string, limits Limits) (*Manage
 		return nil, err
 	}
 	m.privateDir = resolveExisting(m.dir)
-	dir, err := os.Open(m.dir)
+	entries, err := metadataEntries(m.dir)
 	if err != nil {
 		return nil, err
-	}
-	entries, err := dir.ReadDir(4097)
-	closeErr := dir.Close()
-	if errors.Is(err, io.EOF) {
-		err = nil
-	}
-	if err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return nil, err
-	}
-	if len(entries) > 4096 {
-		return nil, errors.New("upload metadata directory exceeds 4096 entries; preserve it for recovery")
 	}
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".write-") {
-			continue
-		}
 		name := strings.TrimSuffix(e.Name(), ".json")
 		if !digest.MatchString(name) || !strings.HasSuffix(e.Name(), ".json") || !e.Type().IsRegular() {
 			return nil, errors.New("invalid upload metadata entry")
@@ -455,4 +438,38 @@ func (m *Manager) space(r record, bytes int64) error {
 		}
 	}
 	return nil
+}
+
+// metadataEntries lists upload records. Temporary files from interrupted
+// atomic writes are removed rather than counted, so they cannot push a node
+// past the record bound and prevent it from starting. No writer is active
+// before the manager exists.
+func metadataEntries(dir string) ([]os.DirEntry, error) {
+	f, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	var records []os.DirEntry
+	for {
+		batch, err := f.ReadDir(256)
+		for _, e := range batch {
+			if strings.HasPrefix(e.Name(), store.TempPrefix) {
+				if e.Type().IsRegular() {
+					_ = os.Remove(filepath.Join(dir, e.Name()))
+				}
+				continue
+			}
+			if len(records) == 4096 {
+				return nil, errors.New("upload metadata directory exceeds 4096 entries; preserve it for recovery")
+			}
+			records = append(records, e)
+		}
+		if errors.Is(err, io.EOF) {
+			return records, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -15,6 +16,35 @@ type gatewayWrite struct {
 	data   []byte
 	pooled *[]byte // backing store of data, recycled after the write
 	done   chan error
+	// timeout bounds the sender's wait; abandoned tells the writer the sender
+	// stopped waiting, so the packet must not be written.
+	timeout   *time.Timer
+	abandoned atomic.Bool
+}
+
+// gatewaySendTimeout bounds queueing plus writing one gateway packet.
+const gatewaySendTimeout = 10 * time.Second
+
+var gatewayWrites = sync.Pool{New: func() any {
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	return &gatewayWrite{done: make(chan error, 1), timeout: timer}
+}}
+
+func getGatewayWrite(ctx context.Context, ws *websocket.Conn, data []byte, pooled *[]byte) *gatewayWrite {
+	request := gatewayWrites.Get().(*gatewayWrite)
+	request.ctx, request.ws, request.data, request.pooled = ctx, ws, data, pooled
+	request.abandoned.Store(false)
+	request.timeout.Reset(gatewaySendTimeout)
+	return request
+}
+
+// putGatewayWrite recycles a request the writer no longer references: one
+// never queued, or one whose result the sender received.
+func putGatewayWrite(request *gatewayWrite) {
+	request.timeout.Stop()
+	request.ctx, request.ws, request.data, request.pooled = nil, nil, nil, nil
+	gatewayWrites.Put(request)
 }
 
 // gatewayWriteBuffers recycles marshaled gateway packets, which are
@@ -40,15 +70,36 @@ func putWriteBuffer(b *[]byte) {
 // so a reconnect cannot replay a queued packet onto a different connection.
 func (p *Peer) writeGateway() {
 	defer p.drainWrites()
+	// One write context serves every write; a stall timer cancels it, which
+	// closes that socket as a per-write timeout would. Only then is it rebuilt.
+	var ctx context.Context
+	var cancel context.CancelFunc
+	var stall *time.Timer
+	defer func() {
+		if cancel != nil {
+			stall.Stop()
+			cancel()
+		}
+	}()
 	write := func(request *gatewayWrite) {
+		if request.abandoned.Load() {
+			putWriteBuffer(request.pooled)
+			request.done <- context.Canceled
+			return
+		}
 		if err := request.ctx.Err(); err != nil {
 			putWriteBuffer(request.pooled)
 			request.done <- err
 			return
 		}
-		ctx, cancel := context.WithTimeout(p.ctx, 10*time.Second)
+		if ctx == nil || ctx.Err() != nil {
+			ctx, cancel = context.WithCancel(p.ctx)
+			stall = time.AfterFunc(gatewaySendTimeout, cancel)
+		} else {
+			stall.Reset(gatewaySendTimeout)
+		}
 		err := request.ws.Write(ctx, websocket.MessageBinary, request.data)
-		cancel()
+		stall.Stop()
 		putWriteBuffer(request.pooled)
 		request.done <- err
 	}

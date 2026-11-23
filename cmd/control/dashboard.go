@@ -75,7 +75,8 @@ func dashboardCLI(ctx context.Context, c client.Client, remote client.Admin, arg
 	options.Refresh = func(ctx context.Context) (model.PoolActivitySnapshot, error) {
 		return c.DashboardFresh(ctx, remote, query)
 	}
-	if role := remote.Role(ctx); role == "user" || role == "superuser" {
+	// One authentication request answers both the role and proxy support.
+	if auth, _ := remote.DisplayAuth(ctx); auth.Role == "user" || auth.Role == "superuser" {
 		options.Invite = func(ctx context.Context, name, platform, mode string, proxy model.GatewayProxy) (enrollment.Link, error) {
 			return remote.Invite(ctx, enrollment.Request{Name: name, OS: platform, ServiceMode: mode, ProxyWorker: proxy.Worker, ProxyURL: proxy.URL})
 		}
@@ -83,7 +84,7 @@ func dashboardCLI(ctx context.Context, c client.Client, remote client.Admin, arg
 			return remote.Invite(ctx, enrollment.Request{Name: name, OS: platform, ServiceMode: mode, Force: true, ProxyWorker: proxy.Worker, ProxyURL: proxy.URL})
 		}
 		// Offer the proxy step only when the gateway declares support.
-		if supported, err := remote.SupportsGatewayProxy(ctx); err == nil && supported {
+		if auth.GatewayProxy {
 			options.ProxyWorkers = remote.ProxyWorkers
 		}
 		options.InvitationStatus = remote.Invitation

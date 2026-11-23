@@ -74,7 +74,8 @@ func (m view) updateSelection(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		case tea.MouseWheelDown:
 			m.offset += 3
 		}
-		lines := strings.Split(m.body(time.Now()), "\n")
+		lines, _, updated := m.renderedLines(time.Now())
+		m = updated
 		m.offset = max(0, min(m.offset, len(lines)-m.pageSize()))
 	case tea.MouseMotionMsg, tea.MouseReleaseMsg:
 		if m.selection == nil || (mouse.Button != tea.MouseLeft && mouse.Button != tea.MouseNone) {

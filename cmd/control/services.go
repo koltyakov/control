@@ -5,13 +5,16 @@ import (
 	"errors"
 	"flag"
 	"log/slog"
+	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/gateway"
 	"github.com/koltyakov/control/internal/installation"
+	"github.com/koltyakov/control/internal/logfile"
 	"github.com/koltyakov/control/internal/node"
 )
 
@@ -100,6 +103,9 @@ func nodeCLI(ctx context.Context, args, commandArgs []string, token string) erro
 				}
 			}
 		}()
+		logs := make(chan struct{})
+		go func() { defer close(logs); logfile.Maintain(ctx, filepath.Join(filepath.Dir(*path), "node.log")) }()
+		defer func() { cancel(); <-logs }()
 		n.SetShutdown(cancel)
 		n.ConfigureStartup(func(ctx context.Context, mode string) error {
 			return installation.PrepareStartupChange(ctx, *path, n.Identity.ID, mode)
@@ -115,6 +121,10 @@ func nodeCLI(ctx context.Context, args, commandArgs []string, token string) erro
 			return err
 		}
 		slog.Info("node online", "name", n.Config.Name, "id", n.Identity.ID, "api", n.Config.Listen)
-		return serve(ctx, node.HTTPServer(n.Config.Listen, n.Handler()), "", "")
+		server := node.HTTPServer(n.Config.Listen, n.Handler())
+		// Long polls, downloads, and log follows end with the service, so
+		// graceful shutdown does not wait for them to time out.
+		server.BaseContext = func(net.Listener) context.Context { return ctx }
+		return serve(ctx, server, "", "")
 	})
 }

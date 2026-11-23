@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/koltyakov/control/internal/logfile"
 )
 
 // StartTunnelService installs a separate user startup entry, never a fleet node.
@@ -26,7 +28,9 @@ func StartTunnelService(ctx context.Context, binary, dir string) error {
 	if mode != "process" {
 		return installTunnelService(ctx, binary, dir)
 	}
-	log, err := os.OpenFile(filepath.Join(dir, "service.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	logPath := filepath.Join(dir, "service.log")
+	_ = logfile.Trim(logPath)
+	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}

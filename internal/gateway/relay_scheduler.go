@@ -14,6 +14,10 @@ const (
 	// One drained session is kept for alternating push/pop traffic, but only
 	// with small ring storage. Larger rings are released with their session.
 	relaySpareItems = 8
+	// Data cannot use the last packets and bytes of a destination queue, so a
+	// close still reaches a destination whose queue is full of bulk data.
+	relayControlPackets = 64
+	relayControlBytes   = relayQueueBytes / 16
 )
 
 type relayItem struct {
@@ -38,8 +42,9 @@ func (s *relaySession) front() relayItem { return s.items[s.head] }
 
 func (s *relaySession) pushBack(item relayItem) {
 	if s.n == len(s.items) {
-		// Growth stops at the per-session packet bound enforced by push.
-		items := make([]relayItem, min(max(2*len(s.items), 4), relaySessionPackets))
+		// Growth stops at the per-session packet bound enforced by push, plus
+		// the slot reserved for a closing packet.
+		items := make([]relayItem, min(max(2*len(s.items), 4), relaySessionPackets+1))
 		for i := range s.n {
 			items[i] = s.items[(s.head+i)%len(s.items)]
 		}
@@ -86,12 +91,18 @@ func (q *relayScheduler) push(p *protocol.Packet) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	size := packetRetainedBytes(p)
-	if q.count >= relayQueuePackets || q.bytes+size > relayQueueBytes {
+	packets, bytes := relayQueuePackets, int64(relayQueueBytes)
+	if p.Kind == "data" {
+		packets, bytes = packets-relayControlPackets, bytes-relayControlBytes
+	}
+	if q.count >= packets || q.bytes+size > bytes {
 		return false
 	}
 	key := relayStreamKey{p.From, p.Session}
 	s := q.sessions[key]
-	if s != nil && (s.n >= relaySessionPackets || s.bytes+size > relaySessionBytes) {
+	// A close ends its session and the gateway has already recorded it, so it
+	// may use one slot beyond the per-session bound that its data filled.
+	if s != nil && (p.Kind == "close" && s.n > relaySessionPackets || p.Kind != "close" && (s.n >= relaySessionPackets || s.bytes+size > relaySessionBytes)) {
 		return false
 	}
 	q.sequence++

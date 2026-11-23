@@ -56,10 +56,19 @@ func (c Admin) IsSuperuser(ctx context.Context) bool {
 	return c.Role(ctx) == "superuser"
 }
 
+// Role is a best-effort lookup for help and display paths. It keeps a short
+// bound so an offline gateway does not stall usage output.
 func (c Admin) Role(ctx context.Context) string {
-	role, _ := c.AuthRole(ctx)
+	role, _, _ := c.account(ctx, roleLookupTimeout)
 	return role
 }
+
+const (
+	roleLookupTimeout = 2 * time.Second
+	// accountTimeout bounds explicit commands on a slow first connection.
+	// A caller deadline that is shorter still applies.
+	accountTimeout = 15 * time.Second
+)
 
 // AuthRole preserves authentication and connection errors for explicit commands.
 // Role is used by help, where unavailable credentials simply hide management.
@@ -71,19 +80,38 @@ func (c Admin) AuthRole(ctx context.Context) (string, error) {
 // Account returns the credential's role and the browser username of a management
 // key. Gateways older than the username field return an empty name.
 func (c Admin) Account(ctx context.Context) (role, username string, err error) {
+	return c.account(ctx, accountTimeout)
+}
+
+func (c Admin) account(ctx context.Context, timeout time.Duration) (role, username string, err error) {
+	info, err := c.authInfo(ctx, timeout)
+	return info.Role, info.Username, err
+}
+
+// AuthInfo is the gateway's description of a credential and its features.
+type AuthInfo struct {
+	Role         string `json:"role"`
+	Username     string `json:"username"`
+	GatewayProxy bool   `json:"gatewayProxy"`
+}
+
+// DisplayAuth reads the role and gateway features in one request, with the
+// short bound of Role, for display paths such as the dashboard.
+func (c Admin) DisplayAuth(ctx context.Context) (AuthInfo, error) {
+	return c.authInfo(ctx, roleLookupTimeout)
+}
+
+func (c Admin) authInfo(ctx context.Context, timeout time.Duration) (AuthInfo, error) {
 	if c.Key == "" {
-		return "", "", fmt.Errorf("gateway credential is not configured; run control login --gateway URL")
+		return AuthInfo{}, fmt.Errorf("gateway credential is not configured; run control login --gateway URL")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	var info struct {
-		Role     string `json:"role"`
-		Username string `json:"username"`
-	}
+	var info AuthInfo
 	if err := c.request(ctx, http.MethodGet, "/v1/auth", nil, 0, "application/json", &info); err != nil {
-		return "", "", fmt.Errorf("authenticate with gateway %s: %w", c.URL, err)
+		return AuthInfo{}, fmt.Errorf("authenticate with gateway %s: %w", c.URL, err)
 	}
-	return info.Role, info.Username, nil
+	return info, nil
 }
 
 func (c Admin) JSON(ctx context.Context, method, path string, params, result any) error {

@@ -37,6 +37,10 @@ type tunnelService struct {
 	mu      sync.Mutex
 	entries map[string]*retainedTunnel
 	wg      sync.WaitGroup
+	// expiryWake re-arms the expiry timer after a tunnel is added.
+	expiryWake chan struct{}
+	// shared is the account client of every tunnel; see client.
+	shared *Client
 }
 
 // RunTunnelService owns the retained listeners independently of CLI/MCP processes.
@@ -126,7 +130,7 @@ func (m *tunnelService) listenEndpoint(listen func(string, string) (net.Listener
 
 func newTunnelService(ctx context.Context, dir string, cfg StandaloneConfig) (*tunnelService, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	m := &tunnelService{ctx: ctx, cancel: cancel, dir: dir, cfg: cfg, entries: map[string]*retainedTunnel{}}
+	m := &tunnelService{ctx: ctx, cancel: cancel, dir: dir, cfg: cfg, entries: map[string]*retainedTunnel{}, expiryWake: make(chan struct{}, 1)}
 	var infos []PersistentTunnelInfo
 	if err := store.Read(filepath.Join(dir, "tunnels.json"), &infos); err != nil && !os.IsNotExist(err) {
 		cancel()
@@ -171,6 +175,27 @@ func (m *tunnelService) close() {
 	m.cancel()
 	m.mu.Unlock()
 	m.wg.Wait()
+	m.mu.Lock()
+	shared := m.shared
+	m.shared = nil
+	m.mu.Unlock()
+	if shared != nil {
+		_ = shared.Close()
+	}
+}
+
+// client returns the service's one account client. Every retained tunnel
+// shares its gateway connection and transport identity instead of holding one
+// of the account's client connections each. A failed backend setup is not
+// cached by the client, so later attempts set it up again.
+func (m *tunnelService) client() Client {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.shared == nil {
+		c := (Client{}).WithStandalone(m.ctx, m.cfg)
+		m.shared = &c
+	}
+	return *m.shared
 }
 
 // saveLocked commits desired state before acknowledging creation or disposal.
@@ -249,6 +274,10 @@ func (m *tunnelService) create(ctx context.Context, spec PersistentTunnelSpec) (
 	}
 	e := m.entry(info)
 	m.entries[spec.ID] = e
+	select {
+	case m.expiryWake <- struct{}{}:
+	default:
+	}
 	if err := m.saveLocked(); err != nil {
 		delete(m.entries, spec.ID)
 		e.cancel()
@@ -305,15 +334,38 @@ func (m *tunnelService) disposeEntry(id string, expected *retainedTunnel) error 
 	return nil
 }
 
+// expire sleeps until the nearest tunnel TTL instead of polling; tunnels
+// without a TTL need no timer at all.
 func (m *tunnelService) expire() {
 	defer m.wg.Done()
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	defer timer.Stop()
 	for {
+		m.mu.Lock()
+		var next time.Time
+		for _, e := range m.entries {
+			if expires := e.info.Expires; !expires.IsZero() && (next.IsZero() || expires.Before(next)) {
+				next = expires
+			}
+		}
+		m.mu.Unlock()
+		var due <-chan time.Time
+		if !next.IsZero() {
+			// A past deadline means the last disposal failed; retry each second.
+			wait := time.Until(next)
+			if wait <= 0 {
+				wait = time.Second
+			}
+			timer.Reset(wait)
+			due = timer.C
+		}
 		select {
 		case <-m.ctx.Done():
 			return
-		case now := <-ticker.C:
+		case <-m.expiryWake:
+			timer.Stop()
+		case now := <-due:
 			m.mu.Lock()
 			expired := map[string]*retainedTunnel{}
 			for id, e := range m.entries {
@@ -333,9 +385,8 @@ func (m *tunnelService) expire() {
 func (m *tunnelService) run(e *retainedTunnel) {
 	delay := time.Second
 	for e.ctx.Err() == nil {
-		// Each attempt gets a fresh client so failed initialization is not cached.
 		// The target is an immutable ID, never a replacement using the same name.
-		c := (Client{}).WithStandalone(e.ctx, m.cfg)
+		c := m.client()
 		setup, cancel := context.WithTimeout(e.ctx, 15*time.Second)
 		var description struct{ ID string }
 		// The identity check needs no runbook catalog.
@@ -362,7 +413,6 @@ func (m *tunnelService) run(e *retainedTunnel) {
 			err = errors.New("listener disconnected; restoring for new connections")
 			delay = time.Second
 		}
-		_ = c.Close()
 		m.mu.Lock()
 		e.forward, e.info.State = nil, "retrying"
 		if err != nil {

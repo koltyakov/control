@@ -43,13 +43,14 @@ func (p *Peer) OpenRPCWithReceipt(ctx context.Context, target, method string, pa
 	if method == "tcp.open" || method == "tcp.listen" {
 		lane = InteractiveLane
 	}
+	raw := model.JSON(params)
 	if method == "tasks.logs" || method == "tasks.get" {
 		// Long-held requests stay off the control lane's stream budget.
 		var q struct {
 			Follow      bool `json:"follow"`
 			WaitSeconds int  `json:"waitSeconds"`
 		}
-		if json.Unmarshal(model.JSON(params), &q) == nil && (q.Follow || q.WaitSeconds > 0) {
+		if json.Unmarshal(raw, &q) == nil && (q.Follow || q.WaitSeconds > 0) {
 			lane = InteractiveLane
 		}
 	}
@@ -64,7 +65,7 @@ func (p *Peer) OpenRPCWithReceipt(ctx context.Context, target, method string, pa
 	})
 	defer stop()
 	deadline, _ := ctx.Deadline()
-	request := model.Request{Version: model.Version, Method: method, Params: model.JSON(params), Deadline: deadline}
+	request := model.Request{Version: model.Version, Method: method, Params: raw, Deadline: deadline}
 	if method == "tasks.start" || method == "peers.call" {
 		request.SubmissionID = identity.NewID()
 	}

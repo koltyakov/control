@@ -156,7 +156,7 @@ func (p *Peer) acceptChannel(l *link) {
 	if err != nil {
 		return
 	}
-	if !p.registerSession(s) {
+	if p.registerSession(s) != nil {
 		_ = s.mux.Close()
 		return
 	}

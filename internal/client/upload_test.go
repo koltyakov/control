@@ -16,6 +16,7 @@ import (
 
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/node"
+	"github.com/koltyakov/control/internal/store"
 	"github.com/koltyakov/control/internal/transport/transporttest"
 	"github.com/koltyakov/control/internal/upload"
 	"github.com/koltyakov/control/internal/wire"
@@ -297,5 +298,34 @@ func TestUploadRecoveryFilenamesArePortable(t *testing.T) {
 	}
 	if base := filepath.Base(c.uploadRecordPath("CON")); base == "CON.json" || len(base) != 69 {
 		t.Fatal("Windows device name used as recovery filename", base)
+	}
+}
+
+func TestUploadRecordsArePrunedOnlyAfterPublishedRetention(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	write := func(name string, published time.Time) string {
+		path := filepath.Join(dir, name)
+		if err := store.Write(path, localUpload{Spec: upload.Spec{ID: name}, Published: published}); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	old := write("old.json", now.Add(-8*24*time.Hour))
+	recent := write("recent.json", now.Add(-time.Hour))
+	pending := write("pending.json", time.Time{})
+	orphan := filepath.Join(dir, "gone.json.lock")
+	if err := os.WriteFile(orphan, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	stale := now.Add(-2 * time.Hour)
+	if err := os.Chtimes(orphan, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	pruneUploadRecords(t.Context(), dir, now)
+	for path, kept := range map[string]bool{old: false, old + ".lock": false, recent: true, pending: true, orphan: false} {
+		if _, err := os.Stat(path); (err == nil) != kept {
+			t.Fatal("unexpected record retention", filepath.Base(path), err)
+		}
 	}
 }

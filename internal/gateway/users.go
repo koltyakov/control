@@ -18,7 +18,15 @@ type User struct {
 	Disabled  bool      `json:"disabled"`
 }
 
-type principal struct{ Role, KeyID, UserID string }
+type principal struct {
+	Role, KeyID, UserID string
+	// Username is an account key's browser username, published with the
+	// credential index so /v1/auth need not wait on g.mu.
+	Username string
+	// Installation is the g.installations key of an installation credential,
+	// so registration finds its invitation without scanning them all.
+	Installation string
+}
 
 func newCredential() (string, error) {
 	var secret [32]byte

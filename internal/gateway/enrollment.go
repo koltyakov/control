@@ -92,11 +92,13 @@ func (g *Gateway) installationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /install/{ticket}/check", g.checkInstallation)
 }
 
-func (g *Gateway) installationAsset(r *http.Request, osName, arch string) (update.Asset, string, error) {
+// installationAsset selects an installer binary. A non-nil release means the
+// asset is already pinned and verified, so the caller need not hash it again.
+func (g *Gateway) installationAsset(r *http.Request, osName, arch string) (update.Asset, string, func(), error) {
 	if d := g.updates.Current(); d != nil {
 		if a, ok := d.Manifest.Asset(osName, arch); ok {
-			if err := update.Verify(g.updates.Blob(a.SHA256), a); err == nil {
-				return a, d.Manifest.Version, nil
+			if release, err := g.updates.VerifyPinned([]update.Asset{a}); err == nil {
+				return a, d.Manifest.Version, release, nil
 			}
 		}
 	}
@@ -104,33 +106,34 @@ func (g *Gateway) installationAsset(r *http.Request, osName, arch string) (updat
 	if info.OS == osName && info.Arch == arch && update.ValidDigest(info.SHA256) {
 		path, err := os.Executable()
 		if err != nil {
-			return update.Asset{}, "", err
+			return update.Asset{}, "", nil, err
 		}
 		f, err := os.Open(path)
 		if err != nil {
-			return update.Asset{}, "", err
+			return update.Asset{}, "", nil, err
 		}
 		defer func() { _ = f.Close() }()
 		stat, err := f.Stat()
 		if err != nil {
-			return update.Asset{}, "", err
+			return update.Asset{}, "", nil, err
 		}
 		a := update.Asset{OS: osName, Arch: arch, File: update.AssetName(osName, arch), Size: stat.Size(), SHA256: info.SHA256}
-		if err := update.Verify(g.updates.Blob(a.SHA256), a); err != nil {
-			if err = g.updates.Upload(f, a); err != nil {
-				return a, "", err
-			}
+		if release, err := g.updates.VerifyPinned([]update.Asset{a}); err == nil {
+			return a, info.Version, release, nil
 		}
-		return a, info.Version, nil
+		if err = g.updates.Upload(f, a); err != nil {
+			return a, "", nil, err
+		}
+		return a, info.Version, nil, nil
 	}
 	if g.options.ReleaseRepo != "" && g.requestPrincipal(r).Role == "superuser" {
 		if d, err := g.fetchRelease(r.Context()); err == nil && d != nil {
 			if a, ok := d.Manifest.Asset(osName, arch); ok {
-				return a, d.Manifest.Version, nil
+				return a, d.Manifest.Version, nil, nil
 			}
 		}
 	}
-	return update.Asset{}, "", fmt.Errorf("no %s/%s installer binary available; publish a bundle with make update or configure a release containing that platform", osName, arch)
+	return update.Asset{}, "", nil, fmt.Errorf("no %s/%s installer binary available; publish a bundle with make update or configure a release containing that platform", osName, arch)
 }
 
 func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
@@ -194,6 +197,7 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	var asset update.Asset
 	var assets []update.Asset
 	var version string
+	var pinned func()
 	if q.Arch == "" {
 		// Pin both architectures from one manifest, never a moving release target.
 		deployment := g.updates.Current()
@@ -211,7 +215,7 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 		}
 		asset, version = assets[0], deployment.Manifest.Version
 	} else {
-		asset, version, err = g.installationAsset(r, q.OS, q.Arch)
+		asset, version, pinned, err = g.installationAsset(r, q.OS, q.Arch)
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
@@ -219,7 +223,10 @@ func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	// Pin before verification so cleanup cannot remove selected assets while
 	// they are hashed outside g.mu or before the invitation commits.
-	release, err := g.updates.VerifyPinned(append([]update.Asset{asset}, assets...))
+	release := pinned
+	if release == nil {
+		release, err = g.updates.VerifyPinned(append([]update.Asset{asset}, assets...))
+	}
 	if err != nil {
 		http.Error(w, "installer binary changed; create a new invitation", http.StatusConflict)
 		return

@@ -144,7 +144,18 @@ func TestMCPMachineDiscoveryCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = ss.Close() }()
-	session, err := mcp.NewClient(&mcp.Implementation{Name: "discovery-test", Version: "1"}, nil).Connect(ctx, ct, nil)
+	mcpClient := mcp.NewClient(&mcp.Implementation{Name: "discovery-test", Version: "1"}, nil)
+	// The Go SDK fills omitted arguments with {}; other clients may omit them.
+	var omitArguments atomic.Bool
+	mcpClient.AddSendingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			if params, ok := request.GetParams().(*mcp.CallToolParams); ok && omitArguments.Load() {
+				params.Arguments = nil
+			}
+			return next(ctx, method, request)
+		}
+	})
+	session, err := mcpClient.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,6 +185,13 @@ func TestMCPMachineDiscoveryCompatibility(t *testing.T) {
 			t.Fatal("MCP output differs from shared projection", text.Text, string(want))
 		}
 	}
+	// Tools without required fields accept calls that omit arguments.
+	before := calls.Load()
+	omitArguments.Store(true)
+	if result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "control_nodes"}); err != nil || result.IsError || calls.Load() != before+1 {
+		t.Fatal("omitted arguments were rejected", result, err)
+	}
+	omitArguments.Store(false)
 	for _, invalid := range []map[string]any{{"compact": "true"}, {"node": true}, {"node": ""}, {"unknown": true}} {
 		before := calls.Load()
 		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "control_nodes", Arguments: invalid})

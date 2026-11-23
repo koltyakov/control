@@ -67,6 +67,7 @@ func updateSelfVerified(ctx context.Context, path, releases, version, currentVer
 		return result, errors.New("another CLI update is in progress")
 	}
 	defer func() { _ = lock.Close() }()
+	removeStaleUpdateDirs(filepath.Dir(path))
 	base := releases + "/latest/download"
 	if version != "" {
 		base = releases + "/download/" + version
@@ -155,4 +156,20 @@ func updateSelfVerified(ctx context.Context, path, releases, version, currentVer
 	}
 	result.Changed = true
 	return result, nil
+}
+
+// removeStaleUpdateDirs deletes staging directories left by earlier updates
+// of this executable, such as a Windows previous.exe that was still running.
+// The caller holds the update lock, so no other update uses them. A directory
+// whose old executable is still locked stays until a later update.
+func removeStaleUpdateDirs(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".control-update-") && entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
+			_ = os.RemoveAll(filepath.Join(dir, entry.Name()))
+		}
+	}
 }

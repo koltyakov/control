@@ -1,6 +1,7 @@
 package installation
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/koltyakov/control/internal/node"
 )
@@ -44,14 +46,41 @@ func installService(ctx context.Context, binary, config string) error {
 	if err != nil {
 		return err
 	}
-	if err = writeManaged(path, []byte(userLaunchPlist(binary, config))); err != nil {
+	domain := fmt.Sprintf("gui/%d", os.Getuid())
+	return launchdLoad(ctx, domain, domain+"/com.koltyakov.control", path, []byte(userLaunchPlist(binary, config)))
+}
+
+// launchdLoad writes a managed plist and loads it. A loaded job keeps the
+// definition it was bootstrapped with, so a changed plist is booted out and
+// bootstrapped again; an unchanged one is only kickstarted.
+func launchdLoad(ctx context.Context, domain, target, path string, content []byte) error {
+	old, _ := os.ReadFile(path)
+	changed := !bytes.Equal(old, content)
+	if err := writeManaged(path, content); err != nil {
 		return err
 	}
-	domain := fmt.Sprintf("gui/%d", os.Getuid())
-	if exec.CommandContext(ctx, "launchctl", "print", domain+"/com.koltyakov.control").Run() == nil {
-		return run(ctx, "launchctl", "kickstart", domain+"/com.koltyakov.control")
+	if exec.CommandContext(ctx, "launchctl", "print", target).Run() == nil {
+		if !changed {
+			return run(ctx, "launchctl", "kickstart", target)
+		}
+		if err := run(ctx, "launchctl", "bootout", target); err != nil {
+			return err
+		}
 	}
-	return run(ctx, "launchctl", "bootstrap", domain, path)
+	// bootout returns before launchd forgets the job; bootstrap can briefly
+	// fail until it has.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := run(ctx, "launchctl", "bootstrap", domain, path)
+		if err == nil || ctx.Err() != nil || time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 }
 
 func userLaunchPlist(binary, config string) string {
@@ -100,13 +129,7 @@ func systemService(ctx context.Context, operation, binary, config string, _ node
 	path := filepath.Join("/Library/LaunchDaemons", label+".plist")
 	target := "system/" + label
 	if operation == "start" {
-		if err := writeManaged(path, []byte(systemLaunchPlist(binary, config))); err != nil {
-			return err
-		}
-		if exec.CommandContext(ctx, "launchctl", "print", target).Run() == nil {
-			return run(ctx, "launchctl", "kickstart", target)
-		}
-		return run(ctx, "launchctl", "bootstrap", "system", path)
+		return launchdLoad(ctx, "system", target, path, []byte(systemLaunchPlist(binary, config)))
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil

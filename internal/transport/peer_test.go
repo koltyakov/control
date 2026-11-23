@@ -245,6 +245,19 @@ func TestRefusedSetupFailsDialerFast(t *testing.T) {
 				t.Fatal("setup failed after slots were released", err)
 			}
 			_ = stream.Close()
+			// Outgoing setups have their own bound: a saturated fan-out on beta
+			// must not refuse a new incoming lane.
+			for range cap(b.dialSetups) {
+				b.dialSetups <- struct{}{}
+			}
+			stream, err = a.OpenLane(ctx, "beta", InteractiveLane)
+			if err != nil {
+				t.Fatal("outgoing setups refused an incoming setup", err)
+			}
+			_ = stream.Close()
+			for range cap(b.dialSetups) {
+				<-b.dialSetups
+			}
 		})
 	}
 }

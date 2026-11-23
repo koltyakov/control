@@ -225,7 +225,11 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		_ = ws.CloseNow()
 		return nil, errors.New("peer stopped during connection")
 	}
-	p.gatewaySession.Add(1)
+	// Count a reconnect before signaling so observers of gatewayConnected
+	// see the stat that describes the session they were woken for.
+	if p.gatewaySession.Add(1) > 1 {
+		p.stats.gatewayReconnects.Add(1)
+	}
 	p.mu.Unlock()
 	select {
 	case p.gatewayConnected <- struct{}{}:
@@ -255,13 +259,20 @@ func (p *Peer) run(ws *websocket.Conn) {
 				_ = current.CloseNow()
 			})
 		}
+		// Resetting a timer per packet costs more than the packet at relay
+		// rates; renew at most once a second, extending idle by under that.
+		var renewed time.Time
+		renew := min(time.Second, idle/4)
 		for {
 			_, b, err := reader.Read(p.ctx, ws)
 			if err != nil {
 				break
 			}
 			if watchdog != nil {
-				watchdog.Reset(idle)
+				if now := time.Now(); now.Sub(renewed) >= renew {
+					watchdog.Reset(idle)
+					renewed = now
+				}
 			}
 			var msg protocol.Packet
 			if proto.Unmarshal(b, &msg) != nil {
@@ -308,7 +319,6 @@ func (p *Peer) run(ws *websocket.Conn) {
 			var err error
 			ws, err = p.connect(p.ctx)
 			if err == nil {
-				p.stats.gatewayReconnects.Add(1)
 				if failures > 0 {
 					p.log.Info("gateway reconnected", "attempts", failures+1)
 				}
@@ -347,9 +357,9 @@ func (p *Peer) send(ctx context.Context, msg *protocol.Packet) error {
 		return err
 	}
 	*pooled = b
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	request := &gatewayWrite{ctx: ctx, ws: ws, data: b, pooled: pooled, done: make(chan error, 1)}
+	// Requests, their result channels, and their timeout timers are reused per
+	// packet. A request the sender stops waiting for stays with the writer.
+	request := getGatewayWrite(ctx, ws, b, pooled)
 	queue := p.writes
 	if msg.Kind != "data" && msg.Kind != "close" {
 		queue = p.priorityWrites
@@ -358,17 +368,29 @@ func (p *Peer) send(ctx context.Context, msg *protocol.Packet) error {
 	case queue <- request:
 	case <-ctx.Done():
 		putWriteBuffer(pooled)
+		putGatewayWrite(request)
 		return ctx.Err()
+	case <-request.timeout.C:
+		putWriteBuffer(pooled)
+		putGatewayWrite(request)
+		return context.DeadlineExceeded
 	case <-p.ctx.Done():
 		putWriteBuffer(pooled)
+		putGatewayWrite(request)
 		return p.ctx.Err()
 	}
 	select {
 	case err := <-request.done:
+		putGatewayWrite(request)
 		return err
 	case <-ctx.Done():
+		request.abandoned.Store(true)
 		return ctx.Err()
+	case <-request.timeout.C:
+		request.abandoned.Store(true)
+		return context.DeadlineExceeded
 	case <-p.ctx.Done():
+		request.abandoned.Store(true)
 		return p.ctx.Err()
 	}
 }

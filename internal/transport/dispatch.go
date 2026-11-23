@@ -149,6 +149,14 @@ func (p *Peer) receive(msg *protocol.Packet) {
 		p.receiveICE(msg)
 		return
 	}
+	if msg.Kind == "data" {
+		if v, ok := p.linkIndex.Load(msg.Session); ok {
+			if l := v.(*link); l.remote == msg.From {
+				p.receiveData(l, msg)
+				return
+			}
+		}
+	}
 	p.mu.Lock()
 	l := p.links[msg.Session]
 	setup := p.incomingSetups[msg.Session]
@@ -161,12 +169,7 @@ func (p *Peer) receive(msg *protocol.Packet) {
 	}
 	switch msg.Kind {
 	case "data":
-		if l.mode == "relay" && !l.conn.pushOwned(msg.Data) {
-			if len(msg.Data) > 0 && len(msg.Data) <= largePacketSize {
-				p.overflow(l)
-			}
-			go func() { _ = l.conn.Close() }()
-		}
+		p.receiveData(l, msg)
 	case "answer":
 		if l.mode == "relay" {
 			l.readyOnce.Do(func() { close(l.ready) })
@@ -225,5 +228,14 @@ func (p *Peer) rejectSetup(msg *protocol.Packet) {
 		_ = p.send(ctx, reply)
 	}) {
 		<-p.rejects
+	}
+}
+
+func (p *Peer) receiveData(l *link, msg *protocol.Packet) {
+	if l.mode == "relay" && !l.conn.pushOwned(msg.Data) {
+		if len(msg.Data) > 0 && len(msg.Data) <= largePacketSize {
+			p.overflow(l)
+		}
+		go func() { _ = l.conn.Close() }()
 	}
 }

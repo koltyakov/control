@@ -8,12 +8,12 @@ import (
 
 type gpuDevice struct{ info model.GPUInfo }
 
-func gpuInventory(ctx context.Context) []gpuDevice {
+func gpuInventory(ctx context.Context) ([]gpuDevice, error) {
 	data, err := gpuCommand(ctx, "/usr/sbin/system_profiler", "SPDisplaysDataType", "-json")
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return parseDarwinGPUs(data)
+	return parseDarwinGPUs(data), nil
 }
 
 func sampleGPUDevices(_ context.Context, devices []gpuDevice) []model.GPUInfo {

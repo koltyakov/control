@@ -273,15 +273,29 @@ func cleanupDelegations(ctx context.Context, peer *transport.Peer, grants []mode
 	if len(grants) == 0 {
 		return
 	}
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	for i, grant := range grants {
-		if cleanup.Err() != nil {
-			slog.Warn("delegation cleanup deadline reached; reconcile access without replaying work", "remaining", len(grants)-i)
-			break
-		}
-		if err := peerCall(cleanup, peer, grant.Target, "access.revoke", map[string]string{"id": grant.ID}, nil); err != nil {
-			slog.Warn("delegation cleanup failed; reconcile access without replaying work", "target", grant.Target, "grant", grant.ID, "error", err)
-		}
-	}
+	revokeDelegations(context.WithoutCancel(ctx), grants, func(ctx context.Context, grant model.Delegation) error {
+		return peerCall(ctx, peer, grant.Target, "access.revoke", map[string]string{"id": grant.ID}, nil)
+	})
 }
+
+// Each revoke has its own deadline, and revokes run concurrently with the same
+// bound as issuance, so one unreachable destination cannot leave the grants of
+// other destinations active until their idle expiry.
+func revokeDelegations(ctx context.Context, grants []model.Delegation, revoke func(context.Context, model.Delegation) error) {
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, 8)
+	for _, grant := range grants {
+		slots <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-slots }()
+			attempt, cancel := context.WithTimeout(ctx, revokeTimeout)
+			defer cancel()
+			if err := revoke(attempt, grant); err != nil {
+				slog.Warn("delegation cleanup failed; reconcile access without replaying work", "target", grant.Target, "grant", grant.ID, "error", err)
+			}
+		})
+	}
+	wg.Wait()
+}
+
+const revokeTimeout = 5 * time.Second

@@ -81,6 +81,7 @@ func PrepareStartupChange(ctx context.Context, config, id, mode string) error {
 	if err = ctx.Err(); err != nil {
 		return err
 	}
+	pruneHelperCopies(cfg.DataDir, "startup-", sha)
 	if err = copyUninstallHelper(source, helper, sha); err != nil {
 		return err
 	}

@@ -28,7 +28,7 @@ func DownloadPreferred(ctx context.Context, route gatewayroute.Route, repository
 	if !route.Proxied() && repositoryPattern.MatchString(repository) && parts[0] != "." && parts[0] != ".." && parts[1] != "." && parts[1] != ".." {
 		releases = "https://github.com/" + repository + "/releases/download/" + url.PathEscape(version)
 	}
-	return downloadPreferred(ctx, route.Client(2*time.Minute, true), repository, version, releases, gateway, token, path, asset, VerifyReleaseManifest)
+	return downloadPreferred(ctx, route.Client(0, true), repository, version, releases, gateway, token, path, asset, VerifyReleaseManifest)
 }
 
 func downloadPreferred(ctx context.Context, client *http.Client, repository, version, releases, gateway, token, path string, asset Asset, verify func(context.Context, string, string, []byte, []byte) error) error {
@@ -75,10 +75,9 @@ func downloadMatchingRelease(ctx context.Context, client *http.Client, repositor
 	if err := verify(metadataCtx, repository, version, data, proof); err != nil {
 		return err
 	}
-	// A stalled public asset must not prevent reaching the gateway fallback.
-	downloadCtx, stop := context.WithTimeout(ctx, time.Minute)
-	defer stop()
-	return Download(downloadCtx, client, releases+"/"+asset.File, "", path, asset)
+	// Download's stall timeouts let a stalled public asset reach the gateway
+	// fallback without failing a slow link that is still making progress.
+	return Download(ctx, client, releases+"/"+asset.File, "", path, asset)
 }
 
 func releaseMetadata(ctx context.Context, client *http.Client, target string, limit int64) ([]byte, error) {

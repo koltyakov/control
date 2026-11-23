@@ -61,7 +61,7 @@ func (c Client) MCPServer() *mcp.Server {
 		}
 		server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: input}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args := map[string]json.RawMessage{}
-			if err := json.Unmarshal(request.Params.Arguments, &args); err != nil {
+			if err := json.Unmarshal(toolArguments(request), &args); err != nil {
 				return inputError(err), nil
 			}
 			if err := knownFields(args, properties); err != nil {
@@ -180,17 +180,16 @@ func (c Client) MCPServer() *mcp.Server {
 			input["required"] = required
 		}
 		server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: input}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			raw := toolArguments(request)
 			fields := map[string]json.RawMessage{}
-			if len(request.Params.Arguments) != 0 {
-				if err := json.Unmarshal(request.Params.Arguments, &fields); err != nil {
-					return inputError(err), nil
-				}
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				return inputError(err), nil
 			}
 			if err := knownFields(fields, properties); err != nil {
 				return inputError(err), nil
 			}
 			ctx = context.WithValue(ctx, uploadProgressKey{}, request)
-			result, err := call(ctx, request.Params.Arguments)
+			result, err := call(ctx, raw)
 			if err != nil {
 				return toolError(err), nil
 			}
@@ -471,4 +470,14 @@ func decodeTaskSpec(params any) (model.TaskSpec, error) {
 		return model.TaskSpec{}, fmt.Errorf("invalid task: %w", err)
 	}
 	return spec, nil
+}
+
+// toolArguments treats omitted or null tool arguments as an empty object, so
+// tools without required fields accept calls that send no arguments at all.
+func toolArguments(request *mcp.CallToolRequest) json.RawMessage {
+	raw := bytes.TrimSpace(request.Params.Arguments)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return json.RawMessage("{}")
+	}
+	return request.Params.Arguments
 }

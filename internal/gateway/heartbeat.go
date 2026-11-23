@@ -40,13 +40,33 @@ func (c *connection) writePackets(ctx context.Context) {
 	if c.relay != nil {
 		relayReady = c.relay.ready
 	}
+	// An echo the read loop already delivered proves liveness even when the
+	// deadline is due, so consume it before judging the deadline.
+	answered := func(pong string) {
+		if pending != "" && pong == pending {
+			timer.Stop()
+			deadline, pending = nil, ""
+		}
+	}
+	drainPongs := func() {
+		for {
+			select {
+			case pong := <-c.pong:
+				answered(pong)
+			default:
+				return
+			}
+		}
+	}
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		// Liveness must not starve behind a continuous signaling backlog.
 		if pending != "" && !timerDeadline.IsZero() && !time.Now().Before(timerDeadline) {
-			return
+			if drainPongs(); pending != "" {
+				return
+			}
 		}
 		// Ready signaling always writes before further bulk relay data.
 		if priorityBurst < 8 {
@@ -65,12 +85,11 @@ func (c *connection) writePackets(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-deadline:
-			return
-		case pong := <-c.pong:
-			if pending != "" && pong == pending {
-				timer.Stop()
-				deadline, pending = nil, ""
+			if drainPongs(); pending != "" {
+				return
 			}
+		case pong := <-c.pong:
+			answered(pong)
 		case packet := <-c.out:
 			if err := c.writeQueuedPacket(ctx, packet); err != nil {
 				return

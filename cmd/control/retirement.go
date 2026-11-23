@@ -8,13 +8,16 @@ import (
 	"path/filepath"
 
 	"github.com/koltyakov/control/internal/installation"
+	"github.com/koltyakov/control/internal/logfile"
 )
 
 func retiredUninstallCLI(ctx context.Context, args []string) error {
 	if len(args) != 3 || !filepath.IsAbs(args[0]) || !filepath.IsAbs(args[1]) {
 		return errors.New("retired uninstall requires absolute profile and state paths and an identity")
 	}
-	log, err := os.OpenFile(filepath.Join(filepath.Dir(args[0]), "node.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	logPath := filepath.Join(filepath.Dir(args[0]), "node.log")
+	_ = logfile.Trim(logPath)
+	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}

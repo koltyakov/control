@@ -479,6 +479,13 @@ func (g *Gateway) stageGateway(ctx context.Context, d *update.Deployment) (strin
 	return path, info, err
 }
 
+// completeRolloutInterval spaces checks for late joiners once a rollout is
+// complete; completeCleanupInterval spaces repeated binary pruning.
+const (
+	completeRolloutInterval = 10 * time.Second
+	completeCleanupInterval = 15 * time.Minute
+)
+
 func (g *Gateway) rolloutLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -490,7 +497,7 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 	var gatewayBlocked string
 	var nextAttempt time.Time
 	var cleanedID string
-	var nextCleanup time.Time
+	var nextCleanup, nextCompleteCheck time.Time
 	requestedRestart := false
 	defer func() {
 		if !requestedRestart {
@@ -547,6 +554,14 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 			if err != nil {
 				return
 			}
+			// A completed, cleaned rollout only needs to notice late joiners;
+			// copying every node each second buys nothing.
+			if d.Phase == "complete" && cleanedID == d.ID {
+				if time.Now().Before(nextCompleteCheck) {
+					return
+				}
+				nextCompleteCheck = time.Now().Add(completeRolloutInterval)
+			}
 			peers := g.rolloutPeers(d)
 			if len(lastSent) != 0 {
 				retained := make(map[string]bool, len(peers))
@@ -599,7 +614,7 @@ func (g *Gateway) rolloutLoop(ctx context.Context) {
 				}
 				if cleanedID != d.ID || !time.Now().Before(nextCleanup) {
 					g.cleanupUpdates(ctx, d.ID)
-					cleanedID, nextCleanup = d.ID, time.Now().Add(time.Minute)
+					cleanedID, nextCleanup = d.ID, time.Now().Add(completeCleanupInterval)
 				}
 				return
 			}

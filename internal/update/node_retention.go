@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/koltyakov/control/internal/store"
 )
@@ -121,6 +122,14 @@ func (a *Updater) prune(ctx context.Context) error {
 			if err := ctx.Err(); err != nil {
 				return errors.Join(append(failures, err)...)
 			}
+			if ValidDigest(entry.Name()) && keep[entry.Name()] && entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
+				// A retained version can still hold temporary files from an
+				// interrupted download of its binary.
+				if err := pruneUpdateTemps(storage, entry.Name(), time.Now().Add(-time.Hour)); err != nil {
+					failures = append(failures, err)
+				}
+				continue
+			}
 			if !ValidDigest(entry.Name()) || keep[entry.Name()] || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 				continue
 			}
@@ -138,4 +147,31 @@ func (a *Updater) prune(ctx context.Context) error {
 			return errors.Join(failures...)
 		}
 	}
+}
+
+// pruneUpdateTemps removes interrupted download temporaries in dir that have
+// not been written since cutoff. Active downloads keep a fresh modification
+// time. Symlinks and other entries are never followed or removed.
+func pruneUpdateTemps(root *os.Root, dir string, cutoff time.Time) error {
+	f, err := root.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	entries, err := f.ReadDir(64)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	var failures []error
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), ".update-") || !entry.Type().IsRegular() {
+			continue
+		}
+		if info, err := entry.Info(); err == nil && info.ModTime().Before(cutoff) {
+			if err := root.Remove(filepath.Join(dir, entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+				failures = append(failures, err)
+			}
+		}
+	}
+	return errors.Join(failures...)
 }

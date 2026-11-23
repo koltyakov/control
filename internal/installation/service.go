@@ -15,6 +15,7 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/koltyakov/control/internal/client"
 	"github.com/koltyakov/control/internal/identity"
+	"github.com/koltyakov/control/internal/logfile"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/node"
 	"github.com/koltyakov/control/internal/processutil"
@@ -302,7 +303,9 @@ func startDetached(binary, config string) error {
 	if err := os.MkdirAll(filepath.Dir(config), 0700); err != nil {
 		return err
 	}
-	log, err := os.OpenFile(filepath.Join(filepath.Dir(config), "node.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	logPath := filepath.Join(filepath.Dir(config), "node.log")
+	_ = logfile.Trim(logPath)
+	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}

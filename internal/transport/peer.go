@@ -65,32 +65,38 @@ type link struct {
 }
 
 type Peer struct {
-	userID              string
-	members             map[string]bool
-	memberSeen          map[string]time.Time
-	owners              map[string]string
-	channels            map[string]bool
-	largePackets        map[string]bool
-	trickle             map[string]bool
-	iceServers          []webrtc.ICEServer
-	directRetry         map[string]time.Time
-	lookups             map[string]lookupEntry
-	carriers            map[string]*rtcCarrier
-	api                 *webrtc.API
-	trickleAPI          *webrtc.API
-	stats               transportStats
-	cfg                 Config
-	ctx                 context.Context
-	cancel              context.CancelFunc
-	mu                  sync.Mutex
-	ws                  *websocket.Conn
-	gatewayWS           atomic.Pointer[websocket.Conn] // send-path mirror of ws, read without mu
-	connectCancel       context.CancelFunc
-	writes              chan *gatewayWrite
-	priorityWrites      chan *gatewayWrite
-	reconnectWake       chan struct{}
-	gatewayConnected    chan struct{}
-	links               map[string]*link
+	userID           string
+	members          map[string]bool
+	memberSeen       map[string]time.Time
+	owners           map[string]string
+	channels         map[string]bool
+	largePackets     map[string]bool
+	trickle          map[string]bool
+	iceServers       []webrtc.ICEServer
+	directRetry      map[string]time.Time
+	lookups          map[string]lookupEntry
+	carriers         map[string]*rtcCarrier
+	api              *webrtc.API
+	trickleAPI       *webrtc.API
+	stats            transportStats
+	cfg              Config
+	ctx              context.Context
+	cancel           context.CancelFunc
+	mu               sync.Mutex
+	ws               *websocket.Conn
+	gatewayWS        atomic.Pointer[websocket.Conn] // send-path mirror of ws, read without mu
+	connectCancel    context.CancelFunc
+	writes           chan *gatewayWrite
+	priorityWrites   chan *gatewayWrite
+	reconnectWake    chan struct{}
+	gatewayConnected chan struct{}
+	links            map[string]*link
+	// linkIndex mirrors links, under mu for writes, so relay data packets
+	// find their link without taking mu.
+	linkIndex sync.Map
+	// lookupFlights and directoryFlight coalesce concurrent lookup misses.
+	lookupFlights       map[string]*flight[model.Node]
+	directoryFlight     *flight[[]model.Node]
 	sessions            map[sessionKey]*peerSession
 	allSessions         map[string]*peerSession
 	pending             map[sessionKey]*sessionDial
@@ -99,7 +105,14 @@ type Peer struct {
 	resolved            map[string]string
 	directoryGeneration uint64
 	networkGeneration   uint64
-	setups              chan struct{}
+	// setups bounds concurrent incoming setups; dialSetups bounds outgoing
+	// TLS/ICE setups separately, so a slow fan-out cannot refuse incoming work.
+	setups     chan struct{}
+	dialSetups chan struct{}
+	// closers tracks asynchronous pion teardowns; see closeAsync.
+	closersMu      sync.Mutex
+	closersWaiting bool
+	closers        sync.WaitGroup
 	// rejects bounds concurrent close replies to refused setups.
 	rejects         chan struct{}
 	streamSlots     chan struct{}
@@ -156,7 +169,7 @@ func New(cfg Config, handler func(string, net.Conn), options ...Options) *Peer {
 		incomingSetups: map[string]*incomingSetup{}, resolved: map[string]string{},
 		members: map[string]bool{}, memberSeen: map[string]time.Time{}, owners: map[string]string{}, channels: map[string]bool{},
 		largePackets: map[string]bool{}, trickle: map[string]bool{}, directRetry: map[string]time.Time{}, lookups: map[string]lookupEntry{},
-		carriers: map[string]*rtcCarrier{}, setups: make(chan struct{}, 32), rejects: make(chan struct{}, 8), streamSlots: make(chan struct{}, 512),
+		carriers: map[string]*rtcCarrier{}, setups: make(chan struct{}, 32), dialSetups: make(chan struct{}, 32), rejects: make(chan struct{}, 8), streamSlots: make(chan struct{}, 512),
 		pendingSlots: map[Lane]chan struct{}{
 			ControlLane: make(chan struct{}, 32), BulkLane: make(chan struct{}, 16), InteractiveLane: make(chan struct{}, 16),
 		},
@@ -313,7 +326,25 @@ func (p *Peer) Close() error {
 			_ = s.mux.Close()
 		}
 		p.wg.Wait()
+		p.closersMu.Lock()
+		p.closersWaiting = true
+		p.closersMu.Unlock()
+		p.closers.Wait()
 		p.drainWrites()
 	})
 	return nil
+}
+
+// closeAsync runs a pion teardown off the caller's goroutine, which may hold
+// locks or run inside a pion callback. Close waits for teardowns started
+// before it, so returning from Close means data channels and peer connections
+// of closed links are torn down.
+func (p *Peer) closeAsync(fn func()) {
+	p.closersMu.Lock()
+	defer p.closersMu.Unlock()
+	if p.closersWaiting {
+		go fn()
+		return
+	}
+	p.closers.Go(fn)
 }

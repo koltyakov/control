@@ -36,9 +36,13 @@ type packetConn struct {
 	readDeadline  time.Time
 	writeDeadline time.Time
 	changed       chan struct{}
-	writeCancel   context.CancelFunc
-	writeTimer    *time.Timer
-	queued        int // Undelivered receive bytes, protected by mu.
+	// writeCtx is reused across writes until a deadline cancels it; writing
+	// reports whether a write is in progress for the deadline timer.
+	writeCtx    context.Context
+	writeCancel context.CancelFunc
+	writing     bool
+	writeTimer  *time.Timer
+	queued      int // Undelivered receive bytes, protected by mu.
 	// packetSize is fixed before the link carries traffic.
 	packetSize int
 	// holding and held batch TLS records under writeMu; see holdWrites.
@@ -230,19 +234,21 @@ func (c *packetConn) writeLocked(b []byte) (int, error) {
 		c.mu.Unlock()
 		return 0, os.ErrDeadlineExceeded
 	}
-	ctx, cancel := context.WithCancel(c.ctx)
-	c.writeCancel = cancel
+	if c.writeCtx == nil || c.writeCtx.Err() != nil {
+		c.writeCtx, c.writeCancel = context.WithCancel(c.ctx)
+	}
+	ctx := c.writeCtx
+	c.writing = true
 	c.armWriteTimerLocked()
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
-		c.writeCancel = nil
+		c.writing = false
 		if c.writeTimer != nil {
 			c.writeTimer.Stop()
 			c.writeTimer = nil
 		}
 		c.mu.Unlock()
-		cancel()
 	}()
 	written := 0
 	for len(b) > 0 {
@@ -316,7 +322,7 @@ func (c *packetConn) armWriteTimerLocked() {
 		c.writeTimer.Stop()
 		c.writeTimer = nil
 	}
-	if c.writeCancel == nil || c.writeDeadline.IsZero() {
+	if !c.writing || c.writeDeadline.IsZero() {
 		return
 	}
 	if !time.Now().Before(c.writeDeadline) {
@@ -326,7 +332,7 @@ func (c *packetConn) armWriteTimerLocked() {
 	c.writeTimer = time.AfterFunc(time.Until(c.writeDeadline), func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		if c.writeCancel != nil && !c.writeDeadline.IsZero() && !time.Now().Before(c.writeDeadline) {
+		if c.writing && !c.writeDeadline.IsZero() && !time.Now().Before(c.writeDeadline) {
 			c.writeCancel()
 		}
 	})

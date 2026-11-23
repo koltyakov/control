@@ -26,6 +26,7 @@ import (
 	"github.com/koltyakov/control/internal/enrollment"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/installation"
+	"github.com/koltyakov/control/internal/logfile"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -61,12 +62,19 @@ func main() {
 		return
 	}
 	if len(args) == 2 && args[0] == "__tunnels" {
-		logFile, err := os.OpenFile(filepath.Join(args[1], "service.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		logPath := filepath.Join(args[1], "service.log")
+		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 		if err == nil {
 			defer func() { _ = logFile.Close() }()
 			os.Stderr = logFile
 		}
-		if err = client.RunTunnelService(ctx, args[1]); err != nil {
+		logs := make(chan struct{})
+		logCtx, stopLogs := context.WithCancel(ctx)
+		go func() { defer close(logs); logfile.Maintain(logCtx, logPath) }()
+		err = client.RunTunnelService(ctx, args[1])
+		stopLogs()
+		<-logs
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "control tunnels:", err)
 			os.Exit(1)
 		}
@@ -506,22 +514,32 @@ func artifactCLI(ctx context.Context, c client.Client, args []string) error {
 			return err
 		}
 		defer func() { _ = f.Close() }()
-		offset, err := f.Seek(0, io.SeekEnd)
+		// Hash the retained prefix, then the received bytes as they arrive,
+		// instead of reading the whole file again afterwards.
+		hash := sha256.New()
+		offset, err := io.Copy(hash, f)
 		if err != nil {
 			return err
 		}
 		if offset > a.Size {
 			return errors.New("partial file exceeds artifact size; remove it before retrying")
 		}
-		if err = c.Download(ctx, a, offset, f); err != nil {
+		if err = c.Download(ctx, a, offset, io.MultiWriter(f, hash)); err != nil {
 			return err
 		}
-		if _, err = f.Seek(0, io.SeekStart); err != nil {
-			return err
-		}
-		hash := sha256.New()
-		if _, err = io.Copy(hash, f); err != nil {
-			return err
+		if hex.EncodeToString(hash.Sum(nil)) != a.SHA256 && offset > 0 {
+			// The retained prefix may belong to other content downloaded to
+			// the same path. Refetch once from the start instead of failing.
+			if err = f.Truncate(0); err != nil {
+				return err
+			}
+			if _, err = f.Seek(0, io.SeekStart); err != nil {
+				return err
+			}
+			hash.Reset()
+			if err = c.Download(ctx, a, 0, io.MultiWriter(f, hash)); err != nil {
+				return err
+			}
 		}
 		if hex.EncodeToString(hash.Sum(nil)) != a.SHA256 {
 			_ = f.Close()
@@ -619,7 +637,15 @@ func serve(ctx context.Context, server *http.Server, cert, key string) error {
 	case <-ctx.Done():
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return server.Shutdown(shutdown)
+		err := server.Shutdown(shutdown)
+		if errors.Is(err, context.DeadlineExceeded) {
+			// A request that outlives the grace period must not turn a normal
+			// stop into a failure or abandon a pending update handoff.
+			slog.Warn("closing HTTP requests still active after shutdown grace period")
+			_ = server.Close()
+			return nil
+		}
+		return err
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -190,5 +191,53 @@ func TestLeastLoadedPrefersIdleMachines(t *testing.T) {
 	}
 	if len(seen) != 3 {
 		t.Fatal("selection without load information is not spread", fmt.Sprint(seen))
+	}
+}
+
+func TestConcurrentLookupMissesShareOneDirectoryRead(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	const token = "lookup-flight-test-token-1234567890"
+	g, err := gateway.New(t.TempDir(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = g.Close() }()
+	var reads atomic.Int32
+	release := make(chan struct{})
+	handler := g.Handler()
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/nodes" {
+			reads.Add(1)
+			<-release
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	defer s.Close()
+	peers := echoPeers(t, ctx, s.URL, token, true, "alpha", "beta", "gamma")
+	alpha := peers[0]
+	// The first caller gives up; its cancellation must not fail the others.
+	impatient, stop := context.WithCancel(ctx)
+	results := make(chan error, 8)
+	for i := range 8 {
+		lookupCtx := ctx
+		if i == 0 {
+			lookupCtx = impatient
+		}
+		name := []string{"beta", "gamma"}[i%2]
+		go func() { _, err := alpha.Lookup(lookupCtx, name); results <- err }()
+	}
+	waitFor(t, ctx, func() bool { return reads.Load() == 1 })
+	stop()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	failed := 0
+	for range 8 {
+		if err := <-results; err != nil {
+			failed++
+		}
+	}
+	if failed != 1 || reads.Load() != 1 {
+		t.Fatal("concurrent misses were not coalesced", failed, reads.Load())
 	}
 }

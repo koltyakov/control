@@ -53,6 +53,8 @@ type routingAttempt struct {
 	cancel context.CancelFunc
 	peer   *transport.Peer
 	err    error
+	// abandoned means the initiator's own cancellation ended the attempt.
+	abandoned bool
 }
 
 // WithStandalone configures command-scoped peer routing. AccountRouting uses an
@@ -88,6 +90,11 @@ func (c Client) backend(ctx context.Context) (*transport.Peer, error) {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-a.done:
+			if a.abandoned && ctx.Err() == nil {
+				// The initiator's own cancellation says nothing about this
+				// caller; start a fresh attempt instead of sharing it.
+				return c.backend(ctx)
+			}
 			return a.peer, a.err
 		}
 	}
@@ -136,6 +143,7 @@ func (c Client) backend(ctx context.Context) (*transport.Peer, error) {
 		r.mu.Lock()
 	}
 	a.peer, a.err = r.peer, err
+	a.abandoned = err != nil && ctx.Err() != nil && !r.closed && r.ctx.Err() == nil
 	r.attempt = nil
 	close(a.done)
 	r.mu.Unlock()

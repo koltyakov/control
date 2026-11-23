@@ -47,6 +47,15 @@ func (n *Node) loadArtifactUsage() error {
 		if !artifactDataFile(entry.Name()) || !entry.Type().IsRegular() {
 			continue
 		}
+		// Import staging belongs to one process. Before this node serves,
+		// any staging file was left by a crash and is never resumed, so
+		// remove it rather than charge it against maxArtifactBytes.
+		if strings.HasPrefix(entry.Name(), ".import-") {
+			if err := os.Remove(filepath.Join(n.Config.DataDir, "artifacts", entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			continue
+		}
 		info, err := entry.Info()
 		if err != nil {
 			return err
@@ -65,24 +74,24 @@ type artifactBudgetWriter struct {
 
 func (w *artifactBudgetWriter) Write(p []byte) (int, error) {
 	n := w.node
+	// Check real free space at admission and each 1 MiB, outside the shared
+	// budget lock so a slow statfs never stalls other transfers.
+	if w.checked <= w.written {
+		usage, err := disk.Usage(n.Config.DataDir)
+		if err != nil {
+			return 0, err
+		}
+		if usage.Free < n.Config.ArtifactReserveBytes+uint64(len(p)) {
+			return 0, errors.New("artifact write would consume metadata disk reserve")
+		}
+		w.checked = w.written + 1<<20
+	}
+	// The byte accounting includes concurrent writers and partial files, not
+	// just published blobs.
 	n.artifactBudgetMu.Lock()
 	if n.Config.MaxArtifactBytes > 0 && int64(len(p)) > n.Config.MaxArtifactBytes-n.artifactUsed {
 		n.artifactBudgetMu.Unlock()
 		return 0, errors.New("artifact storage budget exhausted; release unused artifacts or increase maxArtifactBytes")
-	}
-	// Check real free space at admission and each 1 MiB. The byte accounting
-	// includes concurrent writers and partial files, not just published blobs.
-	if w.checked <= w.written {
-		usage, err := disk.Usage(n.Config.DataDir)
-		if err != nil {
-			n.artifactBudgetMu.Unlock()
-			return 0, err
-		}
-		if usage.Free < n.Config.ArtifactReserveBytes+uint64(len(p)) {
-			n.artifactBudgetMu.Unlock()
-			return 0, errors.New("artifact write would consume metadata disk reserve")
-		}
-		w.checked = w.written + 1<<20
 	}
 	n.artifactUsed += int64(len(p))
 	n.artifactBudgetMu.Unlock()
@@ -137,6 +146,25 @@ func (n *Node) artifactReferenced(id string) bool {
 	return false
 }
 
+// referencedArtifacts returns every artifact ID a retained task references.
+func (n *Node) referencedArtifacts() map[string]bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	ids := map[string]bool{}
+	for _, t := range n.tasks {
+		for _, a := range t.Artifacts {
+			ids[a.ID] = true
+		}
+		if t.ResultArtifact != nil {
+			ids[t.ResultArtifact.ID] = true
+		}
+		for _, input := range t.Spec.Inputs {
+			ids[input.Artifact.ID] = true
+		}
+	}
+	return ids
+}
+
 func (n *Node) pruneArtifacts(ctx context.Context, now time.Time) error {
 	dir := filepath.Join(n.Config.DataDir, "artifacts")
 	entries, err := os.ReadDir(dir)
@@ -149,6 +177,16 @@ func (n *Node) pruneArtifacts(ctx context.Context, now time.Time) error {
 	var failures []error
 	retention := time.Duration(n.Config.ArtifactRetentionHours) * time.Hour
 	expiredCount := 0
+	// One snapshot of task references per pass screens every candidate. A
+	// reference added later is caught by the exact check before deletion, and
+	// one dropped later only defers deletion to the next pass.
+	var referenced map[string]bool
+	keep := func(id string) bool {
+		if referenced == nil {
+			referenced = n.referencedArtifacts()
+		}
+		return referenced[id] || n.artifactReferenced(id)
+	}
 	defer func() {
 		if expiredCount > 0 {
 			slog.Info("artifact retention removed expired artifacts", "count", expiredCount, "retentionHours", n.Config.ArtifactRetentionHours)
@@ -169,7 +207,7 @@ func (n *Node) pruneArtifacts(ctx context.Context, now time.Time) error {
 			// Age-based expiry is opt-in and only adds candidates; the same
 			// reference, reader and grant checks protect content still in use.
 			expired := retention > 0 && !a.Created.IsZero() && now.Sub(a.retainedSince()) >= retention
-			if err == nil && (a.Deleting || expired) && !n.artifactReferenced(id) && !n.artifactReading(id) && !n.artifactGranted(id) {
+			if err == nil && (a.Deleting || expired) && !keep(id) && !n.artifactReading(id) && !n.artifactGranted(id) {
 				err = n.deleteArtifactLocked(a)
 				if err == nil && !a.Deleting {
 					expiredCount++

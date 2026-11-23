@@ -293,3 +293,17 @@ func TestRegistrationIgnoresUnconfirmedAndStaleRedemption(t *testing.T) {
 		t.Fatal("late redemption changed a dismissed dialog")
 	}
 }
+
+func TestRegistrationKeepsRedemptionAcrossStatusFailure(t *testing.T) {
+	m := view{busy: true, wizard: &registration{id: 1, step: "done", checking: true, redeemedID: "node", link: enrollment.Link{Invitation: enrollment.Invitation{ID: "current"}}}}
+	next, _ := m.Update(invitationStatusResult{id: 1, err: errors.New("gateway unavailable")})
+	m = next.(view)
+	if m.wizard == nil || m.wizard.redeemedID != "node" {
+		t.Fatal("transient status failure forgot the confirmed redemption")
+	}
+	m.wizard.checking = true
+	next, _ = m.Update(invitationStatusResult{id: 1, invitation: enrollment.Invitation{ID: "current", Revoked: true, RedeemedID: "node"}})
+	if next.(view).wizard.redeemedID != "" {
+		t.Fatal("revoked invitation kept its redemption")
+	}
+}

@@ -72,14 +72,19 @@ func (p *Peer) worker(fn func()) bool {
 	return true
 }
 
-func (p *Peer) registerSession(s *peerSession) bool {
+func (p *Peer) registerSession(s *peerSession) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed || p.ctx.Err() != nil || (s.mode == "relay" && s.lane != IncomingLane && p.relayDrainingLocked(s.remote)) || (s.link != nil && (s.link.generation != p.networkGeneration || s.link.conn.ctx.Err() != nil)) {
-		return false
+	switch {
+	case p.closed || p.ctx.Err() != nil:
+		return errors.New("peer stopped during setup")
+	case s.mode == "relay" && s.lane != IncomingLane && p.relayDrainingLocked(s.remote):
+		return transientSetup("gateway relay is draining for maintenance")
+	case s.link != nil && (s.link.generation != p.networkGeneration || s.link.conn.ctx.Err() != nil):
+		return transientSetup("network changed during peer setup")
 	}
 	p.allSessions[s.id] = s
-	return true
+	return nil
 }
 
 func (p *Peer) serve(s *peerSession) {
@@ -337,7 +342,12 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 	// lane after resolution without replacing a session carrying active work.
 	p.mu.Lock()
 	cached := p.sessions[actualKey]
-	usable := cached != nil && cached.usableLocked()
+	// A draining session refuses new streams, so it must not satisfy a new
+	// establish even while long-lived streams keep its mux open.
+	usable := cached != nil && !cached.draining && cached.usableLocked()
+	if usable && d.refresh == nil && directoryGeneration == p.directoryGeneration {
+		p.resolved[target], p.resolved[node.Name] = node.ID, node.ID
+	}
 	p.mu.Unlock()
 	if usable && d.refresh == nil {
 		s = cached
@@ -346,8 +356,8 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 	// Do not hold a TLS/ICE slot while waiting for another lane's setup. A
 	// full batch of bulk callers must still let their control carriers start.
 	select {
-	case p.setups <- struct{}{}:
-		defer func() { <-p.setups }()
+	case p.dialSetups <- struct{}{}:
+		defer func() { <-p.dialSetups }()
 	case <-ctx.Done():
 		err = ctx.Err()
 		return
@@ -404,10 +414,9 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 	} else {
 		p.stats.directSessions.Add(1)
 	}
-	if !p.registerSession(s) {
+	if err = p.registerSession(s); err != nil {
 		_ = s.mux.Close()
 		s = nil
-		err = errors.New("peer stopped during setup")
 		return
 	}
 	p.mu.Lock()

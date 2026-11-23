@@ -55,19 +55,36 @@ const auditSignInFailed = "session.signin_failed"
 
 var auditCategories = map[string]bool{"session": true, "key": true, "invitation": true, "machine": true, "account": true, "update": true}
 
-func writeAudit(tx *sql.Tx, events []AuditEvent) error {
+// auditPruneSlack is how many events may be written between retention passes.
+// Each pass walks up to a budget of index entries, so pruning on every
+// audited commit cost far more than the insert; budgets may be exceeded by at
+// most this many events.
+const auditPruneSlack = 256
+
+// writeAudit inserts events and periodically enforces retention. Caller holds
+// g.mu. The fleets and failure flag accumulate across commits until a pass.
+func (g *Gateway) writeAudit(tx *sql.Tx, events []AuditEvent) error {
 	if len(events) == 0 {
 		return nil
 	}
-	failed := false
-	fleets := map[string]bool{}
+	if g.auditPruneFleets == nil {
+		g.auditPruneFleets = map[string]bool{}
+	}
 	for _, e := range events {
-		failed = failed || e.Action == auditSignInFailed
-		fleets[e.UserID] = true
+		g.auditPruneFailed = g.auditPruneFailed || e.Action == auditSignInFailed
+		if len(g.auditPruneFleets) < 4096 {
+			g.auditPruneFleets[e.UserID] = true
+		}
 		if _, err := tx.Exec(`INSERT INTO audit_events(user_id,action,data) VALUES(?,?,?)`, e.UserID, e.Action, model.JSON(e)); err != nil {
 			return err
 		}
 	}
+	g.auditPending += len(events)
+	if g.auditPending < auditPruneSlack {
+		return nil
+	}
+	fleets, failed := g.auditPruneFleets, g.auditPruneFailed
+	g.auditPending, g.auditPruneFleets, g.auditPruneFailed = 0, nil, false
 	for fleet := range fleets {
 		if _, err := tx.Exec(`DELETE FROM audit_events WHERE user_id=? AND id <= (SELECT id FROM audit_events WHERE user_id=? ORDER BY id DESC LIMIT 1 OFFSET ?)`, fleet, fleet, maxAuditFleetEvents); err != nil {
 			return err
@@ -146,9 +163,10 @@ func (g *Gateway) listAudit(w http.ResponseWriter, r *http.Request) {
 		fleet = ""
 	}
 	// Separate statements let tenant pages use the (user_id, id) index.
-	statement, args := `SELECT id, data FROM audit_events WHERE (?=0 OR id<?) AND (?='' OR action LIKE ? || '.%') ORDER BY id DESC LIMIT ?`, []any{before, before, category, category, limit + 1}
+	// A category is a fixed prefix; a range on it can use the action index.
+	statement, args := `SELECT id, data FROM audit_events WHERE (?=0 OR id<?) AND (?='' OR (action>=? AND action<?)) ORDER BY id DESC LIMIT ?`, []any{before, before, category, category + ".", category + "/", limit + 1}
 	if fleet != "" {
-		statement, args = `SELECT id, data FROM audit_events WHERE user_id=? AND (?=0 OR id<?) AND (?='' OR action LIKE ? || '.%') ORDER BY id DESC LIMIT ?`, append([]any{fleet}, args...)
+		statement, args = `SELECT id, data FROM audit_events WHERE user_id=? AND (?=0 OR id<?) AND (?='' OR (action>=? AND action<?)) ORDER BY id DESC LIMIT ?`, append([]any{fleet}, args...)
 	}
 	rows, err := g.db.QueryContext(r.Context(), statement, args...)
 	if err != nil {
@@ -209,7 +227,10 @@ func (g *Gateway) clearAudit(w http.ResponseWriter, r *http.Request) {
 	if p.Role == "superuser" {
 		fleet = ""
 	}
-	const scope = `(?='' OR user_id=?) AND (?='' OR json_extract(CAST(data AS TEXT),'$.at') < ?)`
+	// Compare instants, not RFC 3339 strings: trimmed fractional seconds make
+	// lexical order wrong within the cutoff second. One DELETE ... RETURNING
+	// pass finds the affected fleets and removes their events.
+	const scope = `(?='' OR user_id=?) AND (?='' OR julianday(json_extract(CAST(data AS TEXT),'$.at')) < julianday(?))`
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	tx, err := g.db.BeginTx(r.Context(), nil)
@@ -219,30 +240,32 @@ func (g *Gateway) clearAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback() }()
 	fleets := []string{}
-	rows, err := tx.Query(`SELECT DISTINCT user_id FROM audit_events WHERE `+scope, fleet, fleet, cutoff, cutoff)
+	var removed int64
+	rows, err := tx.Query(`DELETE FROM audit_events WHERE `+scope+` RETURNING user_id`, fleet, fleet, cutoff, cutoff)
 	if err == nil {
+		seen := map[string]bool{}
 		for rows.Next() {
 			var id string
 			if err = rows.Scan(&id); err != nil {
 				break
 			}
-			fleets = append(fleets, id)
+			removed++
+			if !seen[id] {
+				seen[id] = true
+				fleets = append(fleets, id)
+			}
+		}
+		if err == nil {
+			err = rows.Err()
 		}
 		_ = rows.Close()
-	}
-	var removed int64
-	if err == nil {
-		var result sql.Result
-		if result, err = tx.Exec(`DELETE FROM audit_events WHERE `+scope, fleet, fleet, cutoff, cutoff); err == nil {
-			removed, _ = result.RowsAffected()
-		}
 	}
 	if err == nil && removed > 0 {
 		events := []AuditEvent{}
 		for _, id := range fleets {
 			events = append(events, g.auditEventLocked(r, id, "audit.clear", "", "", fmt.Sprintf("%s (%d)", detail, removed)))
 		}
-		err = writeAudit(tx, events)
+		err = g.writeAudit(tx, events)
 	}
 	if err == nil {
 		err = tx.Commit()

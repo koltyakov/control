@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -112,8 +113,12 @@ func (n *Node) browserRun(ctx context.Context, raw json.RawMessage, e Execution)
 		config = filepath.Join(home, "config.json")
 		// This durable empty config prevents automatic workspace/user config
 		// discovery from silently attaching to another browser or enabling traces.
-		if err := store.Write(config, map[string]any{}); err != nil {
-			return nil, errors.New("cannot write private browser configuration")
+		// Rewrite it only when it is missing or was changed.
+		var existing map[string]any
+		if err := store.Read(config, &existing); err != nil || existing == nil || len(existing) != 0 {
+			if err := store.Write(config, map[string]any{}); err != nil {
+				return nil, errors.New("cannot write private browser configuration")
+			}
 		}
 	}
 	values, err := n.secretValues()
@@ -125,7 +130,7 @@ func (n *Node) browserRun(ctx context.Context, raw json.RawMessage, e Execution)
 	args := browserScreenshotArgs(r.Args, e.Dir)
 	cmd := command(ctx, Command{Command: n.Config.Browser.CLI, Args: append([]string{"--json"}, args...)}, e.Dir)
 	cmd.Env = browserEnvironment(cmd.Env, home, runtime, namespace, config, r.Session)
-	if err := n.checkBrowserVersion(ctx, cmd.Env, e.Dir); err != nil {
+	if err := n.checkBrowserVersion(ctx, cmd.Path, cmd.Env, e.Dir); err != nil {
 		return nil, err
 	}
 	if r.Stdin != nil {
@@ -178,7 +183,24 @@ func (n *Node) browserRun(ctx context.Context, raw json.RawMessage, e Execution)
 // Older CLIs silently ignore settings used for private runtime namespaces and
 // lack the bundled dashboard. Check the configured executable before any work,
 // including after it has been replaced or upgraded outside Control.
-func (n *Node) checkBrowserVersion(ctx context.Context, env []string, dir string) error {
+// A compatible result is remembered for the resolved executable file, so
+// routine commands do not start a second process; replacing or upgrading the
+// file changes its identity and repeats the check.
+func (n *Node) checkBrowserVersion(ctx context.Context, path string, env []string, dir string) error {
+	info, statErr := os.Stat(path)
+	if statErr == nil && n.browserVersion.compatible(path, info) {
+		return nil
+	}
+	if err := n.runBrowserVersionCheck(ctx, env, dir); err != nil {
+		return err
+	}
+	if statErr == nil {
+		n.browserVersion.remember(path, info)
+	}
+	return nil
+}
+
+func (n *Node) runBrowserVersionCheck(ctx context.Context, env []string, dir string) error {
 	cmd := command(ctx, Command{Command: n.Config.Browser.CLI, Args: []string{"--version"}}, dir)
 	cmd.Env = env
 	stdout, stderr := &capture{}, &capture{}
@@ -249,4 +271,24 @@ func browserEnvironment(env []string, home, runtime, namespace, config, session 
 		"XDG_CONFIG_HOME="+filepath.Join(home, "config"), "XDG_DATA_HOME="+filepath.Join(home, "data"),
 		"XDG_CACHE_HOME="+filepath.Join(home, "cache"), "AGENT_BROWSER_SOCKET_DIR="+runtime,
 		"AGENT_BROWSER_NAMESPACE="+namespace, "AGENT_BROWSER_CONFIG="+config, "AGENT_BROWSER_SESSION="+session)
+}
+
+// browserVersionCache remembers the last executable that passed the version
+// check by path and file identity.
+type browserVersionCache struct {
+	mu   sync.Mutex
+	path string
+	info os.FileInfo
+}
+
+func (c *browserVersionCache) compatible(path string, info os.FileInfo) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.info != nil && c.path == path && os.SameFile(c.info, info) && c.info.Size() == info.Size() && c.info.ModTime().Equal(info.ModTime())
+}
+
+func (c *browserVersionCache) remember(path string, info os.FileInfo) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.path, c.info = path, info
 }

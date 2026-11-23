@@ -426,7 +426,7 @@ func TestNetworkResetCancelsSetupsAndRejectsOldSessions(t *testing.T) {
 	if outgoing.Err() == nil || incoming.Err() == nil || gatewayConnect.Err() == nil || len(p.pending) != 0 || len(p.resolved) != 0 || len(p.lookups) != 0 {
 		t.Fatal("old network setup or directory cache survived")
 	}
-	if p.registerSession(&peerSession{id: "old", mux: mux, link: l}) {
+	if p.registerSession(&peerSession{id: "old", mux: mux, link: l}) == nil {
 		t.Fatal("setup from the old network repopulated the session cache")
 	}
 }
@@ -570,5 +570,34 @@ func TestNetworkSamplerReenumeratesWhenCacheCannotPlaceSource(t *testing.T) {
 	}
 	if _, err := (&networkSampler{route: routeSource, interfaces: sampleInterfaces, now: time.Now}).sample(); err != nil {
 		t.Fatal("a sampler without targets must not fail")
+	}
+}
+
+func TestNetworkSamplerResolvesLazilyAfterFailedLookup(t *testing.T) {
+	now := time.Unix(1000, 0)
+	lookups := 0
+	var resolved []*net.UDPAddr
+	s := &networkSampler{
+		resolve: func() []*net.UDPAddr { lookups++; return resolved },
+		route:   func(*net.UDPAddr) net.IP { return net.IPv4(192, 168, 1, 2) },
+		interfaces: func() ([]networkInterface, error) {
+			return []networkInterface{{Interface: net.Interface{Index: 1, Name: "en0", Flags: net.FlagUp}, addresses: []net.Addr{&net.IPNet{IP: net.IPv4(192, 168, 1, 2), Mask: net.CIDRMask(24, 32)}}}}, nil
+		},
+		now: func() time.Time { return now },
+	}
+	if fingerprint, err := s.sample(); err != nil || fingerprint != "" || lookups != 1 {
+		t.Fatal("failed lookup produced a fingerprint", fingerprint, err)
+	}
+	if _, _ = s.sample(); lookups != 1 {
+		t.Fatal("lookup retried before backoff")
+	}
+	resolved = []*net.UDPAddr{{IP: net.IPv4(203, 0, 113, 1), Port: 443}}
+	now = now.Add(networkResolveRetry)
+	if fingerprint, err := s.sample(); err != nil || fingerprint == "" || lookups != 2 {
+		t.Fatal("switch detection stayed disabled after DNS recovered", fingerprint, err)
+	}
+	now = now.Add(networkResolveRetry)
+	if _, _ = s.sample(); lookups != 2 {
+		t.Fatal("resolved targets were looked up again")
 	}
 }

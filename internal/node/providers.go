@@ -322,6 +322,9 @@ func (n *Node) filesList(ctx context.Context, args json.RawMessage, e Execution)
 			continue
 		}
 		info, err := entry.Info()
+		if errors.Is(err, os.ErrNotExist) {
+			continue // Removed after the directory was read.
+		}
 		if err != nil {
 			return nil, err
 		}

@@ -166,8 +166,13 @@ type Gateway struct {
 	metrics          *system.Collector
 	metricsCancel    context.CancelFunc
 	metricsWG        sync.WaitGroup
-	// presenceDirty holds nodes whose last-seen time changed on disconnect but
-	// is not yet persisted. Caller holds g.mu.
+	// auditPending counts events written since the last retention pass, for
+	// the fleets in auditPruneFleets; see writeAudit. Caller holds g.mu.
+	auditPending     int
+	auditPruneFleets map[string]bool
+	auditPruneFailed bool
+	// presenceDirty holds nodes whose last-seen time or LAN proofs changed but
+	// are not yet persisted. Caller holds g.mu.
 	presenceDirty  map[string]bool
 	presenceCancel context.CancelFunc
 	presenceWG     sync.WaitGroup
@@ -493,11 +498,8 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		return
 	}
 	if strings.HasPrefix(p.KeyID, "install:") {
-		for _, invitation := range g.installations {
-			if p.KeyID == "install:"+invitation.ID && invitation.RedeemedID == n.ID && !invitation.Revoked {
-				n.HybridID, n.HybridRole = invitation.HybridID, invitation.HybridRole
-				break
-			}
+		if invitation, ok := g.installations[p.Installation]; ok && p.KeyID == "install:"+invitation.ID && invitation.RedeemedID == n.ID && !invitation.Revoked {
+			n.HybridID, n.HybridRole = invitation.HybridID, invitation.HybridRole
 		}
 	}
 	if g.closed || g.restarting {
@@ -810,7 +812,7 @@ func verifyHello(handshake context.Context, ws *websocket.Conn, client bool) (He
 func (g *Gateway) servePackets(ctx context.Context, ws *websocket.Conn, c *connection, n model.Node, client bool) {
 	// Sessions whose data was dropped for a full destination queue. Only this
 	// read loop touches it, and the sender's close packet clears an entry.
-	overflowed := map[string]bool{}
+	overflowed := map[relayStreamKey]bool{}
 	var reader wsio.Reader
 	for {
 		_, b, e := reader.Read(ctx, ws)
@@ -897,8 +899,8 @@ func (g *Gateway) servePackets(ctx context.Context, ws *websocket.Conn, c *conne
 			return
 		}
 		p.From = n.ID // Never trust the sender supplied by the client.
-		session := p.To + "\x00" + p.Session
-		if overflowed[session] {
+		session := relayStreamKey{p.To, p.Session}
+		if len(overflowed) != 0 && overflowed[session] {
 			if p.Kind == "close" {
 				delete(overflowed, session)
 			} else {

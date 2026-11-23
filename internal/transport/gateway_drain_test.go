@@ -89,13 +89,23 @@ func TestGatewayDrainRetiresIdleRelayWithoutInterruptingStreams(t *testing.T) {
 				t.Fatal("lost accepted bytes", string(data[:]), err)
 			}
 			activeSession := active.(*sessionStream).session
+			packet.Kind = "gateway.resume"
+			a.receive(packet)
+			b.receive(packet)
+			// A long-lived stream keeps the drained mux open; new streams on its
+			// lane must establish a replacement instead of the retired session.
+			fresh, err := a.OpenLane(ctx, b.IdentityID(), InteractiveLane)
+			if err != nil {
+				t.Fatal("resume did not replace the draining lane while a stream stayed open", err)
+			}
+			if relay && fresh.(*sessionStream).session == activeSession {
+				t.Fatal("new stream reused the draining session")
+			}
+			_ = fresh.Close()
 			_ = active.Close()
 			if relay {
 				waitFor(t, ctx, activeSession.mux.IsClosed)
 			}
-			packet.Kind = "gateway.resume"
-			a.receive(packet)
-			b.receive(packet)
 			conn, err := a.Open(ctx, b.IdentityID())
 			if err != nil {
 				t.Fatal("resume did not restore relay admission", err)

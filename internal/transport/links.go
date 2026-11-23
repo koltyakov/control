@@ -24,15 +24,16 @@ func (p *Peer) newLink(ctx context.Context, id, remote, mode string, shared ...*
 		dc := l.dc
 		l.dcMu.Unlock()
 		if dc != nil {
-			go func() { _ = dc.Close() }()
+			p.closeAsync(func() { _ = dc.Close() })
 		}
 		p.mu.Lock()
 		delete(p.links, id)
+		p.linkIndex.Delete(id)
 		closePC := p.releaseCarrierLocked(l, id)
 		notify := l.generation == p.networkGeneration
 		p.mu.Unlock()
 		if closePC {
-			go func() { _ = l.pc.Close() }()
+			p.closeAsync(func() { _ = l.pc.Close() })
 		}
 		if notify {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -86,6 +87,7 @@ func (p *Peer) newLink(ctx context.Context, id, remote, mode string, shared ...*
 		return nil, errors.New("duplicate session or peer link limit reached")
 	}
 	p.links[id] = l
+	p.linkIndex.Store(id, l)
 	l.generation = p.networkGeneration
 	if l.ice != nil {
 		if setup := p.incomingSetups[id]; setup != nil && setup.remote == remote {
@@ -277,7 +279,7 @@ func (p *Peer) accept(ctx context.Context, msg *protocol.Packet) {
 	if err != nil {
 		return
 	}
-	if !p.registerSession(s) {
+	if p.registerSession(s) != nil {
 		_ = s.mux.Close()
 		return
 	}

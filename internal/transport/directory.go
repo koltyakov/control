@@ -53,17 +53,68 @@ func (p *Peer) Lookup(ctx context.Context, name string) (model.Node, error) {
 		p.stats.lookupHits.Add(1)
 		return node, nil
 	}
-	p.mu.Unlock()
 	p.stats.lookupMisses.Add(1)
-	node, err := p.lookup(ctx, name, clientSessions, userID, generation)
-	if err == nil {
-		p.mu.Lock()
-		if generation == p.directoryGeneration {
-			p.storeLookupLocked(node, time.Now(), name, node.ID)
+	// Concurrent misses for one name share a single gateway request. It runs
+	// detached from any one caller, so a caller's cancellation cannot fail
+	// the others; each caller still stops waiting with its own context.
+	f := p.lookupFlights[name]
+	if f == nil || f.generation != generation {
+		f = &flight[model.Node]{done: make(chan struct{}), generation: generation}
+		if p.lookupFlights == nil {
+			p.lookupFlights = map[string]*flight[model.Node]{}
 		}
+		p.lookupFlights[name] = f
+		p.mu.Unlock()
+		p.fly(func(ctx context.Context) {
+			node, err := p.lookup(ctx, name, clientSessions, userID, generation)
+			p.mu.Lock()
+			if err == nil && generation == p.directoryGeneration {
+				p.storeLookupLocked(node, time.Now(), name, node.ID)
+			}
+			if p.lookupFlights[name] == f {
+				delete(p.lookupFlights, name)
+			}
+			p.mu.Unlock()
+			f.value, f.err = node, err
+			close(f.done)
+		})
+	} else {
 		p.mu.Unlock()
 	}
-	return node, err
+	select {
+	case <-ctx.Done():
+		return model.Node{}, ctx.Err()
+	case <-f.done:
+		return f.value, f.err
+	}
+}
+
+// flight is one shared request; waiters read value and err after done closes.
+type flight[T any] struct {
+	done       chan struct{}
+	generation uint64
+	value      T
+	err        error
+}
+
+// lookupTimeout bounds a shared lookup, which no single caller can cancel.
+const lookupTimeout = 20 * time.Second
+
+// fly runs a shared request under the peer lifetime, inline once the peer is
+// stopping.
+func (p *Peer) fly(run func(context.Context)) {
+	base := p.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	shared := func() {
+		ctx, cancel := context.WithTimeout(base, lookupTimeout)
+		defer cancel()
+		run(ctx)
+	}
+	if !p.worker(shared) {
+		shared()
+	}
 }
 
 func (p *Peer) lookup(ctx context.Context, name string, clientSessions bool, userID string, generation uint64) (model.Node, error) {
@@ -81,7 +132,7 @@ func (p *Peer) lookup(ctx context.Context, name string, clientSessions bool, use
 			}
 		}
 	}
-	nodes, err := p.Nodes(ctx)
+	nodes, err := p.sharedNodes(ctx, generation)
 	if err != nil {
 		return model.Node{}, err
 	}
@@ -103,6 +154,33 @@ func (p *Peer) lookup(ctx context.Context, name string, clientSessions bool, use
 		}
 	}
 	return model.Node{}, fmt.Errorf("unknown node %q", name)
+}
+
+// sharedNodes coalesces concurrent directory reads made by lookups of
+// different names. The caller's context is already detached; see Lookup.
+func (p *Peer) sharedNodes(ctx context.Context, generation uint64) ([]model.Node, error) {
+	p.mu.Lock()
+	f := p.directoryFlight
+	if f == nil || f.generation != generation {
+		f = &flight[[]model.Node]{done: make(chan struct{}), generation: generation}
+		p.directoryFlight = f
+		p.mu.Unlock()
+		f.value, f.err = p.Nodes(ctx)
+		p.mu.Lock()
+		if p.directoryFlight == f {
+			p.directoryFlight = nil
+		}
+		p.mu.Unlock()
+		close(f.done)
+		return f.value, f.err
+	}
+	p.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-f.done:
+		return f.value, f.err
+	}
 }
 
 // lookupID reads one identity's scoped gateway record without the directory.

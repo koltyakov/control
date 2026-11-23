@@ -25,7 +25,12 @@ type PruneResult struct {
 // Callers must serialize invitation creation and deployment selection with it.
 func (r *Repository) Prune(ctx context.Context, id string, retained []string) (PruneResult, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			r.mu.Unlock()
+		}
+	}()
 	var result PruneResult
 	if err := ctx.Err(); err != nil {
 		return result, err
@@ -65,6 +70,19 @@ func (r *Repository) Prune(ctx context.Context, id string, retained []string) (P
 		return result, err
 	}
 	r.retainPath(keep, executable)
+	// Scan and remove without holding r.mu, so Pin and Current callers do not
+	// wait on directory I/O. Each removal rechecks, under r.mu, that this
+	// rollout is still current and the hash was not pinned meanwhile.
+	r.mu.Unlock()
+	locked = false
+	remove := func(hash string, del func() error) (bool, error) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.current == nil || r.current.ID != id || r.pins[hash] != 0 {
+			return false, nil
+		}
+		return true, del()
+	}
 	root, err := os.OpenRoot(r.dir)
 	if err != nil {
 		return result, err
@@ -87,6 +105,16 @@ func (r *Repository) Prune(ctx context.Context, id string, retained []string) (P
 					_ = f.Close()
 					return result, errors.Join(append(failures, err)...)
 				}
+				if directory == "blobs" && strings.HasPrefix(entry.Name(), ".update-") && entry.Type().IsRegular() {
+					// An interrupted download's temporary file; active ones
+					// keep a fresh modification time.
+					if info, err := entry.Info(); err == nil && info.ModTime().Before(cutoff) {
+						if err := root.Remove(filepath.Join(directory, entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+							failures = append(failures, err)
+						}
+					}
+					continue
+				}
 				if !ValidDigest(entry.Name()) || keep[entry.Name()] || entry.Type()&os.ModeSymlink != 0 {
 					continue
 				}
@@ -100,17 +128,17 @@ func (r *Repository) Prune(ctx context.Context, id string, retained []string) (P
 					if !info.Mode().IsRegular() || !info.ModTime().Before(cutoff) {
 						continue
 					}
-					err = root.Remove(path)
-					if err == nil {
-						result.Blobs++
-					}
+					removed, err := remove(entry.Name(), func() error { return root.Remove(path) })
 					if err != nil {
 						failures = append(failures, err)
+					} else if removed {
+						result.Blobs++
 					}
 				} else if entry.IsDir() {
-					if err := root.RemoveAll(path); err != nil {
+					removed, err := remove(entry.Name(), func() error { return root.RemoveAll(path) })
+					if err != nil {
 						failures = append(failures, err)
-					} else {
+					} else if removed {
 						result.Staged++
 					}
 				}

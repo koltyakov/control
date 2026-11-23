@@ -2,10 +2,12 @@
 package wire
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
+	"sync"
 
 	"github.com/koltyakov/control/internal/model"
 )
@@ -28,26 +30,53 @@ func WriteResponse(w io.Writer, response model.Response) error {
 	if err != nil {
 		return err
 	}
-	return writeBytes(w, b)
-}
-
-func WriteFrame(w io.Writer, value any) error {
-	b, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	return writeBytes(w, b)
-}
-
-func writeBytes(w io.Writer, b []byte) error {
 	if len(b) > MaxFrame {
 		return ErrFrameTooLarge
 	}
-	// One write keeps the prefix and body in one multiplexer frame and packet.
-	frame := make([]byte, 4, 4+len(b))
-	binary.BigEndian.PutUint32(frame, uint32(len(b)))
-	_, err := w.Write(append(frame, b...))
+	buffer := getFrameBuffer()
+	defer putFrameBuffer(buffer)
+	buffer.Write(make([]byte, 4))
+	buffer.Write(b)
+	return writeFrameBuffer(w, buffer.Bytes())
+}
+
+// WriteFrame encodes value after a reserved length prefix in a pooled buffer,
+// so a frame is not copied again to prepend its length.
+func WriteFrame(w io.Writer, value any) error {
+	buffer := getFrameBuffer()
+	defer putFrameBuffer(buffer)
+	buffer.Write(make([]byte, 4))
+	if err := json.NewEncoder(buffer).Encode(value); err != nil {
+		return err
+	}
+	// Encode appends a newline that json.Marshal would not; keep the bytes
+	// identical to earlier senders.
+	frame := buffer.Bytes()
+	return writeFrameBuffer(w, frame[:len(frame)-1])
+}
+
+// writeFrameBuffer fills the reserved prefix. One write keeps the prefix and
+// body in one multiplexer frame and packet.
+func writeFrameBuffer(w io.Writer, frame []byte) error {
+	size := len(frame) - 4
+	if size > MaxFrame {
+		return ErrFrameTooLarge
+	}
+	binary.BigEndian.PutUint32(frame, uint32(size))
+	_, err := w.Write(frame)
 	return err
+}
+
+var frameBuffers = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
+func getFrameBuffer() *bytes.Buffer { return frameBuffers.Get().(*bytes.Buffer) }
+
+func putFrameBuffer(b *bytes.Buffer) {
+	if b.Cap() > 1<<20 {
+		return
+	}
+	b.Reset()
+	frameBuffers.Put(b)
 }
 
 func ReadFrame(r io.Reader, value any) error {

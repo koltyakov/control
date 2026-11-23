@@ -39,6 +39,9 @@ type localUpload struct {
 	NodeID    string `json:"nodeId"`
 	Node      string `json:"node"`
 	LocalPath string `json:"localPath"`
+	// Published is when this client saw the upload complete; see
+	// pruneUploadRecords.
+	Published time.Time `json:"published,omitzero"`
 }
 
 func (c Client) uploadPeer(ctx context.Context) (*transport.Peer, error) {
@@ -141,6 +144,7 @@ func (c Client) Upload(ctx context.Context, s UploadSpec) (upload.Result, error)
 	if err = os.MkdirAll(filepath.Dir(localPath), 0700); err != nil {
 		return result, err
 	}
+	pruneUploadRecords(ctx, filepath.Dir(localPath), time.Now())
 	lock := flock.New(localPath + ".lock")
 	defer func() { _ = lock.Close() }()
 	locked, err := lock.TryLockContext(ctx, 50*time.Millisecond)
@@ -189,6 +193,7 @@ func (c Client) Upload(ctx context.Context, s UploadSpec) (upload.Result, error)
 		if ready.Offset != ready.Size || ready.PrefixSHA256 != ready.SHA256 {
 			return result, errors.New("invalid upload completion receipt")
 		}
+		markUploadPublished(ctx, localPath, rec)
 		return ready.Result, nil
 	}
 	if ready.State != "staging" || ready.Generation == "" {
@@ -197,6 +202,9 @@ func (c Client) Upload(ctx context.Context, s UploadSpec) (upload.Result, error)
 	result, err = sendUpload(ctx, conn, f, info, ready, s.Progress)
 	if err != nil {
 		return result, fmt.Errorf("upload %s; query status before explicitly resuming: %w", s.ID, err)
+	}
+	if result.State == "published" {
+		markUploadPublished(ctx, localPath, rec)
 	}
 	return result, nil
 }
@@ -336,4 +344,69 @@ func (c Client) UploadStatus(ctx context.Context, node, id string, abort bool) (
 		err = errors.New("upload status identity mismatch")
 	}
 	return result, err
+}
+
+// uploadRecordRetention keeps a published upload's recovery record long enough
+// to reconcile a lost final response with an explicit resume.
+const uploadRecordRetention = 7 * 24 * time.Hour
+
+// markUploadPublished records completion so pruneUploadRecords can later
+// remove the record. A record replaced meanwhile by another attempt for
+// different content is left unchanged.
+func markUploadPublished(ctx context.Context, path string, published localUpload) {
+	lock := flock.New(path + ".lock")
+	defer func() { _ = lock.Close() }()
+	if locked, err := lock.TryLockContext(ctx, 50*time.Millisecond); err != nil || !locked {
+		return
+	}
+	var current localUpload
+	if store.Read(path, &current) == nil && current.Spec == published.Spec && current.NodeID == published.NodeID && current.Published.IsZero() {
+		current.Published = time.Now().UTC()
+		_ = store.Write(path, current)
+	}
+}
+
+// pruneUploadRecords removes recovery records of uploads published before the
+// retention period, and lock files left without a record. Unpublished records
+// are kept: they are the only evidence for a safe explicit resume.
+func pruneUploadRecords(ctx context.Context, dir string, now time.Time) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return
+		}
+		name := entry.Name()
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		if record, ok := strings.CutSuffix(name, ".lock"); ok {
+			// A fresh lock may belong to an attempt about to write its record.
+			info, err := entry.Info()
+			if err != nil || now.Sub(info.ModTime()) < time.Hour {
+				continue
+			}
+			if _, err := os.Lstat(filepath.Join(dir, record)); errors.Is(err, os.ErrNotExist) {
+				_ = os.Remove(filepath.Join(dir, name))
+			}
+			continue
+		}
+		if !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		var record localUpload
+		if store.Read(path, &record) != nil || record.Published.IsZero() || now.Sub(record.Published) < uploadRecordRetention {
+			continue
+		}
+		lock := flock.New(path + ".lock")
+		if locked, err := lock.TryLock(); err == nil && locked {
+			_ = os.Remove(path)
+			_ = lock.Unlock()
+		}
+		_ = lock.Close()
+		_ = os.Remove(path + ".lock")
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -249,5 +250,24 @@ func TestLANWatcherNegotiatesViewWithGateway(t *testing.T) {
 		if err != nil || view.Receiver != id.ID || len(view.Nodes) != 1 || view.Nodes[0].ID != id.ID || <-polls != status {
 			t.Fatal("unexpected gateway LAN response", view, err)
 		}
+	}
+}
+
+func TestWakeInterfaceChangesAreConfirmedAndDeferredForRelays(t *testing.T) {
+	registered := []model.WakeInterface{{Address: "192.168.1.2/24", MAC: "02:00:00:00:00:02"}}
+	bridge := append(slices.Clone(registered), model.WakeInterface{Address: "172.17.0.1/16", MAC: "02:42:00:00:00:01"})
+	pending, republish := wakeRepublish(bridge, registered, nil, false)
+	if republish || !slices.Equal(pending, bridge) {
+		t.Fatal("first changed sample republished without confirmation")
+	}
+	if pending, republish = wakeRepublish(registered, registered, pending, false); republish || pending != nil {
+		t.Fatal("transient adapter remained pending after it disappeared")
+	}
+	pending, _ = wakeRepublish(bridge, registered, nil, false)
+	if pending, republish = wakeRepublish(bridge, registered, pending, true); republish || !slices.Equal(pending, bridge) {
+		t.Fatal("confirmed change cut active relay links")
+	}
+	if _, republish = wakeRepublish(bridge, registered, pending, false); !republish {
+		t.Fatal("confirmed change was not republished once relays ended")
 	}
 }

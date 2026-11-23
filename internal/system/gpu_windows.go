@@ -15,17 +15,17 @@ type gpuDevice struct {
 	native bool
 }
 
-func gpuInventory(ctx context.Context) []gpuDevice {
+func gpuInventory(ctx context.Context) ([]gpuDevice, error) {
 	if devices := dxCoreInventory(ctx); len(devices) > 0 {
-		return devices
+		return devices, nil
 	}
 	// Win32_VideoController.AdapterRAM is a 32-bit value and is not reliable for
 	// modern VRAM capacities. Do not expose it as a GPU memory measurement.
 	data, err := gpuPowerShell(ctx, `ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_VideoController | Select-Object Name,AdapterCompatibility)`)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return parseWindowsGPUs(data)
+	return parseWindowsGPUs(data), nil
 }
 
 func gpuPowerShell(ctx context.Context, script string) ([]byte, error) {

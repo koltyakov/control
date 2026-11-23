@@ -11,6 +11,7 @@ import (
 
 	"github.com/koltyakov/control/internal/buildinfo"
 	"github.com/koltyakov/control/internal/installation"
+	"github.com/koltyakov/control/internal/logfile"
 	"github.com/koltyakov/control/internal/node"
 	"github.com/koltyakov/control/internal/processutil"
 	"github.com/koltyakov/control/internal/store"
@@ -62,7 +63,9 @@ func runPlatformService(ctx context.Context, args []string) (bool, error) {
 		}
 		ctx = context.WithValue(ctx, windowsManagedKey{}, windowsManagedMode{Mode: "user", Config: config})
 	}
-	log, err := os.OpenFile(filepath.Join(filepath.Dir(config), "node.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	logPath := filepath.Join(filepath.Dir(config), "node.log")
+	_ = logfile.Trim(logPath)
+	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return true, err
 	}

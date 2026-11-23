@@ -12,12 +12,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/store"
 	"github.com/koltyakov/control/internal/testutil"
 	"github.com/koltyakov/control/internal/wire"
 )
@@ -627,4 +629,19 @@ func TestUploadDisconnectDuringVerificationDoesNotPublish(t *testing.T) {
 			t.Fatal("disconnected caller published a file", err)
 		}
 	})
+}
+
+func TestUploadStartupRemovesInterruptedWriteTemps(t *testing.T) {
+	m := fixture(t)
+	for i := range 4097 {
+		if err := os.WriteFile(filepath.Join(m.dir, store.TempPrefix+strconv.Itoa(i)), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := New(m.root, m.workDir, filepath.Dir(m.dir), m.nodeID, m.limits); err != nil {
+		t.Fatal("interrupted write temps prevented startup", err)
+	}
+	if entries, err := os.ReadDir(m.dir); err != nil || len(entries) != 0 {
+		t.Fatal("interrupted write temps were kept", len(entries), err)
+	}
 }

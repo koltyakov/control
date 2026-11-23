@@ -97,12 +97,13 @@ func (g *Gateway) admitRelay(from string, source, dest *connection, p *protocol.
 		return false
 	}
 	opening := p.Kind == "open" && len(p.Data) == 0
-	draining := time.Now().Before(m.until) || time.Now().Before(m.peerDrains[from]) || time.Now().Before(m.peerDrains[p.To])
-	if opening && (exists || draining) {
+	if opening && exists {
 		return false
 	}
+	// Established data, the steady state of a transfer, needs no drain check.
 	if (opening || p.Kind == "data") && !exists {
-		if draining || m.counts[source] >= 256 || m.counts[dest] >= 256 {
+		now := time.Now()
+		if now.Before(m.until) || now.Before(m.peerDrains[from]) || now.Before(m.peerDrains[p.To]) || m.counts[source] >= 256 || m.counts[dest] >= 256 {
 			return false
 		}
 		if m.relays == nil {
@@ -128,7 +129,7 @@ func (g *Gateway) admitRelay(from string, source, dest *connection, p *protocol.
 			m.relays[key] = r
 		}
 	}
-	if (p.Kind == "answer" || p.Kind == "data") && exists {
+	if (p.Kind == "answer" || p.Kind == "data") && exists && !r.answered {
 		r.answered = true
 		m.relays[key] = r
 	}
@@ -149,6 +150,9 @@ func (g *Gateway) forgetRelays(c *connection) {
 	m := &g.maintenance
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.counts[c] == 0 {
+		return
+	}
 	for key, r := range m.relays {
 		if r.first == c || r.second == c {
 			m.removeRelay(key, r)

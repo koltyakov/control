@@ -10,11 +10,14 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/gofrs/flock"
 	"github.com/koltyakov/control/internal/client"
@@ -111,21 +114,24 @@ func setupCLI(ctx context.Context, args []string, config string) error {
 	if err = admin.JSON(ctx, "GET", "/v1/auth", nil, &auth); err != nil {
 		return err
 	}
-	credential := key
+	credential, createdKey := key, ""
 	if auth.Role == "superuser" || auth.Role == "user" {
 		var created struct {
-			Token string `json:"token"`
+			Key   struct{ ID string } `json:"key"`
+			Token string              `json:"token"`
 		}
 		if err = admin.JSON(ctx, "POST", "/v1/fleet/keys", map[string]string{"name": "host:" + *name}, &created); err != nil {
 			return err
 		}
-		credential = created.Token
+		credential, createdKey = created.Token, created.Key.ID
 		if err = installation.SaveAdmin(installation.AdminProfile{Gateway: gatewayURL, Key: key}); err != nil {
-			return err
+			return errors.Join(err, revokeSetupKey(ctx, admin, createdKey))
 		}
 	}
 	if err = createNodeConfig(config, *name, gatewayURL, credential, *listen, true); err != nil {
-		return err
+		// Only the saved profile references the new fleet key. Once it exists,
+		// a later failure leaves a usable credential for control service start.
+		return errors.Join(err, revokeSetupKey(ctx, admin, createdKey))
 	}
 	binary, err := installation.InstallSelf(ctx)
 	if err != nil {
@@ -140,6 +146,20 @@ func setupCLI(ctx context.Context, args []string, config string) error {
 		}
 	}
 	fmt.Printf("%s is registered and online.\n", *name)
+	return nil
+}
+
+// revokeSetupKey removes a fleet key that setup created but never saved, so a
+// failed setup does not leave an unreferenced credential on the gateway.
+func revokeSetupKey(ctx context.Context, admin client.Admin, id string) error {
+	if id == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := admin.JSON(ctx, http.MethodDelete, "/v1/fleet/keys/"+url.PathEscape(id), nil, nil); err != nil {
+		return fmt.Errorf("revoke unused fleet key %[1]s; run control keys revoke %[1]s: %[2]w", id, err)
+	}
 	return nil
 }
 

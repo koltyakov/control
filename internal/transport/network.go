@@ -31,22 +31,30 @@ type networkRoute struct {
 // established connection. UDP connect asks the OS for a route; no packets are sent.
 // A proxied node watches its route to the proxy: the gateway may not resolve.
 func networkProbe(ctx context.Context, host, port string) func() (string, error) {
-	var targets []*net.UDPAddr
+	sampler := &networkSampler{interfaces: sampleInterfaces, route: routeSource, now: time.Now}
 	if host != "" {
-		resolve, cancel := context.WithTimeout(ctx, 2*time.Second)
-		addresses, _ := net.DefaultResolver.LookupIPAddr(resolve, host)
-		cancel()
 		number, err := strconv.Atoi(port)
 		if err != nil || number <= 0 {
 			number = 443
 		}
-		for _, address := range addresses[:min(len(addresses), 16)] {
-			targets = append(targets, &net.UDPAddr{IP: address.IP, Zone: address.Zone, Port: number})
+		sampler.resolve = func() []*net.UDPAddr {
+			resolve, cancel := context.WithTimeout(ctx, 2*time.Second)
+			addresses, _ := net.DefaultResolver.LookupIPAddr(resolve, host)
+			cancel()
+			var targets []*net.UDPAddr
+			for _, address := range addresses[:min(len(addresses), 16)] {
+				targets = append(targets, &net.UDPAddr{IP: address.IP, Zone: address.Zone, Port: number})
+			}
+			return targets
 		}
 	}
-	sampler := &networkSampler{targets: targets, interfaces: sampleInterfaces, route: routeSource, now: time.Now}
 	return sampler.sample
 }
+
+// networkResolveRetry spaces gateway lookups while none has succeeded, such as
+// after booting without DNS. Resolved targets are kept: re-resolving a healthy
+// route could change the fingerprint without any network change.
+const networkResolveRetry = 30 * time.Second
 
 // networkInterfaceRefresh bounds reuse of an interface inventory while every
 // route keeps its source address. Enumeration is the expensive part of a
@@ -61,6 +69,8 @@ const networkInterfaceRefresh = 30 * time.Second
 // unchanged source, such as a subnet edit, are noticed within the refresh.
 type networkSampler struct {
 	targets    []*net.UDPAddr
+	resolve    func() []*net.UDPAddr
+	resolveAt  time.Time
 	interfaces func() ([]networkInterface, error)
 	route      func(*net.UDPAddr) net.IP
 	now        func() time.Time
@@ -71,6 +81,9 @@ type networkSampler struct {
 }
 
 func (s *networkSampler) sample() (string, error) {
+	if len(s.targets) == 0 && s.resolve != nil && !s.now().Before(s.resolveAt) {
+		s.targets, s.resolveAt = s.resolve(), s.now().Add(networkResolveRetry)
+	}
 	if len(s.targets) == 0 {
 		return "", nil
 	}

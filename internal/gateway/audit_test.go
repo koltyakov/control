@@ -289,3 +289,26 @@ func TestAuditRetentionIsPerFleet(t *testing.T) {
 		t.Fatalf("busy fleet kept %d events, quiet fleet kept %d", busy, quiet)
 	}
 }
+
+func TestClearAuditComparesInstantsWithinTheCutoffSecond(t *testing.T) {
+	g, s := installationFixture(t)
+	cutoff := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	g.mu.Lock()
+	err := g.commit(change{audit: []AuditEvent{
+		{At: cutoff.Add(-100 * time.Millisecond), UserID: legacyUser, Action: "key.create"},
+		{At: cutoff.Add(500 * time.Millisecond), UserID: legacyUser, Action: "key.rename"},
+	}})
+	g.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct{ Removed int }
+	operator := testAdmin{URL: s.URL, Key: superKey}
+	if err := operator.JSON(context.Background(), "DELETE", "/v1/audit?before="+url.QueryEscape(cutoff.Format(time.RFC3339)), nil, &result); err != nil {
+		t.Fatal(err)
+	}
+	actions := auditActions(readAudit(t, operator, ""))
+	if result.Removed != 1 || !slices.Contains(actions, "key.rename") || slices.Contains(actions, "key.create") {
+		t.Fatalf("cutoff removed %d events, kept %v", result.Removed, actions)
+	}
+}

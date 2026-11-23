@@ -16,9 +16,9 @@ type gpuDevice struct {
 	path string
 }
 
-func gpuInventory(_ context.Context) []gpuDevice {
+func gpuInventory(_ context.Context) ([]gpuDevice, error) {
 	devices := linuxGPUInventory("/sys/class/drm")
-	return append(devices, linuxNPUInventory("/sys/class/accel")...)
+	return append(devices, linuxNPUInventory("/sys/class/accel")...), nil
 }
 
 func linuxGPUInventory(root string) []gpuDevice {

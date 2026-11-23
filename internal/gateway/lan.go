@@ -48,7 +48,6 @@ func (g *Gateway) receiveLANReport(receiver model.Node, c *connection, data []by
 	if !ed25519.Verify(sender.PublicKey, proof.Message(), proof.Signature) {
 		return false
 	}
-	previous := n
 	peers := retainedLANPeers(n.LANPeers, n.WakeInterfaces)
 	next := model.LANPeer{ID: sender.ID, Local: proof.ReceiverNIC, Remote: proof.SenderNIC, VerifiedAt: proof.IssuedAt}
 	index := slices.IndexFunc(peers, func(peer model.LANPeer) bool {
@@ -68,9 +67,14 @@ func (g *Gateway) receiveLANReport(receiver model.Node, c *connection, data []by
 	}
 	n.LANPeers = peers
 	g.nodes[n.ID] = n
-	if err := g.commit(change{nodes: []string{n.ID}}); err != nil {
-		g.nodes[n.ID] = previous
-		return true // A later discovery cycle can report fresh evidence.
+	// Proofs refresh every ten minutes per pair, so persist them with the
+	// batched last-seen flush instead of one synchronous commit per report
+	// under g.mu. A crash loses at most one flush interval of evidence,
+	// which later discovery cycles report again.
+	if g.presenceDirty == nil {
+		g.presenceDirty = map[string]bool{}
 	}
+	g.presenceDirty[n.ID] = true
+	g.publishObservations(n.ID)
 	return true
 }

@@ -1,39 +1,40 @@
 package client
 
 import (
+	"context"
+	"fmt"
+	"sync"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/koltyakov/control/internal/model"
 )
 
-func TestDelegationCleanupLifetimePolicy(t *testing.T) {
-	task := model.TaskSpec{ID: "parent", Capability: "peers.call"}
-	grants := []model.Delegation{{ID: "single-use", Method: "exec.run"}, {ID: "durable", Method: "tasks.start"}}
-	for _, status := range []string{"accepted", "existing", "rejected", ""} {
-		t.Run(status, func(t *testing.T) {
-			var receipt *model.TaskSubmissionReceipt
-			if status != "" {
-				receipt = &model.TaskSubmissionReceipt{TaskID: task.ID, Status: status}
+func TestDelegationCleanupRevokesPastUnreachableDestination(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		grants := []model.Delegation{{ID: "stuck", Target: "down"}}
+		for i := range 20 {
+			grants = append(grants, model.Delegation{ID: fmt.Sprint("grant-", i), Target: "up"})
+		}
+		var mu sync.Mutex
+		revoked := map[string]bool{}
+		started := time.Now()
+		revokeDelegations(t.Context(), grants, func(ctx context.Context, grant model.Delegation) error {
+			if grant.Target == "down" {
+				<-ctx.Done()
+				return ctx.Err()
 			}
-			got := releasableDelegations("tasks.start", model.JSON(task), grants, receipt)
-			want := 0
-			if status == "existing" || status == "rejected" {
-				want = len(grants)
-			}
-			if len(got) != want {
-				t.Fatal("incorrect durable cleanup", status, got)
-			}
+			mu.Lock()
+			revoked[grant.ID] = true
+			mu.Unlock()
+			return nil
 		})
-	}
-	wrong := &model.TaskSubmissionReceipt{TaskID: "another-task", Status: "existing"}
-	if got := releasableDelegations("tasks.start", model.JSON(task), grants, wrong); len(got) != 0 {
-		t.Fatal("another task's receipt withdrew authority", got)
-	}
-	if got := releasableDelegations("workflow.run", nil, grants, nil); len(got) != 1 || got[0].ID != "single-use" {
-		t.Fatal("synchronous return withdrew durable child grants", got)
-	}
-	forwarded := model.JSON(map[string]any{"method": "tasks.start", "params": task})
-	if got := releasableDelegations("peers.call", forwarded, grants, nil); len(got) != 1 {
-		t.Fatal("uncertain forwarded child lost task authority", got)
-	}
+		if len(revoked) != len(grants)-1 {
+			t.Fatal("unreachable destination left other grants unrevoked", len(revoked))
+		}
+		if elapsed := time.Since(started); elapsed > revokeTimeout {
+			t.Fatal("cleanup waited beyond one revoke deadline", elapsed)
+		}
+	})
 }

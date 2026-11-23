@@ -68,15 +68,15 @@ func (g *Gateway) authenticateLocked(token string) principal { return g.authenti
 // change to users, keys, or invitations. Caller holds g.mu or is initializing.
 func (g *Gateway) reindexCredentialsLocked() {
 	index := make(map[string]principal, len(g.keys)+len(g.installations))
-	for _, i := range g.installations {
+	for hash, i := range g.installations {
 		if u, ok := g.users[i.UserID]; ok && !u.Disabled && !i.Revoked && i.RedeemedID != "" && i.CredentialHash != "" {
-			index[i.CredentialHash] = principal{Role: "common", KeyID: "install:" + i.ID, UserID: i.UserID}
+			index[i.CredentialHash] = principal{Role: "common", KeyID: "install:" + i.ID, UserID: i.UserID, Installation: hash}
 		}
 	}
 	// Account and common keys take precedence, as they did in the linear scan.
 	for id, key := range g.keys {
 		if u, ok := g.users[key.UserID]; ok && !u.Disabled && !key.Revoked && key.Hash != "" {
-			index[key.Hash] = principal{Role: key.Role, KeyID: id, UserID: key.UserID}
+			index[key.Hash] = principal{Role: key.Role, KeyID: id, UserID: key.UserID, Username: u.Name}
 		}
 	}
 	g.credentials.Store(&index)
@@ -121,9 +121,7 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		case "superuser":
 			username = "@operator"
 		case "user":
-			g.mu.Lock()
-			username = g.users[p.UserID].Name
-			g.mu.Unlock()
+			username = p.Username
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"role": p.Role, "userId": p.UserID, "username": username, "capabilities": capabilities, "nodeHealth": true, "clientSessions": true, "clientOwners": true, "peerChannels": true, "delegation": true, "largePackets": true, "nodeBytes": true, "machineStatePush": true, "gatewayHeartbeat": true, "telemetryLiveness": true, "relayDrain": true, "gatewayProtocol": g.options.Software.GatewayProtocol, "trickleICE": true, "lanDiscovery": true, "lanView": true, "gatewayProxy": true, "managedGatewayProxy": true, "stunServers": g.options.STUNServers})
 	}))

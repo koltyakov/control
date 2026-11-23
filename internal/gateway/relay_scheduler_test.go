@@ -202,8 +202,8 @@ func TestRelaySessionBoundsAreExact(t *testing.T) {
 	if q.push(&protocol.Packet{Kind: "data", From: "n", Session: "a"}) {
 		t.Fatal("session packet bound exceeded")
 	}
-	if len(q.sessions[relayStreamKey{"n", "a"}].items) != relaySessionPackets {
-		t.Fatal("session ring grew beyond its packet bound")
+	if len(q.sessions[relayStreamKey{"n", "a"}].items) != relaySessionPackets+1 {
+		t.Fatal("session ring grew beyond its packet bound and close slot")
 	}
 	if !q.push(&protocol.Packet{Kind: "data", From: "n", Session: "b"}) {
 		t.Fatal("other session rejected")
@@ -220,6 +220,29 @@ func TestRelaySessionBoundsAreExact(t *testing.T) {
 	}
 	if accepted > relaySessionBytes || accepted+packetRetainedBytes(p) <= relaySessionBytes || q.bytes != accepted {
 		t.Fatal("session byte bound inexact", accepted)
+	}
+	for q.pop() != nil {
+	}
+	assertRelaySchedulerReleased(t, q)
+}
+
+func TestRelayCloseBypassesFullDataQueues(t *testing.T) {
+	q := newRelayScheduler()
+	for q.push(&protocol.Packet{Kind: "data", From: "n", Session: "a"}) {
+	}
+	if !q.push(&protocol.Packet{Kind: "close", From: "n", Session: "a"}) {
+		t.Fatal("close rejected by its own full session")
+	}
+	if q.push(&protocol.Packet{Kind: "close", From: "n", Session: "a"}) {
+		t.Fatal("repeated closes grew a full session without bound")
+	}
+	for i := 0; q.push(&protocol.Packet{Kind: "data", From: "n", Session: fmt.Sprint("s", i)}); i++ {
+	}
+	if q.count != relayQueuePackets-relayControlPackets {
+		t.Fatal("data consumed control headroom", q.count)
+	}
+	if !q.push(&protocol.Packet{Kind: "close", From: "n", Session: "s0"}) {
+		t.Fatal("close rejected by a destination queue full of data")
 	}
 	for q.pop() != nil {
 	}

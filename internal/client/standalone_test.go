@@ -355,3 +355,35 @@ func TestStandaloneNeverSwitchesAfterLocalErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestStandaloneSetupCancellationDoesNotFailWaiters(t *testing.T) {
+	var describes atomic.Int32
+	first := make(chan struct{})
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var q node.APICall
+		_ = json.NewDecoder(r.Body).Decode(&q)
+		if q.Method == "node.describe" && describes.Add(1) == 1 {
+			close(first)
+			<-r.Context().Done()
+			return
+		}
+		_, _ = w.Write([]byte(`{"result":{}}`))
+	}))
+	defer api.Close()
+	c := (Client{URL: api.URL}).WithStandalone(context.Background(), StandaloneConfig{Gateway: Admin{URL: "http://127.0.0.1:1", Key: "key"}, StateDir: t.TempDir()})
+	defer func() { _ = c.Close() }()
+	initiator, cancel := context.WithCancel(context.Background())
+	initiated := make(chan error, 1)
+	go func() { initiated <- c.Call(initiator, "", "node.describe", map[string]any{}, nil) }()
+	<-first
+	waited := make(chan error, 1)
+	go func() { waited <- c.Call(context.Background(), "", "node.describe", map[string]any{}, nil) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	if err := <-initiated; err == nil {
+		t.Fatal("cancelled initiator succeeded")
+	}
+	if err := <-waited; err != nil {
+		t.Fatal("initiator cancellation failed a concurrent caller", err)
+	}
+}
