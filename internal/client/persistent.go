@@ -80,6 +80,9 @@ func validatePersistentTunnel(spec PersistentTunnelSpec) error {
 	if spec.Node == "" || len(spec.Node) > 128 {
 		return errors.New("a named target machine is required")
 	}
+	if spec.SOCKS || spec.AllowNonLoopback {
+		return errors.New("retained tunnels do not support SOCKS mode; use the foreground control tunnel NODE --socks or control_forward_start")
+	}
 	for _, address := range []string{spec.Address, spec.Listen} {
 		host, port, err := net.SplitHostPort(address)
 		n, parseErr := strconv.Atoi(port)

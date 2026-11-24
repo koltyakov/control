@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/koltyakov/control/internal/client"
@@ -89,24 +90,34 @@ func tunnelCLI(ctx context.Context, c client.Client, args []string) error {
 			return persistentTunnelCLI(ctx, c, args)
 		}
 	}
+	const usage = "usage: control tunnel NODE HOST:PORT [--reverse] [--listen 127.0.0.1:PORT], or control tunnel NODE --socks [--listen 127.0.0.1:PORT] [--allow-non-loopback]"
 	if len(args) < 2 {
-		return errors.New("usage: control tunnel NODE HOST:PORT [--reverse] [--listen 127.0.0.1:PORT]")
+		return errors.New(usage)
+	}
+	// SOCKS mode has no destination argument; flags follow NODE directly.
+	address, flags := args[1], args[2:]
+	if strings.HasPrefix(address, "-") {
+		address, flags = "", args[1:]
 	}
 	f := flag.NewFlagSet("tunnel", flag.ContinueOnError)
 	listen := f.String("listen", "127.0.0.1:0", "listen address, on the remote machine with --reverse")
 	reverse := f.Bool("reverse", false, "forward a remote listener to HOST:PORT on this machine")
-	if err := f.Parse(args[2:]); err != nil {
+	socks := f.Bool("socks", false, "run a local SOCKS5 proxy; NODE resolves and dials each requested host")
+	allowNonLoopback := f.Bool("allow-non-loopback", false, "permit a non-loopback --socks listener, an unauthenticated open proxy into the fleet")
+	if err := f.Parse(flags); err != nil {
 		return err
 	}
-	if f.NArg() != 0 {
-		return errors.New("unexpected tunnel arguments")
+	if f.NArg() != 0 || (address == "") != *socks {
+		return errors.New(usage)
 	}
-	forward, err := c.StartForward(ctx, client.ForwardSpec{Node: args[0], Address: args[1], Listen: *listen, Reverse: *reverse})
+	forward, err := c.StartForward(ctx, client.ForwardSpec{Node: args[0], Address: address, Listen: *listen, Reverse: *reverse, SOCKS: *socks, AllowNonLoopback: *allowNonLoopback})
 	if err != nil {
 		return err
 	}
 	defer forward.Close()
-	if *reverse {
+	if *socks {
+		fmt.Fprintln(os.Stderr, "SOCKS5 proxy listening on", forward.Info().Listen, "through", args[0])
+	} else if *reverse {
 		fmt.Fprintln(os.Stderr, "listening on", args[0], forward.Info().Listen, "forwarding to local", args[1])
 	} else {
 		fmt.Fprintln(os.Stderr, "listening on", forward.Info().Listen)

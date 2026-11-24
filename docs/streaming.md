@@ -76,10 +76,11 @@ control exec worker --detach --id render-001 --timeout 4h -- COMMAND ARG...
 control task logs worker render-001 --follow --offset 0
 control task cancel worker render-001
 control tunnel worker db.internal:5432 --listen 127.0.0.1:15432
+control tunnel worker --socks --listen 127.0.0.1:1080
 control session
 ```
 
-Accepted work survives log-follower or forward shutdown. Streaming logs preserve bytes and offset boundaries, including non-UTF-8 output. Disconnects report an error; reconnect explicitly from the last consumed offset. MCP's `control_task_logs` remains a bounded snapshot tool, while `control_forward_start`, `control_forward_list`, and `control_forward_stop` manage process-owned listeners.
+Accepted work survives log-follower or forward shutdown. Streaming logs preserve bytes and offset boundaries, including non-UTF-8 output. Disconnects report an error; reconnect explicitly from the last consumed offset. MCP's `control_task_logs` remains a bounded snapshot tool, while `control_forward_start`, `control_forward_list`, and `control_forward_stop` manage process-owned listeners. A `--socks` forward opens one ordinary `tcp.open` stream per SOCKS5 `CONNECT`, with the same duplex negotiation and limits; see [SOCKS proxies](tunnels.md#socks-proxies).
 
 ## Verification and measurements
 

@@ -195,6 +195,11 @@ func (c Client) Download(ctx context.Context, a model.Artifact, offset int64, w 
 }
 
 func (c Client) Tunnel(ctx context.Context, target, address string) (net.Conn, error) {
+	return c.tunnel(ctx, target, address, openPeerTCP)
+}
+
+// tunnel lets SOCKS sockets replace the peer opener; see openSOCKSPeerTCP.
+func (c Client) tunnel(ctx context.Context, target, address string, openPeer func(context.Context, *transport.Peer, string, string) (net.Conn, error)) (net.Conn, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	stopLifetime := func() bool { return false }
 	if c.resources != nil {
@@ -220,7 +225,7 @@ func (c Client) Tunnel(ctx context.Context, target, address string) (net.Conn, e
 		if target == "" {
 			return nil, errors.New("standalone tunnels require a target machine")
 		}
-		conn, err = openPeerTCP(ctx, peer, target, address)
+		conn, err = openPeer(ctx, peer, target, address)
 		if err != nil {
 			return nil, err
 		}

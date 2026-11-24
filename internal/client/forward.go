@@ -22,14 +22,19 @@ type ForwardSpec struct {
 	Address string `json:"address"`
 	Listen  string `json:"listen,omitempty"`
 	Reverse bool   `json:"reverse,omitempty"`
+	// SOCKS reads each socket's destination from a SOCKS5 CONNECT request
+	// instead of Address. AllowNonLoopback opts in to an open proxy listener.
+	SOCKS            bool `json:"socks,omitempty"`
+	AllowNonLoopback bool `json:"allowNonLoopback,omitempty"`
 }
 
 type ForwardInfo struct {
 	ID        string `json:"id"`
 	Node      string `json:"node"`
-	Address   string `json:"address"`
+	Address   string `json:"address,omitempty"`
 	Listen    string `json:"listen"`
 	Reverse   bool   `json:"reverse,omitempty"`
+	SOCKS     bool   `json:"socks,omitempty"`
 	Active    int    `json:"activeConnections"`
 	LastError string `json:"lastError,omitempty"`
 }
@@ -132,13 +137,24 @@ func (c Client) StartForward(ctx context.Context, spec ForwardSpec) (*Forward, e
 	if spec.Node == "" {
 		return nil, errors.New("forwarding requires a target machine")
 	}
-	if _, _, err := net.SplitHostPort(spec.Address); err != nil {
+	if spec.SOCKS {
+		if err := validateSOCKSForward(spec); err != nil {
+			return nil, err
+		}
+	} else if spec.AllowNonLoopback {
+		return nil, errors.New("allowNonLoopback applies only to SOCKS forwards")
+	} else if _, _, err := net.SplitHostPort(spec.Address); err != nil {
 		return nil, fmt.Errorf("destination address: %w", err)
 	}
 	// Select the backend before publishing a local port. Never create a dummy
 	// remote TCP connection just to probe readiness or replay a failed stream.
 	if _, err := c.backend(ctx); err != nil {
 		return nil, err
+	}
+	if spec.SOCKS {
+		if err := c.checkSOCKSTarget(ctx, spec.Node); err != nil {
+			return nil, err
+		}
 	}
 	if spec.Listen == "" {
 		spec.Listen = "127.0.0.1:0"
@@ -173,6 +189,10 @@ func (c Client) StartForward(ctx context.Context, spec ForwardSpec) (*Forward, e
 		stop()
 	} else {
 		listener, err = net.Listen("tcp", spec.Listen)
+		if err == nil && spec.SOCKS && !spec.AllowNonLoopback && !loopbackListener(listener.Addr()) {
+			_ = listener.Close()
+			err = errSOCKSNonLoopback
+		}
 	}
 	if err != nil {
 		cancel()
@@ -186,7 +206,7 @@ func (c Client) StartForward(ctx context.Context, spec ForwardSpec) (*Forward, e
 		return nil, errors.New("client closed during forward setup")
 	}
 	f := &Forward{ctx: forwardCtx, cancel: cancel, listener: listener, connections: map[net.Conn]net.Conn{}, done: make(chan struct{}),
-		info: ForwardInfo{ID: identity.NewID(), Node: spec.Node, Address: spec.Address, Listen: listener.Addr().String(), Reverse: spec.Reverse}}
+		info: ForwardInfo{ID: identity.NewID(), Node: spec.Node, Address: spec.Address, Listen: listener.Addr().String(), Reverse: spec.Reverse, SOCKS: spec.SOCKS}}
 	r.forwards[f.info.ID] = f
 	f.retire = func() {
 		r.mu.Lock()
@@ -230,7 +250,11 @@ func (f *Forward) serve(c Client) {
 		f.connections[local] = nil
 		f.wg.Add(1)
 		f.mu.Unlock()
-		go f.bridge(c, local)
+		if f.info.SOCKS {
+			go f.bridgeSOCKS(c, local)
+		} else {
+			go f.bridge(c, local)
+		}
 	}
 }
 

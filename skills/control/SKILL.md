@@ -19,7 +19,7 @@ Keep this core guidance loaded. Before using a specialized feature, read its ref
 | Browser automation or browser login/2FA takeover | [Browser](references/browser.md) |
 | GUI interaction, desktop readiness or desktop setup | [Desktop](references/desktop.md) |
 | Uploads, artifacts or an explicitly requested clipboard paste | [Transfers](references/transfers.md) |
-| Wake-on-LAN, connection tests or TCP tunnels | [Networking](references/networking.md) |
+| Wake-on-LAN, connection tests or TCP/SOCKS tunnels | [Networking](references/networking.md) |
 | Installation, enrollment, service changes or fleet administration | [Administration](references/administration.md) |
 
 Do not load agent-desktop or agent-browser instructions, probe those tools, or install their dependencies for command-only or file-only work. The browser and desktop references explain when to load the worker's installed upstream guidance. Load that guidance once per worker, backend and version per session; reload when those change. Check live readiness for each new UI sequence.

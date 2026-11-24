@@ -77,3 +77,14 @@ The separate `P.Tun.` column means permanent tunnels and counts this dashboard h
 MCP exposes `control_tunnel_start`, `control_tunnel_list`, and `control_tunnel_dispose`. Start requires `id`, `node`, `address`, and a fixed `listen`, with optional `reverse` and `ttlSeconds`. These use the same host service and durable state as the CLI. Explicit local API routing is unsupported for persistent tunnels; use an account login.
 
 The original foreground `control tunnel NODE HOST:PORT` and process-owned MCP `control_forward_start/list/stop` retain their existing lifetimes. Use them for temporary sessions; use the new tunnel commands/tools when the definition must outlive the calling process.
+
+## SOCKS proxies
+
+To reach several hosts on a worker's network through one local port, run a foreground SOCKS5 proxy instead of one tunnel per destination:
+
+```sh
+control tunnel worker --socks --listen 127.0.0.1:1080
+curl --socks5-hostname 127.0.0.1:1080 https://api.internal/health
+```
+
+MCP `control_forward_start` takes `socks: true` without `address`. Each SOCKS `CONNECT` opens its own `tcp.open` stream through the worker, which resolves domain names with its own DNS and network. Use `socks5h://` or `--socks5-hostname` so clients send names unresolved. Only "no authentication" and `CONNECT` are supported. A SOCKS listener must be on loopback unless `--allow-non-loopback` is given; a non-loopback listener is an unauthenticated open proxy into everything the worker can reach. SOCKS mode is refused for instruction-only destinations such as Hybrid System companions, and for `--reverse`. Retained `control tunnel start` definitions do not support SOCKS mode in this version. See [SOCKS forwarding details](protocol.md#orchestrator-sessions-and-forwards).
