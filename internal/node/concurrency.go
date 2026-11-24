@@ -28,7 +28,7 @@ func (n *Node) providerSlots(capability string) (*providerPool, string) {
 	case "workflow.run", "peers.call":
 		// Coordination must not hold a slot needed by its local child work.
 		return nil, ""
-	case "files.list", "files.read", "files.write", "http.request", "http.download", "network.wake":
+	case "files.list", "files.read", "files.write", "files.stat", "files.mkdir", "files.remove", "files.move", "files.copy", "http.request", "http.download", "network.wake":
 		return n.operationsPool, "waiting for operation slot"
 	case "desktop.run":
 		if n.Config.Desktop != nil {

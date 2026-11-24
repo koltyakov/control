@@ -61,7 +61,7 @@ def scope_error(args, case):
         method = args[2]
         if method in ["node.describe", "system.info", "leases.get", "capabilities.list"]:
             return None
-        if method not in ["files.read", "files.list", "files.write"]:
+        if method not in ["files.read", "files.list", "files.stat", "files.write"]:
             return "Method outside benchmark allowlist"
         query = json.loads(args[3]) if len(args) > 3 else {}
         path = query.get("path", "").replace("\\", "/")

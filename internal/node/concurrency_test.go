@@ -37,7 +37,10 @@ func TestProviderPools(t *testing.T) {
 	}
 	assertPool(t, *report.InputStaging, 4, 0, 0)
 	assertPool(t, *report.OutputPublication, 4, 0, 0)
-	for _, method := range []string{"files.list", "files.read", "files.write", "http.request", "http.download", "network.wake"} {
+	for _, method := range []string{"files.list", "files.read", "files.write", "files.stat", "files.mkdir", "files.remove", "files.move", "files.copy", "http.request", "http.download", "network.wake"} {
+		if workflowProviderPool(method) != "operations" {
+			t.Fatal("workflow ordering misclassifies an operation", method)
+		}
 		slots, phase := n.providerSlots(method)
 		if slots != n.operationsPool || phase != "waiting for operation slot" {
 			t.Fatal("operation uses execution capacity", method)

@@ -45,7 +45,12 @@ func (n *Node) registerProviders() error {
 		{model.Capability{Name: "http.download", Description: "Stream a GET response body into an immutable content-addressed artifact on this machine, held by the caller's task owner; returns status, selected headers and the artifact reference, never the body. Requires 200 OK. maxBytes defaults to 1 GiB; maxArtifactBytes and the disk reserve also apply. sha256 is verified before publication. Ends after stallSeconds (default 30) without headers or body bytes; the invocation or task deadline bounds the whole download. Failures publish nothing and remove partial bytes; there is no retry or resume. headerSecrets match http.request; secret-bearing requests never follow redirects, others follow at most 10 http/https redirects. Errors and headers are masked; downloaded bytes are not. Prefer a tracked task.", InputSchema: schema(map[string]any{"url": text, "method": map[string]any{"type": "string", "enum": []string{http.MethodGet}}, "headers": object, "headerSecrets": map[string]any{"type": "object", "maxProperties": 32, "additionalProperties": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"secret"}, "properties": map[string]any{"secret": map[string]any{"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$"}, "prefix": text}}}, "sha256": map[string]any{"type": "string", "pattern": "^[a-fA-F0-9]{64}$"}, "maxBytes": map[string]any{"type": "integer", "minimum": 1, "maximum": maxDownloadBytes}, "name": map[string]any{"type": "string", "maxLength": 255}, "stallSeconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 3600}}, "url")}, n.httpDownload},
 		{model.Capability{Name: "files.list", Description: "List a directory relative to the configured filesystem root. Rejects non-directory targets, including special files.", InputSchema: schema(map[string]any{"path": text})}, n.filesList},
 		{model.Capability{Name: "files.read", Description: "Read up to 1 MiB at an offset; returns base64 bytes, or UTF-8 text when encoding is text and the bytes are valid text. Text never splits a character; continue from the returned offset and check the returned encoding.", InputSchema: schema(map[string]any{"path": text, "offset": map[string]any{"type": "integer"}, "limit": map[string]any{"type": "integer"}, "encoding": encodingSchema}, "path")}, n.filesRead},
-		{model.Capability{Name: "files.write", Description: "Write base64 bytes at an offset to a regular file. Creates missing files and rejects special files. Set truncate for replacement.", InputSchema: schema(map[string]any{"path": text, "data": text, "offset": map[string]any{"type": "integer"}, "truncate": map[string]any{"type": "boolean"}}, "path", "data")}, n.filesWrite},
+		{model.Capability{Name: "files.write", Description: "Write up to 1 MiB at an offset to a regular file. data is base64 unless encoding is text, which writes the UTF-8 string unchanged. Creates missing files and parents and rejects special files. Set truncate for replacement.", InputSchema: schema(map[string]any{"path": text, "data": text, "offset": map[string]any{"type": "integer"}, "truncate": map[string]any{"type": "boolean"}, "encoding": map[string]any{"type": "string", "enum": []string{encodingBase64, encodingText}, "description": "Encoding of data: base64 (default) or text for UTF-8 written unchanged."}}, "path", "data")}, n.filesWrite},
+		{model.Capability{Name: "files.stat", Description: "Describe a regular file or directory relative to the filesystem root: type, file size and modification time. Set sha256 to hash a regular file of at most 1 GiB from the opened handle. Rejects special files.", InputSchema: schema(map[string]any{"path": text, "sha256": map[string]any{"type": "boolean"}})}, n.filesStat},
+		{model.Capability{Name: "files.mkdir", Description: "Create a directory below the filesystem root. Without parents the parent must exist and the path must not. With parents, missing parents are created and an existing directory succeeds.", InputSchema: schema(map[string]any{"path": text, "parents": map[string]any{"type": "boolean"}}, "path")}, n.filesMkdir},
+		{model.Capability{Name: "files.remove", Description: "Remove one regular file or empty directory below the filesystem root. Never follows the final name and has no recursive mode; symbolic links and special files are refused. Never retries.", InputSchema: schema(map[string]any{"path": text}, "path")}, n.filesRemove},
+		{model.Capability{Name: "files.move", Description: "Move a regular file or directory within the filesystem root. Never replaces an existing destination unless overwrite is set, which replaces only a regular file with a regular file; directories are never replaced. The destination parent must exist. Never retries; a partial_effect error names what changed.", InputSchema: schema(map[string]any{"from": text, "to": text, "overwrite": map[string]any{"type": "boolean"}}, "from", "to")}, n.filesMove},
+		{model.Capability{Name: "files.copy", Description: "Copy a regular file of at most 1 GiB within the filesystem root, publishing the complete synced copy at once. Never replaces an existing destination unless overwrite is set, and then only a regular file. The destination parent must exist. Never retries.", InputSchema: schema(map[string]any{"from": text, "to": text, "overwrite": map[string]any{"type": "boolean"}}, "from", "to")}, n.filesCopy},
 		{model.Capability{Name: "mcp.call", Description: "Invoke a tool on a configured local MCP server. Tool-reported isError fails execution; tracked tasks retain the original result, including partial output. Failure does not authorize replay.", InputSchema: schema(map[string]any{"server": text, "tool": text, "arguments": object}, "server", "tool")}, n.mcpCall},
 		{model.Capability{Name: "mcp.request", Description: "Read MCP resources or prompts on a configured server.", InputSchema: schema(map[string]any{"server": text, "method": text, "params": object}, "server", "method")}, n.mcpRequest},
 		{model.Capability{Name: "workflow.run", Description: "Execute dependency-ordered tasks across peers and transfer their artifact inputs. maxParallel runs up to that many ready steps at once (default 1, sequential). Parallel ready ordering skips capacity probes for identical destination and pool requirements; targets and accepted tasks never move or replay. Transient status reads retry; unresolved observations retain child IDs without cancelling healthy work.", InputSchema: schema(map[string]any{"steps": map[string]any{"type": "array", "items": object}, "maxParallel": map[string]any{"type": "integer", "minimum": 1, "maximum": model.MaxWorkflowParallel}}, "steps")}, n.workflowRun},
@@ -380,6 +385,7 @@ func (n *Node) filesWrite(ctx context.Context, args json.RawMessage, e Execution
 		Data     string `json:"data"`
 		Offset   int64  `json:"offset"`
 		Truncate bool   `json:"truncate"`
+		Encoding string `json:"encoding"`
 	}
 	if err := json.Unmarshal(args, &q); err != nil {
 		return nil, err
@@ -387,11 +393,18 @@ func (n *Node) filesWrite(ctx context.Context, args json.RawMessage, e Execution
 	if q.Offset < 0 {
 		return nil, errors.New("invalid offset")
 	}
+	if err := validEncoding(q.Encoding); err != nil {
+		return nil, err
+	}
 	if err := n.uploads.CheckPath(q.Path); err != nil {
 		return nil, err
 	}
-	b, err := base64.StdEncoding.DecodeString(q.Data)
-	if err != nil {
+	// JSON strings are already valid UTF-8, so text needs no further check.
+	var b []byte
+	var err error
+	if q.Encoding == encodingText {
+		b = []byte(q.Data)
+	} else if b, err = base64.StdEncoding.DecodeString(q.Data); err != nil {
 		return nil, err
 	}
 	if len(b) > 1<<20 {

@@ -40,6 +40,8 @@ class RecorderTests(unittest.TestCase):
 
     def test_recovery_direct_read_allowed_tracked_read_denied(self):
         self.assertIsNone(recorder.scope_error(["call", "worker", "files.read", '{"path":"tasks/seed/receipt.json"}'], self.case))
+        self.assertIsNone(recorder.scope_error(["call", "worker", "files.stat", '{"path":"tasks/seed/receipt.json","sha256":true}'], self.case))
+        self.assertIsNotNone(recorder.scope_error(["call", "worker", "files.remove", '{"path":"tasks/seed/receipt.json"}'], self.case))
         result = recorder.control(self.root, "episode", ["task", "start", "worker", '{"capability":"files.read"}'])
         self.assertTrue(result["blocked"])
         self.assertEqual(result["exitCode"], 125)

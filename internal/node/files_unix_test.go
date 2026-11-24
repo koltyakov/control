@@ -257,3 +257,53 @@ func TestFileWriteRejectsOpenFIFOAndEscapedSymlink(t *testing.T) {
 		t.Fatal("root-confined alias did not truncate its regular target", string(got), err)
 	}
 }
+
+func TestFileMutationsRejectFIFOWithoutWaiting(t *testing.T) {
+	n := localNode(t, nil)
+	name := filepath.Join(n.Config.WorkDir, "pipe")
+	if err := unix.Mkfifo(name, 0600); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(n.Config.WorkDir, "regular"), "regular")
+	// A recovery endpoint lets a regressed blocking open return so cleanup can join.
+	recoverFIFO := func() {
+		fd, err := unix.Open(name, unix.O_RDWR|unix.O_NONBLOCK, 0)
+		if err == nil {
+			t.Cleanup(func() { _ = unix.Close(fd) })
+		}
+	}
+	for _, c := range []struct {
+		method string
+		params map[string]any
+	}{
+		{"files.stat", map[string]any{"path": "pipe"}},
+		{"files.stat", map[string]any{"path": "pipe", "sha256": true}},
+		{"files.remove", map[string]any{"path": "pipe"}},
+		{"files.move", map[string]any{"from": "pipe", "to": "moved"}},
+		{"files.copy", map[string]any{"from": "pipe", "to": "copied"}},
+		{"files.move", map[string]any{"from": "regular", "to": "pipe", "overwrite": true}},
+		{"files.copy", map[string]any{"from": "regular", "to": "pipe", "overwrite": true}},
+	} {
+		done := make(chan error, 1)
+		go func() { done <- n.Call(t.Context(), "", c.method, c.params, nil) }()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("accepted FIFO", c.method, c.params)
+			}
+		case <-time.After(2 * time.Second):
+			recoverFIFO()
+			<-done
+			t.Fatal("FIFO operation waited for another endpoint", c.method, c.params)
+		}
+		info, err := os.Lstat(name)
+		if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+			t.Fatal("rejected FIFO was replaced or removed", c.method, err)
+		}
+		assertFileContent(t, filepath.Join(n.Config.WorkDir, "regular"), "regular")
+		assertMissing(t, filepath.Join(n.Config.WorkDir, "moved"))
+		assertMissing(t, filepath.Join(n.Config.WorkDir, "copied"))
+		assertNoCopyTemporaries(t, n.Config.WorkDir)
+	}
+	assertPool(t, n.operationsPool.snapshot(), 8, 0, 0)
+}
