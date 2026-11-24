@@ -165,7 +165,8 @@ func NormalizeProxyURL(value string) (string, error) {
 	if err != nil || number < 1 || number > 65535 || strconv.Itoa(number) != port {
 		return "", invalid
 	}
-	if ip := net.ParseIP(host); ip != nil {
+	// Strip one root dot first so "0.0.0.0." is checked as an address.
+	if ip := net.ParseIP(strings.TrimSuffix(host, ".")); ip != nil {
 		if ip.IsUnspecified() || ip.IsMulticast() {
 			return "", errors.New("proxy address must be a reachable unicast address")
 		}
@@ -175,6 +176,11 @@ func NormalizeProxyURL(value string) (string, error) {
 		return "", errors.New("proxy address must be a hostname, IPv4, or unzoned IPv6 address")
 	} else {
 		host = strings.ToLower(strings.TrimSuffix(host, "."))
+		// One root dot is accepted; an empty or still dotted host would not
+		// survive its own validation after normalization.
+		if host == "" || strings.HasSuffix(host, ".") {
+			return "", invalid
+		}
 	}
 	return "http://" + net.JoinHostPort(host, port), nil
 }

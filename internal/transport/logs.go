@@ -17,7 +17,9 @@ func ValidateLogChunk(chunk model.TaskLogChunk, offset int64) error {
 	if chunk.Error != "" {
 		return errors.New(chunk.Error)
 	}
-	if len(chunk.Data) > MaxLogChunk || chunk.Offset != offset+int64(len(chunk.Data)) {
+	// Subtract rather than add so a starting offset near the int64 limit
+	// cannot wrap and accept a rewound peer offset.
+	if len(chunk.Data) > MaxLogChunk || chunk.Offset < offset || chunk.Offset-offset != int64(len(chunk.Data)) {
 		return errors.New("invalid streamed log offset or chunk size")
 	}
 	return nil

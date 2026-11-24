@@ -359,6 +359,29 @@ The Dockerfile downloads Go dependencies while building the image. The running t
 
 Linux legacy-startup tests accept the known service-wide vendor timeout-abort setting while refusing unvalidated/custom paths, execution hooks, account/environment changes, writable or non-root metadata, symlinks and oversized files. On an explicitly selected host supplying the override, run the compiled installation test binary with `CONTROL_SYSTEMD_VENDOR_SMOKE=1` and `-test.run=TestLegacySystemd` to validate the actual root-protected User/System vendor files read-only. The default Go suite skips this native check and remains self-contained. A full migration check must also confirm one runtime per profile, unchanged identity and startup definition, and preserved SELinux labels.
 
+## Fuzz targets
+
+Native Go fuzz targets cover parsers that read peer, network, pipe or file input. `go test ./...` runs only their seed corpora, so they cost about as much as ordinary unit tests. `make fuzz` runs each target in turn for `FUZZ_TIME`; to run one target, use for example `go test ./internal/wire -run '^$' -fuzz '^FuzzReadFrameLimit$' -fuzztime 30s`.
+
+| Target | Property |
+| --- | --- |
+| `wire.FuzzReadFrameLimit` | Oversized prefixes are refused before reading the body; accepted frames consume exactly their declared bytes and re-encode equally |
+| `upload.FuzzReadRecord` | Record kinds and sizes respect their limits and the caller's scratch buffer; accepted records re-encode byte for byte |
+| `upload.FuzzSpecValidate` | Accepted destinations are normalized relative paths without separators, drive syntax, control characters, staging names or Windows device names |
+| `secrets.FuzzRedactorText`, `secrets.FuzzRedactorJSON` | No configured value or claimed encoding survives outside a marker, including in JSON strings and keys |
+| `secrets.FuzzOpenEnvelope` | Malformed requests never open; any change to a sealed envelope, recipient or name fails authentication |
+| `transport.FuzzDuplexConn` | Duplex records match an independent decoder for any read sizes; writes and write-side EOF round-trip |
+| `transport.FuzzValidateLogChunk` | Accepted log chunks are bounded and advance the offset by exactly their length, without integer overflow |
+| `model.FuzzWorkflowPlanOrdered` | Acceptance matches an independent validator; accepted orders run every dependency and input source first |
+| `model.FuzzNormalizeProxyURL` | Normalized proxy URLs are fixed points that pass the gateway and endpoint validators |
+| `runbooks.FuzzParseMetadata` | Accepted metadata respects text and 16 KiB requirement bounds and survives JSON re-encoding |
+| `desktop.FuzzDesktopPacket` | Requests accepted by `Decode` survive the private helper packet unchanged; accepted packets re-encode equally |
+| `client.FuzzToolText` | Restoring HTML escapes in MCP text never changes the JSON value |
+
+A failing input is written under the package's `testdata/fuzz` directory. Convert it into an `f.Add` seed or a regression test rather than committing the generated corpus.
+
+Two drift tests keep documentation aligned with code. `TestProtocolMethodTableMatchesNode` compares the "Node operations" table in [the protocol reference](protocol.md#node-operations) with a default node's built-in capabilities and the methods its dispatcher and stream handler serve. A short allowlist in `internal/node/protocol_docs_test.go` names the deliberate exceptions. `TestMCPToolsAreDocumented` requires every MCP tool to be named in `docs/`, the README or the shipped skill bundle, apart from a listed set of known gaps.
+
 ## Performance benchmarks
 
 A November 17, 2026 macOS arm64 fixture loaded 512 terminal tasks with 64 KiB inline results. The live Go heap added after GC fell from about 32 MiB to 253–259 KiB with on-demand payload reads. A separate 10,000-task fixture with 4 KiB results added 6.7 MiB; 1,000 owner-checked full reads from the warm local filesystem took 24 µs median and 34 µs p95 in one run. These figures exclude RPC and do not measure process RSS or cold-disk latency.
@@ -583,6 +606,7 @@ Firewall tests verify profile-scoped rule names, path quoting, gateway-port vali
 | `cov`, `test-coverage` | Generate `tmp/coverage.out` and `tmp/coverage.html` |
 | `test-cov-check` | Regenerate coverage and enforce `COVERAGE_MIN`, default 50% |
 | `bench` | Run available Go benchmarks without ordinary tests |
+| `fuzz` | Run each listed fuzz target for `FUZZ_TIME`, default 10 seconds |
 | `build-all`, `bundle` | Build release binaries for all six platforms |
 | `release-local` | Build a bundle and check its manifest, files, and checksums |
 | `release-check` | Validate the existing bundle without rebuilding it |
@@ -590,4 +614,4 @@ Firewall tests verify profile-scoped rule names, path quoting, gateway-port vali
 | `ci`, `ci-compose` | Run local CI checks, optionally followed by both Compose modes |
 | `clean` | Remove build, bundle, and coverage output |
 
-`GO`, `BIN_DIR`, `DIST_DIR`, `COVER_PROFILE`, and `COVER_HTML` can override the local tool/output paths. `PLATFORMS` narrows a local bundle. `make check` retains the existing vet and race-enabled checks.
+`GO`, `BIN_DIR`, `DIST_DIR`, `COVER_PROFILE`, `COVER_HTML`, `FUZZ_TIME`, and `FUZZ_TARGETS` can override the local tool/output paths. `PLATFORMS` narrows a local bundle. `make check` retains the existing vet and race-enabled checks.

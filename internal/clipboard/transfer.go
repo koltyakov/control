@@ -63,7 +63,8 @@ func validName(name string) bool {
 			return false
 		}
 	}
-	base := strings.ToUpper(strings.SplitN(name, ".", 2)[0])
+	// Windows ignores spaces before the extension, so "con .txt" names CON.
+	base := strings.TrimRight(strings.ToUpper(strings.SplitN(name, ".", 2)[0]), " ")
 	if base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" || base == "CONIN$" || base == "CONOUT$" {
 		return false
 	}

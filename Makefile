@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help tidy deps deps-update deps-check go-update fmt fmt-check lint lint-hint lint-hint-all typecheck-console vet test test-race check cov test-coverage test-cov-check bench build build-all bundle install uninstall release-local release-check ci ci-compose vuln clean proto test-compose test-compose-webrtc test-compose-relay test-compose-hybrid test-compose-proxy update update-status
+.PHONY: help tidy deps deps-update deps-check go-update fmt fmt-check lint lint-hint lint-hint-all typecheck-console vet test test-race check fuzz cov test-coverage test-cov-check bench build build-all bundle install uninstall release-local release-check ci ci-compose vuln clean proto test-compose test-compose-webrtc test-compose-relay test-compose-hybrid test-compose-proxy update update-status
 
 GO ?= go
 TEST_TIMEOUT ?= 300s
@@ -9,6 +9,8 @@ DIST_DIR ?= dist
 COVER_PROFILE ?= tmp/coverage.out
 COVER_HTML ?= tmp/coverage.html
 COVERAGE_MIN ?= 50.0
+FUZZ_TIME ?= 10s
+FUZZ_TARGETS ?= wire:FuzzReadFrameLimit upload:FuzzReadRecord upload:FuzzSpecValidate secrets:FuzzRedactorText secrets:FuzzRedactorJSON secrets:FuzzOpenEnvelope transport:FuzzDuplexConn transport:FuzzValidateLogChunk model:FuzzWorkflowPlanOrdered model:FuzzNormalizeProxyURL runbooks:FuzzParseMetadata desktop:FuzzDesktopPacket client:FuzzToolText
 GOLANGCI_LINT_VERSION ?= v2.14.0
 GOVULNCHECK_VERSION ?= v1.8.0
 ACTIONLINT_VERSION ?= v1.7.12
@@ -27,6 +29,7 @@ help:
 	@echo "  make lint-hint[-all]     - Run gopls hints on changed / all Go files"
 	@echo "  make vet / test          - Run vet / native tests"
 	@echo "  make test-race / check   - Race tests / vet plus race tests"
+	@echo "  make fuzz               - Run each fuzz target for $(FUZZ_TIME)"
 	@echo "  make cov                - Generate coverage profile and HTML"
 	@echo "  make test-cov-check      - Enforce $(COVERAGE_MIN)% coverage"
 	@echo "  make bench              - Run Go benchmarks"
@@ -128,6 +131,14 @@ vet:
 	$(GO) vet ./...
 
 check: vet test-race
+
+# Each target runs alone; go test accepts one -fuzz pattern per package.
+fuzz:
+	@set -e; for target in $(FUZZ_TARGETS); do \
+	  pkg=$${target%%:*}; name=$${target#*:}; \
+	  echo "fuzz internal/$$pkg $$name"; \
+	  $(GO) test "./internal/$$pkg" -run '^$$' -fuzz "^$$name\$$" -fuzztime "$(FUZZ_TIME)"; \
+	done
 
 cov:
 	@mkdir -p "$(dir $(COVER_PROFILE))" "$(dir $(COVER_HTML))"
