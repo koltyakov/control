@@ -86,7 +86,7 @@ func workflowProviderPool(capability string) string {
 	switch capability {
 	case "workflow.run", "peers.call":
 		return ""
-	case "files.list", "files.read", "files.write", "http.request", "network.wake":
+	case "files.list", "files.read", "files.write", "http.request", "http.download", "network.wake":
 		return "operations"
 	case "desktop.run":
 		// Descriptions do not distinguish built-in adapters from custom

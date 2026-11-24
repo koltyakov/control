@@ -26,6 +26,8 @@ When task creation is prohibited, inspect the original task with `control task g
 
 `files.read` and `http.request` return base64 by default. Pass `"encoding":"text"` to receive valid UTF-8 as text; check the returned `encoding`, because binary or invalid text still comes back as base64. Continue chunked text reads from the returned `offset`.
 
+To fetch an installer, model or dataset onto a worker, use a tracked `http.download` task with an explicit ID, enough `timeoutSeconds`, and the publisher's `sha256` when known, rather than `exec.run` with `curl`. It stores the body as an artifact held by your task owner and returns only the status, selected headers and artifact reference. Stage that artifact as a task input to place it in a workspace, or deliver it to another worker. A failed download publishes nothing and is never retried automatically; check the worker's schema first, since older workers lack the capability.
+
 Printed and MCP task results omit the submitted `spec`, since the caller already has it. Use `control task get NODE ID --spec` or `control_task_get` with `includeSpec: true` to read a task's arguments.
 
 For authorized PowerShell execution, choose descriptive helper names such as `Get-ProtectedFileDigest`, not aliases such as `H`/`h` for `Get-History`. Alias lookup takes precedence over a same-named function. Variable names are case-insensitive: `$q` and `$Q` are one variable. Use names such as `$csvText` and `$quoteCharacter` instead, and avoid automatic/read-only variables such as `$input`, `$args`, `$PID` and `$Host`. `-NoProfile` does not remove built-in aliases or automatic variables.

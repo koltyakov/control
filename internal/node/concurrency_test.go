@@ -37,7 +37,7 @@ func TestProviderPools(t *testing.T) {
 	}
 	assertPool(t, *report.InputStaging, 4, 0, 0)
 	assertPool(t, *report.OutputPublication, 4, 0, 0)
-	for _, method := range []string{"files.list", "files.read", "files.write", "http.request", "network.wake"} {
+	for _, method := range []string{"files.list", "files.read", "files.write", "http.request", "http.download", "network.wake"} {
 		slots, phase := n.providerSlots(method)
 		if slots != n.operationsPool || phase != "waiting for operation slot" {
 			t.Fatal("operation uses execution capacity", method)
