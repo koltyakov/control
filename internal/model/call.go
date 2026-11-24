@@ -12,6 +12,9 @@ type WorkflowStep struct {
 	Name   string   `json:"name"`
 	Target string   `json:"target"`
 	Needs  []string `json:"needs,omitempty"`
+	// When is WorkflowWhenSuccess (default) or WorkflowWhenAlways for a
+	// pre-planned cleanup step. See WorkflowPlan.Ordered.
+	When   string   `json:"when,omitempty"`
 	Task   TaskSpec `json:"task"`
 	Inputs []struct {
 		Step     string `json:"step"`

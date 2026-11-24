@@ -1,0 +1,41 @@
+{
+  "id": "scratch-workflow-001",
+  "capability": "workflow.run",
+  "args": {
+    "steps": [
+      {
+        "name": "prepare",
+        "target": "worker",
+        "task": {
+          "id": "scratch-workflow-001-prepare",
+          "capability": "exec.run",
+          "args": { "command": "mkdir", "args": ["-p", "/tmp/scratch-workflow-001"] }
+        }
+      },
+      {
+        "name": "encode",
+        "target": "worker",
+        "needs": ["prepare"],
+        "task": {
+          "id": "scratch-workflow-001-encode",
+          "capability": "exec.run",
+          "args": {
+            "command": "ffmpeg",
+            "args": ["-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10", "-t", "1", "-c:v", "mpeg4", "/tmp/scratch-workflow-001/output.mp4"]
+          }
+        }
+      },
+      {
+        "name": "cleanup",
+        "target": "worker",
+        "when": "always",
+        "needs": ["prepare", "encode"],
+        "task": {
+          "id": "scratch-workflow-001-cleanup",
+          "capability": "exec.run",
+          "args": { "command": "rm", "args": ["-rf", "/tmp/scratch-workflow-001"] }
+        }
+      }
+    ]
+  }
+}

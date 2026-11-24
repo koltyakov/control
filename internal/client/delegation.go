@@ -115,6 +115,11 @@ func prepareDelegations(ctx context.Context, peer *transport.Peer, target, metho
 		if _, err = workflow.Ordered(); err != nil {
 			return nil, grants, err
 		}
+		// Refuse before any grant: an older coordinator would ignore when and
+		// run cleanup as an ordinary step.
+		if workflow.HasAlways() && !model.WorkflowAlwaysSupported(coordinator.Capabilities) {
+			return nil, grants, errWorkflowAlwaysUnsupported
+		}
 		byName := map[string]int{}
 		for i := range workflow.Steps {
 			step := &workflow.Steps[i]
@@ -184,6 +189,25 @@ func prepareDelegations(ctx context.Context, peer *transport.Peer, target, metho
 		params = args
 	}
 	return params, grants, nil
+}
+
+var errWorkflowAlwaysUnsupported = errors.New("workflow coordinator does not advertise always (cleanup) steps; upgrade it before submitting a plan with when \"always\"")
+
+// submittedWorkflow returns the workflow plan carried by a direct workflow.run
+// call or a workflow.run task submission.
+func submittedWorkflow(method string, params json.RawMessage) (model.WorkflowPlan, bool) {
+	var plan model.WorkflowPlan
+	args := params
+	if method == "tasks.start" {
+		var task model.TaskSpec
+		if json.Unmarshal(params, &task) != nil || task.Capability != "workflow.run" {
+			return plan, false
+		}
+		args = task.Args
+	} else if method != "workflow.run" {
+		return plan, false
+	}
+	return plan, json.Unmarshal(args, &plan) == nil
 }
 
 // Stop assigning steps on the first failure, but let in-flight grants return

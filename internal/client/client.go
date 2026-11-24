@@ -103,6 +103,17 @@ func (c Client) call(ctx context.Context, target, method string, params any, res
 		cleanupDelegations(ctx, peer, releasableDelegations(method, prepared, grants, receipt))
 		return err
 	}
+	if plan, ok := submittedWorkflow(method, model.JSON(params)); ok && plan.HasAlways() {
+		// The local node forwards the plan unchanged; check its coordinator
+		// before submission, as account routing does before preparing grants.
+		var capabilities []model.Capability
+		if err := c.call(ctx, target, "capabilities.list", nil, &capabilities); err != nil {
+			return err
+		}
+		if !model.WorkflowAlwaysSupported(capabilities) {
+			return errWorkflowAlwaysUnsupported
+		}
+	}
 	resp, err := c.request(ctx, "/v1/call", model.APICall{Target: target, Method: method, Params: model.JSON(params)})
 	if err != nil {
 		return fmt.Errorf("local node API: %w", err)

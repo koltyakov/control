@@ -15,9 +15,14 @@ const (
 )
 
 func workflowReadySteps(ordered []WorkflowStep, started, succeeded map[string]bool) []WorkflowStep {
+	return workflowReadyWhere(ordered, func(step WorkflowStep) bool { return !started[step.Name] && step.Ready(succeeded) })
+}
+
+// workflowReadyWhere returns up to the lookahead bound of ready steps in plan order.
+func workflowReadyWhere(ordered []WorkflowStep, ready func(WorkflowStep) bool) []WorkflowStep {
 	steps := make([]WorkflowStep, 0, workflowReadyLookahead)
 	for _, step := range ordered {
-		if !started[step.Name] && step.Ready(succeeded) {
+		if ready(step) {
 			steps = append(steps, step)
 			if len(steps) == workflowReadyLookahead {
 				break

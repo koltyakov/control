@@ -17,16 +17,24 @@ type WorkflowReconciliation struct {
 	Complete bool                  `json:"complete"`
 }
 
+// NotStarted means the terminal coordinator recorded no child for the step and
+// its destination reports no such task. When echoes the plan's step condition.
 type WorkflowObservation struct {
 	Name           string             `json:"name"`
 	Target         string             `json:"target"`
 	ID             string             `json:"id"`
+	When           string             `json:"when,omitempty"`
 	Task           *model.TaskSummary `json:"task,omitempty"`
+	NotStarted     bool               `json:"notStarted,omitempty"`
 	Error          string             `json:"error,omitempty"`
 	Code           string             `json:"code,omitempty"`
 	Outcome        string             `json:"outcome,omitempty"`
 	ErrorTruncated bool               `json:"errorTruncated,omitempty"`
 }
+
+// workerTaskNotFound is the destination's reply for an ID it never accepted.
+// Pruned tasks keep tombstones and are reported as pruned instead.
+const workerTaskNotFound = "task not found"
 
 // ReconcileWorkflow reads the persisted plan and each stable child ID using the
 // account owner's authority. It never resubmits a child or restores a grant.
@@ -51,10 +59,16 @@ func (c Client) ReconcileWorkflow(ctx context.Context, target, id string) (Workf
 	if len(plan.Steps) < 1 || len(plan.Steps) > 100 {
 		return report, errors.New("invalid persisted workflow plan")
 	}
+	// A terminal coordinator's retained result lists every child it observed.
+	// Uncertain submissions are absent too, so absence alone proves nothing.
+	var recorded map[string]json.RawMessage
+	if !parent.Terminal() || len(parent.Result) == 0 || json.Unmarshal(parent.Result, &recorded) != nil {
+		recorded = nil
+	}
 	report.Steps = make([]WorkflowObservation, len(plan.Steps))
 	jobs := make(chan int, len(plan.Steps))
 	for i, step := range plan.Steps {
-		report.Steps[i] = WorkflowObservation{Name: step.Name, Target: step.Target, ID: step.Task.ID}
+		report.Steps[i] = WorkflowObservation{Name: step.Name, Target: step.Target, ID: step.Task.ID, When: step.When}
 		jobs <- i
 	}
 	close(jobs)
@@ -77,6 +91,9 @@ func (c Client) ReconcileWorkflow(ctx context.Context, target, id string) (Workf
 				if err != nil {
 					rpc := model.OperationError(err, "unknown")
 					observation.Error, observation.Code, observation.Outcome = rpc.Message, rpc.Code, rpc.Outcome
+					if _, ok := recorded[observation.Name]; recorded != nil && !ok && rpc.Cause == nil && rpc.Message == workerTaskNotFound {
+						observation.NotStarted = true
+					}
 					if len(observation.Error) > 1024 {
 						observation.Error = strings.Clone(observation.Error[:1024])
 						observation.ErrorTruncated = true

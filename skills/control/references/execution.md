@@ -52,7 +52,7 @@ Parallel workflows consider at most 32 unstarted ready steps and probe at most e
 
 Use detached submission and explicit task IDs for long work, continue other independent activities, and wait only when a result is needed. Use workflow `maxParallel` for independent ready steps. Do not acquire a machine-wide lease for ordinary independent work. Reserve exclusive execution only when the workflow requires it, and respect existing leases. Serialize conflicting file, application, desktop or shared-session changes. Separate task workspaces do not isolate external state, and per-batch desktop locking does not protect an entire multi-batch interaction.
 
-For independent `workflow.run` steps, `maxParallel` (up to 16) runs ready steps concurrently; a failed step stops further steps from starting but lets already-running steps finish.
+For independent `workflow.run` steps, `maxParallel` (up to 16) runs ready steps concurrently; a failed step stops further steps from starting but lets already-running steps finish. Plan cleanup, such as removing a temporary directory, releasing a licence or stopping a helper service, as a step with `"when": "always"`: it starts once its `needs` have settled, even after a failure, but not after the workflow is cancelled or times out, not behind a child whose state is unknown, and not when an artifact input's step did not succeed. It is part of the plan with its own fixed task ID and grant, not a retry. A failed cleanup step fails the workflow without hiding the original failure. Older coordinators lack support, and the client refuses such plans for them. Reconciliation shows each step's `when` and marks never-started steps `notStarted`.
 
 ## Delegate through another worker
 
