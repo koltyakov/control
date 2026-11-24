@@ -382,7 +382,7 @@ func (n *Node) retryTaskCleanup() error {
 	var records bytes.Buffer
 	for _, t := range pending {
 		var err error
-		for _, path := range []string{n.taskPath(t.ID), n.logPath(t.ID)} {
+		for _, path := range []string{n.taskPath(t.ID), n.logPath(t.ID), n.logTailPath(t.ID)} {
 			if e := os.Remove(path); e != nil && !errors.Is(e, os.ErrNotExist) {
 				err = errors.Join(err, e)
 			}

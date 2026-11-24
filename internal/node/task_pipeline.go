@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -90,7 +91,16 @@ func (n *Node) runTaskProvider(ctx context.Context, task model.Task, dir string,
 		return nil, err
 	}
 	defer func() { _ = log.Close() }()
-	output := &limitedLog{w: log, remaining: 10 << 20, notify: func() { notifier.notify(false) }}
+	output := &limitedLog{w: log, remaining: taskLogHead, notify: func() { notifier.notify(false) }, tail: &logTail{}}
+	notifier.live.Store(output)
+	// Persist the retained tail before the task can become terminal, then
+	// let readers switch from the live writer to the file.
+	defer func() {
+		if err := n.persistLogTail(task.ID, output); err != nil {
+			slog.Warn("persist task log tail", "task", task.ID, "error", err)
+		}
+		notifier.live.Store(nil)
+	}()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

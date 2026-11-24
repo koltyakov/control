@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -42,6 +43,9 @@ type taskNotifier struct {
 	// watched records that someone took changed since it was last closed, so
 	// log writes with no follower do not allocate a channel each.
 	watched bool
+	// live is the running provider's log writer, whose retained tail
+	// snapshot reads use until it is persisted at the end of execution.
+	live atomic.Pointer[limitedLog]
 }
 
 func newTaskNotifier() *taskNotifier {
@@ -535,6 +539,9 @@ func (n *Node) taskMethod(ctx context.Context, owner, method string, args json.R
 		WaitSeconds int    `json:"waitSeconds"`
 		Limit       int    `json:"limit"`
 		Cursor      string `json:"cursor"`
+		// Tail reads the retained end of a log beyond the head limit.
+		// Older nodes ignore it and serve an ordinary head read.
+		Tail bool `json:"tail"`
 	}
 	if err := json.Unmarshal(args, &query); err != nil {
 		return nil, err
@@ -568,8 +575,11 @@ func (n *Node) taskMethod(ctx context.Context, owner, method string, args json.R
 	}
 	terminal := record.Terminal()
 	var payload taskPayload
+	var live *limitedLog
 	if method != "tasks.logs" {
 		payload = n.payloadLocked(record)
+	} else if notifier := n.notifiers[query.ID]; notifier != nil {
+		live = notifier.live.Load()
 	}
 	if method == "tasks.cancel" {
 		if cancel := n.cancels[query.ID]; cancel != nil {
@@ -584,19 +594,7 @@ func (n *Node) taskMethod(ctx context.Context, owner, method string, args json.R
 		if query.Offset < 0 {
 			return nil, errors.New("invalid log offset")
 		}
-		f, err := os.Open(n.logPath(query.ID))
-		if errors.Is(err, os.ErrNotExist) {
-			return map[string]any{"text": "", "offset": query.Offset, "terminal": terminal}, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-		defer func() { _ = f.Close() }()
-		if _, err = f.Seek(query.Offset, io.SeekStart); err != nil {
-			return nil, err
-		}
-		b, err := io.ReadAll(io.LimitReader(f, 64*1024))
-		return map[string]any{"text": string(b), "offset": query.Offset + int64(len(b)), "terminal": terminal}, err
+		return n.taskLogSnapshot(query.ID, query.Offset, query.Tail, terminal, live)
 	}
 	return nil, errors.New("unknown task method")
 }
@@ -697,14 +695,17 @@ type limitedLog struct {
 	w         io.Writer
 	remaining int64
 	notify    func()
+	// tail, when set, retains the last bytes beyond remaining.
+	tail *logTail
 }
 
 func (w *limitedLog) Write(b []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	original := len(b)
+	var overflow []byte
 	if int64(len(b)) > w.remaining {
-		b = b[:w.remaining]
+		b, overflow = b[:w.remaining], b[w.remaining:]
 	}
 	n, err := w.w.Write(b)
 	w.remaining -= int64(n)
@@ -713,6 +714,10 @@ func (w *limitedLog) Write(b []byte) (int, error) {
 	}
 	if err != nil {
 		return n, err
+	}
+	if w.tail != nil {
+		w.tail.head += int64(n)
+		w.tail.add(overflow)
 	}
 	return original, nil
 }

@@ -101,25 +101,112 @@ type commandResult struct {
 	Stdout    string `json:"stdout"`
 	Stderr    string `json:"stderr"`
 	Truncated bool   `json:"truncated"`
+	// Bytes dropped between the retained head and tail of each stream. The
+	// text marker between them is informational; these fields are exact.
+	StdoutOmitted int64 `json:"stdoutOmitted,omitempty"`
+	StderrOmitted int64 `json:"stderrOmitted,omitempty"`
 }
 
+const (
+	// captureLimit bounds each captured stream. Output within it is complete.
+	captureLimit = 2 << 20
+	// Larger output keeps a head and a tail plus an omission marker, all
+	// within captureLimit. The reserve holds the longest possible marker.
+	captureHead          = 1 << 20
+	captureMarkerReserve = 64
+	captureTail          = captureLimit - captureHead - captureMarkerReserve
+)
+
+// capture keeps at most captureLimit bytes. By default it keeps only the head
+// and sets truncated; adapters that require complete output fail on that.
+// keepTail additionally retains the last captureTail bytes once the limit is
+// exceeded, so a failing command's final diagnostics survive.
 type capture struct {
 	mu        sync.Mutex
 	b         bytes.Buffer
 	truncated bool
+	keepTail  bool
+	// After overflow in keepTail mode, kept holds captureHead head bytes
+	// followed by a ring of captureTail bytes; b is released.
+	kept   []byte
+	next   int
+	filled int
+	total  int64
 }
 
 func (c *capture) Write(b []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	size := len(b)
-	remaining := (2 << 20) - c.b.Len()
+	if c.keepTail {
+		c.total += int64(size)
+		if c.kept == nil {
+			if c.b.Len()+len(b) <= captureLimit {
+				_, _ = c.b.Write(b)
+				return size, nil
+			}
+			c.truncated = true
+			c.kept = make([]byte, captureHead+captureTail)
+			prior := c.b.Bytes()
+			n := copy(c.kept[:captureHead], prior)
+			if n < captureHead {
+				b = b[copy(c.kept[n:captureHead], b):]
+			} else {
+				c.ring(prior[captureHead:])
+			}
+			c.b = bytes.Buffer{}
+		}
+		c.ring(b)
+		return size, nil
+	}
+	remaining := captureLimit - c.b.Len()
 	if len(b) > remaining {
 		b = b[:remaining]
 		c.truncated = true
 	}
 	_, _ = c.b.Write(b)
 	return size, nil
+}
+
+// ring appends to the circular tail, keeping only its last captureTail bytes.
+func (c *capture) ring(b []byte) {
+	c.next, c.filled = ringWrite(c.kept[captureHead:], c.next, c.filled, b)
+}
+
+// output returns the complete text, or head, marker and tail with the exact
+// number of omitted bytes. Neither cut splits a UTF-8 sequence: partial
+// sequences at the cuts are counted as omitted.
+func (c *capture) output() (string, int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.kept == nil {
+		return c.b.String(), 0
+	}
+	head := completeText(c.kept[:captureHead])
+	ring := c.kept[captureHead:]
+	tail := make([]byte, 0, c.filled)
+	if c.filled == len(ring) {
+		tail = append(append(tail, ring[c.next:]...), ring[:c.next]...)
+	} else {
+		tail = append(tail, ring[:c.filled]...)
+	}
+	tail = tail[leadingContinuation(tail):]
+	omitted := c.total - int64(len(head)) - int64(len(tail))
+	return string(head) + omissionMarker(omitted) + string(tail), omitted
+}
+
+func omissionMarker(omitted int64) string {
+	return fmt.Sprintf("\n... [control: %d bytes omitted] ...\n", omitted)
+}
+
+// leadingContinuation counts at most UTFMax-1 continuation bytes that begin b,
+// the remainder of a UTF-8 sequence cut before b.
+func leadingContinuation(b []byte) int {
+	n := 0
+	for n < utf8.UTFMax-1 && n < len(b) && !utf8.RuneStart(b[n]) {
+		n++
+	}
+	return n
 }
 
 func command(ctx context.Context, cfg Command, dir string) *exec.Cmd {
@@ -147,11 +234,13 @@ func runCommand(ctx context.Context, cfg Command, e Execution, input string) (co
 	}
 	cmd := command(ctx, cfg, e.Dir)
 	cmd.Stdin = strings.NewReader(input)
-	stdout, stderr := &capture{}, &capture{}
+	stdout, stderr := &capture{keepTail: true}, &capture{keepTail: true}
 	cmd.Stdout = io.MultiWriter(stdout, e.Log)
 	cmd.Stderr = io.MultiWriter(stderr, e.Log)
 	exit, err := commandexec.Run(ctx, cmd)
-	result := commandResult{ExitCode: exit, Stdout: stdout.b.String(), Stderr: stderr.b.String(), Truncated: stdout.truncated || stderr.truncated}
+	result := commandResult{ExitCode: exit, Truncated: stdout.truncated || stderr.truncated}
+	result.Stdout, result.StdoutOmitted = stdout.output()
+	result.Stderr, result.StderrOmitted = stderr.output()
 	if err != nil {
 		return result, fmt.Errorf("execute %s: %w", cfg.Command, err)
 	}

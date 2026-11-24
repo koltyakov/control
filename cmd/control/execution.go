@@ -71,16 +71,22 @@ func logsCLI(ctx context.Context, c client.Client, target string, args []string)
 	f := flag.NewFlagSet("task logs", flag.ContinueOnError)
 	follow := f.Bool("follow", false, "stream logs until completion or cancellation")
 	offset := f.Int64("offset", 0, "starting byte offset")
+	tail := f.Bool("tail", false, "read the retained end of a log that exceeded the head limit, by absolute offset")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
-	if f.NArg() != 0 || *offset < 0 {
-		return errors.New("usage: control task logs NODE ID [--follow] [--offset BYTES]")
+	if f.NArg() != 0 || *offset < 0 || (*tail && *follow) {
+		return errors.New("usage: control task logs NODE ID [--follow | --tail] [--offset BYTES]")
 	}
 	if *follow {
 		return c.FollowLogs(ctx, target, args[0], *offset, os.Stdout)
 	}
-	return callPrint(ctx, c, target, "tasks.logs", map[string]any{"id": args[0], "offset": *offset})
+	params := map[string]any{"id": args[0], "offset": *offset}
+	if *tail {
+		// Older workers ignore this field and return an ordinary head read.
+		params["tail"] = true
+	}
+	return callPrint(ctx, c, target, "tasks.logs", params)
 }
 
 func tunnelCLI(ctx context.Context, c client.Client, args []string) error {

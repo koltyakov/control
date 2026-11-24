@@ -78,7 +78,10 @@ func (n *Node) execRun(ctx context.Context, args json.RawMessage, e Execution) (
 	private.Log = io.Discard
 	result, runErr := runCommand(ctx, input.Command, private, stdin)
 	if result.Truncated || ctx.Err() != nil || errors.Is(runErr, exec.ErrWaitDelay) || !utf8.ValidString(result.Stdout) || !utf8.ValidString(result.Stderr) {
+		// Truncated output keeps a head and tail, which are never masked or
+		// published here: suppression remains all-or-nothing.
 		result.Stdout, result.Stderr = "", ""
+		result.StdoutOmitted, result.StderrOmitted = 0, 0
 		return result, errors.New("secret-bearing command output is incomplete or non-UTF-8; output suppressed")
 	}
 	result.Stdout = redactCommandText(redactor, result.Stdout)

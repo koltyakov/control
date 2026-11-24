@@ -54,7 +54,7 @@ Use detached submission and explicit task IDs for long work, continue other inde
 
 ## Submit durable work
 
-For a command, use `control exec NAME -- COMMAND ARG...`. The CLI prints a task ID before submission and waits for its result. For long work, use `--detach --id TASK_ID --timeout 4h` before `--` to return after durable acceptance. Follow logs with `control task logs NAME TASK_ID --follow --offset 0`. Stopping a follower or wait does not cancel the task; use `control task cancel`. Use structured argument arrays; do not assume the remote machine has a Unix shell.
+For a command, use `control exec NAME -- COMMAND ARG...`. The CLI prints a task ID before submission and waits for its result. For long work, use `--detach --id TASK_ID --timeout 4h` before `--` to return after durable acceptance. Follow logs with `control task logs NAME TASK_ID --follow --offset 0`. `--tail` reads the end. Stopping a follower or wait does not cancel the task; use `control task cancel`. Use structured argument arrays; do not assume a remote Unix shell.
 
 `files.*` paths start at `workDir`. An `exec.run` relative `dir` starts at the invocation workspace, `workDir/tasks/ID` for tracked tasks. Use a verified absolute path or an explicit task-relative path, not a `files.*` path copied into `dir`. Declared outputs stay relative to the original task workspace.
 

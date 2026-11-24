@@ -682,7 +682,7 @@ Environment: CONTROL_API, CONTROL_TOKEN
   exec NODE [--detach] [--id ID] [--timeout DURATION] [--] COMMAND [ARG...]
   task start NODE JSON|@file [--wait] [--spec]  Submit a durable task; optionally wait for its result
   task get|wait|cancel NODE ID [--spec] Inspect or manage a task; --spec adds its specification
-  task logs NODE ID [--follow] [--offset BYTES]
+  task logs NODE ID [--follow | --tail] [--offset BYTES]
   task list NODE [--limit N --cursor ID] Page through task summaries
   task reconcile NODE ID               Inspect a workflow and its stable child IDs
   diagnostics NODE                     Read bounded operational counters
