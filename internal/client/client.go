@@ -67,6 +67,9 @@ func (c Client) request(ctx context.Context, path string, value any) (*http.Resp
 }
 
 func (c Client) Call(ctx context.Context, target, method string, params any, result any) error {
+	if method == "nodes.select" {
+		return c.selectNode(ctx, target, params, result)
+	}
 	if method != "node.describe" || result == nil {
 		return c.call(ctx, target, method, params, result)
 	}

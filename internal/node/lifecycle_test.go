@@ -343,6 +343,17 @@ func TestMachineLifecycleBlocksSchedulingAndStopsNode(t *testing.T) {
 				var chosen model.Node
 				return testCall(t, source, ctx, "", "nodes.select", map[string]any{"labels": map[string]string{"role": "worker"}}, &chosen) == nil && chosen.ID == worker.Identity.ID
 			})
+			var confirmed map[string]any
+			if err := testCall(t, source, ctx, "", "nodes.select", map[string]any{"labels": map[string]string{"role": "worker"}, "gpuVendor": "No Such Vendor"}, &confirmed); err == nil {
+				t.Fatal("node selector ignored an unsatisfiable GPU constraint", confirmed)
+			}
+			// The node-side selector validates and applies GPU constraints itself.
+			if _, err := source.selectNode(ctx, model.JSON(map[string]any{"minGpuMemoryBytes": -1})); err == nil || !strings.Contains(err.Error(), "non-negative integer") {
+				t.Fatal("node selector accepted a negative GPU memory constraint", err)
+			}
+			if _, err := source.selectNode(ctx, model.JSON(map[string]any{"labels": map[string]string{"role": "worker"}, "gpuKind": model.GPUNPU, "gpuVendor": "No Such Vendor"})); err == nil {
+				t.Fatal("node selector ignored an unsatisfiable GPU constraint")
+			}
 			if err := testCall(t, source, ctx, "worker", "probe", map[string]any{}, nil); err != nil {
 				t.Fatal("enabled worker rejected work", err)
 			}

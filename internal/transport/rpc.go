@@ -132,17 +132,16 @@ func (p *Peer) OpenTCP(ctx context.Context, target, address string) (net.Conn, e
 // Select uses the same admission filters for node and standalone callers.
 // Among matching machines it prefers the one reporting the fewest active
 // operations, choosing randomly among ties or when load is not visible.
-func (p *Peer) Select(ctx context.Context, args json.RawMessage) (model.Node, error) {
-	var query model.NodeSelector
-	if err := json.Unmarshal(args, &query); err != nil {
-		return model.Node{}, err
-	}
-	if query.MaxCPUPercent != nil && (*query.MaxCPUPercent < 0 || *query.MaxCPUPercent > 100) {
-		return model.Node{}, errors.New("maxCpuPercent must be 0..100")
+// GPU constraints are confirmed in the result for callers that may reach an
+// older selector.
+func (p *Peer) Select(ctx context.Context, args json.RawMessage) (model.NodeSelection, error) {
+	query, err := model.DecodeNodeSelector(args)
+	if err != nil {
+		return model.NodeSelection{}, err
 	}
 	nodes, err := p.Nodes(ctx)
 	if err != nil {
-		return model.Node{}, err
+		return model.NodeSelection{}, err
 	}
 	candidates := []model.Node{}
 	for _, peer := range nodes {
@@ -164,9 +163,13 @@ func (p *Peer) Select(ctx context.Context, args json.RawMessage) (model.Node, er
 		}
 	}
 	if len(candidates) == 0 {
-		return model.Node{}, errors.New("no online enabled node matches the selector")
+		return model.NodeSelection{}, errors.New("no online enabled node matches the selector")
 	}
-	return resourcePlacement(candidates, p.placementHealth(ctx), query, time.Now())
+	selected, err := resourcePlacement(candidates, p.placementHealth(ctx), query, time.Now())
+	if err != nil {
+		return model.NodeSelection{}, err
+	}
+	return model.NodeSelection{Node: selected, GPUConstraints: query.GPUConstrained()}, nil
 }
 
 // leastLoaded treats load as a placement preference, not a reservation;

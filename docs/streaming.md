@@ -103,10 +103,9 @@ These gaps are not implemented:
 | --- | --- | --- |
 | Interactive process stdin and PTYs | Drive a persistent remote shell or REPL | Explicit process ownership, input framing, resize, reconnect, and OS-specific terminal lifecycle |
 | UDP forwarding | Tunnel a UDP protocol | Bounded datagrams, size limits, and explicit loss/lifetime semantics |
-| GPU-aware placement and reservations | Place accelerator work by available GPU capacity | GPU sampling and explicit destination-owned reservations are still needed |
+| GPU reservations | Hold accelerator capacity between selection and execution | GPU selection is advisory; destination-owned reservations and admission for GPU memory or devices are still needed |
 | Weighted relay bandwidth guarantees | Reserve a share of a saturated link | Round-robin session service does not provide per-user bandwidth guarantees or preempt writes |
-| Automatic eviction of owned artifacts | Reclaim published output without explicit deletion | An explicit retention policy must preserve owner holds and references |
 
-Bounded parallel workflows, fresh CPU/memory/disk placement, artifact byte budgets, abandoned-file cleanup, relay session scheduling, and explicit workflow reconciliation are implemented. See [D075 through D078](decisions.md#d075-bounded-task-data-and-durable-cleanup).
+Bounded parallel workflows, fresh CPU/memory/disk placement, artifact byte budgets, abandoned-file cleanup, relay session scheduling, and explicit workflow reconciliation are implemented. See [D075 through D078](decisions.md#d075-bounded-task-data-and-durable-cleanup). Opt-in `artifactRetentionHours` expires unreferenced artifacts ([D160](decisions.md#d160-compact-agent-facing-discovery-task-and-artifact-results)). Driver-reported GPU/NPU sampling ([D092](decisions.md#d092-optional-driver-reported-gpu-resources), [D093](decisions.md#d093-classified-accelerators-and-loaded-dedicated-memory)) feeds advisory GPU selection constraints ([D176](decisions.md#d176-advisory-gpu-selection-constraints)).
 
 TCP reconnection cannot transparently recover a database transaction or an arbitrary process session. Any resumable application protocol needs its own explicit recovery contract.

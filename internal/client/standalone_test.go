@@ -133,6 +133,12 @@ func TestStandalonePeerOperations(t *testing.T) {
 			if err := c.Call(ctx, "", "nodes.select", map[string]any{}, &selected); err != nil || selected.ID != described.ID {
 				t.Fatal("selector chose an outbound-only caller", selected, err)
 			}
+			if err := c.Call(ctx, "", "nodes.select", map[string]any{"gpuVendor": "No Such Vendor"}, &selected); err == nil {
+				t.Fatal("selector ignored an unsatisfiable GPU constraint", selected)
+			}
+			if err := c.Call(ctx, "", "nodes.select", map[string]any{"gpuKind": "tpu"}, nil); err == nil || !strings.Contains(err.Error(), "gpuKind must be") {
+				t.Fatal("selector accepted an unknown GPU kind", err)
+			}
 			for _, method := range []string{"node.describe", "test.owner", "tasks.list"} {
 				if err := c.Call(ctx, workers[1].Identity.ID, method, map[string]any{}, nil); err == nil {
 					t.Fatal("cross-fleet call accepted", method)
