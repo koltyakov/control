@@ -155,6 +155,9 @@ func run(ctx context.Context, args []string) error {
 		fmt.Print(commandHelp(ctx, admin()))
 		return nil
 	}
+	if args[0] == "completion" {
+		return completionCLI(os.Stdout, args[1:], func() string { return commandHelp(ctx, admin()) })
+	}
 	level := slog.LevelInfo
 	if *debug {
 		level = slog.LevelDebug
@@ -666,6 +669,7 @@ Environment: CONTROL_API, CONTROL_TOKEN
   service firewall                     Configure Windows node firewall rules (UAC)
   install-mcp CLIENT [--project DIR]    Configure an AI client's MCP server
   install-skill CLIENT [--project DIR]  Install the Control CLI skill
+  completion bash|zsh|fish|powershell [--login]  Print a shell completion script
   mcp                                  Serve MCP over stdio using saved credentials
   machines [--compact] [--node NAME_OR_ID] List fleet JSON; optionally project or filter it
   dashboard [--once] [--json] [--node NAME,...]  Gateway status, fleet activity and resources
@@ -674,11 +678,11 @@ Environment: CONTROL_API, CONTROL_TOKEN
   wake NODE [--from WORKER|local] [--json]
   call NODE METHOD [JSON|@file]         Invoke any operation
   runbooks [--node NAME] [--local]       Discover shared and machine-specific operational instructions
+    --source SOURCE --file FILE         Read one complete runbook from its exact origin
   browser run NODE [--session NAME] -- COMMAND [ARG...]
                                        Operate an opt-in worker agent-browser CLI
   browser view NODE [--port 4848] [--listen 127.0.0.1:0]
                                        Forward a worker browser dashboard to a local URL
-    --source SOURCE --file FILE         Read one complete runbook from its exact origin
   exec NODE [--detach] [--id ID] [--timeout DURATION] [--] COMMAND [ARG...]
   task start NODE JSON|@file [--wait] [--spec]  Submit a durable task; optionally wait for its result
   task get|wait|cancel NODE ID [--spec] Inspect or manage a task; --spec adds its specification

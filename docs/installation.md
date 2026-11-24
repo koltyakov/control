@@ -77,6 +77,19 @@ Set `CONTROL_INSTALL_DIR` to change the executable directory, `CONTROL_VERSION` 
 
 After installation, run `control update` to update the CLI in place, or `control upgrade` as an alias. `control update --version TAG` selects a release. This command needs no gateway login; running nodes use the gateway's separate managed rollout. Older binaries without this command need a current build or a one-time reinstall. See [CLI updates](updates.md#update-the-local-cli).
 
+### Shell completion
+
+`control completion bash|zsh|fish|powershell` prints a completion script for commands, subcommands, and their flags. Installers do not change shell profiles; add one line yourself:
+
+| Shell | Load in the current shell or profile | Or save once |
+| --- | --- | --- |
+| bash | `eval "$(control completion bash)"` in `~/.bashrc` | `~/.local/share/bash-completion/completions/control` |
+| zsh | `source <(control completion zsh)` in `~/.zshrc`, after `compinit` | `_control` in a directory on `$fpath` |
+| fish | `control completion fish \| source` | `~/.config/fish/completions/control.fish` |
+| PowerShell | `control completion powershell \| Out-String \| Invoke-Expression` in `$PROFILE` | |
+
+The bash script works with or without the bash-completion package and with macOS bash 3.2, which cannot `source <(...)`. By default the script covers only the commands help shows to every credential, so printing it needs no login and never contacts the gateway. `--login` instead uses the same role lookup as `control help`, adding fleet commands for an account key and gateway administration for the superuser. That lookup contacts the gateway, so save its output to a file instead of generating it at every shell start, and regenerate it after `control login` or a CLI update. Machine names are not completed, because that would query the gateway on every Tab press.
+
 ## Log in once
 
 ```sh
