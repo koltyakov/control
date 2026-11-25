@@ -91,10 +91,16 @@ func (s Spec) Validate() error {
 	if !ValidID(s.ID) || s.Size < 0 || s.Size > MaxSize || !digest.MatchString(s.SHA256) {
 		return Error("invalid_upload", "invalid upload ID, size, or SHA-256")
 	}
-	if s.Path == "" || len(s.Path) > 4096 || !utf8.ValidString(s.Path) || path.IsAbs(s.Path) || path.Clean(s.Path) != s.Path {
+	return ValidatePath(s.Path)
+}
+
+// ValidatePath applies the destination rules every receiver enforces, so a
+// sender can reject a whole directory tree before sending any file.
+func ValidatePath(p string) error {
+	if p == "" || len(p) > 4096 || !utf8.ValidString(p) || path.IsAbs(p) || path.Clean(p) != p {
 		return Error("invalid_upload", "destination must be a normalized workspace-relative file path")
 	}
-	for _, part := range strings.Split(s.Path, "/") {
+	for _, part := range strings.Split(p, "/") {
 		if !ValidName(part) || strings.EqualFold(part, StagingDir) || part == "." || part == ".." {
 			return Error("invalid_upload", "invalid or reserved destination component")
 		}

@@ -708,7 +708,8 @@ Environment: CONTROL_API, CONTROL_TOKEN
   artifact deliver NODE ID DEST_NODE   Peer-to-peer transfer
   artifact get NODE ID LOCAL_PATH      Resumable, checksum-verified download
   upload start NODE LOCAL REMOTE [--id ID --timeout DURATION]  Stream a local file, no overwrite
-  upload resume NODE ID LOCAL [--timeout DURATION]  Explicitly resume a verified partial
+  upload start NODE LOCAL_DIR REMOTE_DIR --recursive [--skip-unsupported]  Upload a tree into a new directory
+  upload resume NODE ID LOCAL [--timeout DURATION]  Explicitly resume a verified partial or directory
   upload status|abort NODE ID          Reconcile publication or abandon staging
   tunnel NODE HOST:PORT [--reverse] [--listen ADDRESS]
   tunnel NODE --socks [--listen ADDRESS] [--allow-non-loopback]  Local SOCKS5 proxy through NODE

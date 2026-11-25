@@ -100,21 +100,31 @@ func (c Client) Upload(ctx context.Context, s UploadSpec) (upload.Result, error)
 	if err != nil {
 		return result, err
 	}
+	if info, err := os.Lstat(s.LocalPath); err == nil && info.IsDir() {
+		return result, errors.New("localPath is a directory; upload directory trees with the CLI: control upload start NODE LOCAL_DIR REMOTE_DIR --recursive")
+	}
+	if err = c.refuseDirectoryUploadID(s.ID); err != nil {
+		return result, err
+	}
 	target, err := c.uploadTarget(ctx, peer, s.Node, s.ID)
 	if err != nil {
 		return result, err
 	}
-	var description struct {
-		FileUpload struct {
-			Protocol string `json:"protocol"`
-		} `json:"fileUpload"`
-	}
-	if err = peerCall(ctx, peer, target, "node.describe", map[string]any{}, &description); err != nil {
+	if _, err = describeUploadTarget(ctx, peer, target, false); err != nil {
 		return result, err
 	}
-	if description.FileUpload.Protocol != upload.Protocol {
-		return result, errors.New("target does not support streaming uploads; upgrade it before sending files")
+	records := filepath.Dir(c.uploadRecordPath(s.ID))
+	if err = os.MkdirAll(records, 0700); err != nil {
+		return result, err
 	}
+	pruneUploadRecords(ctx, records, time.Now())
+	return c.uploadFile(ctx, peer, target, s)
+}
+
+// uploadFile performs one attempt for one file after the caller has checked
+// the target's upload protocol. Directory uploads call it once per file.
+func (c Client) uploadFile(ctx context.Context, peer *transport.Peer, target string, s UploadSpec) (upload.Result, error) {
+	var result upload.Result
 	info, err := os.Lstat(s.LocalPath)
 	if err != nil {
 		return result, err
@@ -144,7 +154,6 @@ func (c Client) Upload(ctx context.Context, s UploadSpec) (upload.Result, error)
 	if err = os.MkdirAll(filepath.Dir(localPath), 0700); err != nil {
 		return result, err
 	}
-	pruneUploadRecords(ctx, filepath.Dir(localPath), time.Now())
 	lock := flock.New(localPath + ".lock")
 	defer func() { _ = lock.Close() }()
 	locked, err := lock.TryLockContext(ctx, 50*time.Millisecond)

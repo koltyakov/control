@@ -289,7 +289,7 @@ func (c Client) MCPServer() *mcp.Server {
 			if err := json.Unmarshal(args, &q); err != nil {
 				return nil, err
 			}
-			return c.UploadStatus(ctx, q.Node, q.ID, abort)
+			return c.UploadState(ctx, q.Node, q.ID, abort)
 		})
 	}
 	local("control_runbooks", "Discover shared or machine-specific operational instructions. requires is agent-friendly guidance: plain text, a list, or optional structured details, preserved even when full content is omitted. Use the user's task and worker evidence to choose a suitable machine; do not invent fixed OS, GPU, or capability constraints. Optional node filters machine bindings and adds worker stores; local: true avoids worker contact. source and file read a complete exact-origin document, with node required for worker origins. Reports source errors and conflicts. Discovery does not execute instructions or retrieve secret values.", map[string]any{"node": text, "file": text, "source": text, "local": map[string]any{"type": "boolean"}}, nil, func(ctx context.Context, args json.RawMessage) (any, error) {

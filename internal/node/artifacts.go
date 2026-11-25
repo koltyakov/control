@@ -549,6 +549,9 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 		if err := n.uploads.CheckPath(q.Path); err != nil {
 			return nil, err
 		}
+		if a, ok, err := n.exportDirectory(ctx, q.Path); ok {
+			return a, err
+		}
 		f, _, err := openRegularFile(n.root, q.Path)
 		if err != nil {
 			return nil, err

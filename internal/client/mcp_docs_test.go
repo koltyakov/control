@@ -23,7 +23,6 @@ var undocumentedMCPTools = map[string]string{
 	"control_access_list":      "access.list is in docs/protocol.md; the tool is named only in the MCP server instructions",
 	"control_access_revoke":    "access.revoke is in docs/protocol.md; the tool is named only in the MCP server instructions",
 	"control_artifact_deliver": "artifacts.deliver is in docs/protocol.md; the tool has only its own description",
-	"control_artifact_export":  "artifacts.export is in docs/protocol.md; the tool has only its own description",
 	"control_mcp_call":         "mcp.call is in docs/protocol.md; the tool has only its own description",
 	"control_mcp_discover":     "mcp.discover is in docs/protocol.md; the tool has only its own description",
 }

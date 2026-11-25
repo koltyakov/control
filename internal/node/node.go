@@ -689,6 +689,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		sort.Strings(servers)
 		description := map[string]any{"id": n.Identity.ID, "name": n.fleetName(ctx), "capabilities": n.Capabilities(), "concurrency": n.concurrencySnapshot(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "transport": n.Peer.Stats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot(), "fileUpload": n.uploads.Description(), "clipboard": map[string]any{"protocol": clipboard.Protocol, "methods": []string{clipboard.OpenMethod, clipboard.PasteMethod}}, "connectionTest": map[string]any{"protocol": model.ConnectionTestProtocol, "methods": []string{model.ConnectionTestMethod, model.ConnectionOpenMethod}, "maxBytes": 256 << 20, "maxSamples": 100, "timeoutSeconds": 120}, "runbooks": map[string]any{"protocol": runbooks.Protocol, "methods": []string{"runbooks.list", "runbooks.read"}}}
 		description["taskTags"] = model.TaskTagsDescription()
+		description["artifactExport"] = artifactExportDescription()
 		if description["name"] != n.Config.Name {
 			description["configuredName"] = n.Config.Name
 		}
