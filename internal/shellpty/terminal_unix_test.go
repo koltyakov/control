@@ -182,15 +182,46 @@ func TestStartWithCancelledContext(t *testing.T) {
 	}
 }
 
+// cursorReplyTerminal answers PowerShell's cursor queries while the recorder
+// drains output. A fixed position is enough because this test checks input
+// and exit status, not screen rendering.
+type cursorReplyTerminal struct {
+	*Terminal
+	matched int
+}
+
+func (tty *cursorReplyTerminal) Read(p []byte) (int, error) {
+	const query = "\x1b[6n"
+	n, err := tty.Terminal.Read(p)
+	for _, b := range p[:n] {
+		if b != query[tty.matched] {
+			tty.matched = 0
+		}
+		if b == query[tty.matched] {
+			tty.matched++
+		}
+		if tty.matched == len(query) {
+			tty.matched = 0
+			if _, replyErr := tty.Write([]byte("\x1b[1;1R")); replyErr != nil {
+				return n, replyErr
+			}
+		}
+	}
+	return n, err
+}
+
 func TestPwshSession(t *testing.T) {
 	requireShell(t, "pwsh")
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", home)
 	tty, err := Start(context.Background(), "pwsh", 100, 30, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = tty.Close() }()
-	out := record(tty)
+	out := record(&cursorReplyTerminal{Terminal: tty})
+	out.waitFor(t, "> ")
 	write(t, tty, "exit 5\r")
 	out.eof(t)
 	if code, err := waitResult(t, tty); code != 5 || err != nil {

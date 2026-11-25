@@ -19,6 +19,20 @@ import (
 // pipeBuffer is the requested kernel buffer for each pseudo-console pipe.
 const pipeBuffer = 64 * 1024
 
+var conPTYSupport = sync.OnceValue(func() error {
+	kernel := windows.NewLazySystemDLL("kernel32.dll")
+	return checkConPTYExports(func(name string) error { return kernel.NewProc(name).Find() })
+})
+
+func checkConPTYExports(find func(string) error) error {
+	for _, name := range [...]string{"CreatePseudoConsole", "ResizePseudoConsole", "ClosePseudoConsole"} {
+		if err := find(name); err != nil {
+			return fmt.Errorf("%w: this Windows worker lacks ConPTY (%s unavailable); use control exec for non-interactive commands", ErrUnsupportedPlatform, name)
+		}
+	}
+	return nil
+}
+
 // Terminal is a running shell attached to a pseudo console. Read returns
 // terminal output, Write sends input, and both are safe to use concurrently
 // with each other and with Resize, Wait, and Close.
@@ -49,11 +63,20 @@ type Terminal struct {
 // directory. The shell and every process it starts belong to a job object
 // that is terminated when the shell exits or the terminal closes.
 func Start(ctx context.Context, name string, cols, rows uint16, term, dir string) (*Terminal, error) {
+	return startWithConPTYProbe(ctx, name, cols, rows, term, dir, conPTYSupport)
+}
+
+func startWithConPTYProbe(ctx context.Context, name string, cols, rows uint16, term, dir string, probe func() error) (*Terminal, error) {
 	resolved, dir, err := validateStart(name, cols, rows, term, dir)
 	if err != nil {
 		return nil, err
 	}
 	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
+	// The x/sys wrappers panic on a missing export. Check all three before
+	// allocating anything, so resize and cleanup are safe too.
+	if err := probe(); err != nil {
 		return nil, err
 	}
 	var env []string

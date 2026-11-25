@@ -15,6 +15,7 @@ import (
 
 func startShell(t *testing.T, ctx context.Context, name string, cols, rows uint16, term, dir string) (*Terminal, *recorder) {
 	t.Helper()
+	requireConPTY(t)
 	requireShell(t, name)
 	tty, err := Start(ctx, name, cols, rows, term, dir)
 	if err != nil {
@@ -22,6 +23,55 @@ func startShell(t *testing.T, ctx context.Context, name string, cols, rows uint1
 	}
 	t.Cleanup(func() { _ = tty.Close() })
 	return tty, record(tty)
+}
+
+func requireConPTY(t *testing.T) {
+	t.Helper()
+	if err := conPTYSupport(); err != nil {
+		t.Skip(err)
+	}
+}
+
+func TestStartRejectsMissingConPTYExport(t *testing.T) {
+	for _, missing := range []string{"CreatePseudoConsole", "ResizePseudoConsole", "ClosePseudoConsole"} {
+		t.Run(missing, func(t *testing.T) {
+			probe := func() error {
+				return checkConPTYExports(func(name string) error {
+					if name == missing {
+						return windows.ERROR_PROC_NOT_FOUND
+					}
+					return nil
+				})
+			}
+			term, err := startWithConPTYProbe(t.Context(), "cmd", 80, 24, "", "", probe)
+			if term != nil {
+				_ = term.Close()
+				t.Fatal("started a shell without all required ConPTY exports")
+			}
+			if !errors.Is(err, ErrUnsupportedPlatform) || !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), "control exec") {
+				t.Fatalf("missing %s: got %v, want an actionable unsupported-platform error", missing, err)
+			}
+		})
+	}
+}
+
+func TestStartOnWindowsWithoutConPTY(t *testing.T) {
+	// Read the export independently of Start's probe. On Server 2016 this
+	// exercises the same public entry point a remote shell request uses.
+	kernel := windows.NewLazySystemDLL("kernel32.dll")
+	if kernel.NewProc("CreatePseudoConsole").Find() == nil {
+		t.Skip("this host exports CreatePseudoConsole")
+	}
+	for _, name := range []string{"cmd", "powershell"} {
+		term, err := Start(t.Context(), name, 80, 24, "", "")
+		if term != nil {
+			_ = term.Close()
+			t.Fatalf("Start(%q) created a shell without ConPTY", name)
+		}
+		if !errors.Is(err, ErrUnsupportedPlatform) || !strings.Contains(err.Error(), "CreatePseudoConsole") {
+			t.Fatalf("Start(%q) = %v, want an unsupported-platform error", name, err)
+		}
+	}
 }
 
 func send(t *testing.T, tty *Terminal, line string) {
@@ -158,6 +208,7 @@ func TestCloseTerminatesBusyShell(t *testing.T) {
 // Before Windows 11 24H2, ClosePseudoConsole waits for its final frame to be
 // read. An unread terminal must still exit and close within the bound.
 func TestWaitAndCloseWithoutReads(t *testing.T) {
+	requireConPTY(t)
 	requireShell(t, "cmd")
 	tty, err := Start(context.Background(), "cmd", 80, 24, "", "")
 	if err != nil {
