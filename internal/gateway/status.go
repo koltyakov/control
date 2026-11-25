@@ -62,6 +62,7 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 		}
 		snapshot := model.NodeActivitySnapshot{
 			ID: n.ID, Name: n.Name, OS: n.OS, Labels: n.Labels, Online: n.Online,
+			OwnerLabels: n.OwnerLabels, RemovedLabels: n.RemovedLabels, NodeLabels: n.NodeLabels,
 			LastSeen: n.LastSeen, Status: state, System: n.System,
 			Software: n.Software, Disabled: n.Disabled, ControlPending: n.ControlPending, RunAs: n.RunAs,
 			HybridID: n.HybridID, HybridRole: n.HybridRole,

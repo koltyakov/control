@@ -56,6 +56,7 @@ func (g *Gateway) cleanupHybridInstallations(now time.Time) error {
 	previous := map[string]installation{}
 	nodes := map[string]model.Node{}
 	states := map[string]model.MachineState{}
+	labels := map[string]labelOverlay{}
 	persisted := change{}
 	type pair struct{ userID, hybridID string }
 	expired := map[pair]bool{}
@@ -97,6 +98,11 @@ func (g *Gateway) cleanupHybridInstallations(now time.Time) error {
 		g.machineStates[id] = model.MachineState{Revision: states[id].Revision + 1, Disabled: true, Unregistered: true}
 		persisted.nodes = append(persisted.nodes, id)
 		persisted.machineStates = append(persisted.machineStates, id)
+		if overlay, ok := g.labelOverlays[id]; ok {
+			labels[id] = overlay
+			delete(g.labelOverlays, id)
+			persisted.labels = append(persisted.labels, id)
+		}
 		persisted.audit = append(persisted.audit, AuditEvent{At: now.UTC(), UserID: i.UserID, Actor: "gateway", Via: "timeout", Action: "machine.unregister", Target: i.Name, TargetID: id, Detail: "incomplete hybrid installation " + i.HybridID})
 	}
 	if len(previous) == 0 {
@@ -105,6 +111,7 @@ func (g *Gateway) cleanupHybridInstallations(now time.Time) error {
 	if err := g.commit(persisted); err != nil {
 		maps.Copy(g.installations, previous)
 		maps.Copy(g.nodes, nodes)
+		maps.Copy(g.labelOverlays, labels)
 		for id, state := range states {
 			if state == (model.MachineState{}) {
 				delete(g.machineStates, id)

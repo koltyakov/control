@@ -71,6 +71,12 @@ type Node struct {
 	// GatewayProxy reports this node's configured route, not connection health.
 	// It is retained by the gateway for owner status, not peer discovery.
 	GatewayProxy *GatewayProxy `json:"gatewayProxy,omitempty"`
+	// OwnerLabels, RemovedLabels and NodeLabels are gateway-owned directory
+	// fields, present only when the fleet owner has a label overlay. Labels is
+	// then the effective set; NodeLabels is the node's signed registration.
+	OwnerLabels   map[string]string `json:"ownerLabels,omitempty"`
+	RemovedLabels []string          `json:"removedLabels,omitempty"`
+	NodeLabels    map[string]string `json:"nodeLabels,omitempty"`
 }
 
 type Artifact struct {

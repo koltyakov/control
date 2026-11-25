@@ -1473,6 +1473,20 @@ textarea:focus {
     SFMono-Regular,
     monospace;
 }
+.label-chip.owner {
+  box-shadow: inset 0 0 0 1px var(--focus);
+}
+.label-chip.removed {
+  color: var(--muted);
+}
+.label-origin {
+  margin-left: 6px;
+  color: var(--muted);
+  font: 11px system-ui, sans-serif;
+}
+.label-edit {
+  margin-top: 8px;
+}
 
 /* Dialogs */
 dialog {

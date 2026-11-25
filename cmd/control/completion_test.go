@@ -55,7 +55,7 @@ func TestCompletionParsesHelpCommands(t *testing.T) {
 		"browser":          {"run", "view"},
 		"clipboard":        {"paste"},
 		"completion":       {"bash", "zsh", "fish", "powershell"},
-		"machines":         {"add", "proxies", "invites", "revoke", "enable", "disable", "rename", "unregister"},
+		"machines":         {"add", "proxies", "invites", "revoke", "enable", "disable", "rename", "label", "unregister"},
 		"machines proxies": {"release", "inspect", "enable", "disable"},
 		"machines invites": {"clear"},
 		"keys":             {"create", "list", "rename", "revoke"},

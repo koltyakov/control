@@ -111,6 +111,9 @@ func (g *Gateway) migrateLegacyClients() error {
 		if len(n.PublicKey) != ed25519.PublicKeySize || identity.ID(n.PublicKey) != id || n.Name != "cli-"+id[:16] || len(n.Capabilities) != 0 || n.System != nil || len(n.Labels) != 0 || n.Managed || n.Disabled || n.ClientSessions || g.machineStates[id].Revision != 0 {
 			continue
 		}
+		if _, labelled := g.labelOverlays[id]; labelled {
+			continue // Owner-managed labels make it a lifecycle-managed machine.
+		}
 		bound := false
 		for _, i := range g.installations {
 			if i.RedeemedID == id {

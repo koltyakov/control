@@ -46,6 +46,8 @@ To also execute requested work on an orchestrator machine, run `control setup --
 | Redeemed installation key | Common permissions, with registration restricted to its bound identity, name, OS, and architecture |
 | Gateway superuser | Provision/disable accounts and publish gateway-wide software updates; fleet management and account-client execution operate only on the operator's legacy fleet |
 
+Account owners can also set, override and remove machine labels on the gateway with `control machines label` or the console. Labels remain discovery and selection metadata that grant no authority, and common keys cannot change them. See [owner labels](protocol.md#owner-labels).
+
 Users issue, list, rename, and revoke their own keys with `control keys create|list|rename|revoke`; `PATCH /v1/fleet/keys/{id}` with `{"name":...}` changes only the label. They cannot issue account keys for other users, change credential ownership, publish executable updates, or inspect gateway-wide rollout status. Fleet-management commands appear in user-account help. Gateway administration appears only for the superuser. Common-key help exposes neither.
 
 Only account-authenticated client sessions initiate execution authority. Enrolling a node with an account key does not grant its node identity that authority. Keep account keys off execution workers, since someone who steals one can authenticate a new orchestrator client. Worker installation/common keys do not independently execute peer commands, including through the local API or a new common-key client session.
@@ -91,6 +93,10 @@ Schema version 6 adds `audit_events`, a bounded history of sign-ins and manageme
 
 Schema version 7 adds `console_sessions`, storing cookie digests and session metadata so valid browser logins survive updates and gateway restarts. Idle and absolute expiry still apply, and restart never renews them. Password changes and sign-out commit session revocation before acknowledgment. Versions 1 through 6 migrate automatically; older gateways reject schema version 7. Existing in-memory sessions from an older executable cannot be recovered, so the first upgrade to this version still requires signing in again.
 
+Schema version 8 adds `proxy_dependencies` for managed gateway proxy listeners. See [gateway proxies](gateway-proxy.md). Older gateways reject schema version 8.
+
+Schema version 9 adds `machine_labels`, referencing permanent identities and the owning user, and storing each fleet owner's label overlay without changing the machine's signed registration. Versions 1 through 8 upgrade transactionally. Unregistering a machine deletes its overlay in the same transaction. Older gateways reject schema version 9. See [owner labels](protocol.md#owner-labels).
+
 `CONTROL_TOKEN` on the gateway is an optional bootstrap common key for the legacy fleet only. For a new shared gateway, omit it and configure `CONTROL_SUPERUSER_KEY`, then create separate accounts. Do not give unrelated users the same account key or legacy bootstrap token.
 
 **Upgrade the gateway before upgrading nodes from the pre-isolation version.** New nodes require fleet-aware authentication and refuse an older gateway. Pause automated release polling during this one-time migration. Later managed updates independently reserve eligible nodes, allowing node-before-gateway installation only with explicit executable compatibility. An older coordinator retains its previous rollout order until upgraded. SQLite migration cannot be reversed by starting the old executable against stale JSON files.
@@ -104,7 +110,7 @@ To split an old shared pool into new accounts, enroll fresh node identities unde
 | `POST /v1/admin/users` | Superuser | JSON `name`; returns `user` and one-time `token` |
 | `GET /v1/admin/users` | Superuser | Registered users, without credentials |
 | `DELETE /v1/admin/users/{id}` | Superuser | Disable that account and its credentials |
-| `GET /v1/auth` | Authenticated | `role`, `userId`, and management capabilities |
+| `GET /v1/auth` | Authenticated | `role`, `userId`, management capabilities, and features such as `machineLabels` |
 | `PUT /v1/console/password` | Account owner or superuser | Set own browser password; superuser may select an existing account by `username` |
 | `GET /v1/nodes` | Authenticated | Only the credential owner's fleet |
 | `GET /v1/client/connect` | Authenticated, unbound credential | Role-proven client session, without machine enrollment |
@@ -115,7 +121,7 @@ To split an old shared pool into new accounts, enroll fresh node identities unde
 | `DELETE /v1/fleet/keys/{id}` | Fleet owner | Revoke own credential |
 | `/v1/fleet/installations` | Fleet owner | Scoped installation management, detailed in [installation](installation.md) |
 | `DELETE /v1/fleet/nodes/{id}` | Fleet owner | Forget own offline registration |
-| `PATCH /v1/fleet/nodes/{id}` | Fleet owner | Enable/disable with JSON `disabled`, or rename with JSON `name` |
+| `PATCH /v1/fleet/nodes/{id}` | Fleet owner | Enable/disable with JSON `disabled`, rename with JSON `name`, or change owner labels with JSON `labels` |
 | `DELETE /v1/fleet/nodes/{id}?stop=true` | Fleet owner | Unregister own machine regardless of online state or lifecycle support |
 
 The older `/v1/admin/keys`, `/v1/admin/installations`, and `/v1/admin/nodes/{id}` aliases remain superuser-only and operate on the legacy fleet. They do not provide a cross-user route. Account IDs cannot be reassigned or deleted; `users revoke` disables the account. The legacy operator fleet cannot be disabled through this endpoint.

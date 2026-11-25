@@ -178,6 +178,7 @@ type Gateway struct {
 	presenceWG     sync.WaitGroup
 	startedAt      time.Time
 	machineStates  map[string]model.MachineState
+	labelOverlays  map[string]labelOverlay // Owner label overlays by identity; see effectiveNodeLocked.
 	// proxyDependencies keeps managed proxy listeners active for enrolled and
 	// retiring children, keyed by child identity. Protected by mu.
 	proxyDependencies map[string]proxyDependency
@@ -479,6 +480,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	n.UserID = p.UserID
 	// Pairing is gateway-owned; never accept a machine's asserted companion.
 	n.HybridID, n.HybridRole = "", ""
+	stripOwnerLabels(&n)
 	// A machine or common key cannot claim orchestrator authority in its proof.
 	n.ExecutionAuthority = client && (p.Role == "user" || p.Role == "superuser")
 	if g.machineStates[n.ID].Unregistered {

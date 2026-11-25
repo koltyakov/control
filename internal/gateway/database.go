@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -47,7 +48,7 @@ func (g *Gateway) openDatabase(dir string) error {
 	if err = g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 8 {
+	if version > currentSchemaVersion {
 		return errors.New("gateway database is newer than this executable")
 	}
 	if version == 0 {
@@ -72,8 +73,8 @@ CREATE TABLE client_identities (id TEXT PRIMARY KEY REFERENCES identities(id), d
 CREATE TABLE client_transports (id TEXT PRIMARY KEY REFERENCES identities(id), owner_id TEXT NOT NULL REFERENCES client_identities(id), data BLOB NOT NULL);
 CREATE INDEX client_identity_prefix ON client_identities(substr(id,1,16));
 CREATE TABLE console_passwords (username TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL);
-` + auditSchema + consoleSessionSchema + proxyDependencySchema + `
-PRAGMA user_version=8;`); err != nil {
+` + auditSchema + consoleSessionSchema + proxyDependencySchema + machineLabelSchema + `
+PRAGMA user_version=9;`); err != nil {
 			return err
 		}
 		if err = g.writeState(tx); err != nil {
@@ -177,6 +178,20 @@ PRAGMA user_version=8;`); err != nil {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		version = 8
+	}
+	if version == 8 {
+		tx, err := g.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(machineLabelSchema + ` PRAGMA user_version=9;`); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
 	}
 	g.users = map[string]User{}
 	g.owners = map[string]string{}
@@ -187,6 +202,7 @@ PRAGMA user_version=8;`); err != nil {
 	g.installations = map[string]installation{}
 	g.machineStates = map[string]model.MachineState{}
 	g.proxyDependencies = map[string]proxyDependency{}
+	g.labelOverlays = map[string]labelOverlay{}
 	if _, err = g.db.Exec(`CREATE INDEX IF NOT EXISTS client_identity_prefix ON client_identities(substr(id,1,16))`); err != nil {
 		return err
 	}
@@ -200,6 +216,9 @@ PRAGMA user_version=8;`); err != nil {
 		return err
 	}
 	if err = readRecords(g.db, "proxy_dependencies", "id", g.proxyDependencies); err != nil {
+		return err
+	}
+	if err = readRecords(g.db, "machine_labels", "id", g.labelOverlays); err != nil {
 		return err
 	}
 	if err = readRecords(g.db, "users", "id", g.users); err != nil {
@@ -255,6 +274,7 @@ func (g *Gateway) importLegacy(dir string) error {
 	g.clientTransports = map[string]string{}
 	g.machineStates = map[string]model.MachineState{}
 	g.proxyDependencies = map[string]proxyDependency{}
+	g.labelOverlays = map[string]labelOverlay{}
 	g.users = map[string]User{legacyUser: {ID: legacyUser, Name: "legacy", CreatedAt: time.Now().UTC()}}
 	g.owners = map[string]string{}
 	g.keys = map[string]keyRecord{}
@@ -313,6 +333,8 @@ type change struct {
 	passwords, sessions                     []string
 	// proxyDependencies are keyed by the child's identity.
 	proxyDependencies []string
+	// labels are owner label overlays, keyed by machine identity.
+	labels []string
 	// audit events commit in the same transaction as the change they describe.
 	audit []AuditEvent
 }
@@ -335,7 +357,7 @@ func (g *Gateway) commit(c change) error {
 	if len(c.users)+len(c.keys)+len(c.invitations) != 0 {
 		g.reindexCredentialsLocked()
 	}
-	g.publishObservations(c.nodes...)
+	g.publishObservations(slices.Concat(c.nodes, c.labels)...)
 	g.publishProxyObservations(c)
 	return nil
 }
@@ -402,6 +424,13 @@ func (g *Gateway) writeChange(tx *sql.Tx, c change) error {
 			}
 		}
 	}
+	for _, id := range c.labels {
+		if _, ok := g.labelOverlays[id]; !ok {
+			if err := exec(`DELETE FROM machine_labels WHERE id=?`, id); err != nil {
+				return err
+			}
+		}
+	}
 	for _, id := range c.users {
 		u, ok := g.users[id]
 		if !ok {
@@ -463,6 +492,13 @@ func (g *Gateway) writeChange(tx *sql.Tx, c change) error {
 	for _, id := range c.proxyDependencies {
 		if d, ok := g.proxyDependencies[id]; ok {
 			if err := exec(`INSERT INTO proxy_dependencies(id,user_id,data) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id,data=excluded.data`, id, d.UserID, model.JSON(d)); err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range c.labels {
+		if o, ok := g.labelOverlays[id]; ok {
+			if err := exec(`INSERT INTO machine_labels(id,user_id,data) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id,data=excluded.data`, id, o.UserID, model.JSON(o)); err != nil {
 				return err
 			}
 		}
@@ -552,6 +588,11 @@ func (g *Gateway) writeState(tx *sql.Tx) error {
 	}
 	for id, d := range g.proxyDependencies {
 		if _, err := tx.Exec(`INSERT INTO proxy_dependencies(id,user_id,data) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id,data=excluded.data`, id, d.UserID, model.JSON(d)); err != nil {
+			return err
+		}
+	}
+	for id, o := range g.labelOverlays {
+		if _, err := tx.Exec(`INSERT INTO machine_labels(id,user_id,data) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id,data=excluded.data`, id, o.UserID, model.JSON(o)); err != nil {
 			return err
 		}
 	}

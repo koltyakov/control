@@ -880,13 +880,18 @@ func (g *Gateway) forgetMachine(w http.ResponseWriter, r *http.Request) {
 	delete(g.nodes, id)
 	previous := g.machineStates[id]
 	g.machineStates[id] = model.MachineState{Revision: previous.Revision + 1, Disabled: true, Unregistered: true}
-	persisted := change{nodes: []string{id}, machineStates: []string{id}, audit: []AuditEvent{g.auditEventLocked(r, "", "machine.unregister", n.Name, id, "")}}
+	labels, hadLabels := g.labelOverlays[id]
+	delete(g.labelOverlays, id)
+	persisted := change{nodes: []string{id}, machineStates: []string{id}, labels: []string{id}, audit: []AuditEvent{g.auditEventLocked(r, "", "machine.unregister", n.Name, id, "")}}
 	for hash := range old {
 		persisted.invitations = append(persisted.invitations, hash)
 	}
 	if err := g.commit(persisted); err != nil {
 		g.machineStates[id] = previous
 		g.nodes[id] = n
+		if hadLabels {
+			g.labelOverlays[id] = labels
+		}
 		for hash, i := range old {
 			g.installations[hash] = i
 		}

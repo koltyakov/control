@@ -167,7 +167,7 @@ func TestOnlineBackupDuringMutationsRestoresIntoGateway(t *testing.T) {
 	if err := json.Unmarshal([]byte(events[0]), &event); err != nil {
 		t.Fatal(err)
 	}
-	if event.UserID != legacyUser || event.Actor != "@operator" || event.TargetID == "" || !strings.Contains(event.Detail, "schema 8") {
+	if event.UserID != legacyUser || event.Actor != "@operator" || event.TargetID == "" || !strings.Contains(event.Detail, fmt.Sprintf("schema %d", currentSchemaVersion)) {
 		t.Fatalf("audit event: %+v", event)
 	}
 	for _, e := range events {

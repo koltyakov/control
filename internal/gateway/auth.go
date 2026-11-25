@@ -123,7 +123,7 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		case "user":
 			username = p.Username
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"role": p.Role, "userId": p.UserID, "username": username, "capabilities": capabilities, "nodeHealth": true, "clientSessions": true, "clientOwners": true, "peerChannels": true, "delegation": true, "largePackets": true, "nodeBytes": true, "machineStatePush": true, "gatewayHeartbeat": true, "telemetryLiveness": true, "relayDrain": true, "gatewayProtocol": g.options.Software.GatewayProtocol, "trickleICE": true, "lanDiscovery": true, "lanView": true, "gatewayProxy": true, "managedGatewayProxy": true, "stunServers": g.options.STUNServers})
+		_ = json.NewEncoder(w).Encode(map[string]any{"role": p.Role, "userId": p.UserID, "username": username, "capabilities": capabilities, "nodeHealth": true, "clientSessions": true, "clientOwners": true, "peerChannels": true, "delegation": true, "largePackets": true, "nodeBytes": true, "machineStatePush": true, "gatewayHeartbeat": true, "telemetryLiveness": true, "relayDrain": true, "gatewayProtocol": g.options.Software.GatewayProtocol, "trickleICE": true, "lanDiscovery": true, "lanView": true, "gatewayProxy": true, "managedGatewayProxy": true, "machineLabels": true, "stunServers": g.options.STUNServers})
 	}))
 	create := func(w http.ResponseWriter, r *http.Request) {
 		p := g.requestPrincipal(r)

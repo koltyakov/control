@@ -126,6 +126,7 @@ Your fleet:
   machines revoke ID                   Revoke an invitation and its machine key
   machines enable|disable NAME          Enable or disable new work on a machine
   machines rename NAME NEW_NAME [--force] Change alias; force retracts a pending invitation
+  machines label NAME [KEY=VALUE|KEY-]... [--reset KEY]  Set or remove owner labels; no change shows origins
   machines unregister NAME              Unregister a machine and request node uninstall
   keys create NAME                     Issue a common key, shown once
   keys list                            List common keys
@@ -297,6 +298,9 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 			return c.ForceRenameMachine(ctx, n.ID, args[2])
 		}
 		return c.RenameMachine(ctx, n.ID, args[2])
+	}
+	if args[0] == "label" {
+		return machineLabelCLI(ctx, c, args[1:])
 	}
 	if (args[0] == "forget" || args[0] == "unregister" || args[0] == "enable" || args[0] == "disable") && len(args) == 2 {
 		n, err := c.ResolveMachine(ctx, args[1])

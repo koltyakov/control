@@ -40,6 +40,9 @@ type NodeActivitySnapshot struct {
 	Name           string            `json:"name"`
 	OS             string            `json:"os"`
 	Labels         map[string]string `json:"labels,omitempty"`
+	OwnerLabels    map[string]string `json:"ownerLabels,omitempty"` // Owner overlay, as in Node.
+	RemovedLabels  []string          `json:"removedLabels,omitempty"`
+	NodeLabels     map[string]string `json:"nodeLabels,omitempty"`
 	Online         bool              `json:"online"`
 	LastSeen       time.Time         `json:"lastSeen"`
 	Software       buildinfo.Info    `json:"software"`

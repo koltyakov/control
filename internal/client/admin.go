@@ -93,6 +93,8 @@ type AuthInfo struct {
 	Role         string `json:"role"`
 	Username     string `json:"username"`
 	GatewayProxy bool   `json:"gatewayProxy"`
+	// MachineLabels advertises owner-managed label overlays (D185).
+	MachineLabels bool `json:"machineLabels"`
 }
 
 // DisplayAuth reads the role and gateway features in one request, with the

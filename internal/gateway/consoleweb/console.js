@@ -30,7 +30,10 @@
  * @property {string} status
  * @property {Software} [software]
  * @property {SystemInfo} [system]
- * @property {Record<string, string>} [labels]
+ * @property {Record<string, string>} [labels] Effective labels used for discovery and selection.
+ * @property {Record<string, string>} [ownerLabels] Fleet-owner values; present only with an owner overlay.
+ * @property {string[]} [removedLabels] Keys the fleet owner removed, including node-reported ones.
+ * @property {Record<string, string>} [nodeLabels] Node-reported labels; present only with an owner overlay.
  * @property {boolean} [disabled]
  * @property {boolean} [controlPending]
  * @property {string} [updateState]
@@ -94,7 +97,8 @@
  * @typedef {{login: {username: string, password: string}, logout: never, 'fleet/installations': InstallationRequest, 'fleet/keys': {name: string}, 'admin/users': {name: string}, 'admin/updates/check': never} & Record<`fleet/nodes/${string}/startup`, {mode: string}> & Record<`fleet/nodes/${string}/wake`, never>} PostBody
  * @typedef {{'console/password': {username?: string, currentPassword?: string, password: string}} & Record<`fleet/nodes/${string}/secrets/${string}`, SecretEnvelope> & Record<`fleet/nodes/${string}/proxy`, ProxySetupRequest>} PutBody
  * @typedef {Record<`fleet/nodes/${string}/proxy`, ProxySetup>} PutAPI
- * @typedef {Record<`fleet/nodes/${string}`, {name?: string, force?: boolean, disabled?: boolean}> & Record<`fleet/keys/${string}`, {name: string}>} PatchBody
+ * @typedef {{set?: Record<string, string>, remove?: string[], reset?: string[]}} LabelPatch
+ * @typedef {Record<`fleet/nodes/${string}`, {name?: string, force?: boolean, disabled?: boolean, labels?: LabelPatch}> & Record<`fleet/keys/${string}`, {name: string}>} PatchBody
  * @typedef {{session: ConsoleSession, status: FleetSnapshot, 'fleet/installations': Invitation[], 'fleet/keys': FleetKey[], 'admin/users': FleetUser[], 'admin/updates': UpdateResult} & Record<`audit?${string}`, AuditPage> & Record<`fleet/nodes/${string}/secrets`, SecretList> & Record<`fleet/nodes/${string}/proxy`, ProxySetup>} GetAPI
  * @typedef {{login: ConsoleSession, logout: null, 'fleet/installations': InstallationLink, 'fleet/keys': IssuedKey, 'admin/users': IssuedKey, 'admin/updates/check': unknown} & Record<`fleet/nodes/${string}/startup`, StartupResult> & Record<`fleet/nodes/${string}/wake`, {source: string}>} PostAPI
  * @typedef {{'fleet/installations': ClearResult} & Record<`audit${string}`, ClearResult> & Record<`fleet/nodes/${string}` | `fleet/keys/${string}` | `fleet/installations/${string}` | `admin/users/${string}`, unknown>} DeleteAPI
@@ -1779,6 +1783,7 @@ const auditActions = {
   "audit.clear": ["Cleared activity log", "warn"],
   "machine.enroll": ["Enrolled machine", "good"],
   "machine.rename": ["Renamed machine", ""],
+  "machine.labels": ["Changed machine labels", ""],
   "machine.enable": ["Enabled machine", "good"],
   "machine.disable": ["Disabled machine", "warn"],
   "machine.unregister": ["Unregistered machine", "bad"],
@@ -3095,6 +3100,85 @@ function activitySection(n) {
     ].filter((row) => Array.isArray(row));
   return `<section class="drawer-section"><h3>Activity</h3><dl class="metadata">${rows.map(([label, value]) => `<dt>${label}</dt><dd>${esc(value)}</dd>`).join("")}</dl></section>`;
 }
+// Labels come from the node's signed configuration or from the fleet owner's
+// gateway overlay. Origin is shown as text, not only color.
+/** @param {Machine} n @returns {Record<string, string>} */
+function reportedLabels(n) {
+  return (n.ownerLabels || n.removedLabels ? n.nodeLabels : n.labels) || {};
+}
+/** @param {Machine} n @returns {string} */
+function labelChips(n) {
+  const owner = n.ownerLabels || {},
+    reported = reportedLabels(n),
+    chips = Object.entries(n.labels || {}).map(([key, value]) => {
+      const set = Object.hasOwn(owner, key),
+        overridden = set && Object.hasOwn(reported, key) && reported[key] !== value,
+        title = set ? "Set by the fleet owner" + (overridden ? "; the node reports " + key + "=" + reported[key] : "") : "Reported by the node";
+      return `<span class="label-chip${set ? " owner" : ""}" title="${esc(title)}">${esc(key)}=${esc(value)}${set ? '<span class="label-origin">owner</span>' : ""}</span>`;
+    }),
+    removed = (n.removedLabels || []).map(
+      (key) =>
+        `<span class="label-chip removed" title="Removed by the fleet owner"><s>${esc(key)}${Object.hasOwn(reported, key) ? "=" + esc(reported[key]) : ""}</s><span class="label-origin">removed</span></span>`,
+    );
+  return chips.length || removed.length ? `<span class="labels">${chips.join("")}${removed.join("")}</span>` : "None";
+}
+const labelKeyPattern = /^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$/,
+  labelValuePattern = /^[A-Za-z0-9._:/@+-]{1,128}$/;
+/** @param {string} text @returns {string[]} */
+const labelLines = (text) => text.split("\n").map((line) => line.trim()).filter(Boolean);
+// The gateway applies a patch, so send only differences from what was shown.
+/** @param {Machine} node @param {string} setText @param {string} removeText @returns {LabelPatch | null} */
+function labelPatch(node, setText, removeText) {
+  const owner = node.ownerLabels || {},
+    removed = node.removedLabels || [];
+  /** @type {Map<string, string>} */
+  const set = new Map();
+  for (const line of labelLines(setText)) {
+    const at = line.indexOf("="),
+      key = at < 0 ? "" : line.slice(0, at).trim(),
+      value = at < 0 ? "" : line.slice(at + 1).trim();
+    if (!labelKeyPattern.test(key) || !labelValuePattern.test(value))
+      throw new Error(`"${line}" must be KEY=VALUE. Keys use letters, digits, dots, hyphens or underscores; values may also use : / @ +.`);
+    if (set.has(key)) throw new Error(key + " is listed more than once.");
+    set.set(key, value);
+  }
+  /** @type {Set<string>} */
+  const hide = new Set();
+  for (const key of labelLines(removeText)) {
+    if (!labelKeyPattern.test(key)) throw new Error(`"${key}" is not a valid label key.`);
+    if (set.has(key)) throw new Error(key + " cannot be both set and removed.");
+    hide.add(key);
+  }
+  if (set.size + hide.size > 32) throw new Error("A machine may have at most 32 owner label entries, including removals.");
+  /** @type {Record<string, string>} */
+  const changed = {};
+  for (const [key, value] of set) if (!Object.hasOwn(owner, key) || owner[key] !== value) changed[key] = value;
+  const remove = [...hide].filter((key) => !removed.includes(key)),
+    reset = [...Object.keys(owner), ...removed].filter((key) => !set.has(key) && !hide.has(key));
+  /** @type {LabelPatch} */
+  const patch = {};
+  if (Object.keys(changed).length) patch.set = changed;
+  if (remove.length) patch.remove = remove;
+  if (reset.length) patch.reset = reset;
+  return patch.set || patch.remove || patch.reset ? patch : null;
+}
+/** @param {Machine} node @returns {void} */
+function editLabels(node) {
+  const reported = Object.entries(reportedLabels(node)),
+    owner = Object.entries(node.ownerLabels || {});
+  formDialog(
+    "Labels for " + node.name,
+    `<p>Owner labels are stored on the gateway and apply at once to discovery and selection, including workflow fan-out. They grant no access. The node's own configuration is not changed.</p><p class="field-help">Reported by the node: ${reported.length ? `<span class="mono">${esc(reported.map(([key, value]) => key + "=" + value).join(", "))}</span>` : "none"}</p><label for="owner-labels">Owner labels</label><textarea id="owner-labels" name="set" rows="4" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="owner-labels-help">${esc(owner.map(([key, value]) => key + "=" + value).join("\n"))}</textarea><p id="owner-labels-help" class="field-help">One KEY=VALUE per line. An owner value replaces the node's value for the same key.</p><label for="removed-labels">Removed labels</label><textarea id="removed-labels" name="remove" rows="2" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="removed-labels-help">${esc((node.removedLabels || []).join("\n"))}</textarea><p id="removed-labels-help" class="field-help">One key per line. Hides a node-reported label until you delete the line.</p>`,
+    async (fields, current) => {
+      const patch = labelPatch(node, fields.set || "", fields.remove || "");
+      if (!patch) return;
+      await api(`fleet/nodes/${encodeURIComponent(node.id)}`, "PATCH", { labels: patch });
+      if (!current()) return;
+      toast("Labels saved");
+    },
+    "Save labels",
+  );
+}
 /** @param {string | undefined} id @returns {void} */
 function machineDetails(id) {
   const n = state.snapshot?.nodes.find((node) => node.id === id);
@@ -3103,7 +3187,6 @@ function machineDetails(id) {
     live = n.online ? sys : /** @type {Partial<SystemInfo>} */ ({}),
     memory = percent(live.memoryUsedBytes, live.memoryTotalBytes),
     detail = statusDetail(n),
-    labels = Object.entries(n.labels || {}),
     proxyTags = proxyChips(n);
   dialog(
     n.name,
@@ -3115,7 +3198,7 @@ function machineDetails(id) {
             `<div class="disk-usage">${meter(percent(disk.usedBytes, disk.totalBytes), "Disk utilization for " + disk.path)}<small class="muted mono">${esc(disk.path)}</small><small class="muted">${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small></div>`,
         )
         .join("") || meter(null, "Disk utilization")
-    }</dd><dt>Processor</dt><dd>${esc(sys.cpuModel || "Unknown")}${sys.logicalCPUs ? " · " + esc(sys.logicalCPUs) + " cores" : ""}</dd><dt>Sampled</dt><dd>${esc(date(sys.sampledAt))}${n.online ? "" : `<small class="muted">Cached while offline</small>`}</dd></dl></section>${activitySection(n)}${proxySection(n)}<section class="drawer-section"><h3>System</h3><dl class="metadata"><dt>Platform</dt><dd>${esc(platformText(n) || "Unknown")}</dd>${n.runAs ? `<dt>Runs as</dt><dd>${runAsLabels[n.runAs][1]}</dd>` : ""}<dt>Version</dt><dd>${esc(n.software?.version || "Unknown")}</dd><dt>Labels</dt><dd>${labels.length ? `<span class="labels">${labels.map(([k, v]) => `<span class="label-chip">${esc(k)}=${esc(v)}</span>`).join("")}</span>` : "None"}</dd>${n.online ? "" : `<dt>Last seen</dt><dd>${esc(date(n.lastSeen))}</dd>`}<dt>Identity</dt><dd class="mono">${esc(n.id)}</dd></dl></section>${!n.online && n.wakeVia ? `<p class="drawer-note">Wake sends a Wake-on-LAN packet from ${esc(n.wakeVia)}, an online machine on the same LAN. The machine appears online once its node starts.</p>` : ""}<div class="drawer-actions">${!n.online && n.wakeVia ? `<button class="primary" data-action="wake" data-id="${esc(n.id)}">Wake</button>` : ""}<button class="secondary" data-action="rename" data-id="${esc(n.id)}">Rename</button><button class="secondary" data-action="toggle" data-id="${esc(n.id)}">${n.disabled ? "Enable" : "Disable"}</button><button class="secondary square machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="More actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div>`,
+    }</dd><dt>Processor</dt><dd>${esc(sys.cpuModel || "Unknown")}${sys.logicalCPUs ? " · " + esc(sys.logicalCPUs) + " cores" : ""}</dd><dt>Sampled</dt><dd>${esc(date(sys.sampledAt))}${n.online ? "" : `<small class="muted">Cached while offline</small>`}</dd></dl></section>${activitySection(n)}${proxySection(n)}<section class="drawer-section"><h3>System</h3><dl class="metadata"><dt>Platform</dt><dd>${esc(platformText(n) || "Unknown")}</dd>${n.runAs ? `<dt>Runs as</dt><dd>${runAsLabels[n.runAs][1]}</dd>` : ""}<dt>Version</dt><dd>${esc(n.software?.version || "Unknown")}</dd><dt>Labels</dt><dd>${labelChips(n)}<button class="secondary compact label-edit" data-action="labels" data-id="${esc(n.id)}" aria-label="Edit labels for ${esc(n.name)}">Edit labels</button></dd>${n.online ? "" : `<dt>Last seen</dt><dd>${esc(date(n.lastSeen))}</dd>`}<dt>Identity</dt><dd class="mono">${esc(n.id)}</dd></dl></section>${!n.online && n.wakeVia ? `<p class="drawer-note">Wake sends a Wake-on-LAN packet from ${esc(n.wakeVia)}, an online machine on the same LAN. The machine appears online once its node starts.</p>` : ""}<div class="drawer-actions">${!n.online && n.wakeVia ? `<button class="primary" data-action="wake" data-id="${esc(n.id)}">Wake</button>` : ""}<button class="secondary" data-action="rename" data-id="${esc(n.id)}">Rename</button><button class="secondary" data-action="toggle" data-id="${esc(n.id)}">${n.disabled ? "Enable" : "Disable"}</button><button class="secondary square machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="More actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div>`,
     "machine-drawer",
   );
 }
@@ -3313,6 +3396,7 @@ document.addEventListener("click", async (event) => {
         },
       );
     }
+    if (action === "labels" && node) editLabels(node);
     if (action === "toggle" && node)
       confirmAction(
         (node.disabled ? "Enable " : "Disable ") + node.name,

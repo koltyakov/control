@@ -65,6 +65,7 @@ func (g *Gateway) publishObservations(ids ...string) {
 			}
 			continue
 		}
+		n = g.effectiveNodeLocked(n)
 		n.ControlPending = g.machinePending(id)
 		// Hash the serialized directory record, not health or rollout status.
 		// This also detects edits to nested maps/slices shared by model values.

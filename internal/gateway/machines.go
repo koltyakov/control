@@ -93,15 +93,22 @@ func (g *Gateway) nodeState(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 	p := g.requestPrincipal(r)
-	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	var q struct {
-		Disabled *bool   `json:"disabled"`
-		Name     *string `json:"name"`
-		Force    bool    `json:"force,omitempty"`
+		Disabled *bool             `json:"disabled"`
+		Name     *string           `json:"name"`
+		Labels   *model.LabelPatch `json:"labels"`
+		Force    bool              `json:"force,omitempty"`
 	}
-	if json.NewDecoder(r.Body).Decode(&q) != nil || (q.Disabled == nil) == (q.Name == nil) {
-		http.Error(w, "provide either disabled or name", 400)
+	if json.NewDecoder(r.Body).Decode(&q) != nil || countSet(q.Disabled != nil, q.Name != nil, q.Labels != nil) != 1 {
+		http.Error(w, "provide exactly one of disabled, name, or labels", 400)
 		return
+	}
+	if q.Labels != nil {
+		if err := q.Labels.Validate(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	if q.Name != nil && !validName.MatchString(*q.Name) {
 		http.Error(w, "name must start with a letter or digit and contain 1..63 letters, digits, dots, hyphens or underscores", 400)
@@ -121,6 +128,10 @@ func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 	}
 	if q.Name != nil {
 		g.renameMachine(w, r, n, *q.Name, q.Force)
+		return
+	}
+	if q.Labels != nil {
+		g.setMachineLabels(w, r, n, *q.Labels)
 		return
 	}
 	if !n.Managed {

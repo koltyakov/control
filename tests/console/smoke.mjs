@@ -255,6 +255,81 @@ async function holdRequest(page, pattern, method) {
   };
 }
 
+// Owner labels are edited from the drawer, keep their origin visible, and send
+// one patch with only the differences to the real gateway.
+async function assertOwnerLabels(page, token) {
+  const patches = [];
+  const record = (request) => {
+    if (request.method() === "PATCH" && request.url().includes("/console/api/fleet/nodes/"))
+      patches.push(request.postDataJSON());
+  };
+  page.on("request", record);
+  const drawerLabels = () => page.locator("#dialog .labels .label-chip").allTextContents();
+  const openDrawer = async () => {
+    await page.getByRole("button", { name: "renamed-worker", exact: true }).click();
+    await page.getByRole("dialog", { name: "renamed-worker", exact: true }).waitFor();
+  };
+  try {
+    await openDrawer();
+    assert.deepEqual((await drawerLabels()).sort(), ["gpu=none", "zone=lab"]);
+    await page.getByRole("button", { name: "Edit labels for renamed-worker", exact: true }).click();
+    await page.getByRole("dialog", { name: "Labels for renamed-worker", exact: true }).waitFor();
+    await page.getByText("gpu=none, zone=lab", { exact: true }).waitFor();
+    const owner = page.getByLabel("Owner labels", { exact: true }),
+      removed = page.getByLabel("Removed labels", { exact: true });
+    assert.equal(await owner.inputValue(), "");
+    await owner.fill("pool=render\ngpu=a100\nbad key=x");
+    await page.locator("#modal-form button[type=submit]").click();
+    await page.locator("#modal-form .form-error").filter({ hasText: "must be KEY=VALUE" }).waitFor();
+    assert.equal(patches.length, 0, "Invalid labels must not be sent");
+    await owner.fill("pool=render\ngpu=a100");
+    await removed.fill("zone");
+    await page.locator("#modal-form button[type=submit]").click();
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    assert.equal(patches.length, 1, "Saving labels must send one patch");
+    assert.deepEqual(patches[0], { labels: { set: { pool: "render", gpu: "a100" }, remove: ["zone"] } });
+    const directory = await api("/v1/nodes", "GET", undefined, token);
+    const worker = directory.find((n) => n.name === "renamed-worker");
+    assert.deepEqual(worker.labels, { pool: "render", gpu: "a100" });
+    assert.deepEqual(worker.nodeLabels, { zone: "lab", gpu: "none" });
+    assert.deepEqual(worker.removedLabels, ["zone"]);
+    await until(async () => {
+      await page.evaluate(() => refresh(true));
+      return page.evaluate(() => state.snapshot?.nodes.some((n) => n.ownerLabels?.pool === "render"));
+    }, "Snapshot did not include owner labels");
+    await openDrawer();
+    assert.deepEqual((await drawerLabels()).sort(), ["gpu=a100owner", "pool=renderowner", "zone=labremoved"]);
+    assert.equal(
+      await page.locator("#dialog .label-chip.owner", { hasText: "gpu=a100" }).getAttribute("title"),
+      "Set by the fleet owner; the node reports gpu=none",
+    );
+    // Clearing both fields resets every owner entry; unchanged saves send nothing.
+    await page.getByRole("button", { name: "Edit labels for renamed-worker", exact: true }).click();
+    assert.equal(await owner.inputValue(), "gpu=a100\npool=render");
+    assert.equal(await removed.inputValue(), "zone");
+    await page.locator("#modal-form button[type=submit]").click();
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    assert.equal(patches.length, 1, "An unchanged label form must not send a patch");
+    await openDrawer();
+    await page.getByRole("button", { name: "Edit labels for renamed-worker", exact: true }).click();
+    await owner.fill("");
+    await removed.fill("");
+    await page.locator("#modal-form button[type=submit]").click();
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    assert.equal(patches.length, 2);
+    assert.deepEqual(patches[1].labels.reset.sort(), ["gpu", "pool", "zone"]);
+    const reset = (await api("/v1/nodes", "GET", undefined, token)).find((n) => n.name === "renamed-worker");
+    assert.deepEqual(reset.labels, { zone: "lab", gpu: "none" });
+    assert.equal(reset.ownerLabels, undefined);
+    await pageLink(page, "activity");
+    await page.locator("tr").filter({ hasText: "Changed machine labels" }).first().waitFor();
+    await pageLink(page, "machines");
+    await page.locator("#machine-search").fill("renamed-worker");
+  } finally {
+    page.off("request", record);
+  }
+}
+
 async function assertAsyncConsoleOwnership(browser) {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -2057,6 +2132,7 @@ try {
       dataDir: "node-state",
       workDir: "node-work",
       listen: "127.0.0.1:" + nodePort,
+      labels: { zone: "lab", gpu: "none" },
       allow: { "@orchestrator": ["secrets.manage"] },
     }),
   );
@@ -2265,6 +2341,7 @@ try {
   await page
     .getByRole("button", { name: "renamed-worker", exact: true })
     .waitFor();
+  await assertOwnerLabels(page, account.token);
 
   await pageLink(page, "keys");
   await page.getByRole("button", { name: "Create key", exact: false }).click();
@@ -2729,7 +2806,7 @@ try {
   await page.getByText("Selected version", { exact: true }).waitFor();
   assert.deepEqual(errors, []);
   console.log(
-    "Console browser smoke passed: login, fleet isolation, search, machine context menus, confirmed lifecycle actions, rename, escaped keys, enrollment commands, confirmed invitation replacement, stale views, themes, mobile layout, password change, logout, and operator pages.",
+    "Console browser smoke passed: login, fleet isolation, search, machine context menus, confirmed lifecycle actions, rename, owner labels, escaped keys, enrollment commands, confirmed invitation replacement, stale views, themes, mobile layout, password change, logout, and operator pages.",
   );
 } catch (error) {
   console.error(logs.join(""));
