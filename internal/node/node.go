@@ -753,7 +753,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 }
 
 func (n *Node) selectNode(ctx context.Context, args json.RawMessage) (any, error) {
-	return n.Peer.Select(ctx, args)
+	return n.Peer.SelectRequest(ctx, args)
 }
 
 // fleetName returns the gateway-owned routing name, which a fleet rename can

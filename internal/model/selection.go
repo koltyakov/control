@@ -1,6 +1,7 @@
 package model
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,8 +37,20 @@ type NodeSelection struct {
 // DecodeNodeSelector decodes and validates a nodes.select request, naming the
 // offending field instead of reporting a Go type.
 func DecodeNodeSelector(data []byte) (NodeSelector, error) {
+	return decodeNodeSelector(data, false)
+}
+
+func decodeNodeSelector(data []byte, strict bool) (NodeSelector, error) {
 	var q NodeSelector
-	if err := json.Unmarshal(data, &q); err != nil {
+	err := json.Unmarshal(data, &q)
+	if err == nil && strict {
+		// Workflow selectors reject unknown fields: a misspelled constraint
+		// would otherwise widen a fan-out to every machine.
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.DisallowUnknownFields()
+		err = decoder.Decode(&NodeSelector{})
+	}
+	if err != nil {
 		var typeErr *json.UnmarshalTypeError
 		if errors.As(err, &typeErr) && typeErr.Field != "" && typeErr.Type != nil {
 			if typeErr.Type.Kind() == reflect.Uint64 {

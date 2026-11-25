@@ -80,6 +80,15 @@ func (c Client) Call(ctx context.Context, target, method string, params any, res
 }
 
 func (c Client) call(ctx context.Context, target, method string, params any, result any) error {
+	// Resolve workflow select/each targets before any grant or submission, on
+	// every route, so no coordinator or worker ever chooses machines.
+	if method == "workflow.run" || method == "tasks.start" || method == model.TaskCheckMethod {
+		resolved, err := c.resolveWorkflowCall(ctx, target, method, model.JSON(params))
+		if err != nil {
+			return err
+		}
+		params = resolved
+	}
 	if err := c.requireTaskTagsOnce(ctx, target, method, params); err != nil {
 		return err
 	}

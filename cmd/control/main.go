@@ -437,6 +437,10 @@ func submit(ctx context.Context, c client.Client, target string, spec model.Task
 	}
 	// Print before sending so an interrupted submission can be reconciled.
 	fmt.Fprintln(os.Stderr, "task", spec.ID)
+	spec, err := resolveTaskPlan(ctx, c, target, spec)
+	if err != nil {
+		return err
+	}
 	var task model.Task
 	if wait {
 		// Overlap the blocking-wait lane setup with submission. Cancelling it

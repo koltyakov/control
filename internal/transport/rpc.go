@@ -9,7 +9,6 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/koltyakov/control/internal/gateway"
@@ -135,35 +134,9 @@ func (p *Peer) OpenTCP(ctx context.Context, target, address string) (net.Conn, e
 // GPU constraints are confirmed in the result for callers that may reach an
 // older selector.
 func (p *Peer) Select(ctx context.Context, args json.RawMessage) (model.NodeSelection, error) {
-	query, err := model.DecodeNodeSelector(args)
+	query, candidates, err := p.selectCandidates(ctx, args)
 	if err != nil {
 		return model.NodeSelection{}, err
-	}
-	nodes, err := p.Nodes(ctx)
-	if err != nil {
-		return model.NodeSelection{}, err
-	}
-	candidates := []model.Node{}
-	for _, peer := range nodes {
-		if !peer.Online || peer.Disabled || peer.ControlPending || peer.InstructionOnly {
-			continue
-		}
-		matches := true
-		for k, v := range query.Labels {
-			if peer.Labels[k] != v {
-				matches = false
-				break
-			}
-		}
-		if matches && query.Capability != "" {
-			matches = slices.ContainsFunc(peer.Capabilities, func(c model.Capability) bool { return c.Name == query.Capability })
-		}
-		if matches {
-			candidates = append(candidates, peer)
-		}
-	}
-	if len(candidates) == 0 {
-		return model.NodeSelection{}, errors.New("no online enabled node matches the selector")
 	}
 	selected, err := resourcePlacement(candidates, p.placementHealth(ctx), query, time.Now())
 	if err != nil {

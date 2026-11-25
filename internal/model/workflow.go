@@ -107,6 +107,9 @@ func (p WorkflowPlan) Ordered() ([]WorkflowStep, error) {
 		if step.Task.Capability == "workflow.run" {
 			return nil, errors.New("nested workflows are not supported")
 		}
+		if step.Placement != nil {
+			return nil, fmt.Errorf("workflow step %s: %w", step.Name, ErrUnresolvedPlacement)
+		}
 		if step.When != "" && step.When != WorkflowWhenSuccess && step.When != WorkflowWhenAlways {
 			return nil, fmt.Errorf("workflow step %s: when must be %q or %q", step.Name, WorkflowWhenSuccess, WorkflowWhenAlways)
 		}

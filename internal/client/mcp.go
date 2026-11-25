@@ -102,6 +102,13 @@ func (c Client) MCPServer() *mcp.Server {
 				if err != nil {
 					return inputError(err), nil
 				}
+				// The caller does not hold a plan whose select/each targets
+				// the client resolved, so return its specification.
+				spec, resolved, err := c.ResolveTask(ctx, target, spec)
+				if err != nil {
+					return toolError(err), nil
+				}
+				omitSpec = omitSpec && resolved == nil
 				if _, err = c.StartTask(ctx, target, spec, &result); err != nil {
 					return toolError(err), nil
 				}

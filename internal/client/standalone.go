@@ -265,7 +265,7 @@ func peerCallWithReceipt(ctx context.Context, peer *transport.Peer, target, meth
 		case "nodes.list":
 			value, err = peer.Nodes(ctx)
 		case "nodes.select":
-			value, err = peer.Select(ctx, model.JSON(params))
+			value, err = peer.SelectRequest(ctx, model.JSON(params))
 		case "activities.pool":
 			value, err = peerActivities(ctx, peer, model.JSON(params))
 		default:

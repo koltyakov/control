@@ -20,6 +20,11 @@ func (c Client) StartTask(ctx context.Context, target string, spec model.TaskSpe
 	if !model.TaskIDPattern.MatchString(spec.ID) {
 		return "", model.OperationError(fmt.Errorf("invalid task ID %q: use 1-128 letters, digits, '_' or '-'; nothing was submitted", spec.ID), "not_sent")
 	}
+	// Resolution failures are known outcomes, not uncertain submissions.
+	spec, _, err := c.ResolveTask(ctx, target, spec)
+	if err != nil {
+		return spec.ID, err
+	}
 	// Refuse unsupported tags here, unwrapped, because nothing was sent.
 	if err := c.requireTaskTags(ctx, target, "tasks.start", spec); err != nil {
 		return "", err

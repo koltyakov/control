@@ -21,4 +21,7 @@ type WorkflowStep struct {
 		Artifact int    `json:"artifact"`
 		Path     string `json:"path"`
 	} `json:"inputs,omitempty"`
+	// Placement holds an unresolved {"select"|"each": selector} target, which
+	// only the client accepts. See workflow_placement.go.
+	Placement *WorkflowPlacement `json:"-"`
 }
