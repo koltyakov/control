@@ -221,6 +221,7 @@ func (g *Gateway) fleetVaultRoutes(mux *http.ServeMux) {
 	}
 	mux.Handle("GET /console/api/fleet/vault", browser(g.getFleetVault))
 	mux.Handle("PUT /console/api/fleet/vault", browser(g.setFleetVault))
+	mux.Handle("PUT /console/api/fleet/vault/profiles/{id}", browser(g.labelClientProfile))
 	mux.Handle("POST /console/api/fleet/vault/allowances", browser(g.addFleetVaultAllowance))
 	mux.Handle("DELETE /console/api/fleet/vault/allowances/{id}", browser(g.removeFleetVaultAllowance))
 	mux.HandleFunc("POST "+model.FleetVaultCheckPath, g.auth(g.fleetVaultCheckHTTP))
@@ -229,6 +230,7 @@ func (g *Gateway) fleetVaultRoutes(mux *http.ServeMux) {
 type fleetVaultChoice struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	Role string `json:"role,omitempty"` // Only execution credentials have roles.
 }
 
 type fleetVaultAllowanceView struct {
@@ -249,7 +251,7 @@ type fleetVaultView struct {
 	GlobalPausedUntil time.Time                 `json:"globalPausedUntil,omitzero"`
 	Allowances        []fleetVaultAllowanceView `json:"allowances"`
 	Keys              []fleetVaultChoice        `json:"keys"`
-	Hosts             []fleetVaultChoice        `json:"hosts"`
+	Hosts             []clientProfileChoice     `json:"hosts"`
 	Machines          []fleetVaultChoice        `json:"machines"`
 }
 
@@ -257,7 +259,7 @@ type fleetVaultView struct {
 // may select. Caller holds g.mu.
 func (g *Gateway) fleetVaultViewLocked(user string, now time.Time) (fleetVaultView, error) {
 	p := g.vaultPolicies[user]
-	v := fleetVaultView{Enabled: p.Enabled, Revision: p.Revision, GlobalEnabled: g.globalVault.Enabled, Allowances: []fleetVaultAllowanceView{}, Keys: []fleetVaultChoice{}, Hosts: []fleetVaultChoice{}, Machines: []fleetVaultChoice{}}
+	v := fleetVaultView{Enabled: p.Enabled, Revision: p.Revision, GlobalEnabled: g.globalVault.Enabled, Allowances: []fleetVaultAllowanceView{}, Keys: []fleetVaultChoice{}, Machines: []fleetVaultChoice{}}
 	if p.Enabled && now.Before(p.PausedUntil) {
 		v.PausedUntil = p.PausedUntil.UTC()
 	}
@@ -271,11 +273,11 @@ func (g *Gateway) fleetVaultViewLocked(user string, now time.Time) (fleetVaultVi
 		v.Allowances = append(v.Allowances, fleetVaultAllowanceView{ID: a.ID, KeyID: a.KeyID, OwnerID: a.OwnerID, AllMachines: a.AllMachines, MachineIDs: append([]string{}, a.MachineIDs...), ExpiresAt: a.ExpiresAt})
 	}
 	if user == legacyUser && g.superuser != "" {
-		v.Keys = append(v.Keys, fleetVaultChoice{ID: superuserKeyID, Name: "operator key"})
+		v.Keys = append(v.Keys, fleetVaultChoice{ID: superuserKeyID, Name: "operator key", Role: roleSuperuser})
 	}
 	for id, k := range g.keys {
 		if g.vaultExecutionKeyLocked(user, id) {
-			v.Keys = append(v.Keys, fleetVaultChoice{ID: id, Name: k.Name})
+			v.Keys = append(v.Keys, fleetVaultChoice{ID: id, Name: k.Name, Role: k.Role})
 		}
 	}
 	for _, n := range g.nodes {
@@ -283,22 +285,11 @@ func (g *Gateway) fleetVaultViewLocked(user string, now time.Time) (fleetVaultVi
 			v.Machines = append(v.Machines, fleetVaultChoice{ID: n.ID, Name: n.Name})
 		}
 	}
-	// Client owners are durable identities; list them while offline too.
-	rows, err := g.db.Query(`SELECT c.id FROM client_identities c JOIN identities i ON i.id=c.id WHERE i.user_id=? AND c.id NOT IN (SELECT id FROM client_transports) ORDER BY c.id LIMIT ?`, user, maxFleetVaultHosts)
+	profiles, err := g.clientProfilesLocked(user)
 	if err != nil {
 		return fleetVaultView{}, err
 	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return fleetVaultView{}, err
-		}
-		v.Hosts = append(v.Hosts, fleetVaultChoice{ID: id, Name: "cli-" + id[:min(16, len(id))]})
-	}
-	if err := rows.Err(); err != nil {
-		return fleetVaultView{}, err
-	}
+	v.Hosts = profiles
 	for _, list := range [][]fleetVaultChoice{v.Keys, v.Machines} {
 		sort.Slice(list, func(i, j int) bool {
 			if list[i].Name != list[j].Name {
@@ -458,7 +449,7 @@ func (g *Gateway) addFleetVaultAllowance(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if (q.KeyID == "" && q.OwnerID == "") || len(q.KeyID) > maxFleetVaultIDBytes || len(q.OwnerID) > maxFleetVaultIDBytes {
-		http.Error(w, "an allowance selects a key, a host, or both", http.StatusBadRequest)
+		http.Error(w, "select an execution credential, a client profile, or both", http.StatusBadRequest)
 		return
 	}
 	if q.AllMachines == (len(q.MachineIDs) != 0) || len(q.MachineIDs) > maxFleetVaultMachines {
@@ -486,10 +477,10 @@ func (g *Gateway) addFleetVaultAllowance(w http.ResponseWriter, r *http.Request)
 		if q.OwnerID != "" {
 			owner, err := g.vaultClientOwnerLocked(p.UserID, q.OwnerID)
 			if err != nil {
-				return fleetVaultView{}, http.StatusInternalServerError, "could not verify host"
+				return fleetVaultView{}, http.StatusInternalServerError, "could not verify client profile"
 			}
 			if !owner {
-				return fleetVaultView{}, http.StatusBadRequest, "host is not a client owner identity of this fleet"
+				return fleetVaultView{}, http.StatusBadRequest, "profile is not a client owner identity of this fleet"
 			}
 		}
 		for _, id := range machines {
@@ -564,7 +555,7 @@ func allowanceDetail(a fleetVaultAllowance) string {
 		parts = append(parts, "key "+a.KeyID)
 	}
 	if a.OwnerID != "" {
-		parts = append(parts, "host "+a.OwnerID)
+		parts = append(parts, "profile "+a.OwnerID)
 	}
 	if a.AllMachines {
 		parts = append(parts, "all machines")

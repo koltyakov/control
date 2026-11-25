@@ -598,8 +598,8 @@ function lockFixture(overrides = {}) {
       { id: "allow-key", keyId: lockIds.key, allMachines: true, machineIds: [], expiresAt: new Date(Date.now() + 2 * 3600000).toISOString() },
       { id: "allow-host", keyId: lockIds.key, ownerId: lockIds.host, allMachines: false, machineIds: [lockIds.worker, lockIds.missing] },
     ],
-    keys: [{ id: lockIds.key, name: lockKeyName }, { id: lockIds.accountKey, name: "Account key" }],
-    hosts: [{ id: lockIds.host, name: "cli-owner-host-0123" }],
+    keys: [{ id: lockIds.key, name: lockKeyName, role: "orchestrator" }, { id: lockIds.accountKey, name: "account", role: "user" }],
+    hosts: [{ id: lockIds.host, name: "", online: true }, { id: "legacy-owner-00001", name: "", online: false }],
     machines: [{ id: lockIds.worker, name: "gpu-worker" }, { id: lockIds.other, name: "mac-worker" }],
     ...overrides,
   };
@@ -627,6 +627,12 @@ async function routeLock(page, server) {
     const injected = server.next;
     server.next = null;
     if (injected && injected !== "abort") return route.fulfill({ status: injected.status, body: injected.body });
+    if (method === "PUT" && url.pathname.includes("/profiles/")) {
+      const profile = target.hosts.find((p) => p.id === decodeURIComponent(url.pathname.split("/").pop()));
+      if (body.previousLabel !== profile.name) return route.fulfill({status: 409, body: "profile label changed; reload before editing"});
+      profile.name = body.label;
+      return route.fulfill({status: 204});
+    }
     if (body?.revision !== target.revision)
       return route.fulfill({ status: 409, body: global ? "gateway lock changed; reload before editing" : "fleet lock changed; reload before editing" });
     server.writes.push({ method, path: url.pathname, body });
@@ -685,17 +691,16 @@ async function assertAccessLockFixtures(browser) {
     let summary = await lockSummary(page);
     assert.match(summary, /Enforced by this fleet's lock\. .*within 2 active allowances/);
     assert.equal(await page.locator("img").count(), 0, "Identity names must not become markup");
-    await page.getByText(lockKeyName, { exact: true }).first().waitFor();
+    await page.getByText(lockKeyName + " (orchestrator key)", { exact: true }).first().waitFor();
     const hostRow = page.locator('tr[data-allowance="allow-host"]');
-    assert.match(await hostRow.innerText(), /cli-owner-host-0123/);
+    assert.match(await hostRow.innerText(), /Unnamed profile/);
     assert.match(await hostRow.innerText(), /gpu-worker/);
     assert.match(await hostRow.innerText(), new RegExp(lockIds.missing + "\\s+Not registered"), "Unknown worker IDs must stay visible");
     assert.match(await hostRow.innerText(), /No expiration/);
     assert.match(await page.locator('tr[data-allowance="allow-key"]').innerText(), /All workers[\s\S]*in 1h 5\dm|All workers[\s\S]*in 2h 0m/);
     assert.equal(await page.locator('[data-id="global"]').count(), 0, "Fleet owners must not get operator controls");
     const notice = await page.locator(".notice").last().textContent();
-    assert.match(notice, /Common worker keys never grant ambient execution/);
-    assert.match(notice, /open sessions do not bypass instruction grants/);
+    assert.match(notice, /the caller must match both/);
 
     // A custom pause beyond the gateway bound is rejected before sending.
     await page.locator('[data-action="lock-pause"][data-id="fleet"]').click();
@@ -738,11 +743,17 @@ async function assertAccessLockFixtures(browser) {
 
     // Allowances need a server-reported caller and at least one worker.
     await page.locator('[data-action="allowance-add"]').click();
+    const credentialSelect = page.locator("#modal-form select[name=keyId]");
+    assert.match(await credentialSelect.locator(`option[value="${lockIds.accountKey}"]`).textContent(), /Fleet account key/);
+    const profileSelect = page.locator("#modal-form select[name=ownerId]");
+    assert.equal(await profileSelect.locator(`option[value="${lockIds.host}"]`).textContent(), `Unnamed profile · ${lockIds.host.slice(0,16)} · Connected now`);
+    assert.match(await profileSelect.locator('option[value="legacy-owner-00001"]').textContent(), /Last seen unknown/);
     await submitModal(page);
-    await modalError(page, "Select an account execution key, an orchestrator host, or both.");
+    await modalError(page, "Select an execution credential, a client profile, or both.");
     assert.equal(await page.locator("#allowance-machines").isHidden(), true);
     await page.locator("#modal-form select[name=keyId]").selectOption(lockIds.key);
     await page.locator("#modal-form select[name=ownerId]").selectOption(lockIds.host);
+    assert.equal(await page.locator("[data-profile-id]").textContent(), `Owner ID: ${lockIds.host}`);
     await page.locator("#modal-form select[name=scope]").selectOption("selected");
     await page.locator("#allowance-machines").waitFor();
     await submitModal(page);
@@ -817,6 +828,13 @@ async function assertAccessLockFixtures(browser) {
     server.failFleet = "";
     await refreshPage(page);
     assert.equal(await page.locator("#stale-banner").isHidden(), true);
+    await page.getByRole("button", {name: "Label a profile"}).click();
+    await page.locator("#modal-form select[name=ownerId]").selectOption(lockIds.host);
+    await page.getByLabel("Profile label", {exact: true}).fill("Build Mac <local>");
+    await submitModal(page);
+    await page.locator("#dialog").waitFor({state: "hidden"});
+    await hostRow.getByText("Build Mac <local>", {exact: true}).waitFor();
+    assert.equal(await hostRow.locator("local").count(), 0);
 
     await page.setViewportSize({ width: 390, height: 844 });
     assert.ok(await page.locator("#app").evaluate((element) => element.scrollWidth <= element.clientWidth), "The lock page must fit narrow screens");

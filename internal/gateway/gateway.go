@@ -174,13 +174,14 @@ type Gateway struct {
 	auditPruneFailed bool
 	// presenceDirty holds nodes whose last-seen time or LAN proofs changed but
 	// are not yet persisted. Caller holds g.mu.
-	presenceDirty  map[string]bool
-	presenceCancel context.CancelFunc
-	presenceWG     sync.WaitGroup
-	startedAt      time.Time
-	machineStates  map[string]model.MachineState
-	labelOverlays  map[string]labelOverlay     // Owner label overlays by identity; see effectiveNodeLocked.
-	vaultPolicies  map[string]fleetVaultPolicy // Fleet lock policies by user; protected by mu.
+	presenceDirty    map[string]bool
+	profileSeenDirty map[string]time.Time
+	presenceCancel   context.CancelFunc
+	presenceWG       sync.WaitGroup
+	startedAt        time.Time
+	machineStates    map[string]model.MachineState
+	labelOverlays    map[string]labelOverlay     // Owner label overlays by identity; see effectiveNodeLocked.
+	vaultPolicies    map[string]fleetVaultPolicy // Fleet lock policies by user; protected by mu.
 	// proxyDependencies keeps managed proxy listeners active for enrolled and
 	// retiring children, keyed by child identity. Protected by mu.
 	proxyDependencies map[string]proxyDependency
@@ -626,6 +627,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		durable = durable || !existed || !sameEnrollment(previous, n)
 	}
 	if durable {
+		if client {
+			persisted.profileSeen = map[string]time.Time{ownerID: n.LastSeen}
+		}
 		err = g.commit(persisted)
 	}
 	if err != nil {
@@ -654,6 +658,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	}
 	if client {
 		g.clients[n.ID] = n
+		if !durable {
+			g.noteProfileSeenLocked(ownerID, n.LastSeen)
+		}
 	}
 	g.trimIdentityCacheLocked()
 	g.peers[n.ID] = c
@@ -679,6 +686,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		g.routeMu.Unlock()
 		g.forgetRelays(c)
 		delete(g.clients, n.ID)
+		if client {
+			g.noteProfileSeenLocked(ownerID, time.Now().UTC())
+		}
 		restartGrace := false
 		if latest, exists := g.nodes[n.ID]; exists {
 			latest.Online = false
@@ -993,7 +1003,7 @@ func (g *Gateway) runPresenceFlush(ctx context.Context) {
 // flushPresenceLocked persists batched last-seen changes in one transaction.
 // A failed write keeps them for the next attempt. Caller holds g.mu.
 func (g *Gateway) flushPresenceLocked() {
-	if len(g.presenceDirty) == 0 {
+	if len(g.presenceDirty)+len(g.profileSeenDirty) == 0 {
 		return
 	}
 	ids := make([]string, 0, len(g.presenceDirty))
@@ -1002,13 +1012,14 @@ func (g *Gateway) flushPresenceLocked() {
 			ids = append(ids, id)
 		}
 	}
-	if len(ids) != 0 {
-		if err := g.commit(change{nodes: ids}); err != nil {
-			slog.Warn("persist machine last-seen times", "nodes", len(ids), "error", err)
+	if len(ids)+len(g.profileSeenDirty) != 0 {
+		if err := g.commit(change{nodes: ids, profileSeen: g.profileSeenDirty}); err != nil {
+			slog.Warn("persist last-seen times", "nodes", len(ids), "profiles", len(g.profileSeenDirty), "error", err)
 			return
 		}
 	}
 	clear(g.presenceDirty)
+	clear(g.profileSeenDirty)
 }
 
 func URL(base, path string) string {

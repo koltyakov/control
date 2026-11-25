@@ -73,8 +73,8 @@ CREATE TABLE client_identities (id TEXT PRIMARY KEY REFERENCES identities(id), d
 CREATE TABLE client_transports (id TEXT PRIMARY KEY REFERENCES identities(id), owner_id TEXT NOT NULL REFERENCES client_identities(id), data BLOB NOT NULL);
 CREATE INDEX client_identity_prefix ON client_identities(substr(id,1,16));
 CREATE TABLE console_passwords (username TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL);
-` + auditSchema + consoleSessionSchema + proxyDependencySchema + machineLabelSchema + fleetVaultSchema + globalVaultSchema + `
-PRAGMA user_version=10;`); err != nil {
+` + auditSchema + consoleSessionSchema + proxyDependencySchema + machineLabelSchema + fleetVaultSchema + globalVaultSchema + clientProfileSchema + `
+PRAGMA user_version=11;`); err != nil {
 			return err
 		}
 		if err = g.writeState(tx); err != nil {
@@ -201,6 +201,20 @@ PRAGMA user_version=10;`); err != nil {
 		}
 		defer func() { _ = tx.Rollback() }()
 		if _, err := tx.Exec(fleetVaultSchema + globalVaultSchema + ` PRAGMA user_version=10;`); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		version = 10
+	}
+	if version == 10 {
+		tx, err := g.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(clientProfileSchema + ` PRAGMA user_version=11;`); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
@@ -356,6 +370,8 @@ type change struct {
 	labels []string
 	// vaultPolicies are fleet lock policies, keyed by user.
 	vaultPolicies []string
+	profileSeen   map[string]time.Time
+	profileLabel  *clientProfileLabel
 	// audit events commit in the same transaction as the change they describe.
 	audit []AuditEvent
 }
@@ -487,6 +503,16 @@ func (g *Gateway) writeChange(tx *sql.Tx, c change) error {
 			if err := writeTransport(tx, id, owner); err != nil {
 				return err
 			}
+		}
+	}
+	for id, seen := range c.profileSeen {
+		if err := exec(`INSERT INTO client_profiles(owner_id,last_seen_ms) VALUES(?,?) ON CONFLICT(owner_id) DO UPDATE SET last_seen_ms=max(last_seen_ms,excluded.last_seen_ms)`, id, seen.UnixMilli()); err != nil {
+			return err
+		}
+	}
+	if label := c.profileLabel; label != nil {
+		if err := exec(`INSERT INTO client_profiles(owner_id,label) VALUES(?,?) ON CONFLICT(owner_id) DO UPDATE SET label=excluded.label`, label.id, label.name); err != nil {
+			return err
 		}
 	}
 	for _, id := range c.nodes {

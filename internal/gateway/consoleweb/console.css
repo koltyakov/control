@@ -1014,6 +1014,9 @@ td strong {
   display: block;
   font-size: 11px;
 }
+[data-profile-id] {
+  overflow-wrap: anywhere;
+}
 .action-column {
   width: 1%;
   text-align: right;

@@ -15,7 +15,8 @@ The console policy routes require a browser login; writes also require the same 
 | Route | Operation |
 | --- | --- |
 | `GET`, `PUT /console/api/admin/vault` | Operator reads or sets the gateway lock with `enabled`, `revision`, and optional `pauseSeconds`. |
-| `GET`, `PUT /console/api/fleet/vault` | Fleet owner reads the effective settings and key, host and machine choices, or updates the fleet lock. |
+| `GET`, `PUT /console/api/fleet/vault` | Fleet owner reads the settings, execution credentials (`keys`, including `role`), client profiles (`hosts`) and workers, or updates the fleet lock. Profile fields are the stable `id`, display label `name` (empty if unnamed), `online`, and optional UTC `lastSeen` (last observed connection or disconnection). |
+| `PUT /console/api/fleet/vault/profiles/{ownerId}` | Set a display label with `{label, previousLabel}`. An empty label removes it; a stale previous label returns 409. A successful edit returns 204. Labels never participate in admission or change the policy revision. |
 | `POST /console/api/fleet/vault/allowances` | Add a rule with `keyId`, `ownerId`, or both. Supply `allMachines: true` or a nonempty `machineIds` list. Optional `ttlSeconds` sets its expiry. |
 | `DELETE /console/api/fleet/vault/allowances/{id}` | Remove an allowance using the current revision. |
 

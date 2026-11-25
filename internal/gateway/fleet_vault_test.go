@@ -467,6 +467,55 @@ func TestFleetVaultCheckDecisions(t *testing.T) {
 	}
 }
 
+func TestFleetVaultClientProfileLabels(t *testing.T) {
+	dir := t.TempDir()
+	g, s := gatewayAt(t, dir)
+	_, a := createTestUser(t, s, "alice")
+	_, b := createTestUser(t, s, "bob")
+	provisionBrowser(t, a, "")
+	browser := browserLogin(t, s.URL, "alice", browserPassword)
+	const vault = "/console/api/fleet/vault"
+	owner, transport := vaultClient(t, s.URL, a.Key)
+	other, _ := vaultClient(t, s.URL, b.Key)
+	path := vault + "/profiles/"
+	label := map[string]string{"label": "Build Mac", "previousLabel": ""}
+	browser.request(t, "PUT", path+transport.ID, label, 404)
+	browser.request(t, "PUT", path+other.ID, label, 404)
+	forged := browser
+	forged.CSRF = "wrong"
+	forged.request(t, "PUT", path+owner.ID, label, 403)
+
+	browser.request(t, "POST", vault+"/allowances", map[string]any{"revision": 0, "ownerId": owner.ID, "allMachines": true}, 201)
+	browser.request(t, "PUT", path+owner.ID, label, 204)
+	browser.request(t, "PUT", path+owner.ID, label, 409)
+	view := func() fleetVaultView {
+		data, _ := browser.request(t, "GET", vault, nil, 200)
+		return vaultView(t, data)
+	}
+	v := view()
+	if len(v.Hosts) != 1 || v.Hosts[0].ID != owner.ID || v.Hosts[0].Name != "Build Mac" || !v.Hosts[0].Online || v.Hosts[0].LastSeen.IsZero() {
+		t.Fatalf("connected profile: %+v", v.Hosts)
+	}
+	if v.Revision != 1 || len(v.Allowances) != 1 || v.Allowances[0].OwnerID != owner.ID || len(v.Keys) != 1 || v.Keys[0].Role != roleUser {
+		t.Fatalf("label must not change allowance/credential: %+v", v)
+	}
+	s.Close()
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	g, s = gatewayAt(t, dir)
+	defer func() { s.Close(); _ = g.Close() }()
+	browser = browserLogin(t, s.URL, "alice", browserPassword)
+	offline := view()
+	if len(offline.Hosts) != 1 || offline.Hosts[0].Online || offline.Hosts[0].Name != "Build Mac" || offline.Hosts[0].LastSeen.Before(v.Hosts[0].LastSeen) {
+		t.Fatalf("profile after restart: %+v", offline.Hosts)
+	}
+	browser.request(t, "PUT", path+owner.ID, map[string]string{"label": "", "previousLabel": "Build Mac"}, 204)
+	if v := view(); v.Hosts[0].Name != "" || v.Hosts[0].LastSeen != offline.Hosts[0].LastSeen || countAudit(t, g, "vault.profile_label") != 2 {
+		t.Fatal("clearing label must preserve observed identity and be audited", v.Hosts)
+	}
+}
+
 // Bearer credentials cannot take over the console of a configured lock or
 // operate machines around an enforced one; console sessions still can.
 func TestFleetVaultBearerGuards(t *testing.T) {
@@ -549,6 +598,7 @@ func TestFleetVaultPersistsAndMigrates(t *testing.T) {
 	alice, a := createTestUser(t, s, "alice")
 	provisionBrowser(t, a, "")
 	browser := browserLogin(t, s.URL, "alice", browserPassword)
+	owner, _ := vaultClient(t, s.URL, a.Key)
 	w1, _ := vaultWorker(t, s.URL, a.Key, "w1", true)
 	key := accountKeyID(t, g, alice.ID)
 	browser.request(t, "POST", "/console/api/fleet/vault/allowances", map[string]any{"revision": 0, "keyId": key, "machineIds": []string{w1.ID}}, 201)
@@ -576,7 +626,7 @@ func TestFleetVaultPersistsAndMigrates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec(`DROP TABLE fleet_vault; DROP TABLE global_vault; PRAGMA user_version=9;`); err != nil {
+	if _, err = db.Exec(`DROP TABLE client_profiles; DROP TABLE fleet_vault; DROP TABLE global_vault; PRAGMA user_version=9;`); err != nil {
 		t.Fatal(err)
 	}
 	_ = db.Close()
@@ -593,6 +643,11 @@ func TestFleetVaultPersistsAndMigrates(t *testing.T) {
 	g.mu.Unlock()
 	if !empty || err != nil {
 		t.Fatal("migrated table must start empty and accept policies", empty, err)
+	}
+	browser = browserLogin(t, s.URL, "alice", browserPassword)
+	data, _ := browser.request(t, "GET", "/console/api/fleet/vault", nil, 200)
+	if profiles := vaultView(t, data).Hosts; len(profiles) != 1 || profiles[0].ID != owner.ID || profiles[0].Online || !profiles[0].LastSeen.IsZero() || profiles[0].Name != "" {
+		t.Fatal("migration must preserve existing profiles without inventing labels or dates", profiles)
 	}
 }
 

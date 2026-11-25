@@ -102,6 +102,8 @@ Schema version 9 adds `machine_labels`, referencing permanent identities and the
 
 Schema version 10 adds the operator lock and each fleet's policy and allowances. Upgrading leaves both locks off. Pauses and finite allowances use absolute UTC deadlines, so restarting the gateway does not renew them. An older gateway cannot open the upgraded database.
 
+Schema version 11 stores optional fleet-assigned client profile labels and gateway-observed last-seen times. Existing identities and allowances keep their IDs. The migration does not invent dates for old profiles.
+
 `CONTROL_TOKEN` on the gateway is an optional bootstrap common key for the legacy fleet only. For a new shared gateway, omit it and configure `CONTROL_SUPERUSER_KEY`, then create separate accounts. Do not give unrelated users the same account key or legacy bootstrap token.
 
 **Upgrade the gateway before upgrading nodes from the pre-isolation version.** New nodes require fleet-aware authentication and refuse an older gateway. Pause automated release polling during this one-time migration. Later managed updates independently reserve eligible nodes, allowing node-before-gateway installation only with explicit executable compatibility. An older coordinator retains its previous rollout order until upgraded. SQLite migration cannot be reversed by starting the old executable against stale JSON files.

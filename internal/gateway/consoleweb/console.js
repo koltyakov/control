@@ -94,11 +94,13 @@
  * @typedef {{removed: number, hidden?: number}} ClearResult
  * @typedef {{token: string}} IssuedKey
  * @typedef {{name: string, role?: 'orchestrator'}} KeyRequest Omitting role creates a common key.
- * @typedef {{id: string, name: string}} LockIdentity Server-discovered key, host or machine; IDs are immutable.
+ * @typedef {{id: string, name: string}} LockIdentity Gateway-reported identity; IDs are immutable.
+ * @typedef {LockIdentity & {role?: string}} LockCredential
+ * @typedef {LockIdentity & {lastSeen?: string, online: boolean}} ClientProfile
  * @typedef {object} LockAllowance
  * @property {string} id
  * @property {string} [keyId] Account execution key the caller must use.
- * @property {string} [ownerId] Stable orchestrator host the caller must run on.
+ * @property {string} [ownerId] Stable client profile the caller must use.
  * @property {boolean} allMachines
  * @property {string[]} machineIds Immutable worker IDs when allMachines is false.
  * @property {string} [expiresAt] Absent for an allowance that lasts until revoked.
@@ -109,8 +111,8 @@
  * @property {boolean} [globalEnabled] Operator minimum; unknown when an older gateway omits it.
  * @property {string} [globalPausedUntil]
  * @property {LockAllowance[]} allowances
- * @property {LockIdentity[]} keys
- * @property {LockIdentity[]} hosts
+ * @property {LockCredential[]} keys
+ * @property {ClientProfile[]} hosts
  * @property {LockIdentity[]} machines
  * @typedef {{enabled: boolean, pausedUntil?: string, revision: number}} GlobalLock
  * @typedef {{revision: number, enabled: boolean, pauseSeconds?: number}} LockRequest
@@ -121,7 +123,7 @@
  * @typedef {{check: () => void, run: <T>(request: () => Promise<T>) => Promise<T>}} MutationGuard
  * @typedef {{name: string, autoName?: boolean, os: string, serviceMode: string, ttlSeconds: number, gateway: string, force: boolean, proxyWorker?: string, proxyUrl?: string}} InstallationRequest
  * @typedef {{login: {username: string, password: string}, logout: never, 'fleet/installations': InstallationRequest, 'fleet/keys': KeyRequest, 'admin/users': {name: string}, 'admin/updates/check': never, 'fleet/vault/allowances': AllowanceRequest} & Record<`fleet/nodes/${string}/startup`, {mode: string}> & Record<`fleet/nodes/${string}/wake`, never>} PostBody
- * @typedef {{'console/password': {username?: string, currentPassword?: string, password: string}, 'fleet/vault': LockRequest, 'admin/vault': LockRequest} & Record<`fleet/nodes/${string}/secrets/${string}`, SecretEnvelope> & Record<`fleet/nodes/${string}/proxy`, ProxySetupRequest>} PutBody
+ * @typedef {{'console/password': {username?: string, currentPassword?: string, password: string}, 'fleet/vault': LockRequest, 'admin/vault': LockRequest} & Record<`fleet/vault/profiles/${string}`, {label: string, previousLabel: string}> & Record<`fleet/nodes/${string}/secrets/${string}`, SecretEnvelope> & Record<`fleet/nodes/${string}/proxy`, ProxySetupRequest>} PutBody
  * @typedef {Record<`fleet/nodes/${string}/proxy`, ProxySetup>} PutAPI
  * @typedef {{set?: Record<string, string>, remove?: string[], reset?: string[]}} LabelPatch
  * @typedef {Record<`fleet/nodes/${string}`, {name?: string, force?: boolean, disabled?: boolean, labels?: LabelPatch}> & Record<`fleet/keys/${string}`, {name: string}>} PatchBody
@@ -1764,7 +1766,7 @@ function renderKeys(items) {
           ),
       `<button class="secondary compact" data-action="create-key">${icon("plus")}Create key</button>`,
     ) +
-    '<p class="notice">Common keys allow enrollment and discovery, never task execution. Orchestrator keys allow account execution only; they cannot manage the fleet or enroll machines, and the <a class="inline-link" href="#lock">access lock</a> and worker rules still apply. Account keys are not listed here. Keep keys out of worker-accessible files.</p>'
+    '<p class="notice">Common keys allow enrollment and discovery only. Orchestrator keys can request work but cannot manage the fleet or enroll machines. The <a class="inline-link" href="#lock">Access lock</a> credential selector also includes the fleet account key issued with the account. That key is not managed on this page.</p>'
   );
 }
 /** Key roles this page manages; account and invitation keys are excluded. @type {Record<string, [string, string]>} */
@@ -1890,9 +1892,11 @@ function identityLine(kind, name, id) {
 }
 /** @param {LockAllowance} a @param {FleetLock} fleet @returns {string} */
 function allowanceCaller(a, fleet) {
+  const key = fleet.keys.find((k) => k.id === a.keyId),
+    profile = fleet.hosts.find((p) => p.id === a.ownerId);
   return [
-    a.keyId ? identityLine("Key", identityName(fleet.keys, a.keyId), a.keyId) : "",
-    a.ownerId ? identityLine("Host", identityName(fleet.hosts, a.ownerId), a.ownerId) : "",
+    a.keyId ? identityLine("Credential", key ? credentialName(key) : "", a.keyId) : "",
+    a.ownerId ? identityLine("Client profile", profile ? profile.name || "Unnamed profile" : "", a.ownerId) : "",
   ].join("") || '<span class="warn-text">No caller identity</span>';
 }
 /** @param {LockAllowance} a @param {FleetLock} fleet @returns {string} */
@@ -1963,9 +1967,9 @@ function renderLock(view) {
       rows.length
         ? `<div class="table-wrap lock-allowances" role="region" aria-label="Allowances" tabindex="0"><table><thead><tr><th scope="col">Caller</th><th scope="col">Workers</th><th scope="col">Expires</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`
         : empty("No allowances", "While a lock is enforced, add an allowance to let a specific orchestrator start work."),
-      `<button class="secondary compact" data-action="allowance-add">${icon("plus")}Add allowance</button>`,
+      `<div class="row-actions">${fleet.hosts.length ? '<button class="secondary compact" data-action="profile-label">Label a profile</button>' : ""}<button class="secondary compact" data-action="allowance-add">${icon("plus")}Add allowance</button></div>`,
     ) +
-    '<p class="notice">An allowance matches the caller\'s account execution key, its stable orchestrator host, or both together, and covers all workers or the selected worker IDs. Common worker keys never grant ambient execution and cannot be selected. Allowances and open sessions do not bypass instruction grants or each worker\'s allow rules.</p>'
+    '<p class="notice">Select a credential, a client profile, or both. When both are set, the caller must match both. Workers still require their usual permissions and instruction grants.</p>'
   );
 }
 // The gateway accepts pauses and allowance lifetimes of up to 365 days.
@@ -2009,8 +2013,8 @@ function durationSeconds(fields, name) {
 }
 // Lock changes carry the revision shown when the dialog opened. A conflict or
 // lost response leaves the outcome to inspect, never a request to repeat.
-/** @returns {MutationGuard} */
-function mutationGuard() {
+/** @param {string} [subject] @returns {MutationGuard} */
+function mutationGuard(subject = "access lock") {
   let blocked = "";
   return {
     check() {
@@ -2024,10 +2028,10 @@ function mutationGuard() {
         // Other conflicts, such as workers that cannot enforce a lock, are
         // definite rejections whose reason the gateway explains.
         if (status === 409 && error instanceof Error && /changed; reload/.test(error.message)) {
-          blocked = "Close this dialog and review the refreshed access lock before submitting another change.";
+          blocked = `Close this dialog and review the refreshed ${subject} before submitting another change.`;
           if (state.busy) pendingRefresh = true;
           else refresh();
-          throw new Error("The access lock changed after this dialog opened, so nothing was applied. Close this dialog and review the current settings before trying again.");
+          throw new Error(`The ${subject} changed after this dialog opened, so nothing was applied. Close this dialog and review the current settings before trying again.`);
         }
         if (status === undefined)
           blocked = "Reload the access lock to check whether the previous change was applied before submitting another change.";
@@ -2095,9 +2099,56 @@ function changeLock(scope, mode) {
   );
   if (mode === "pause") bindDurations($("#modal-form"));
 }
-/** @param {LockIdentity} item @returns {string} */
-function identityOption(item) {
-  return `<option value="${esc(item.id)}">${esc(item.name)} · ${esc(item.id.slice(0, 12))}</option>`;
+/** @param {LockCredential} key @returns {string} */
+function credentialName(key) {
+  if (key.role === "user") return key.name === "account" ? "Fleet account key" : `${key.name} (account key)`;
+  if (key.role === "orchestrator") return `${key.name} (orchestrator key)`;
+  return key.role === "superuser" ? "Gateway operator key" : key.name;
+}
+/** @param {ClientProfile} profile @returns {string} */
+function profileOption(profile) {
+  const when = profile.online ? "Connected now" : profile.lastSeen ? `Last seen ${date(profile.lastSeen)}` : "Last seen unknown";
+  return `<option value="${esc(profile.id)}">${esc(profile.name || "Unnamed profile")} · ${esc(profile.id.slice(0, 16))} · ${esc(when)}</option>`;
+}
+/** @param {ClientProfile[]} profiles @param {boolean} allowAny @returns {string} */
+function profileField(profiles, allowAny) {
+  return `<label>Client profile<select name="ownerId"${allowAny ? "" : " required"}><option value="">${allowAny ? "Any client profile" : "Choose a profile"}</option>${profiles.map(profileOption).join("")}</select></label>
+    <p class="field-help">One computer can have several saved CLI or MCP profiles. Offline profiles stay listed. Match the <code>ownerId</code> from <code>control session</code>.</p>
+    <small class="muted mono id-line" data-profile-id hidden></small>`;
+}
+/** Show the full fingerprint for a precise comparison (even for duplicate labels).
+ * @param {HTMLFormElement} form @param {ClientProfile[]} profiles @param {(profile: ClientProfile | undefined) => void} [onSelect] @returns {void} */
+function bindProfileField(form, profiles, onSelect) {
+  const select = $('#modal-form select[name="ownerId"]', form), detail = $("[data-profile-id]", form);
+  const sync = () => {
+    const profile = profiles.find((p) => p.id === select.value);
+    detail.hidden = !profile;
+    detail.textContent = profile ? `Owner ID: ${profile.id}` : "";
+    onSelect?.(profile);
+  };
+  select.addEventListener("change", sync);
+  sync();
+}
+/** @returns {void} */
+function labelProfile() {
+  const view = currentLockView();
+  if (!view) throw new Error("The access lock is still loading.");
+  const profiles = view.fleet.hosts, guard = mutationGuard("profile label");
+  formDialog("Label a client profile",
+    `${profileField(profiles, false)}<label>Profile label<input name="label" maxlength="64" placeholder="e.g. Build Mac"></label><p class="field-help">This name is shared with your fleet. Leave it blank to remove it. Changing a label does not change access.</p>`,
+    async (fields, current) => {
+      guard.check();
+      const profile = profiles.find((p) => p.id === fields.ownerId);
+      if (!profile) throw new Error("Choose a client profile.");
+      const label = fields.label.trim();
+      if (label !== profile.name) await guard.run(() => api(`fleet/vault/profiles/${encodeURIComponent(profile.id)}`, "PUT", {label, previousLabel: profile.name}));
+      if (current()) toast("Profile label saved");
+    }, "Save label");
+  const form = $("#modal-form"), input = $('input[name="label"]', form);
+  bindProfileField(form, profiles, (profile) => {
+    input.disabled = !profile;
+    input.value = profile?.name || "";
+  });
 }
 /** @returns {void} */
 function addAllowance() {
@@ -2111,7 +2162,10 @@ function addAllowance() {
     guard = mutationGuard();
   formDialog(
     "Add allowance",
-    `<p>Let a specific orchestrator start work while a lock is enforced. Select an account execution key, a stable orchestrator host, or both. A caller must match every selection.</p><div class="form-grid"><label>Account execution key<select name="keyId"><option value="">Any key</option>${fleet.keys.map(identityOption).join("")}</select></label><label>Orchestrator host<select name="ownerId"><option value="">Any host</option>${fleet.hosts.map(identityOption).join("")}</select></label></div><p class="field-help">Only identities reported by the gateway are listed. Common worker keys cannot be selected and never grant ambient execution.</p><label>Workers<select name="scope"><option value="all">All workers in this fleet</option><option value="selected">Selected workers</option></select></label><fieldset id="allowance-machines" class="choice-list" hidden><legend>Selected workers</legend>${fleet.machines.map((m) => `<label class="choice"><input type="checkbox" value="${esc(m.id)}" data-machine disabled><span>${esc(m.name)}</span><small class="mono muted">${esc(m.id.slice(0, 16))}</small></label>`).join("") || '<p class="field-help">No registered workers were reported.</p>'}</fieldset><p class="field-help">Workers are matched by immutable ID, so renaming a machine keeps its allowance.</p>${durationField("expiry", "Expires after", [["3600", "1 hour"], ["28800", "8 hours"], ["86400", "24 hours"], ["604800", "7 days"], ["never", "No expiration"]], "86400")}<p id="allowance-indefinite" class="notice" hidden>This allowance stays in effect until someone revokes it.</p><p class="field-help">Sent once for revision ${esc(revision)}. If another change lands first, nothing is applied.</p>`,
+    `<p>Choose a credential, a client profile, or both. If you choose both, only that combination is allowed.</p>
+    <label>Execution credential<select name="keyId"><option value="">Any execution credential</option>${fleet.keys.map((k) => `<option value="${esc(k.id)}">${esc(credentialName(k))} · ${esc(k.id.slice(0, 12))}</option>`).join("")}</select></label>
+    <p class="field-help">The fleet account key and orchestrator keys can request work. Common keys are for enrollment and discovery only.</p>
+    ${profileField(fleet.hosts, true)}<label>Workers<select name="scope"><option value="all">All workers in this fleet</option><option value="selected">Selected workers</option></select></label><fieldset id="allowance-machines" class="choice-list" hidden><legend>Selected workers</legend>${fleet.machines.map((m) => `<label class="choice"><input type="checkbox" value="${esc(m.id)}" data-machine disabled><span>${esc(m.name)}</span><small class="mono muted">${esc(m.id.slice(0, 16))}</small></label>`).join("") || '<p class="field-help">No registered workers were reported.</p>'}</fieldset><p class="field-help">Workers are matched by immutable ID, so renaming a machine keeps its allowance.</p>${durationField("expiry", "Expires after", [["3600", "1 hour"], ["28800", "8 hours"], ["86400", "24 hours"], ["604800", "7 days"], ["never", "No expiration"]], "86400")}<p id="allowance-indefinite" class="notice" hidden>This allowance stays in effect until someone revokes it.</p><p class="field-help">Sent once for revision ${esc(revision)}. If another change lands first, nothing is applied.</p>`,
     async (fields, current) => {
       guard.check();
       const form = $("#modal-form"),
@@ -2122,9 +2176,9 @@ function addAllowance() {
           ? []
           : [.../** @type {NodeListOf<HTMLInputElement>} */ (form.querySelectorAll("input[data-machine]:checked"))].map((input) => input.value);
       if (!keyId && !ownerId)
-        throw new Error("Select an account execution key, an orchestrator host, or both.");
+        throw new Error("Select an execution credential, a client profile, or both.");
       if ((keyId && !keys.has(keyId)) || (ownerId && !hosts.has(ownerId)))
-        throw new Error("Select a key and host reported by the gateway.");
+        throw new Error("Select a credential and profile listed by the gateway.");
       if (!allMachines && !machineIds.length) throw new Error("Select at least one worker.");
       if (machineIds.some((id) => !machines.has(id))) throw new Error("Select workers reported by the gateway.");
       const ttlSeconds = durationSeconds(fields, "expiry");
@@ -2151,6 +2205,7 @@ function addAllowance() {
     $("#allowance-indefinite", form).hidden = expiry.value !== "never";
   };
   form.addEventListener("change", sync);
+  bindProfileField(form, fleet.hosts);
   bindDurations(form);
   sync();
 }
@@ -2165,7 +2220,7 @@ function revokeAllowance(id) {
     guard = mutationGuard(),
     caller = [
       allowance.keyId && "key " + (identityName(fleet.keys, allowance.keyId) || allowance.keyId),
-      allowance.ownerId && "host " + (identityName(fleet.hosts, allowance.ownerId) || allowance.ownerId),
+      allowance.ownerId && "profile " + [identityName(fleet.hosts, allowance.ownerId), allowance.ownerId.slice(0, 16)].filter(Boolean).join(" · "),
     ].filter(Boolean).join(" on ");
   formDialog(
     "Revoke allowance",
@@ -2214,6 +2269,7 @@ const auditActions = {
   "vault.pause": ["Paused fleet lock", "warn"],
   "vault.allow": ["Added lock allowance", ""],
   "vault.revoke": ["Revoked lock allowance", ""],
+  "vault.profile_label": ["Changed client profile label", ""],
   "vault.gateway": ["Changed operator lock", "warn"],
 };
 /** @param {number} [before] @returns {`audit?${string}`} */
@@ -4046,6 +4102,7 @@ document.addEventListener("click", async (event) => {
     if (action === "lock-enable" || action === "lock-pause" || action === "lock-disable")
       changeLock(id === "global" ? "global" : "fleet", action === "lock-enable" ? "enable" : action === "lock-pause" ? "pause" : "disable");
     if (action === "allowance-add") addAllowance();
+    if (action === "profile-label") labelProfile();
     if (action === "allowance-revoke") revokeAllowance(id);
     if (action === "check-release")
       confirmAction(
