@@ -46,12 +46,13 @@ type sessionDial struct {
 	err        error
 }
 type peerSession struct {
-	draining           bool // Protected by the peer mutex; new streams use the replacement.
-	mux                *yamux.Session
-	link               *link
-	id, remote, mode   string
-	lane               Lane
-	outgoing, incoming chan struct{}
+	draining            bool // Protected by the peer mutex; new streams use the replacement.
+	mux                 *yamux.Session
+	link                *link
+	id, remote, mode    string
+	lane                Lane
+	extendedInteractive bool
+	outgoing, incoming  chan struct{}
 }
 
 // Called with p.mu held. A disconnected carrier is not evidence of reachability,
@@ -98,33 +99,34 @@ func (p *Peer) serve(s *peerSession) {
 		}
 		p.mu.Unlock()
 	}()
+	slots := p.streamSlots
+	if s.extendedInteractive {
+		slots = p.interactiveIncomingSlots
+	}
 	for {
 		stream, err := s.mux.AcceptStream()
 		if err != nil {
 			return
 		}
-		select {
-		case s.incoming <- struct{}{}:
-		default:
+		if release, ok := tryIncomingSlots(s.incoming, slots); ok {
+			p.dispatchStream(s, stream, release)
+		} else if s.extendedInteractive {
+			p.queueInteractiveStream(s, stream, slots)
+		} else {
 			abortStream(stream)
-			continue
 		}
-		select {
-		case p.streamSlots <- struct{}{}:
-		default:
-			<-s.incoming
-			abortStream(stream)
-			continue
+	}
+}
+
+func (p *Peer) dispatchStream(s *peerSession, stream net.Conn, release func()) {
+	conn := &sessionStream{Conn: stream, mode: s.mode, session: s, release: release}
+	if !p.worker(func() {
+		defer func() { _ = conn.Close() }()
+		if p.handler != nil {
+			p.handler(s.remote, conn)
 		}
-		conn := &sessionStream{Conn: stream, mode: s.mode, session: s, release: func() { <-s.incoming; <-p.streamSlots }}
-		if !p.worker(func() {
-			defer func() { _ = conn.Close() }()
-			if p.handler != nil {
-				p.handler(s.remote, conn)
-			}
-		}) {
-			_ = conn.Close()
-		}
+	}) {
+		_ = conn.Close()
 	}
 }
 
@@ -453,35 +455,31 @@ func (p *Peer) establish(ctx context.Context, target string, key sessionKey, d *
 }
 
 func (p *Peer) openStream(ctx context.Context, s *peerSession) (net.Conn, error) {
-	select {
-	case s.outgoing <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-p.ctx.Done():
-		return nil, p.ctx.Err()
+	waitCtx := ctx
+	if bounded, _ := ctx.Value(tcpSlotWaitKey{}).(bool); bounded {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeoutCause(ctx, tcpStreamSlotWait, ErrStreamCapacity)
+		defer cancel()
+	}
+	return p.openStreamWithWait(ctx, waitCtx, s)
+}
+
+func (p *Peer) openStreamWithWait(ctx, waitCtx context.Context, s *peerSession) (net.Conn, error) {
+	release, err := reserveStreamSlots(waitCtx, p.ctx, s.outgoing, p.outgoingSlots[s.lane])
+	if err != nil {
+		return nil, err
 	}
 	p.mu.Lock()
 	draining := s.draining
 	replacement := p.sessions[sessionKey{s.remote, s.lane}]
 	p.mu.Unlock()
 	if draining {
-		<-s.outgoing
+		release()
 		if replacement == nil || replacement == s {
 			return nil, transientSetup("peer session retired")
 		}
-		return p.openStream(ctx, replacement)
+		return p.openStreamWithWait(ctx, waitCtx, replacement)
 	}
-	global := p.outgoingSlots[s.lane]
-	select {
-	case global <- struct{}{}:
-	case <-ctx.Done():
-		<-s.outgoing
-		return nil, ctx.Err()
-	case <-p.ctx.Done():
-		<-s.outgoing
-		return nil, p.ctx.Err()
-	}
-	release := func() { <-s.outgoing; <-global }
 	type result struct {
 		conn net.Conn
 		err  error

@@ -296,7 +296,7 @@ func muxConfig(lane Lane) *yamux.Config {
 	cfg.LogOutput = io.Discard
 	cfg.StreamOpenTimeout = 15 * time.Second
 	cfg.StreamCloseTimeout = 5 * time.Second
-	cfg.AcceptBacklog = 128
+	cfg.AcceptBacklog = legacyMuxStreams
 	switch lane {
 	case BulkLane:
 		// Artifact and clipboard downloads.
@@ -402,13 +402,21 @@ func (p *Peer) dial(ctx context.Context, remote, mode string, lane Lane) (_ *pee
 	return p.secureSession(ctx, l, id, remote, mode, lane)
 }
 
+func (p *Peer) sessionTLSConfig(remote string, lane Lane) *tls.Config {
+	config := p.cfg.Identity.TLS(remote)
+	if lane == InteractiveLane || lane == IncomingLane {
+		config.NextProtos = []string{interactiveStreamsALPN}
+	}
+	return config
+}
+
 // secureSession runs the pinned TLS 1.3 handshake on a link and multiplexes
 // it. Every WebRTC, relay and shared-channel path uses it, so identity
 // pinning and session construction cannot drift between transports.
 // IncomingLane makes this side the TLS and yamux server; any other lane
 // dials. The caller owns l.conn on error.
 func (p *Peer) secureSession(ctx context.Context, l *link, id, remote, mode string, lane Lane) (*peerSession, error) {
-	config := p.cfg.Identity.TLS(remote)
+	config := p.sessionTLSConfig(remote, lane)
 	var secure *tls.Conn
 	if lane == IncomingLane {
 		secure = tls.Server(l.conn, config)
@@ -419,15 +427,23 @@ func (p *Peer) secureSession(ctx context.Context, l *link, id, remote, mode stri
 		return nil, err
 	}
 	frames := newFrameConn(secure, l.conn)
+	extended := secure.ConnectionState().NegotiatedProtocol == interactiveStreamsALPN
+	muxLimit := legacyMuxStreams
+	if extended {
+		muxLimit = interactiveMuxStreams
+	}
+	muxCfg := muxConfig(lane)
+	muxCfg.AcceptBacklog = muxLimit
 	var mux *yamux.Session
 	var err error
 	if lane == IncomingLane {
-		mux, err = yamux.Server(frames, muxConfig(lane))
+		mux, err = yamux.Server(frames, muxCfg)
 	} else {
-		mux, err = yamux.Client(frames, muxConfig(lane))
+		mux, err = yamux.Client(frames, muxCfg)
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &peerSession{mux: mux, link: l, id: id, remote: remote, lane: lane, mode: mode, outgoing: make(chan struct{}, 128), incoming: make(chan struct{}, 128)}, nil
+	return &peerSession{mux: mux, link: l, id: id, remote: remote, lane: lane, mode: mode, extendedInteractive: extended,
+		outgoing: make(chan struct{}, muxLimit), incoming: make(chan struct{}, muxLimit)}, nil
 }

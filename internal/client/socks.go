@@ -19,6 +19,13 @@ import (
 // SOCKS5 (RFC 1928) mode of a process-owned forward: one local listener, one
 // CONNECT per accepted socket, each opened as an ordinary tcp.open stream.
 const (
+	DefaultSOCKSConnections = 256
+	MaxSOCKSConnections     = 384
+	socksWaiters            = 32
+	socksSlotWait           = 500 * time.Millisecond
+	socksQueuedHandshake    = time.Second
+	socksOverflowTimeout    = 100 * time.Millisecond
+
 	socksVersion          = 5
 	socksHandshakeTimeout = 10 * time.Second
 
@@ -47,6 +54,9 @@ var (
 )
 
 func validateSOCKSForward(spec ForwardSpec) error {
+	if spec.MaxConnections < 0 || spec.MaxConnections > MaxSOCKSConnections {
+		return fmt.Errorf("maxConnections must be between 1 and %d, or zero for the default", MaxSOCKSConnections)
+	}
 	if spec.Reverse {
 		return errors.New("SOCKS mode cannot be combined with reverse forwarding")
 	}
@@ -130,23 +140,66 @@ func (f *Forward) recordError(err error) {
 	f.mu.Unlock()
 }
 
-// bridgeSOCKS holds a socket slot from accept, including the handshake. A
-// failed stream is reported to the SOCKS client and never reopened.
-func (f *Forward) bridgeSOCKS(c Client, local net.Conn) {
+func (f *Forward) rejectSOCKSCapacity(local net.Conn, err error) {
+	if f.ctx.Err() != nil {
+		return
+	}
+	f.mu.Lock()
+	f.info.CapacityRejections++
+	f.info.LastError = err.Error()
+	f.mu.Unlock()
+	writeSOCKSCapacityReply(local)
+}
+
+func writeSOCKSCapacityReply(conn net.Conn) {
+	_ = conn.SetWriteDeadline(time.Now().Add(socksOverflowTimeout))
+	_, _ = conn.Write(socksReply(socksReplyGeneralFailure))
+}
+
+// Admitted sockets hold a slot from accept. A bounded overflow can negotiate
+// SOCKS, then wait briefly for a slot without opening any peer stream.
+func (f *Forward) bridgeSOCKS(c Client, local net.Conn, admitted bool) {
 	defer f.wg.Done()
 	defer func() {
 		_ = local.Close()
 		f.mu.Lock()
+		if admitted {
+			<-f.socksSlots
+		}
 		delete(f.connections, local)
 		f.mu.Unlock()
 	}()
-	address, err := socksHandshake(local, socksHandshakeTimeout)
+	handshakeTimeout := socksHandshakeTimeout
+	if !admitted {
+		handshakeTimeout = socksQueuedHandshake
+	}
+	address, err := socksHandshake(local, handshakeTimeout)
 	if err != nil {
 		f.recordError(fmt.Errorf("SOCKS handshake: %w", err))
 		return
 	}
+	if !admitted {
+		timer := time.NewTimer(socksSlotWait)
+		defer timer.Stop()
+		select {
+		case f.socksSlots <- struct{}{}:
+			admitted = true
+		case <-timer.C:
+			f.rejectSOCKSCapacity(local, errors.New("SOCKS connection limit reached"))
+			return
+		case <-f.ctx.Done():
+			return
+		}
+	}
+	if f.ctx.Err() != nil {
+		return
+	}
 	remote, err := c.tunnel(f.ctx, f.info.Node, address, openSOCKSPeerTCP)
 	if err != nil {
+		if transport.IsStreamCapacity(err) {
+			f.rejectSOCKSCapacity(local, err)
+			return
+		}
 		f.recordError(err)
 		_ = local.SetWriteDeadline(time.Now().Add(socksHandshakeTimeout))
 		_, _ = local.Write(socksReply(socksReplyCode(err)))

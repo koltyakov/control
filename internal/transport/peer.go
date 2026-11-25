@@ -114,23 +114,25 @@ type Peer struct {
 	closersWaiting bool
 	closers        sync.WaitGroup
 	// rejects bounds concurrent close replies to refused setups.
-	rejects         chan struct{}
-	streamSlots     chan struct{}
-	outgoingSlots   map[Lane]chan struct{}
-	closed          bool
-	relayDrainUntil time.Time
-	relayDrainID    string
-	relayPeerDrains map[string]peerDrain
-	closeOnce       sync.Once
-	handler         func(string, net.Conn)
-	log             *slog.Logger
-	wg              sync.WaitGroup
-	control         func(string, []byte)
-	wake            func([]byte)
-	startup         func([]byte)
-	secrets         func([]byte)
-	proxyManagement func([]byte)
-	proxySlots      chan struct{}
+	rejects                  chan struct{}
+	streamSlots              chan struct{}
+	interactiveIncomingSlots chan struct{}
+	interactiveWaiters       chan struct{}
+	outgoingSlots            map[Lane]chan struct{}
+	closed                   bool
+	relayDrainUntil          time.Time
+	relayDrainID             string
+	relayPeerDrains          map[string]peerDrain
+	closeOnce                sync.Once
+	handler                  func(string, net.Conn)
+	log                      *slog.Logger
+	wg                       sync.WaitGroup
+	control                  func(string, []byte)
+	wake                     func([]byte)
+	startup                  func([]byte)
+	secrets                  func([]byte)
+	proxyManagement          func([]byte)
+	proxySlots               chan struct{}
 	// controlSlots bound concurrent wake and startup handlers.
 	controlSlots      chan struct{}
 	secretSlots       chan struct{}
@@ -170,11 +172,12 @@ func New(cfg Config, handler func(string, net.Conn), options ...Options) *Peer {
 		members: map[string]bool{}, memberSeen: map[string]time.Time{}, owners: map[string]string{}, channels: map[string]bool{},
 		largePackets: map[string]bool{}, trickle: map[string]bool{}, directRetry: map[string]time.Time{}, lookups: map[string]lookupEntry{},
 		carriers: map[string]*rtcCarrier{}, setups: make(chan struct{}, 32), dialSetups: make(chan struct{}, 32), rejects: make(chan struct{}, 8), streamSlots: make(chan struct{}, 512),
+		interactiveIncomingSlots: make(chan struct{}, incomingInteractive), interactiveWaiters: make(chan struct{}, interactiveWaiters),
 		pendingSlots: map[Lane]chan struct{}{
 			ControlLane: make(chan struct{}, 32), BulkLane: make(chan struct{}, 16), InteractiveLane: make(chan struct{}, 16),
 		},
 		outgoingSlots: map[Lane]chan struct{}{
-			ControlLane: make(chan struct{}, 256), BulkLane: make(chan struct{}, 64), InteractiveLane: make(chan struct{}, 192),
+			ControlLane: make(chan struct{}, 256), BulkLane: make(chan struct{}, 64), InteractiveLane: make(chan struct{}, outgoingInteractive),
 		},
 	}
 	p.api = newWebRTCAPI(cfg.DirectTimeout, false, &p.stats.udpBuffers, options...)

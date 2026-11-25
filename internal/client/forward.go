@@ -26,17 +26,21 @@ type ForwardSpec struct {
 	// instead of Address. AllowNonLoopback opts in to an open proxy listener.
 	SOCKS            bool `json:"socks,omitempty"`
 	AllowNonLoopback bool `json:"allowNonLoopback,omitempty"`
+	MaxConnections   int  `json:"maxConnections,omitempty"` // SOCKS only; zero selects the default.
 }
 
 type ForwardInfo struct {
-	ID        string `json:"id"`
-	Node      string `json:"node"`
-	Address   string `json:"address,omitempty"`
-	Listen    string `json:"listen"`
-	Reverse   bool   `json:"reverse,omitempty"`
-	SOCKS     bool   `json:"socks,omitempty"`
-	Active    int    `json:"activeConnections"`
-	LastError string `json:"lastError,omitempty"`
+	ID                 string `json:"id"`
+	Node               string `json:"node"`
+	Address            string `json:"address,omitempty"`
+	Listen             string `json:"listen"`
+	Reverse            bool   `json:"reverse,omitempty"`
+	SOCKS              bool   `json:"socks,omitempty"`
+	Active             int    `json:"activeConnections"`
+	ConnectionLimit    int    `json:"connectionLimit,omitempty"`
+	WaitingConnections int    `json:"waitingConnections,omitempty"`
+	CapacityRejections uint64 `json:"capacityRejections"`
+	LastError          string `json:"lastError,omitempty"`
 }
 
 type resources struct {
@@ -86,6 +90,7 @@ type Forward struct {
 	listener    net.Listener
 	mu          sync.Mutex
 	connections map[net.Conn]net.Conn
+	socksSlots  chan struct{} // When non-nil, connections also includes bounded SOCKS waiters.
 	wg          sync.WaitGroup
 	done        chan struct{}
 	once        sync.Once
@@ -97,6 +102,10 @@ func (f *Forward) Info() ForwardInfo {
 	defer f.mu.Unlock()
 	info := f.info
 	info.Active = len(f.connections)
+	if f.socksSlots != nil {
+		info.Active = len(f.socksSlots)
+		info.WaitingConnections = len(f.connections) - info.Active
+	}
 	return info
 }
 
@@ -141,6 +150,8 @@ func (c Client) StartForward(ctx context.Context, spec ForwardSpec) (*Forward, e
 		if err := validateSOCKSForward(spec); err != nil {
 			return nil, err
 		}
+	} else if spec.MaxConnections != 0 {
+		return nil, errors.New("maxConnections applies only to SOCKS forwards")
 	} else if spec.AllowNonLoopback {
 		return nil, errors.New("allowNonLoopback applies only to SOCKS forwards")
 	} else if _, _, err := net.SplitHostPort(spec.Address); err != nil {
@@ -207,6 +218,14 @@ func (c Client) StartForward(ctx context.Context, spec ForwardSpec) (*Forward, e
 	}
 	f := &Forward{ctx: forwardCtx, cancel: cancel, listener: listener, connections: map[net.Conn]net.Conn{}, done: make(chan struct{}),
 		info: ForwardInfo{ID: identity.NewID(), Node: spec.Node, Address: spec.Address, Listen: listener.Addr().String(), Reverse: spec.Reverse, SOCKS: spec.SOCKS}}
+	if spec.SOCKS {
+		limit := spec.MaxConnections
+		if limit == 0 {
+			limit = DefaultSOCKSConnections
+		}
+		f.socksSlots = make(chan struct{}, limit)
+		f.info.ConnectionLimit = limit
+	}
 	r.forwards[f.info.ID] = f
 	f.retire = func() {
 		r.mu.Lock()
@@ -241,7 +260,32 @@ func (f *Forward) serve(c Client) {
 			return
 		}
 		f.mu.Lock()
-		if f.ctx.Err() != nil || len(f.connections) >= maxForwardConnections {
+		if f.ctx.Err() != nil {
+			f.mu.Unlock()
+			_ = local.Close()
+			return
+		}
+		admitted := false
+		switch {
+		case f.socksSlots != nil:
+			select {
+			case f.socksSlots <- struct{}{}:
+				admitted = true
+			default:
+				if len(f.connections) >= cap(f.socksSlots)+socksWaiters {
+					f.info.CapacityRejections++
+					f.info.LastError = "SOCKS connection limit reached and wait queue full"
+					f.mu.Unlock()
+					// One bounded reply path in the accept loop avoids spawning
+					// unbounded additional handshakes during an overflow.
+					if _, err := socksHandshake(local, socksOverflowTimeout); err == nil {
+						writeSOCKSCapacityReply(local)
+					}
+					_ = local.Close()
+					continue
+				}
+			}
+		case len(f.connections) >= maxForwardConnections:
 			f.info.LastError = "forward connection limit reached or closing"
 			f.mu.Unlock()
 			_ = local.Close()
@@ -251,7 +295,7 @@ func (f *Forward) serve(c Client) {
 		f.wg.Add(1)
 		f.mu.Unlock()
 		if f.info.SOCKS {
-			go f.bridgeSOCKS(c, local)
+			go f.bridgeSOCKS(c, local, admitted)
 		} else {
 			go f.bridge(c, local)
 		}

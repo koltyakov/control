@@ -79,6 +79,10 @@ func (n *Node) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/tunnel", func(w http.ResponseWriter, r *http.Request) {
 		peer, err := n.OpenTCP(r.Context(), r.URL.Query().Get("target"), r.URL.Query().Get("address"))
 		if err != nil {
+			if transport.IsStreamCapacity(err) {
+				http.Error(w, err.Error(), http.StatusServiceUnavailable)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}

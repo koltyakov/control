@@ -117,7 +117,7 @@ func tunnelCLI(ctx context.Context, c client.Client, args []string) error {
 			return persistentTunnelCLI(ctx, c, args)
 		}
 	}
-	const usage = "usage: control tunnel NODE HOST:PORT [--reverse] [--listen 127.0.0.1:PORT], or control tunnel NODE --socks [--listen 127.0.0.1:PORT] [--allow-non-loopback]"
+	const usage = "usage: control tunnel NODE HOST:PORT [--reverse] [--listen 127.0.0.1:PORT], or control tunnel NODE --socks [--listen 127.0.0.1:PORT] [--max-connections N] [--allow-non-loopback]"
 	if len(args) < 2 {
 		return errors.New(usage)
 	}
@@ -130,6 +130,7 @@ func tunnelCLI(ctx context.Context, c client.Client, args []string) error {
 	listen := f.String("listen", "127.0.0.1:0", "listen address, on the remote machine with --reverse")
 	reverse := f.Bool("reverse", false, "forward a remote listener to HOST:PORT on this machine")
 	socks := f.Bool("socks", false, "run a local SOCKS5 proxy; NODE resolves and dials each requested host")
+	maxConnections := f.Int("max-connections", 0, fmt.Sprintf("SOCKS connection limit (1..%d; zero selects %d)", client.MaxSOCKSConnections, client.DefaultSOCKSConnections))
 	allowNonLoopback := f.Bool("allow-non-loopback", false, "permit a non-loopback --socks listener, an unauthenticated open proxy into the fleet")
 	if err := f.Parse(flags); err != nil {
 		return err
@@ -137,13 +138,19 @@ func tunnelCLI(ctx context.Context, c client.Client, args []string) error {
 	if f.NArg() != 0 || (address == "") != *socks {
 		return errors.New(usage)
 	}
-	forward, err := c.StartForward(ctx, client.ForwardSpec{Node: args[0], Address: address, Listen: *listen, Reverse: *reverse, SOCKS: *socks, AllowNonLoopback: *allowNonLoopback})
+	forward, err := c.StartForward(ctx, client.ForwardSpec{Node: args[0], Address: address, Listen: *listen, Reverse: *reverse, SOCKS: *socks, AllowNonLoopback: *allowNonLoopback, MaxConnections: *maxConnections})
 	if err != nil {
 		return err
 	}
-	defer forward.Close()
+	defer func() {
+		forward.Close()
+		if rejected := forward.Info().CapacityRejections; rejected != 0 {
+			fmt.Fprintln(os.Stderr, "SOCKS5 capacity rejections:", rejected)
+		}
+	}()
 	if *socks {
-		fmt.Fprintln(os.Stderr, "SOCKS5 proxy listening on", forward.Info().Listen, "through", args[0])
+		info := forward.Info()
+		fmt.Fprintf(os.Stderr, "SOCKS5 proxy listening on %s through %s (connection limit %d)\n", info.Listen, args[0], info.ConnectionLimit)
 	} else if *reverse {
 		fmt.Fprintln(os.Stderr, "listening on", args[0], forward.Info().Listen, "forwarding to local", args[1])
 	} else {

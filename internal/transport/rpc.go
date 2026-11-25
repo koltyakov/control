@@ -107,6 +107,7 @@ func (p *Peer) OpenRPCWithReceipt(ctx context.Context, target, method string, pa
 
 // OpenTCP negotiates duplex records. Older receivers return a raw stream.
 func (p *Peer) OpenTCP(ctx context.Context, target, address string) (net.Conn, error) {
+	ctx = context.WithValue(ctx, tcpSlotWaitKey{}, true)
 	conn, result, err := p.OpenRPC(ctx, target, "tcp.open", map[string]any{"address": address, "duplex": DuplexVersion})
 	if err != nil {
 		return nil, err

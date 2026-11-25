@@ -160,7 +160,7 @@ control tunnel worker 127.0.0.1:3000 --reverse --listen 127.0.0.1:3000
 control tunnel worker --socks --listen 127.0.0.1:1080
 ```
 
-The first command reaches a database that only `worker` can see. The second serves your local dev server on `worker`'s loopback, so a browser there can open `http://localhost:3000`. The third is a SOCKS5 proxy through the worker's network. `control tunnel start` keeps a tunnel after the invoking command exits. See [tunnels](docs/tunnels.md) and [fleet streaming](docs/streaming.md).
+The first command reaches a database that only `worker` can see. The second serves your local dev server on `worker`'s loopback, so a browser there can open `http://localhost:3000`. The third is a SOCKS5 proxy through the worker's network, with a default limit of 256 connections. `control tunnel start` keeps a fixed-destination tunnel after the invoking command exits. See [tunnels](docs/tunnels.md) and [fleet streaming](docs/streaming.md).
 
 A worker can also make an HTTP request from its own network with `http.request`, and `control clipboard paste worker` sends your [clipboard](docs/clipboard.md) to it.
 

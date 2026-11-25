@@ -260,6 +260,9 @@ func (c Client) tunnel(ctx context.Context, target, address string, openPeer fun
 		u = strings.Replace(strings.Replace(u, "https://", "wss://", 1), "http://", "ws://", 1)
 		ws, response, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPClient: localAPIClient, HTTPHeader: http.Header{"Authorization": {"Bearer " + c.Token}}})
 		if err != nil {
+			if response != nil && response.StatusCode == http.StatusServiceUnavailable {
+				return nil, transport.ErrStreamCapacity
+			}
 			return nil, err
 		}
 		conn = websocket.NetConn(ctx, ws, websocket.MessageBinary)

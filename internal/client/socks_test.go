@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -161,6 +162,8 @@ func TestSOCKSForwardValidation(t *testing.T) {
 		{Node: "w", SOCKS: true, Listen: "[::]:1080"},
 		{Node: "w", SOCKS: true, Listen: "192.168.1.5:1080"},
 		{Node: "w", SOCKS: true, Listen: "proxy.example:1080"},
+		{Node: "w", SOCKS: true, MaxConnections: -1},
+		{Node: "w", SOCKS: true, MaxConnections: MaxSOCKSConnections + 1},
 	} {
 		if validateSOCKSForward(spec) == nil {
 			t.Errorf("accepted %+v", spec)
@@ -172,6 +175,8 @@ func TestSOCKSForwardValidation(t *testing.T) {
 		{Node: "w", SOCKS: true, Listen: "[::1]:0"},
 		{Node: "w", SOCKS: true, Listen: "localhost:0"},
 		{Node: "w", SOCKS: true, Listen: "0.0.0.0:1080", AllowNonLoopback: true},
+		{Node: "w", SOCKS: true, MaxConnections: 1},
+		{Node: "w", SOCKS: true, MaxConnections: MaxSOCKSConnections},
 	} {
 		if err := validateSOCKSForward(spec); err != nil {
 			t.Errorf("refused %+v: %v", spec, err)
@@ -186,10 +191,14 @@ func TestSOCKSForwardValidation(t *testing.T) {
 	if _, err := c.StartForward(t.Context(), ForwardSpec{Node: "w", Address: "db:5432", AllowNonLoopback: true}); err == nil {
 		t.Error("ordinary forward accepted allowNonLoopback")
 	}
+	if _, err := c.StartForward(t.Context(), ForwardSpec{Node: "w", Address: "db:5432", MaxConnections: 2}); err == nil {
+		t.Error("ordinary forward accepted maxConnections")
+	}
 }
 
-// socksOpen negotiates no authentication and one request, returning the reply code.
-func socksOpen(t *testing.T, listen string, request []byte, payload []byte) (net.Conn, byte) {
+// socksStart pipelines the request, then reads the no-auth selection. CONNECT
+// can still be waiting for capacity when this returns.
+func socksStart(t *testing.T, listen string, request []byte, payload []byte) net.Conn {
 	t.Helper()
 	conn, err := net.DialTimeout("tcp", listen, 2*time.Second)
 	if err != nil {
@@ -201,15 +210,32 @@ func socksOpen(t *testing.T, listen string, request []byte, payload []byte) (net
 	if _, err = conn.Write(message); err != nil {
 		t.Fatal(err)
 	}
-	var reply [12]byte
+	var method [2]byte
+	if _, err = io.ReadFull(conn, method[:]); err != nil || method != [2]byte{socksVersion, socksMethodNone} {
+		_ = conn.Close()
+		t.Fatalf("SOCKS method %v: %v", method, err)
+	}
+	return conn
+}
+
+func socksResult(t *testing.T, conn net.Conn) byte {
+	t.Helper()
+	var reply [10]byte
+	var err error
 	if _, err = io.ReadFull(conn, reply[:]); err != nil {
 		_ = conn.Close()
 		t.Fatal("SOCKS reply", err)
 	}
-	if !bytes.Equal(reply[:2], []byte{5, 0}) || reply[2] != socksVersion || reply[4] != 0 || reply[5] != socksAddressIPv4 {
+	if reply[0] != socksVersion || reply[2] != 0 || reply[3] != socksAddressIPv4 {
 		t.Fatalf("malformed SOCKS reply %v", reply)
 	}
-	return conn, reply[3]
+	return reply[1]
+}
+
+func socksOpen(t *testing.T, listen string, request []byte, payload []byte) (net.Conn, byte) {
+	t.Helper()
+	conn := socksStart(t, listen, request, payload)
+	return conn, socksResult(t, conn)
 }
 
 func echoListener(t *testing.T, network, address string) net.Listener {
@@ -290,7 +316,7 @@ func TestSOCKSForward(t *testing.T) {
 				t.Fatal(err)
 			}
 			info := f.Info()
-			if !info.SOCKS || info.Address != "" || !strings.HasPrefix(info.Listen, "127.0.0.1:") {
+			if !info.SOCKS || info.Address != "" || !strings.HasPrefix(info.Listen, "127.0.0.1:") || info.ConnectionLimit != 256 {
 				t.Fatal("SOCKS forward metadata", info)
 			}
 			if listed := c.Forwards(); len(listed) != 1 || !listed[0].SOCKS {
@@ -369,8 +395,9 @@ func TestSOCKSForward(t *testing.T) {
 				_ = raw.Close()
 			}
 
-			// Half-open handshakes hold socket slots up to the cap.
-			idle := make([]net.Conn, 0, maxForwardConnections)
+			// Hold 256 established CONNECTs across the same peer session,
+			// exceeding both previous transport budgets.
+			idle := make([]net.Conn, 0, DefaultSOCKSConnections)
 			defer func() {
 				for _, conn := range idle {
 					_ = conn.Close()
@@ -384,28 +411,34 @@ func TestSOCKSForward(t *testing.T) {
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
-			for len(idle) < maxForwardConnections-1 {
-				conn, err := net.Dial("tcp", info.Listen)
-				if err != nil {
-					t.Fatal(err)
+			request := socksRequest(socksCommandConnect, socksAddressIPv4, []byte{127, 0, 0, 1}, port)
+			for len(idle) < DefaultSOCKSConnections-1 {
+				conn, reply := socksOpen(t, info.Listen, request, nil)
+				if reply != socksReplySucceeded {
+					t.Fatalf("CONNECT %d reply: %d", len(idle)+2, reply)
 				}
 				idle = append(idle, conn)
 			}
-			for f.Info().Active != maxForwardConnections {
-				if time.Now().After(deadline) {
-					t.Fatal("socket count", f.Info().Active)
-				}
-				time.Sleep(10 * time.Millisecond)
+			if got := f.Info().Active; got != DefaultSOCKSConnections {
+				t.Fatal("socket count", got)
 			}
-			over, err := net.Dial("tcp", info.Listen)
-			if err != nil {
-				t.Fatal(err)
+			started := time.Now()
+			over, reply := socksOpen(t, info.Listen, request, nil)
+			if reply != socksReplyGeneralFailure || time.Since(started) < socksSlotWait {
+				t.Fatal("over-capacity CONNECT did not wait and reply with general failure", reply)
 			}
 			expectClosed(t, over)
 			_ = over.Close()
-			if !strings.Contains(f.Info().LastError, "limit") {
-				t.Fatal("socket cap not reported", f.Info().LastError)
+			if stats := f.Info(); stats.CapacityRejections != 1 || !strings.Contains(stats.LastError, "limit") {
+				t.Fatal("socket cap not reported", stats)
 			}
+			waiting := socksStart(t, info.Listen, request, []byte("queued"))
+			defer func() { _ = waiting.Close() }()
+			_ = idle[0].Close()
+			if reply := socksResult(t, waiting); reply != socksReplySucceeded {
+				t.Fatal("waiting CONNECT was not admitted after a slot opened", reply)
+			}
+			expectEcho(t, waiting, "queued")
 
 			stopped := make(chan error, 1)
 			go func() { stopped <- c.StopForward(info.ID) }()
@@ -423,8 +456,9 @@ func TestSOCKSForward(t *testing.T) {
 				t.Fatal("forward not done after stop")
 			}
 			expectClosed(t, connected)
+			expectClosed(t, waiting)
 			_ = connected.Close()
-			for _, conn := range idle {
+			for _, conn := range idle[1:] {
 				expectClosed(t, conn)
 			}
 			if conn, err := net.DialTimeout("tcp", info.Listen, time.Second); err == nil {
@@ -434,6 +468,61 @@ func TestSOCKSForward(t *testing.T) {
 			if len(c.Forwards()) != 0 {
 				t.Fatal("stopped forward still listed")
 			}
+
+			small, err := c.StartForward(ctx, ForwardSpec{Node: "first", SOCKS: true, MaxConnections: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer small.Close()
+			if info := small.Info(); info.ConnectionLimit != 1 {
+				t.Fatal("custom limit not reflected in metadata", info)
+			}
+			first, reply := socksOpen(t, small.Info().Listen, request, nil)
+			defer func() { _ = first.Close() }()
+			if reply != socksReplySucceeded {
+				t.Fatal("custom limit did not permit first connection", reply)
+			}
+			second, reply := socksOpen(t, small.Info().Listen, request, nil)
+			defer func() { _ = second.Close() }()
+			if reply != socksReplyGeneralFailure || small.Info().CapacityRejections != 1 {
+				t.Fatal("custom limit did not reject second connection", reply, small.Info())
+			}
 		})
+	}
+}
+
+func TestSOCKSWaitQueueIsBounded(t *testing.T) {
+	t.Parallel()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	f := &Forward{ctx: ctx, cancel: cancel, listener: listener, done: make(chan struct{}),
+		connections: map[net.Conn]net.Conn{}, socksSlots: make(chan struct{}, 1), info: ForwardInfo{SOCKS: true, ConnectionLimit: 1}}
+	f.wg.Add(1)
+	go f.serve(Client{})
+	defer f.Close()
+	listen := listener.Addr().String()
+	for range 1 + socksWaiters {
+		conn, err := net.DialTimeout("tcp", listen, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+	}
+	request := socksRequest(socksCommandConnect, socksAddressIPv4, []byte{127, 0, 0, 1}, 80)
+	overflow, reply := socksOpen(t, listen, request, nil)
+	defer func() { _ = overflow.Close() }()
+	if reply != socksReplyGeneralFailure {
+		t.Fatal("full wait queue did not reply with general failure", reply)
+	}
+	expectClosed(t, overflow)
+	if info := f.Info(); info.Active != 1 || info.WaitingConnections != socksWaiters || info.CapacityRejections != 1 {
+		t.Fatal("unexpected hard overflow accounting", info)
+	}
+	f.Close()
+	if info := f.Info(); info.Active != 0 || info.WaitingConnections != 0 || info.CapacityRejections != 1 {
+		t.Fatal("shutdown did not release queued connections", info)
 	}
 }

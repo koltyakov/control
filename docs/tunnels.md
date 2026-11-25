@@ -83,8 +83,10 @@ The original foreground `control tunnel NODE HOST:PORT` and process-owned MCP `c
 To reach several hosts on a worker's network through one local port, run a foreground SOCKS5 proxy instead of one tunnel per destination:
 
 ```sh
-control tunnel worker --socks --listen 127.0.0.1:1080
+control tunnel worker --socks --listen 127.0.0.1:1080 --max-connections 256
 curl --socks5-hostname 127.0.0.1:1080 https://api.internal/health
 ```
 
 MCP `control_forward_start` takes `socks: true` without `address`. Each SOCKS `CONNECT` opens its own `tcp.open` stream through the worker, which resolves domain names with its own DNS and network. Use `socks5h://` or `--socks5-hostname` so clients send names unresolved. Only "no authentication" and `CONNECT` are supported. A SOCKS listener must be on loopback unless `--allow-non-loopback` is given; a non-loopback listener is an unauthenticated open proxy into everything the worker can reach. SOCKS mode is refused for instruction-only destinations such as Hybrid System companions, and for `--reverse`. Retained `control tunnel start` definitions do not support SOCKS mode in this version. See [SOCKS forwarding details](protocol.md#orchestrator-sessions-and-forwards).
+
+SOCKS defaults to 256 connections per listener. Set `--max-connections N` or MCP `maxConnections` to 1–384; zero or omission uses the default. Connections share the same interactive peer session. Upgrade both ends for more than 128 streams on that session; with explicit local API routing, upgrade the local node too. When slots are busy, a SOCKS request can wait briefly and receives general failure (`0x01`) if admission still fails. MCP `control_forward_list` and `control_session` show the per-listener limit and cumulative `capacityRejections`; a foreground CLI prints nonzero rejections when it exits.

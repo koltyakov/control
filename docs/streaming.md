@@ -48,9 +48,9 @@ A detected local network switch retires all old-network sessions, cancels setup,
 
 - At most 256 links and 32 simultaneous TLS/ICE setup operations per process.
 - Pending outbound lookup/setup plans reserve separate capacity for 32 control, 16 bulk, and 16 interactive destinations. Alias lookups coalesce without consuming another TLS/ICE slot. Dependent bulk/interactive setup does not hold a TLS/ICE slot while waiting for a control carrier.
-- At most 128 incoming or outgoing streams per multiplexer, with a 128-stream accept backlog.
-- At most 512 active incoming handlers per process. Excess streams close without invoking a capability.
-- Outgoing stream reservations are separate: 256 control, 64 bulk, and 192 interactive streams. Waiting for capacity observes caller cancellation.
+- At most 128 incoming or outgoing streams per multiplexer, with a 128-stream accept backlog, except for interactive sessions that negotiate `control-interactive-streams-v1` in pinned TLS. Those sessions have 448 slots per direction and a 448-stream backlog. Legacy peers keep the original limit without a gateway upgrade.
+- Up to 512 active incoming handlers per process for negotiated interactive sessions, separate from the 512 for all other sessions. Negotiated interactive overflow can queue up to 32 streams per process for up to 500 ms before returning an admission error. Other sessions keep their close-on-overflow behavior. Refused streams do not invoke a capability.
+- Outgoing stream reservations are separate: 256 control, 64 bulk, and 512 interactive streams. Waiting for capacity observes caller cancellation. `tcp.open` waits at most 500 ms for outgoing stream slots, separate from peer setup and the destination dial.
 - Each packet queue retains at most 256 messages and 8 MiB. Messages are at most 64 KiB; senders use 16 KiB toward peers that do not advertise `largePackets`. Overflow closes that link rather than silently dropping reliable bytes, and is counted and logged at most every ten seconds.
 - Receive buffers use 1 KiB, 4 KiB, 16 KiB, and 64 KiB pools. WebRTC channels are detached and read by peer-owned loops into a reusable 64 KiB-plus-one buffer, rejecting oversized or text messages. Accepted bytes are copied into pooled packets, returned after consumption, and drained on close. Relay packets retain ownership of decoded protobuf payloads. Closed links and invalid packets do not count as queue overflows.
 - TCP duplex records carry at most 32 KiB. A zero-length record is write-side EOF, not connection shutdown.

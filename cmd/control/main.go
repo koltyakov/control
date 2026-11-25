@@ -714,7 +714,7 @@ Environment: CONTROL_API, CONTROL_TOKEN
   upload resume NODE ID LOCAL [--timeout DURATION]  Explicitly resume a verified partial or directory
   upload status|abort NODE ID          Reconcile publication or abandon staging
   tunnel NODE HOST:PORT [--reverse] [--listen ADDRESS]
-  tunnel NODE --socks [--listen ADDRESS] [--allow-non-loopback]  Local SOCKS5 proxy through NODE
+  tunnel NODE --socks [--listen ADDRESS] [--max-connections N] [--allow-non-loopback]  Local SOCKS5 proxy through NODE
   tunnel start NODE HOST:PORT --listen ADDRESS [--reverse] [--id ID] [--ttl DURATION]
   tunnel list
   tunnel dispose ID
