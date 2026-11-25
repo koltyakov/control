@@ -14,6 +14,7 @@ import (
 // client, is refused before any step starts, including steps with concrete
 // targets and cleanup steps.
 func TestWorkflowCoordinatorRejectsUnresolvedPlacement(t *testing.T) {
+	t.Parallel()
 	n, r := cleanupNode(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()

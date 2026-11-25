@@ -46,6 +46,7 @@ func hostOf(t *testing.T, raw string) string {
 }
 
 func TestHTTPSecretPolicy(t *testing.T) {
+	t.Parallel()
 	n := localNode(t, nil)
 	var hits atomic.Int32
 	var authorization atomic.Value
@@ -120,6 +121,7 @@ func TestHTTPSecretPolicy(t *testing.T) {
 }
 
 func TestExecSecretPolicy(t *testing.T) {
+	t.Parallel()
 	n := localNode(t, nil)
 	setPolicySecret(t, n, "domain.admin.password", "private-token", []string{"exec"}, nil, false)
 	setPolicySecret(t, n, "stdin.password", "stdin-token", []string{"desktop", "exec"}, nil, false)
@@ -172,6 +174,7 @@ func TestExecSecretPolicy(t *testing.T) {
 }
 
 func TestDesktopSecretPolicy(t *testing.T) {
+	t.Parallel()
 	n := desktopNode(t, "echo")
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
@@ -253,6 +256,7 @@ func TestRemoteSecretPolicy(t *testing.T) {
 // redaction or validation only. A new consumer fails here until it routes
 // through Resolve and is reviewed into this list.
 func TestSecretValueCallSites(t *testing.T) {
+	t.Parallel()
 	root := repositoryRoot(t)
 	want := []string{
 		"internal/node/browser.go browserRun secretValues",

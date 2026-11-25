@@ -69,7 +69,12 @@ type entry struct {
 // Manager owns bounded metadata and reservations; individual sessions own
 // files and locks. Files are staged beside their destination, not in dataDir.
 type Manager struct {
-	mu         sync.Mutex
+	mu sync.Mutex
+	// stageMu serializes a staging directory's lifecycle: creating it and the
+	// first partial inside it, against removing it once empty. The partial
+	// keeps the directory non-empty afterwards, so the lock never covers
+	// transfers. Lock order is stageMu, then mu.
+	stageMu    sync.Mutex
 	root       *os.Root
 	dir        string
 	privateDir string
@@ -302,8 +307,39 @@ func (m *Manager) cleanup(r *record) error {
 	if err = syncStage(parent); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	m.stageMu.Lock()
+	removeEmptyStage(parent)
+	m.stageMu.Unlock()
 	r.Cleaned = true
 	return m.save(*r)
+}
+
+// removeEmptyStage removes the staging directory under parent when no
+// partial remains in it, so finished uploads leave no private entry behind
+// to block directory export, removal or moves. Removal of a non-empty
+// directory fails, which keeps other uploads' partials. Best effort: a
+// leftover empty directory is tolerated by export and files.remove. The
+// caller holds stageMu.
+func removeEmptyStage(parent *os.Root) {
+	if info, err := parent.Lstat(StagingDir); err == nil && info.Mode().Type() == os.ModeDir {
+		_ = parent.Remove(StagingDir)
+	}
+}
+
+// RemoveDirectory removes the empty workspace directory name, first removing
+// an empty staging directory left inside it. Holding stageMu keeps an upload
+// from creating a partial in between, so a directory holding a partial is
+// never removed. The caller checks name like any filesystem request.
+func (m *Manager) RemoveDirectory(name string) error {
+	m.stageMu.Lock()
+	defer m.stageMu.Unlock()
+	stage := filepath.Join(name, StagingDir)
+	if info, err := m.root.Lstat(stage); err == nil && info.Mode().Type() == os.ModeDir {
+		if err = m.root.Remove(stage); err != nil {
+			return Error("upload_private_path", "directory holds an unfinished upload's staging; finish or abort that upload first")
+		}
+	}
+	return m.root.Remove(name)
 }
 
 // Prune is called at startup and periodically. Busy records and unresolved

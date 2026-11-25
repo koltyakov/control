@@ -103,6 +103,7 @@ func writeChunks(t *testing.T, w io.Writer, data []byte, size int) {
 }
 
 func TestCaptureKeepsCompleteOutputWithinLimit(t *testing.T) {
+	t.Parallel()
 	data := bytes.Repeat([]byte("0123456789abcdef"), captureLimit/16)
 	for _, chunk := range []int{7, 4096, len(data)} {
 		c := &capture{keepTail: true}
@@ -115,6 +116,7 @@ func TestCaptureKeepsCompleteOutputWithinLimit(t *testing.T) {
 }
 
 func TestCaptureRetainsHeadAndTail(t *testing.T) {
+	t.Parallel()
 	data := make([]byte, 3*captureLimit+12345)
 	for i := range data {
 		data[i] = byte('a' + i%26)
@@ -175,6 +177,7 @@ func TestCaptureNeverSplitsUTF8(t *testing.T) {
 }
 
 func TestExecRunReturnsHeadAndTail(t *testing.T) {
+	t.Parallel()
 	n := localNode(t, nil)
 	// Task logs serialize both streams; so does this test log.
 	var head bytes.Buffer
@@ -201,6 +204,7 @@ func TestExecRunReturnsHeadAndTail(t *testing.T) {
 }
 
 func TestSecretCommandTailStaysSuppressed(t *testing.T) {
+	t.Parallel()
 	n := localNode(t, nil)
 	setTestSecret(t, n, "tail.password", "tail-private-token")
 	args := tailProcess(t, "secret-tail")
@@ -234,6 +238,7 @@ func TestSecretCommandTailStaysSuppressed(t *testing.T) {
 }
 
 func TestTaskLogTailPersistsAndPrunes(t *testing.T) {
+	t.Parallel()
 	cfg := Config{Name: "local", Gateway: "http://127.0.0.1:1", Token: testToken, DataDir: t.TempDir(), WorkDir: t.TempDir(), TaskRetentionHours: 1}
 	n := openLocalNode(t, cfg)
 	task, err := n.startTaskContext(t.Context(), "owner", model.TaskSpec{ID: "long-build", Capability: "exec.run", Args: model.JSON(tailProcess(t, "big-log"))})
@@ -312,6 +317,7 @@ func TestTaskLogTailPersistsAndPrunes(t *testing.T) {
 }
 
 func TestTaskLogTailWhileRunning(t *testing.T) {
+	t.Parallel()
 	n := localNode(t, nil)
 	task, err := n.startTaskContext(t.Context(), "owner", model.TaskSpec{ID: "still-running", Capability: "exec.run", Args: model.JSON(tailProcess(t, "big-log-wait"))})
 	if err != nil {

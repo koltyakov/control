@@ -394,6 +394,29 @@ func TestFileMutationsKeepUploadStagingPrivate(t *testing.T) {
 	}
 }
 
+// files.remove treats an empty leftover staging directory as absent, since
+// listings never show it, but keeps refusing a directory holding a partial.
+func TestFilesRemoveDiscardsEmptyUploadStaging(t *testing.T) {
+	t.Parallel()
+	n := localNode(t, nil)
+	work := n.Config.WorkDir
+	if err := os.MkdirAll(filepath.Join(work, "left", ".control-uploads"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(work, "busy", ".control-uploads", "x.partial"), "staged")
+	writeTestFile(t, filepath.Join(work, "full", "a.txt"), "a")
+	mustFileOp(t, n, "files.remove", map[string]any{"path": "left"})
+	assertMissing(t, filepath.Join(work, "left"))
+	if _, err := fileOp(t, n, "files.remove", map[string]any{"path": "busy"}); err == nil || !strings.Contains(err.Error(), "unfinished upload") {
+		t.Fatal("removed a directory holding upload staging", err)
+	}
+	assertFileContent(t, filepath.Join(work, "busy", ".control-uploads", "x.partial"), "staged")
+	if _, err := fileOp(t, n, "files.remove", map[string]any{"path": "full"}); err == nil || !strings.Contains(err.Error(), "only empty directories") {
+		t.Fatal("non-empty directory removal", err)
+	}
+	assertFileContent(t, filepath.Join(work, "full", "a.txt"), "a")
+}
+
 func TestFileMutationsUseOperationAdmission(t *testing.T) {
 	t.Parallel()
 	n := localNode(t, func(cfg *Config) { cfg.MaxOperations = 1 })

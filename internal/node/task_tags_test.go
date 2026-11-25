@@ -62,6 +62,7 @@ func pageIDs(t *testing.T, n *Node, owner, tag string) []string {
 // Tags are validated, de-duplicated and sorted before the digest, so order
 // does not matter but any other change is a conflicting specification.
 func TestTaskTagsValidationAndIdempotentDigest(t *testing.T) {
+	t.Parallel()
 	n := localNode(t, nil)
 	ctx := t.Context()
 	for name, tags := range map[string][]string{
@@ -146,6 +147,7 @@ func TestTaskTagsPreserveLegacyRecordDigests(t *testing.T) {
 }
 
 func TestTaskTagFilterAndCancelTagged(t *testing.T) {
+	t.Parallel()
 	n := localNode(t, func(c *Config) { c.MaxTasks = 1 })
 	ctx := t.Context()
 	start := func(owner string, spec model.TaskSpec) {
@@ -260,6 +262,7 @@ func TestNodeDescribeAdvertisesTaskTags(t *testing.T) {
 // Tags persist with the record, survive interruption at restart and are
 // removed with the record by retention. Tombstones keep only the digest.
 func TestTaskTagsPersistAndRetention(t *testing.T) {
+	t.Parallel()
 	cfg := Config{Name: "local", Gateway: "http://127.0.0.1:1", Token: testToken, DataDir: t.TempDir(), WorkDir: t.TempDir(), MaxRetainedTasks: 1}
 	n := openLocalNode(t, cfg)
 	_ = n.Close()

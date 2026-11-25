@@ -249,6 +249,96 @@ func TestUploadPrefixCorruptionAndExpiry(t *testing.T) {
 	}
 }
 
+// Finished uploads remove their staging directory once no partial remains,
+// so a published tree holds no private entries. Another upload's partial
+// keeps the directory until that upload is also cleaned up.
+func TestUploadStagingDirectoryRemovedWhenEmpty(t *testing.T) {
+	m := fixture(t)
+	for _, dir := range []string{"solo", "shared"} {
+		if err := os.Mkdir(filepath.Join(m.workDir, dir), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	staged := func(dir string) bool {
+		t.Helper()
+		info, err := os.Lstat(filepath.Join(m.workDir, dir, StagingDir))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		return err == nil && info.IsDir()
+	}
+	at := func(id, dir string, data []byte) Request {
+		q := request(id, data)
+		q.Path = dir + "/" + id + ".bin"
+		return q
+	}
+	data := []byte("published content")
+	if r, err := attempt(t, m, "owner", at("only", "solo", data), data, len(data), true, nil); err != nil || r.State != "published" {
+		t.Fatal(r, err)
+	}
+	if staged("solo") {
+		t.Fatal("published upload left its staging directory")
+	}
+
+	partial := bytes.Repeat([]byte("p"), 2*BlockSize)
+	if r, err := attempt(t, m, "owner", at("pending", "shared", partial), partial, BlockSize, false, nil); err == nil || r.State != "staging" {
+		t.Fatal("interrupted upload", r, err)
+	}
+	if r, err := attempt(t, m, "owner", at("done", "shared", data), data, len(data), true, nil); err != nil || r.State != "published" {
+		t.Fatal(r, err)
+	}
+	if !staged("shared") {
+		t.Fatal("publication removed another upload's partial")
+	}
+	if r, err := m.Abort(t.Context(), "owner", "pending"); err != nil || r.State != "aborted" {
+		t.Fatal(r, err)
+	}
+	if staged("shared") {
+		t.Fatal("abort left an empty staging directory")
+	}
+
+	// Expiry cleanup also removes it; a later upload recreates it.
+	if _, err := attempt(t, m, "owner", at("expiring", "shared", partial), partial, BlockSize, false, nil); err == nil || !staged("shared") {
+		t.Fatal("interrupted upload did not stage", err)
+	}
+	if err := m.Prune(t.Context(), time.Now().Add(8*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := m.Status(t.Context(), "owner", "expiring"); err != nil || s.State != "expired" || staged("shared") {
+		t.Fatal("expired upload left its staging directory", s, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(m.workDir, "shared", "done.bin")); err != nil || !bytes.Equal(got, data) {
+		t.Fatal("published file changed", err)
+	}
+}
+
+// RemoveDirectory discards an empty leftover staging directory but never one
+// holding a partial.
+func TestUploadRemoveDirectoryKeepsPartials(t *testing.T) {
+	m := fixture(t)
+	for _, dir := range []string{"left", "busy"} {
+		if err := os.MkdirAll(filepath.Join(m.workDir, dir, StagingDir), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(m.workDir, "busy", StagingDir, "x.partial"), []byte("staged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RemoveDirectory("left"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(m.workDir, "left")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("directory with empty staging retained", err)
+	}
+	var refused *model.RPCError
+	if err := m.RemoveDirectory("busy"); !errors.As(err, &refused) || refused.Code != "upload_private_path" {
+		t.Fatal("removed a directory holding a partial", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(m.workDir, "busy", StagingDir, "x.partial")); err != nil || string(got) != "staged" {
+		t.Fatal("partial changed", err)
+	}
+}
+
 func TestUploadPublicationReconciliation(t *testing.T) {
 	for _, linked := range []bool{false, true} {
 		t.Run(map[bool]string{false: "before-link", true: "after-link"}[linked], func(t *testing.T) {

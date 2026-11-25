@@ -69,6 +69,41 @@ func repositoryRoot(t *testing.T) string {
 
 // TestMCPToolsAreDocumented fails when a registered MCP tool is named nowhere
 // in the documentation, README, shipped skill bundle or on-demand guides.
+// The export tool's description matches artifacts.export: workspace-relative
+// paths, and directories exported as one tar archive.
+func TestMCPArtifactExportDescribesDirectories(t *testing.T) {
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := (Client{}).MCPServer().Connect(t.Context(), serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = serverSession.Close() }()
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(t.Context(), clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Close() }()
+	tools, err := session.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools.Tools {
+		if tool.Name != "control_artifact_export" {
+			continue
+		}
+		for _, want := range []string{"file or directory", "workDir", ".tar", "tar-v1"} {
+			if !strings.Contains(tool.Description, want) {
+				t.Fatalf("description lacks %q: %s", want, tool.Description)
+			}
+		}
+		if strings.Contains(tool.Description, "filesystem root") {
+			t.Fatal("description still names the filesystem root", tool.Description)
+		}
+		return
+	}
+	t.Fatal("control_artifact_export not listed")
+}
+
 func TestMCPToolsAreDocumented(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

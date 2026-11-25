@@ -54,6 +54,7 @@ func checkUsage(t *testing.T, usage *model.CommandUsage) {
 }
 
 func TestExecRunReportsUsage(t *testing.T) {
+	t.Parallel()
 	n := localNode(t, nil)
 	value, err := n.execRun(t.Context(), model.JSON(usageCommand(t, "provider")), Execution{Dir: n.Config.WorkDir, Log: io.Discard})
 	if err != nil {
@@ -67,6 +68,7 @@ func TestExecRunReportsUsage(t *testing.T) {
 }
 
 func TestSecretCommandSuppressesOutputButReportsUsage(t *testing.T) {
+	t.Parallel()
 	n := localNode(t, nil)
 	setTestSecret(t, n, "usage.password", "usage-private-token")
 	cmd := usageCommand(t, "secret-binary")
@@ -80,6 +82,7 @@ func TestSecretCommandSuppressesOutputButReportsUsage(t *testing.T) {
 }
 
 func TestTaskRecordCarriesCommandUsage(t *testing.T) {
+	t.Parallel()
 	n := localNode(t, func(cfg *Config) {
 		cfg.Providers = map[string]Command{"custom.usage": usageCommand(t, "provider")}
 	})

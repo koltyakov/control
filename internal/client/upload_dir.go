@@ -152,13 +152,21 @@ func (c Client) refuseDirectoryUploadID(id string) error {
 }
 
 // IsDirectoryUpload reports whether this client holds a directory transfer
-// recovery record for id.
-func (c Client) IsDirectoryUpload(id string) bool {
-	if c.routing == nil || !c.routing.cfg.AccountRouting || !upload.ValidID(id) {
-		return false
+// recovery record for id. Records are scoped by the stable task owner, which
+// is known only after account routing starts, so routing starts first; a
+// lookup before that would read another scope and miss the record.
+func (c Client) IsDirectoryUpload(ctx context.Context, id string) (bool, error) {
+	if !upload.ValidID(id) {
+		return false, nil
+	}
+	if _, err := c.uploadPeer(ctx); err != nil {
+		return false, err
 	}
 	_, err := os.Lstat(c.dirUploadPath(id))
-	return err == nil
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 type uploadDescription struct {
@@ -353,7 +361,13 @@ func leafDirs(dirs []string) []string {
 // interrupted transfer is continued only by an explicit Resume with the same
 // ID, which never re-sends published files and never overwrites.
 func (c Client) UploadDirectory(ctx context.Context, s DirUploadSpec) (DirUploadResult, error) {
-	result := DirUploadResult{Kind: "directory", ID: s.ID, Path: s.Path, State: "incomplete", States: map[string]int{}}
+	// A new transfer has not started until its remote root exists; a resume
+	// continues one that has.
+	state := "not_started"
+	if s.Resume {
+		state = "incomplete"
+	}
+	result := DirUploadResult{Kind: "directory", ID: s.ID, Path: s.Path, State: state, States: map[string]int{}}
 	if s.Node == "" || !upload.ValidID(s.ID) || s.LocalPath == "" || (!s.Resume && s.Path == "") {
 		return result, errors.New("directory upload requires node, valid id, local directory, and remote directory")
 	}
@@ -465,8 +479,13 @@ func (c Client) UploadDirectory(ctx context.Context, s DirUploadSpec) (DirUpload
 		// so a fresh transfer never merges into an existing directory. No
 		// recovery record exists unless the root was created.
 		if err = peerCall(ctx, peer, target, "files.mkdir", map[string]any{"path": remote}, nil); err != nil {
-			return result, fmt.Errorf("create remote directory %s, which must not exist and whose parent must; nothing was uploaded. If this response was lost, the directory may now exist: inspect it before choosing another destination: %w", remote, err)
+			if rootNotCreated(err) {
+				return result, fmt.Errorf("create remote directory %s, which must not exist and whose parent must; nothing was created or uploaded: %w", remote, err)
+			}
+			result.State = "unknown"
+			return result, fmt.Errorf("create remote directory %s; nothing was uploaded, but the response was lost, so the directory may now exist: inspect it before choosing another destination: %w", remote, err)
 		}
+		result.State = "incomplete"
 		if err = store.Write(manifestPath, m); err != nil {
 			return result, fmt.Errorf("remote directory %s was created but the local recovery record could not be saved: %w", remote, err)
 		}
@@ -494,6 +513,18 @@ func (c Client) UploadDirectory(ctx context.Context, s DirUploadSpec) (DirUpload
 		firstErr = errors.New("not every file was published")
 	}
 	return result, fmt.Errorf("directory upload %s incomplete: %d of %d files published; inspect status, then resume explicitly with the same ID: %w", s.ID, result.States["published"], len(m.Files), firstErr)
+}
+
+// rootNotCreated reports whether a failed root files.mkdir provably created
+// nothing. Without parents it is one create-only mkdir, so the worker's own
+// error reply means the directory was not made; so does a request that was
+// never sent. A lost or unreadable reply leaves the outcome unknown.
+func rootNotCreated(err error) bool {
+	var rpc *model.RPCError
+	if errors.Is(err, model.ErrReplied) {
+		return true
+	}
+	return errors.As(err, &rpc) && (rpc.Outcome == "not_sent" || rpc.Outcome == model.OutcomeNotAccepted)
 }
 
 func (c Client) checkDirTarget(ctx context.Context, peer *transport.Peer, node string, m dirManifest) (string, error) {
@@ -720,7 +751,11 @@ func (c Client) dirFileState(ctx context.Context, peer *transport.Peer, target, 
 
 // UploadState reports or aborts a single-file or directory upload by ID.
 func (c Client) UploadState(ctx context.Context, node, id string, abort bool) (any, error) {
-	if c.IsDirectoryUpload(id) {
+	directory, err := c.IsDirectoryUpload(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if directory {
 		return c.UploadDirectoryStatus(ctx, node, id, abort)
 	}
 	return c.UploadStatus(ctx, node, id, abort)

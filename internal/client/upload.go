@@ -287,6 +287,9 @@ func sendUpload(ctx context.Context, conn net.Conn, f *os.File, info os.FileInfo
 			}
 		}
 	}()
+	// sent counts payload bytes written to the stream by this attempt. After
+	// an interruption the worker may hold fewer; its durable offset says so.
+	var sent int64
 	sendErr := func() error {
 		for offset := ready.Offset; offset < ready.Size; {
 			if err := ctx.Err(); err != nil {
@@ -302,6 +305,7 @@ func sendUpload(ctx context.Context, conn net.Conn, f *os.File, info os.FileInfo
 			if err := upload.WriteRecord(conn, upload.DataRecord, buf[:8+n]); err != nil {
 				return err
 			}
+			sent += int64(n)
 			offset += int64(n)
 		}
 		if err := sourceUnchanged(f, info); err != nil {
@@ -318,16 +322,18 @@ func sendUpload(ctx context.Context, conn net.Conn, f *os.File, info os.FileInfo
 	}
 	completed := <-done
 	<-exited
+	// Failed attempts report what they sent, so an interrupted directory
+	// transfer accounts for its partial files too.
+	result = completed.result
+	result.ResumedFrom = ready.Offset
+	result.BytesSent = sent
 	if sendErr != nil {
 		var remote *model.RPCError
 		if errors.As(completed.err, &remote) {
-			return completed.result, completed.err
+			return result, completed.err
 		}
-		return completed.result, sendErr
+		return result, sendErr
 	}
-	result = completed.result
-	result.ResumedFrom = ready.Offset
-	result.BytesSent = ready.Size - ready.Offset
 	return result, completed.err
 }
 

@@ -105,6 +105,7 @@ func resultNames(results map[string]model.Task) []string {
 }
 
 func TestWorkflowCleanupRunsAfterFailure(t *testing.T) {
+	t.Parallel()
 	n, r := cleanupNode(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
@@ -133,6 +134,7 @@ func TestWorkflowCleanupRunsAfterFailure(t *testing.T) {
 }
 
 func TestWorkflowCleanupRunsAfterSuccess(t *testing.T) {
+	t.Parallel()
 	n, r := cleanupNode(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
@@ -147,6 +149,7 @@ func TestWorkflowCleanupRunsAfterSuccess(t *testing.T) {
 }
 
 func TestWorkflowCleanupFailureReporting(t *testing.T) {
+	t.Parallel()
 	t.Run("after failure", func(t *testing.T) {
 		n, _ := cleanupNode(t)
 		results, err := runCleanupWorkflow(t.Context(), n, []WorkflowStep{
@@ -204,6 +207,7 @@ func TestWorkflowCleanupFailureReporting(t *testing.T) {
 }
 
 func TestWorkflowCleanupWithFailedArtifactInput(t *testing.T) {
+	t.Parallel()
 	n, r := cleanupNode(t)
 	steps := []WorkflowStep{cleanupStep("work", true, ""), cleanupStep("collect", false, model.WorkflowWhenAlways), cleanupStep("final", false, model.WorkflowWhenAlways, "collect")}
 	if err := json.Unmarshal([]byte(`[{"step":"work","artifact":0,"path":"work.log"}]`), &steps[1].Inputs); err != nil {
@@ -223,6 +227,7 @@ func TestWorkflowCleanupWithFailedArtifactInput(t *testing.T) {
 }
 
 func TestWorkflowCleanupNotStartedAfterCancellationOrTimeout(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"cancel", "timeout"} {
 		t.Run(mode, func(t *testing.T) {
 			n, r := cleanupNode(t, "work")
@@ -270,6 +275,7 @@ func TestWorkflowCleanupNotStartedAfterCancellationOrTimeout(t *testing.T) {
 }
 
 func TestWorkflowCleanupParallel(t *testing.T) {
+	t.Parallel()
 	n, r := cleanupNode(t, "bad", "sibling")
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
@@ -343,6 +349,7 @@ func TestWorkflowPlanValidatesStepConditions(t *testing.T) {
 // A child whose state became unknown never releases cleanup steps that
 // depend on it, directly or through a step that will not start.
 func TestWorkflowCleanupBlockedByUnresolvedChild(t *testing.T) {
+	t.Parallel()
 	var armed atomic.Bool
 	armed.Store(true)
 	f := newLifetimeFixture(t, true, false, func(r *model.Response) bool {
@@ -397,6 +404,7 @@ func TestWorkflowCleanupBlockedByUnresolvedChild(t *testing.T) {
 // Revocation is enforced by each destination. Revoking a workflow's grants
 // there refuses its cleanup step; nothing is resubmitted.
 func TestWorkflowCleanupRefusedAfterRevocation(t *testing.T) {
+	t.Parallel()
 	f := newLifetimeFixture(t, false, false, nil)
 	spec := lifetimeWorkflow()
 	spec.Args = model.JSON(map[string]any{"steps": []model.WorkflowStep{
@@ -432,6 +440,7 @@ func TestWorkflowCleanupRefusedAfterRevocation(t *testing.T) {
 }
 
 func TestWorkflowCleanupReconcile(t *testing.T) {
+	t.Parallel()
 	f := newLifetimeFixture(t, false, false, nil)
 	fail := model.TaskSpec{ID: "child-work", Capability: "test.lifetime", Args: model.JSON(map[string]bool{"fail": true}), Outputs: []string{"output"}}
 	spec := model.TaskSpec{ID: "cleanup-workflow", Capability: "workflow.run", Args: model.JSON(map[string]any{"steps": []any{
@@ -471,6 +480,7 @@ func TestWorkflowCleanupReconcile(t *testing.T) {
 // A coordinator that does not advertise always steps would run cleanup as an
 // ordinary step. The client refuses before preparing any grant or task.
 func TestWorkflowCleanupRefusedByLegacyCoordinator(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
 	const common = "legacy-coordinator-worker-key-1234567890"

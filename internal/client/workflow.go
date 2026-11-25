@@ -112,7 +112,7 @@ func (c Client) reconcileWorkflow(ctx context.Context, target, id string, progre
 				if err != nil {
 					rpc := model.OperationError(err, "unknown")
 					observation.Error, observation.Code, observation.Outcome = rpc.Message, rpc.Code, rpc.Outcome
-					if _, ok := recorded[observation.Name]; recorded != nil && !ok && rpc.Cause == nil && rpc.Message == workerTaskNotFound {
+					if _, ok := recorded[observation.Name]; recorded != nil && !ok && errors.Is(err, model.ErrReplied) && rpc.Message == workerTaskNotFound {
 						observation.NotStarted = true
 					}
 					if len(observation.Error) > 1024 {

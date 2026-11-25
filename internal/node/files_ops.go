@@ -203,8 +203,16 @@ func (n *Node) filesRemove(ctx context.Context, args json.RawMessage, e Executio
 	if kind == "" {
 		return nil, errors.New("path must be a regular file or empty directory, not a symbolic link or special file")
 	}
-	if err = n.root.Remove(q.Path); err != nil {
-		if kind == "directory" {
+	if kind == "directory" {
+		// An empty staging directory left by an earlier version or interrupted
+		// cleanup is not content, and files.list never shows it.
+		err = n.uploads.RemoveDirectory(q.Path)
+	} else {
+		err = n.root.Remove(q.Path)
+	}
+	if err != nil {
+		var refused *model.RPCError
+		if kind == "directory" && !errors.As(err, &refused) {
 			return nil, fmt.Errorf("remove directory (only empty directories can be removed): %w", err)
 		}
 		return nil, err

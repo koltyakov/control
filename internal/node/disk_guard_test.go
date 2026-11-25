@@ -142,6 +142,7 @@ func TestTaskDiskGuardRefusesBelowReserve(t *testing.T) {
 }
 
 func TestTaskDiskGuardAcceptsAboveReserveAndWhenDisabled(t *testing.T) {
+	t.Parallel()
 	n, _ := lowDiskNode(t, 1<<30, 1<<30)
 	ctx := context.Background()
 	task, err := n.startTaskContext(ctx, "owner", execSpec(t, "ample", "brief"))
@@ -172,6 +173,7 @@ func TestTaskDiskGuardAcceptsAboveReserveAndWhenDisabled(t *testing.T) {
 }
 
 func TestTaskDiskGuardUnknownProbeAllowsWork(t *testing.T) {
+	t.Parallel()
 	n, f := lowDiskNode(t, 0, 0)
 	f.mu.Lock()
 	f.err = errors.New("permission denied")
@@ -250,6 +252,7 @@ func TestTaskDiskGuardCachesReadings(t *testing.T) {
 }
 
 func TestTaskDiskGuardNeverBlocksAcceptedTasks(t *testing.T) {
+	t.Parallel()
 	n, f := lowDiskNode(t, 1<<30, 1<<30)
 	ctx := context.Background()
 	long, err := n.startTaskContext(ctx, "owner", execSpec(t, "long", "sleep"))

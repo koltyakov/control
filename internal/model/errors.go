@@ -35,6 +35,12 @@ func OperationError(err error, outcome string) *RPCError {
 	return &RPCError{Code: code, Outcome: outcome, Message: err.Error(), Cause: err}
 }
 
+// ErrReplied is the cause of every error decoded from a destination's reply.
+// It shows that the request arrived and the destination answered; whether an
+// effect happened still depends on the method. Transport failures, whose
+// outcome is uncertain, never carry it.
+var ErrReplied = errors.New("the destination replied with an error")
+
 func ErrorResponse(err error) Response {
 	e := OperationError(err, "unknown")
 	return Response{Error: e.Message, Code: e.Code, Outcome: e.Outcome}
@@ -50,5 +56,5 @@ func (r Response) Err() error {
 	if r.Outcome == "" {
 		r.Outcome = "unknown"
 	}
-	return &RPCError{Code: r.Code, Outcome: r.Outcome, Message: r.Error}
+	return &RPCError{Code: r.Code, Outcome: r.Outcome, Message: r.Error, Cause: ErrReplied}
 }

@@ -56,9 +56,13 @@ func uploadCLI(ctx context.Context, c client.Client, args []string) error {
 	}
 	info, statErr := os.Lstat(s.LocalPath)
 	directory := statErr == nil && info.IsDir()
-	if s.Resume {
-		directory = directory || c.IsDirectoryUpload(s.ID)
-	} else if directory != recursive {
+	if s.Resume && !directory {
+		known, err := c.IsDirectoryUpload(ctx, s.ID)
+		if err != nil {
+			return err
+		}
+		directory = known
+	} else if !s.Resume && directory != recursive {
 		if directory {
 			return errors.New("LOCAL_PATH is a directory; add --recursive to upload the tree")
 		}
@@ -96,7 +100,9 @@ func uploadDirectoryCLI(ctx context.Context, c client.Client, s client.DirUpload
 		fmt.Fprintf(os.Stderr, "upload %s: %s %s (%d this attempt)\n", s.ID, f.Path, f.State, done)
 	}
 	result, err := c.UploadDirectory(ctx, s)
-	if result.NodeID != "" {
+	// A transfer refused before its remote root existed has nothing to
+	// summarize; its error states that nothing was created or sent.
+	if result.NodeID != "" && result.State != "not_started" {
 		printJSON(result)
 	}
 	return err

@@ -95,7 +95,7 @@ func (c Client) retainedWorkflow(ctx context.Context, target, id string) (model.
 	err := c.Call(ctx, target, "tasks.get", map[string]any{"id": id}, &task)
 	if err != nil {
 		var rpc *model.RPCError
-		if errors.As(err, &rpc) && rpc.Cause == nil && rpc.Message == workerTaskNotFound {
+		if errors.As(err, &rpc) && errors.Is(err, model.ErrReplied) && rpc.Message == workerTaskNotFound {
 			return task, false, nil
 		}
 		return task, false, fmt.Errorf("check whether task %s already exists before resolving workflow targets: %w", id, err)

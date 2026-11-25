@@ -88,10 +88,17 @@ func (n *Node) scanArchiveTree(ctx context.Context, root string) ([]archiveEntry
 			return nil, err
 		}
 		for _, entry := range list {
+			full := filepath.Join(dir, entry.Name())
 			if strings.EqualFold(entry.Name(), upload.StagingDir) {
+				// An empty staging directory holds no bytes and is never part
+				// of the archive. One holding a partial means an unfinished
+				// upload into this tree. Nothing inside staging is ever read,
+				// so a partial created after this check is not exported.
+				if entry.Name() == upload.StagingDir && entry.Type() == os.ModeDir && emptyDirectory(n.root, full) {
+					continue
+				}
 				return nil, upload.Error("upload_private_path", "directory contains private upload staging; finish or abort uploads first")
 			}
-			full := filepath.Join(dir, entry.Name())
 			rel, err := filepath.Rel(root, full)
 			if err != nil {
 				return nil, err
@@ -125,6 +132,18 @@ func (n *Node) scanArchiveTree(ctx context.Context, root string) ([]archiveEntry
 	// Byte order of the full path puts every directory before its contents.
 	slices.SortFunc(entries, func(a, b archiveEntry) int { return strings.Compare(a.name, b.name) })
 	return entries, nil
+}
+
+// emptyDirectory reports whether name is a directory with no entries. Any
+// error, including a link or special file, reports false.
+func emptyDirectory(root *os.Root, name string) bool {
+	f, err := openDirectory(root, name)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	_, err = f.ReadDir(1)
+	return err == io.EOF
 }
 
 // writeArchive writes normalized PAX-format tar headers: no ownership, fixed

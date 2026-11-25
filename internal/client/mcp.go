@@ -176,7 +176,7 @@ func (c Client) MCPServer() *mcp.Server {
 		}
 		return target, params, nil
 	})
-	add("control_artifact_export", "Publish a file from a node's filesystem root as an immutable downloadable artifact.", "artifacts.export", map[string]any{"node": text, "path": text}, []string{"node", "path"}, normal)
+	add("control_artifact_export", "Publish a file or directory, path relative to the node's workDir, as an immutable downloadable artifact. A directory becomes one deterministic NAME.tar archive (node.describe.artifactExport: tar-v1); nothing extracts it automatically.", "artifacts.export", map[string]any{"node": text, "path": text}, []string{"node", "path"}, normal)
 	add("control_artifact_deliver", "Tell the source node to deliver an artifact directly to another node, without passing bytes through the orchestrator.", "artifacts.deliver", map[string]any{"node": text, "id": text, "target": text}, []string{"node", "id", "target"}, normal)
 	add("control_browser", "Run the worker's opt-in agent-browser CLI. request has args, optional session and non-secret stdin. Load --version and skills get core first. Default state is private to this profile/owner. CLI inputs are task-visible; no secret-reference substitution. Text results are masked, live frames/files/upstream activity are not. Pause automation for manual login/2FA through a forwarded dashboard. Never replay uncertain effects.", "browser.run", map[string]any{"node": text, "request": browser.Schema()}, []string{"node", "request"}, func(args map[string]json.RawMessage) (string, any, error) {
 		target, params, err := nested("request")(args)

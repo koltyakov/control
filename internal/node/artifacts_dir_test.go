@@ -106,6 +106,33 @@ func TestDirectoryExportIsDeterministic(t *testing.T) {
 	}
 }
 
+// An empty staging directory, such as one left by an earlier version, holds
+// no bytes: export skips it, so the tree archives exactly as without it. Only
+// the name the node creates qualifies; other spellings are still refused.
+func TestDirectoryExportSkipsEmptyStaging(t *testing.T) {
+	t.Parallel()
+	n := localNode(t, nil)
+	work := n.Config.WorkDir
+	for _, tree := range []string{"clean", "leftover", "cased"} {
+		writeTestFile(t, filepath.Join(work, tree, "sub", "file.txt"), "content")
+	}
+	for _, dir := range []string{"leftover/.control-uploads", "leftover/sub/.control-uploads", "cased/.CONTROL-UPLOADS"} {
+		if err := os.Mkdir(filepath.Join(work, filepath.FromSlash(dir)), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clean, err := exportTree(t, n, "clean")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leftover, err := exportTree(t, n, "leftover"); err != nil || leftover.ID != clean.ID {
+		t.Fatal("empty staging changed the archive", clean, leftover, err)
+	}
+	if _, err = exportTree(t, n, "cased"); err == nil || !strings.Contains(err.Error(), "staging") {
+		t.Fatal("differently cased staging name skipped", err)
+	}
+}
+
 func TestDirectoryExportRefusals(t *testing.T) {
 	t.Parallel()
 	n := localNode(t, nil)

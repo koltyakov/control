@@ -89,36 +89,7 @@ func (m *Manager) Serve(ctx context.Context, owner string, conn net.Conn, q Requ
 	if err = m.space(r, 0); err != nil {
 		return err
 	}
-	if err = parent.Mkdir(StagingDir, 0700); err != nil && !errors.Is(err, os.ErrExist) {
-		return err
-	}
-	stageInfo, err := parent.Lstat(StagingDir)
-	if err != nil || !stageInfo.IsDir() || stageInfo.Mode()&os.ModeSymlink != 0 {
-		return Error("partial_corrupt", "upload staging directory is not a private directory")
-	}
-	metadata := filepath.Join(m.dir, key(owner, q.ID)+".json")
-	_, statErr := os.Stat(metadata)
-	fresh := errors.Is(statErr, os.ErrNotExist)
-	if statErr != nil && !fresh {
-		return statErr
-	}
-	flags := os.O_RDWR
-	if fresh {
-		// Persist the staging name before creating bytes so crash cleanup never
-		// has to discover anonymous files by scanning workspace directories.
-		if err = m.save(r); err != nil {
-			return err
-		}
-		flags |= os.O_CREATE | os.O_EXCL
-	} else {
-		_, err = checkStage(parent, r)
-		if errors.Is(err, os.ErrNotExist) && r.Offset == 0 {
-			flags |= os.O_CREATE | os.O_EXCL
-		} else if err != nil {
-			return Error("partial_corrupt", "upload staging file is unavailable")
-		}
-	}
-	f, err := parent.OpenFile(filepath.FromSlash(r.Temp), flags, 0600)
+	f, flags, err := m.openPartial(parent, owner, r)
 	if err != nil {
 		return err
 	}
@@ -225,6 +196,49 @@ func (m *Manager) Serve(ctx context.Context, owner string, conn net.Conn, q Requ
 			return Error("invalid_upload_record", "unexpected upload record")
 		}
 	}
+}
+
+// openPartial creates the staging directory if needed and opens the partial
+// inside it. stageMu covers both, so cleanup of another upload cannot remove
+// the directory after it exists but before this partial keeps it non-empty.
+// It returns the open flags, which record whether the partial was created.
+func (m *Manager) openPartial(parent *os.Root, owner string, r record) (*os.File, int, error) {
+	m.stageMu.Lock()
+	defer m.stageMu.Unlock()
+	if err := parent.Mkdir(StagingDir, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, 0, err
+	}
+	stageInfo, err := parent.Lstat(StagingDir)
+	if err != nil || !stageInfo.IsDir() || stageInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, 0, Error("partial_corrupt", "upload staging directory is not a private directory")
+	}
+	metadata := filepath.Join(m.dir, key(owner, r.ID)+".json")
+	_, statErr := os.Stat(metadata)
+	fresh := errors.Is(statErr, os.ErrNotExist)
+	if statErr != nil && !fresh {
+		return nil, 0, statErr
+	}
+	flags := os.O_RDWR
+	if fresh {
+		// Persist the staging name before creating bytes so crash cleanup never
+		// has to discover anonymous files by scanning workspace directories.
+		if err = m.save(r); err != nil {
+			return nil, 0, err
+		}
+		flags |= os.O_CREATE | os.O_EXCL
+	} else {
+		_, err = checkStage(parent, r)
+		if errors.Is(err, os.ErrNotExist) && r.Offset == 0 {
+			flags |= os.O_CREATE | os.O_EXCL
+		} else if err != nil {
+			return nil, 0, Error("partial_corrupt", "upload staging file is unavailable")
+		}
+	}
+	f, err := parent.OpenFile(filepath.FromSlash(r.Temp), flags, 0600)
+	if err != nil {
+		return nil, 0, err
+	}
+	return f, flags, nil
 }
 
 func (r *receiver) write(b []byte) error {

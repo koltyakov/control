@@ -53,6 +53,11 @@ func TestUploadClientResumeAndMCP(t *testing.T) {
 			if err == nil || result.State == "published" {
 				t.Fatal("cancelled upload completed", result, err)
 			}
+			// The interrupted attempt reports what it sent: at least the
+			// checkpoint the worker acknowledged before cancellation.
+			if result.BytesSent < upload.CheckpointBytes || result.BytesSent > int64(len(data)) || result.ResumedFrom != 0 {
+				t.Fatal("interrupted attempt byte accounting", result)
+			}
 			if controlErr != nil {
 				t.Fatal("control traffic stalled during bulk upload", controlErr)
 			}
