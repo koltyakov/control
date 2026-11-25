@@ -330,6 +330,118 @@ async function assertOwnerLabels(page, token) {
   }
 }
 
+// An open details drawer follows refreshed snapshots, such as labels changed
+// through the CLI's bearer API, without reopening. Refreshes keep focus and
+// scroll, leave unchanged markup alone, wait for a menu opened from the
+// drawer, and never replace another dialog.
+async function assertDrawerRefresh(page, token) {
+  const id = (await api("/v1/nodes", "GET", undefined, token)).find((n) => n.name === "renamed-worker").id;
+  const setLabels = (labels) => api("/v1/fleet/nodes/" + id, "PATCH", { labels }, token);
+  const drawer = page.getByRole("dialog", { name: "renamed-worker", exact: true });
+  const chips = () => page.locator("#dialog .labels .label-chip").allTextContents();
+  const refreshUntil = (check, message) =>
+    until(async () => {
+      await page.evaluate(() => refresh(true));
+      return check();
+    }, message);
+  const edit = page.getByRole("button", { name: "Edit labels for renamed-worker", exact: true });
+  try {
+    await page.getByRole("button", { name: "renamed-worker", exact: true }).click();
+    await drawer.waitFor();
+    await edit.focus();
+    const scroll = await page.evaluate(() => {
+      const d = document.getElementById("dialog");
+      d.scrollTop = d.scrollHeight;
+      return d.scrollTop;
+    });
+    // Unchanged snapshots leave the drawer's nodes in place.
+    const kept = await page.locator("#dialog .drawer-section").first().elementHandle();
+    await page.evaluate(() => refresh(true));
+    assert.ok(await kept.evaluate((node) => node.isConnected), "An unchanged refresh replaced the drawer");
+
+    await setLabels({ set: { cli: "1" } });
+    await refreshUntil(async () => (await chips()).includes("cli=1owner"), "Open drawer did not show a label set through the API");
+    assert.ok(await drawer.isVisible(), "The drawer closed during refresh");
+    assert.equal(
+      await page.evaluate(() => document.activeElement?.getAttribute("aria-label")),
+      "Edit labels for renamed-worker",
+      "Refresh moved keyboard focus",
+    );
+    assert.equal(await page.evaluate(() => document.getElementById("dialog").scrollTop), scroll, "Refresh reset the drawer scroll");
+
+    // A menu opened from the drawer is anchored to its button; the drawer
+    // waits for it to close before updating.
+    await page.getByRole("button", { name: "More actions for renamed-worker", exact: true }).click();
+    await page.locator("#machine-menu").waitFor();
+    await setLabels({ set: { menu: "open" } });
+    await until(async () => {
+      await page.evaluate(() => refresh(true));
+      return page.evaluate(() => state.snapshot?.nodes.some((n) => n.ownerLabels?.menu === "open"));
+    }, "Snapshot did not include the label set while the menu was open");
+    assert.ok(await page.locator("#machine-menu").evaluate((menu) => menu.matches(":popover-open")), "Refresh closed the drawer menu");
+    assert.ok(!(await chips()).includes("menu=openowner"), "Drawer updated under an open menu");
+    await page.keyboard.press("Escape");
+    await page.locator("#machine-menu").waitFor({ state: "hidden" });
+    assert.ok(await drawer.isVisible(), "Closing the menu closed the drawer");
+    await refreshUntil(async () => (await chips()).includes("menu=openowner"), "Drawer did not update after its menu closed");
+
+    // Another dialog replaces the drawer and is never overwritten by it.
+    await edit.click();
+    await page.getByRole("dialog", { name: "Labels for renamed-worker", exact: true }).waitFor();
+    const owner = page.getByLabel("Owner labels", { exact: true });
+    await owner.fill("draft=1");
+    await setLabels({ set: { later: "1" } });
+    await until(async () => {
+      await page.evaluate(() => refresh(true));
+      return page.evaluate(() => state.snapshot?.nodes.some((n) => n.ownerLabels?.later === "1"));
+    }, "Snapshot did not include the label set under the editor");
+    assert.equal(await owner.inputValue(), "draft=1", "Refresh replaced the label editor");
+    await page.keyboard.press("Escape");
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    assert.equal(await page.evaluate(() => state.details), null, "A closed drawer still receives refreshes");
+  } finally {
+    await setLabels({ reset: ["cli", "menu", "later"] });
+  }
+}
+
+// A console opened in a background tab loads its machine list without being
+// shown or refreshed by hand. The tab reports itself hidden before any console
+// script runs; the real fixture machine is temporarily renamed "ubuntu".
+async function assertBackgroundTabLoad(context, token) {
+  const worker = (await api("/v1/nodes", "GET", undefined, token)).find((n) => n.name === "renamed-worker");
+  const rename = (name) => api("/v1/fleet/nodes/" + worker.id, "PATCH", { name }, token);
+  await rename("ubuntu");
+  const page = await context.newPage();
+  try {
+    await page.addInitScript(() => {
+      Object.defineProperty(Document.prototype, "hidden", { configurable: true, get: () => true });
+      Object.defineProperty(Document.prototype, "visibilityState", { configurable: true, get: () => "hidden" });
+    });
+    const held = await holdRequest(page, "**/console/api/status", "GET");
+    await page.goto(base + "/console#machines");
+    let timer;
+    const route = await Promise.race([
+      held.pending,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("A hidden console never requested fleet data")), 15000);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    assert.equal(await page.evaluate(() => document.hidden), true, "The test tab must report itself hidden");
+    // Until data arrives the Machines page says it is loading, not empty.
+    await page.locator("#page-content .empty").filter({ hasText: "Loading your fleet" }).waitFor();
+    assert.equal(await page.getByText("No machines registered").count(), 0, "Loading was shown as an empty fleet");
+    assert.equal(await page.locator(".result-count").textContent(), "", "Loading showed a machine count");
+    await route.continue();
+    await held.remove();
+    // No Refresh click: the initial load alone fills the list.
+    await page.getByRole("button", { name: "ubuntu", exact: true }).waitFor();
+    assert.equal(await page.getByText("Loading your fleet").count(), 0);
+  } finally {
+    await page.close();
+    await rename("renamed-worker");
+  }
+}
+
 async function assertAsyncConsoleOwnership(browser) {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -2342,6 +2454,8 @@ try {
     .getByRole("button", { name: "renamed-worker", exact: true })
     .waitFor();
   await assertOwnerLabels(page, account.token);
+  await assertDrawerRefresh(page, account.token);
+  await assertBackgroundTabLoad(page.context(), account.token);
 
   await pageLink(page, "keys");
   await page.getByRole("button", { name: "Create key", exact: false }).click();

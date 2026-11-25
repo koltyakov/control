@@ -512,6 +512,10 @@ main:focus-visible {
   padding: 7px 14px;
   font-size: 13px;
   font-weight: 550;
+  /* Chrome on macOS fakes in-between system-font weights by emboldening
+     the nearest face, which renders 550 heavier than 700. Without synthesis
+     it uses the variable weight, as Safari does. */
+  font-synthesis-weight: none;
   white-space: nowrap;
 }
 .primary {
@@ -881,6 +885,7 @@ tbody tr:hover {
 }
 td strong {
   font-weight: 550;
+  font-synthesis-weight: none;
 }
 .counters {
   display: flex;
@@ -1129,6 +1134,7 @@ td strong {
   padding: 0;
   font-size: 14px;
   font-weight: 550;
+  font-synthesis-weight: none;
   text-align: left;
 }
 tr:hover .machine-name {

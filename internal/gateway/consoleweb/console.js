@@ -117,6 +117,7 @@
  * @property {Auxiliary | null} auxiliary
  * @property {InstallationLink | null} invitation
  * @property {{id: string, startedAt: number} | null} startupChange
+ * @property {string | null} details Machine ID shown by the open details drawer
  * @property {Map<string, string>} contexts
  * @property {boolean} stale
  * @property {string | null} updatedAt
@@ -244,6 +245,7 @@ const state = {
   auxiliary: null,
   invitation: null,
   startupChange: null,
+  details: null,
   contexts: new Map(),
   stale: false,
   updatedAt: null,
@@ -1566,7 +1568,11 @@ function machinePanel(overview) {
     : all.filter(machineMatches);
   const rows = sortedMachines(nodes);
   const showGPUs = all.some((node) => (node.contexts || [node]).some((context) => visibleGPUs(context.system?.gpus).length));
-  const body = rows.length
+  // Before the first snapshot there is no fleet to describe, empty or not.
+  const loading = !state.snapshot;
+  const body = loading
+    ? empty("Loading your fleet", "Waiting for the gateway snapshot.")
+    : rows.length
     ? machineTable(machineRows(rows, showGPUs), showGPUs)
     : empty(
         all.length ? overview ? "No online enabled machines" : "No matching machines" : "No machines registered",
@@ -1585,8 +1591,9 @@ function machinePanel(overview) {
         ? `<a href="#machines" data-action="filter-machines" data-filter="all">${all.length > rows.length ? "View all " + all.length : "All machines"}${icon("arrow")}</a>`
         : "",
     );
-  const count =
-    nodes.length === all.length
+  const count = loading
+    ? ""
+    : nodes.length === all.length
       ? plural(all.length, "machine")
       : `${nodes.length} of ${all.length}`;
   return `<section class="panel"><div class="table-tools"><label class="search">${icon("search")}<input id="machine-search" type="search" aria-label="Search machines" placeholder="Search names, platforms, or labels" value="${esc(state.search)}"></label>${stateFilter(all)}<span class="result-count">${count}</span></div>${body}</section>`;
@@ -1978,7 +1985,10 @@ function banner(message) {
 }
 /** @param {boolean} [manual] @returns {Promise<void>} */
 async function refresh(manual = false) {
-  if (!state.session || state.busy || (document.hidden && !manual)) return;
+  // Hidden tabs pause polling, but the first load after sign-in still runs.
+  // A console opened in a background tab would otherwise show an empty fleet
+  // until it is first shown.
+  if (!state.session || state.busy || (document.hidden && !manual && state.snapshot)) return;
   state.busy = true;
   const page = state.page,
     session = state.session,
@@ -2017,6 +2027,7 @@ async function refresh(manual = false) {
             ? "System startup was not confirmed. Inspect the machine and startup-change.log before using the local recovery command. No automatic retry was made."
             : "Waiting for the machine to reconnect and report System context…";
     }
+    if (session === state.session && state.details) refreshMachineDetails();
     if (session !== state.session || page !== state.page || generation !== auditGeneration) return;
     if (machineDrag) return;
     // Resource refreshes preserve focus. Never replace an in-progress password form.
@@ -2447,6 +2458,7 @@ function closeDialog(force = false) {
   closeMachineMenu();
   state.invitation = null;
   state.startupChange = null;
+  state.details = null;
   $("#dialog").close();
   $("#dialog-body").replaceChildren();
 }
@@ -2457,6 +2469,8 @@ $("#dialog").addEventListener("cancel", (event) => {
 /** @param {string} title @param {string} html @param {string} [className] @returns {void} */
 function dialog(title, html, className = "") {
   closeMachineMenu();
+  // Any other dialog replaces the drawer; machineDetails sets this again.
+  state.details = null;
   $("#dialog").className = className;
   $("#dialog-title").textContent = title;
   $("#dialog-body").innerHTML = html;
@@ -3120,7 +3134,9 @@ function labelChips(n) {
       (key) =>
         `<span class="label-chip removed" title="Removed by the fleet owner"><s>${esc(key)}${Object.hasOwn(reported, key) ? "=" + esc(reported[key]) : ""}</s><span class="label-origin">removed</span></span>`,
     );
-  return chips.length || removed.length ? `<span class="labels">${chips.join("")}${removed.join("")}</span>` : "None";
+  // The same block container holds "None", so Edit labels sits below the
+  // value in both cases instead of beside the empty-state text.
+  return `<span class="labels">${chips.length || removed.length ? chips.join("") + removed.join("") : "None"}</span>`;
 }
 const labelKeyPattern = /^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$/,
   labelValuePattern = /^[A-Za-z0-9._:/@+-]{1,128}$/;
@@ -3179,17 +3195,14 @@ function editLabels(node) {
     "Save labels",
   );
 }
-/** @param {string | undefined} id @returns {void} */
-function machineDetails(id) {
-  const n = state.snapshot?.nodes.find((node) => node.id === id);
-  if (!n) return;
+/** @param {Machine} n @returns {string} */
+function machineDetailsHTML(n) {
   const sys = n.system || /** @type {Partial<SystemInfo>} */ ({}),
     live = n.online ? sys : /** @type {Partial<SystemInfo>} */ ({}),
     memory = percent(live.memoryUsedBytes, live.memoryTotalBytes),
     detail = statusDetail(n),
     proxyTags = proxyChips(n);
-  dialog(
-    n.name,
+  return (
     `<div class="drawer-status">${badge(machineState(n))}${detail ? `<span class="muted">${esc(detail)}</span>` : ""}</div>${proxyTags ? `<div class="proxy-tags">${proxyTags}</div>` : ""}<section class="drawer-section"><h3>Resources</h3><dl class="metadata"><dt>CPU utilization</dt><dd>${meter(live.cpuUsagePercent, "CPU utilization")}</dd>${visibleGPUs(sys.gpus).length ? gpuResources(sys.gpus, n.online, true) : ""}<dt>Memory usage</dt><dd>${meter(memory, "Memory utilization")}${sys.memoryTotalBytes ? `<small class="muted">${memory == null ? bytes(sys.memoryTotalBytes) + " total" : bytes(live.memoryUsedBytes) + " of " + bytes(live.memoryTotalBytes)}</small>` : ""}</dd><dt>Disk usage</dt><dd>${
       (live.disks || [])
         .filter((disk) => disk.totalBytes > 0)
@@ -3198,9 +3211,49 @@ function machineDetails(id) {
             `<div class="disk-usage">${meter(percent(disk.usedBytes, disk.totalBytes), "Disk utilization for " + disk.path)}<small class="muted mono">${esc(disk.path)}</small><small class="muted">${bytes(disk.usedBytes)} of ${bytes(disk.totalBytes)}</small></div>`,
         )
         .join("") || meter(null, "Disk utilization")
-    }</dd><dt>Processor</dt><dd>${esc(sys.cpuModel || "Unknown")}${sys.logicalCPUs ? " · " + esc(sys.logicalCPUs) + " cores" : ""}</dd><dt>Sampled</dt><dd>${esc(date(sys.sampledAt))}${n.online ? "" : `<small class="muted">Cached while offline</small>`}</dd></dl></section>${activitySection(n)}${proxySection(n)}<section class="drawer-section"><h3>System</h3><dl class="metadata"><dt>Platform</dt><dd>${esc(platformText(n) || "Unknown")}</dd>${n.runAs ? `<dt>Runs as</dt><dd>${runAsLabels[n.runAs][1]}</dd>` : ""}<dt>Version</dt><dd>${esc(n.software?.version || "Unknown")}</dd><dt>Labels</dt><dd>${labelChips(n)}<button class="secondary compact label-edit" data-action="labels" data-id="${esc(n.id)}" aria-label="Edit labels for ${esc(n.name)}">Edit labels</button></dd>${n.online ? "" : `<dt>Last seen</dt><dd>${esc(date(n.lastSeen))}</dd>`}<dt>Identity</dt><dd class="mono">${esc(n.id)}</dd></dl></section>${!n.online && n.wakeVia ? `<p class="drawer-note">Wake sends a Wake-on-LAN packet from ${esc(n.wakeVia)}, an online machine on the same LAN. The machine appears online once its node starts.</p>` : ""}<div class="drawer-actions">${!n.online && n.wakeVia ? `<button class="primary" data-action="wake" data-id="${esc(n.id)}">Wake</button>` : ""}<button class="secondary" data-action="rename" data-id="${esc(n.id)}">Rename</button><button class="secondary" data-action="toggle" data-id="${esc(n.id)}">${n.disabled ? "Enable" : "Disable"}</button><button class="secondary square machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="More actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div>`,
-    "machine-drawer",
+    }</dd><dt>Processor</dt><dd>${esc(sys.cpuModel || "Unknown")}${sys.logicalCPUs ? " · " + esc(sys.logicalCPUs) + " cores" : ""}</dd><dt>Sampled</dt><dd>${esc(date(sys.sampledAt))}${n.online ? "" : `<small class="muted">Cached while offline</small>`}</dd></dl></section>${activitySection(n)}${proxySection(n)}<section class="drawer-section"><h3>System</h3><dl class="metadata"><dt>Platform</dt><dd>${esc(platformText(n) || "Unknown")}</dd>${n.runAs ? `<dt>Runs as</dt><dd>${runAsLabels[n.runAs][1]}</dd>` : ""}<dt>Version</dt><dd>${esc(n.software?.version || "Unknown")}</dd><dt>Labels</dt><dd>${labelChips(n)}<button class="secondary compact label-edit" data-action="labels" data-id="${esc(n.id)}" aria-label="Edit labels for ${esc(n.name)}">Edit labels</button></dd>${n.online ? "" : `<dt>Last seen</dt><dd>${esc(date(n.lastSeen))}</dd>`}<dt>Identity</dt><dd class="mono">${esc(n.id)}</dd></dl></section>${!n.online && n.wakeVia ? `<p class="drawer-note">Wake sends a Wake-on-LAN packet from ${esc(n.wakeVia)}, an online machine on the same LAN. The machine appears online once its node starts.</p>` : ""}<div class="drawer-actions">${!n.online && n.wakeVia ? `<button class="primary" data-action="wake" data-id="${esc(n.id)}">Wake</button>` : ""}<button class="secondary" data-action="rename" data-id="${esc(n.id)}">Rename</button><button class="secondary" data-action="toggle" data-id="${esc(n.id)}">${n.disabled ? "Enable" : "Disable"}</button><button class="secondary square machine-menu-button" data-action="machine-menu" data-id="${esc(n.id)}" aria-label="More actions for ${esc(n.name)}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button></div>`
   );
+}
+/** @param {string | undefined} id @returns {void} */
+function machineDetails(id) {
+  const n = state.snapshot?.nodes.find((node) => node.id === id);
+  if (!n) return;
+  dialog(n.name, machineDetailsHTML(n), "machine-drawer");
+  state.details = n.id;
+}
+/**
+ * Re-renders an open details drawer from the latest snapshot, so polling and
+ * changes made elsewhere, such as labels set through the CLI, appear without
+ * reopening it. Unchanged markup is left alone; changed markup keeps the
+ * drawer's scroll position and keyboard focus. A menu opened from the drawer
+ * is anchored to its button, so the drawer waits until that menu closes. A
+ * machine missing from the snapshot keeps its last view.
+ * @returns {void}
+ */
+function refreshMachineDetails() {
+  const drawer = $("#dialog"),
+    body = $("#dialog-body"),
+    title = $("#dialog-title");
+  if (!state.details || !drawer.open || $("#machine-menu").matches(":popover-open")) return;
+  const n = state.snapshot?.nodes.find((node) => node.id === state.details);
+  if (!n) return;
+  const template = document.createElement("template");
+  template.innerHTML = machineDetailsHTML(n);
+  if (template.innerHTML === body.innerHTML && title.textContent === n.name) return;
+  const active = document.activeElement,
+    scroll = drawer.scrollTop;
+  let focus = "";
+  if (active instanceof HTMLElement && body.contains(active)) {
+    focus = "#dialog-title";
+    if (active.dataset.action) {
+      focus = `[data-action="${CSS.escape(active.dataset.action)}"]`;
+      if (active.dataset.id) focus += `[data-id="${CSS.escape(active.dataset.id)}"]`;
+    }
+  }
+  title.textContent = n.name;
+  body.replaceChildren(template.content);
+  drawer.scrollTop = scroll;
+  if (focus) (find(focus, body) || title).focus({ preventScroll: true });
 }
 document.addEventListener("submit", async (event) => {
   if (!(event.target instanceof HTMLFormElement) || event.target.id !== "account-form") return;
