@@ -599,6 +599,7 @@ function lockFixture(overrides = {}) {
     ],
     keys: [{ id: lockIds.key, name: lockKeyName, role: "orchestrator" }, { id: lockIds.accountKey, name: "account", role: "user" }],
     machines: [{ id: lockIds.worker, name: "gpu-worker" }, { id: lockIds.other, name: "mac-worker" }],
+    updateRequired: [{ id: lockIds.other, name: "mac-worker" }],
     ...overrides,
   };
 }
@@ -692,9 +693,12 @@ async function assertAccessLockFixtures(browser) {
     assert.match(await page.locator('tr[data-allowance="allow-key"]').innerText(), /All workers[\s\S]*in 1h 5\dm|All workers[\s\S]*in 2h 0m/);
     assert.equal(await page.locator('[data-id="global"]').count(), 0, "Fleet owners must not get operator controls");
     assert.equal(await page.locator(".lock-scopes").count(), 0, "A single switch needs no scope rows");
-    assert.deepEqual(await page.locator(".lock-summary .lock-actions button").allTextContents(), ["Pause", "Disable"]);
+    assert.deepEqual(await page.locator(".panel-heading .lock-actions button").allTextContents(), ["Pause", "Disable"]);
     assert.equal(await page.locator('.lock-status button, [role="status"] button').count(), 0, "Controls stay outside the live status");
     assert.equal(await page.getByText(/Orchestrators that share an access key/).count(), 0);
+    assert.equal((await page.locator(".lock-updates").innerText()).replace(/\s+/g, " "),
+      "1 worker needs an update to enforce the lock: mac-worker. Until then they accept no new work. Managed workers update automatically when they next connect.",
+      "Outdated workers are named instead of blocking the lock");
 
     // A custom pause beyond the gateway bound is rejected before sending.
     await page.locator('[data-action="lock-pause"][data-id="fleet"]').click();
@@ -798,10 +802,10 @@ async function assertAccessLockFixtures(browser) {
     // Other conflicts are definite rejections with the gateway's reason.
     await refreshPage(page);
     await page.locator('[data-action="lock-disable"][data-id="fleet"]').click();
-    server.next = { status: 409, body: "upgrade these registered workers to a version that enforces the fleet lock before enabling it: old-worker" };
+    server.next = { status: 409, body: "lock change refused: fixture-reason" };
     attempts = server.attempts.length;
     await submitModal(page);
-    await modalError(page, "old-worker");
+    await modalError(page, "fixture-reason");
     await submitModal(page);
     await page.locator("#dialog").waitFor({ state: "hidden" });
     assert.equal(server.attempts.length, attempts + 2, "A definite rejection may be corrected and retried");
@@ -934,7 +938,7 @@ async function assertOperatorLockFixtures(browser) {
     await pageLink(page, "lock");
     await page.locator("#lock-enforcement").filter({ hasText: /^Locked$/ }).waitFor();
     assert.match(await lockSummary(page), /Enforced by the operator minimum and this fleet's lock/);
-    assert.equal(await page.locator(".lock-summary .lock-actions").count(), 0, "Two switches keep their actions in labelled rows");
+    assert.equal(await page.locator(".panel-heading .lock-actions").count(), 0, "Two switches keep their actions in labelled rows");
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 900 });
       assert.ok(await page.locator("#app").evaluate((element) => element.scrollWidth <= element.clientWidth), `Lock switches overflow at ${width}px`);
@@ -970,7 +974,7 @@ async function assertOperatorLockFixtures(browser) {
     await until(async () => /Operator settings could not be read: Operator lock unavailable\. Showing the operator minimum as reported for this fleet\./.test(await lockSummary(page)), "Operator read failure was not shown");
     assert.equal(await page.locator('[data-id="global"]').count(), 0);
     assert.equal(await page.locator(".lock-scopes").count(), 0, "A failed operator read leaves no read-only operator row");
-    await page.locator('.lock-summary [data-action="lock-pause"][data-id="fleet"]').waitFor();
+    await page.locator('.panel-heading [data-action="lock-pause"][data-id="fleet"]').waitFor();
     assert.equal(await page.locator("#stale-banner").isHidden(), true, "An operator read failure must not mark the fleet view stale");
   } finally {
     await unroute();

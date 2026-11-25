@@ -188,11 +188,43 @@ func (g *Gateway) vaultPasswordResetBlockedLocked(record consolePassword, provis
 	return g.fleetVaultConfiguredLocked(record.UserID)
 }
 
-// vaultRegistrationAllowedLocked rejects a worker that cannot ask the
-// gateway for access decisions while its fleet has a configured lock,
-// including a paused one. Caller holds g.mu.
-func (g *Gateway) vaultRegistrationAllowedLocked(user string, fleetVaultCheck bool) bool {
-	return fleetVaultCheck || !g.fleetVaultConfiguredLocked(user)
+// lockedFleets is a copy-on-write snapshot of configured locks, paused or not,
+// so packet routing can quarantine workers that cannot enforce them without
+// waiting on g.mu.
+type lockedFleets struct {
+	all   bool
+	users map[string]bool
+}
+
+// refreshLockedFleetsLocked publishes the current configured locks for
+// routing. Call after every fleet or gateway lock change. Caller holds g.mu,
+// or has exclusive access during startup.
+func (g *Gateway) refreshLockedFleetsLocked() {
+	s := &lockedFleets{all: g.globalVault.Enabled, users: map[string]bool{}}
+	for user, p := range g.vaultPolicies {
+		if p.Enabled {
+			s.users[user] = true
+		}
+	}
+	g.lockedFleets.Store(s)
+}
+
+// fleetLockConfigured reports whether user's fleet has a configured lock,
+// paused or not, from the routing snapshot.
+func (g *Gateway) fleetLockConfigured(user string) bool {
+	s := g.lockedFleets.Load()
+	return s != nil && (s.all || s.users[user])
+}
+
+// lockQuarantineReason refuses new peer sessions involving a worker that
+// cannot enforce its fleet's configured lock. Such a worker still connects
+// for presence and managed updates, so it enforces the lock once updated;
+// until then it neither accepts nor starts new sessions. Sessions admitted
+// before the lock was configured are not interrupted.
+const lockQuarantineReason = "the fleet lock requires this worker to update before it accepts new sessions"
+
+func (g *Gateway) lockQuarantined(source, dest *connection) bool {
+	return (source.lockUnenforced || dest.lockUnenforced) && g.fleetLockConfigured(source.userID)
 }
 
 func (g *Gateway) fleetVaultRoutes(mux *http.ServeMux) {
@@ -238,13 +270,17 @@ type fleetVaultView struct {
 	Allowances        []fleetVaultAllowanceView `json:"allowances"`
 	Keys              []fleetVaultChoice        `json:"keys"`
 	Machines          []fleetVaultChoice        `json:"machines"`
+	// UpdateRequired lists registered workers whose last registration did
+	// not enforce the lock. While a lock is configured they accept no new
+	// sessions until they reconnect with an enforcing version.
+	UpdateRequired []fleetVaultChoice `json:"updateRequired"`
 }
 
 // fleetVaultViewLocked projects user's policy and the choices its console
 // may select. Caller holds g.mu.
 func (g *Gateway) fleetVaultViewLocked(user string, now time.Time) fleetVaultView {
 	p := g.vaultPolicies[user]
-	v := fleetVaultView{Enabled: p.Enabled, Revision: p.Revision, GlobalEnabled: g.globalVault.Enabled, Allowances: []fleetVaultAllowanceView{}, Keys: []fleetVaultChoice{}, Machines: []fleetVaultChoice{}}
+	v := fleetVaultView{Enabled: p.Enabled, Revision: p.Revision, GlobalEnabled: g.globalVault.Enabled, Allowances: []fleetVaultAllowanceView{}, Keys: []fleetVaultChoice{}, Machines: []fleetVaultChoice{}, UpdateRequired: []fleetVaultChoice{}}
 	if p.Enabled && now.Before(p.PausedUntil) {
 		v.PausedUntil = p.PausedUntil.UTC()
 	}
@@ -269,9 +305,12 @@ func (g *Gateway) fleetVaultViewLocked(user string, now time.Time) fleetVaultVie
 	for _, n := range g.nodes {
 		if n.UserID == user {
 			v.Machines = append(v.Machines, fleetVaultChoice{ID: n.ID, Name: n.Name})
+			if !n.FleetVaultCheck {
+				v.UpdateRequired = append(v.UpdateRequired, fleetVaultChoice{ID: n.ID, Name: n.Name})
+			}
 		}
 	}
-	for _, list := range [][]fleetVaultChoice{v.Keys, v.Machines} {
+	for _, list := range [][]fleetVaultChoice{v.Keys, v.Machines, v.UpdateRequired} {
 		sort.Slice(list, func(i, j int) bool {
 			if list[i].Name != list[j].Name {
 				return nodeNameLess(list[i].Name, list[j].Name)
@@ -356,6 +395,7 @@ func (g *Gateway) commitFleetVaultLocked(previous, next fleetVaultPolicy, existe
 		}
 		return err
 	}
+	g.refreshLockedFleetsLocked()
 	return nil
 }
 
@@ -380,21 +420,8 @@ func (g *Gateway) setFleetVault(w http.ResponseWriter, r *http.Request) {
 		if *q.Revision != g.vaultPolicies[p.UserID].Revision {
 			return fleetVaultView{}, http.StatusConflict, fleetVaultConflict
 		}
-		if *q.Enabled {
-			var old []string
-			for _, n := range g.nodes {
-				if n.UserID == p.UserID && !n.FleetVaultCheck {
-					old = append(old, n.Name)
-				}
-			}
-			if len(old) != 0 {
-				sort.Strings(old)
-				if len(old) > 5 {
-					old = append(old[:5], fmt.Sprintf("and %d more", len(old)-5))
-				}
-				return fleetVaultView{}, http.StatusConflict, "upgrade these registered workers to a version that enforces the fleet lock before enabling it: " + strings.Join(old, ", ")
-			}
-		}
+		// Workers that cannot enforce the lock do not block it: the gateway
+		// quarantines them from new sessions until they update.
 		previous, next, existed := g.nextFleetVaultLocked(p.UserID, now)
 		next.Enabled, next.PausedUntil = *q.Enabled, time.Time{}
 		action, detail := "vault.unlock", ""

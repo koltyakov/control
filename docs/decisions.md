@@ -1739,3 +1739,9 @@ Revocation stops key authentication. A fleet owner can restore the original cred
 ## D200: Separate fleet management from account recovery
 
 Named keys may grant fleet management independently of enrollment and execution. This extends D199's permission list. A manager can grant at most its own permissions. The account key and password-authenticated recovery remain distinct from named keys, even when the permissions displayed for two keys match. See [fleet key roles](protocol.md#fleet-key-roles).
+
+## D201: Quarantine workers that cannot enforce a lock
+
+A lock is the owner's instruction and takes effect immediately. Earlier gateways refused to enable a lock while any registered worker, even an offline one, lacked lock checks. They also refused those workers' registration under a configured lock, which left them unable to receive the managed update that would make them compliant. The gateway now enables the lock regardless and quarantines such workers: they register for presence and managed updates, but every new signaling or relay session to or from them is closed while the fleet or operator lock is configured, including during a timed pause. Supporting workers re-register with lock checks after updating and leave quarantine on that connection.
+
+The gateway cannot close direct WebRTC sessions established before the lock was configured; an outdated worker that stays online keeps them until they end. The console lists workers awaiting an update so owners can upgrade or unregister them. See [lock worker access](console.md#lock-worker-access).

@@ -69,7 +69,7 @@ In **Add allowance**, choose an **Access key**, its workers, and an expiry or no
 
 On upgrade, key-only allowances retain their workers and expiry. Rules restricted to a client identity are removed rather than granting their access to everyone sharing the key. Recreate those rules with the intended key.
 
-Upgrade the registered workers before enabling a lock. A fleet owner can enable it when that fleet's workers support checks. The operator's lock requires support from all registered workers, including offline registrations. A worker running an older binary cannot join a fleet with a configured lock, even during a timed pause.
+Enabling a lock never waits for workers to upgrade. **Access lock** lists workers whose last registration did not support lock checks. While a lock is configured, even during a timed pause, the gateway refuses new sessions to and from those workers. They still connect for presence and managed updates, and they enforce the lock once they reconnect on a supporting version. Sessions opened before the lock was configured are not interrupted. Turning off both switches lifts the restriction.
 
 Once a worker negotiates support, it checks with the gateway before each new peer admission, even when both switches are off. This lets the first request after a lock change see the new rule. If the gateway is unreachable, new requests fail closed; work and streams already admitted can continue.
 

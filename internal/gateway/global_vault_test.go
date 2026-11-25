@@ -38,13 +38,10 @@ func TestGlobalVaultOperatorBoundaryAndDurability(t *testing.T) {
 	if err := (testAdmin{URL: srv.URL, Key: superKey}).JSON(t.Context(), "PUT", path, q, nil); err == nil {
 		t.Fatal("bearer-only request changed the master lock")
 	}
-	// An incapable worker in *another* tenant blocks activation.
+	// An incapable worker in another tenant does not block activation; it
+	// is quarantined from new sessions instead.
 	g.mu.Lock()
 	g.nodes["old"] = model.Node{ID: "old", UserID: user.ID}
-	g.mu.Unlock()
-	operator.request(t, "PUT", path, q, http.StatusConflict)
-	g.mu.Lock()
-	delete(g.nodes, "old")
 	g.mu.Unlock()
 
 	q["pauseSeconds"] = 3600

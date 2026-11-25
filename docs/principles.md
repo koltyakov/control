@@ -24,7 +24,7 @@ Use outbound connections so private-network nodes remain reachable without inbou
 
 Transport choice must not change identity verification, authorization, task ownership, or the interpretation of an operation. A connection failure can interrupt a stream; it must not silently start the same command again.
 
-Apply the fleet lock at worker admission, including on previously established transports. Keep the initiating key and owner attached to delegated instructions. One allowance must cover all participating machines; never combine permissions from unrelated allowances into a new route.
+Apply the fleet lock at worker admission, including on previously established transports. Keep the initiating key and owner attached to delegated instructions. One allowance must cover all participating machines; never combine permissions from unrelated allowances into a new route. A worker that cannot enforce a lock never blocks enabling it; the gateway refuses its new sessions while still delivering its managed updates.
 
 ## Accepted work has an identity and a lifecycle
 

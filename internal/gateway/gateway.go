@@ -115,7 +115,10 @@ type connection struct {
 	lifecycleAt       time.Time
 	lifecycleRevision uint64
 	machineStatePush  bool
-	probe             chan struct{} // Requests an early liveness check.
+	// lockUnenforced marks a worker that does not ask for fleet lock
+	// decisions; it is quarantined from new sessions while a lock is configured.
+	lockUnenforced bool
+	probe          chan struct{} // Requests an early liveness check.
 }
 
 // requestProbe asks the writer to check liveness promptly. It never blocks.
@@ -197,11 +200,13 @@ type Gateway struct {
 	keyTimes map[string]*keyTime // target ID to its current tracker; protected by mu
 	// routes mirrors peers for relay forwarding under its own lock, so packet
 	// routing does not wait for commits or administration holding g.mu.
-	routeMu   sync.RWMutex
-	routes    map[string]*connection
-	counters  counters
-	console   *consoleState
-	admission *admission
+	routeMu sync.RWMutex
+	routes  map[string]*connection
+	// lockedFleets mirrors configured locks for routing without g.mu.
+	lockedFleets atomic.Pointer[lockedFleets]
+	counters     counters
+	console      *consoleState
+	admission    *admission
 }
 
 func New(dir, token string, options ...Options) (*Gateway, error) {
@@ -256,6 +261,7 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 		_ = lock.Close()
 		return nil, err
 	}
+	g.refreshLockedFleetsLocked()
 	if err := g.migrateLegacyClients(); err != nil {
 		_ = g.db.Close()
 		_ = lock.Close()
@@ -550,13 +556,6 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 			_ = ws.Close(websocket.StatusPolicyViolation, "name is reserved for a client identity")
 			return
 		}
-		// A configured fleet lock, even paused, admits only workers that ask
-		// the gateway for access decisions.
-		if !g.vaultRegistrationAllowedLocked(n.UserID, n.FleetVaultCheck) {
-			g.mu.Unlock()
-			_ = ws.Close(websocket.StatusPolicyViolation, "the fleet lock requires a worker that enforces it; upgrade this machine")
-			return
-		}
 		for id, existing := range g.nodes {
 			if existing.UserID == n.UserID && existing.Name == n.Name && id != n.ID {
 				g.mu.Unlock()
@@ -581,7 +580,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		return
 	}
 	c := &connection{client: client, ws: ws, out: make(chan *protocol.Packet, relayQueuePackets),
-		keyID: p.KeyID, userID: p.UserID, heartbeat: hello.GatewayHeartbeat, relayDrain: hello.RelayDrain, pong: make(chan string, 1), probe: make(chan struct{}, 1), lanDiscovery: n.LANDiscovery, machineStatePush: n.MachineStatePush && !client, relay: newRelayScheduler(),
+		keyID: p.KeyID, userID: p.UserID, heartbeat: hello.GatewayHeartbeat, relayDrain: hello.RelayDrain, pong: make(chan string, 1), probe: make(chan struct{}, 1), lanDiscovery: n.LANDiscovery, machineStatePush: n.MachineStatePush && !client, lockUnenforced: !client && !n.FleetVaultCheck, relay: newRelayScheduler(),
 		queues: &packetQueues{local: packetBudget{limit: relayQueueBytes}, global: &g.admission.packets, account: &reservation.account.packets, rejected: g.admission}}
 	if !client && n.LANDiscovery {
 		c.lanViewSession = LANViewSession(hello.Signature)
@@ -951,6 +950,13 @@ func (g *Gateway) servePackets(ctx context.Context, ws *websocket.Conn, c *conne
 		}
 		if dest == nil {
 			if p.Kind == "open" && !c.enqueue(&protocol.Packet{Kind: "close", From: p.To, Session: p.Session, Data: []byte("peer offline")}) {
+				return
+			}
+			continue
+		}
+		// Every new direct or relayed session starts with an open packet.
+		if (p.Kind == "open" || p.Kind == "lan.probe") && g.lockQuarantined(c, dest) {
+			if p.Kind == "open" && !c.enqueue(&protocol.Packet{Kind: "close", From: p.To, Session: p.Session, Data: []byte(lockQuarantineReason)}) {
 				return
 			}
 			continue

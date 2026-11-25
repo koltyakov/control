@@ -113,6 +113,7 @@
  * @property {LockAllowance[]} allowances
  * @property {LockCredential[]} keys
  * @property {LockIdentity[]} machines
+ * @property {LockIdentity[]} [updateRequired] Workers that do not enforce a lock until they update; older gateways omit it.
  * @typedef {{enabled: boolean, pausedUntil?: string, revision: number}} GlobalLock
  * @typedef {{revision: number, enabled: boolean, pauseSeconds?: number}} LockRequest
  * @typedef {{revision: number, keyId: string, allMachines: boolean, machineIds: string[], ttlSeconds?: number}} AllowanceRequest
@@ -1909,7 +1910,9 @@ function pausedUntil(value) {
 }
 /**
  * Buttons for one lock switch. `enableLabel` names the scope when the actions
- * stand alone; `describedBy` names it for each button of a labelled switch row.
+ * stand alone in the panel heading, where enabling is a secondary action like
+ * other heading actions; `describedBy` names the scope for each button of a
+ * labelled switch row, where enabling stays primary.
  * @param {'fleet' | 'global'} scope @param {LockStatus} status
  * @param {string} enableLabel @param {string} [describedBy]
  * @returns {string}
@@ -1918,12 +1921,26 @@ function lockActions(scope, status, enableLabel, describedBy = "") {
   const described = describedBy ? ` aria-describedby="${esc(describedBy)}"` : "";
   /** @param {string} action @param {string} label @param {string} [kind] @returns {string} */
   const button = (action, label, kind = "secondary") =>
-    `<button class="${kind} compact" data-action="${action}" data-id="${scope}"${described}>${esc(label)}</button>`;
+    `<button class="${kind} compact" data-action="${action}" data-id="${scope}"${described}>${action === "lock-enable" && !describedBy ? icon("lock") : ""}${esc(label)}</button>`;
   const actions = [];
-  if (!status.active) actions.push(button("lock-enable", status.paused ? "Lock now" : enableLabel, "primary"));
+  if (!status.active) actions.push(button("lock-enable", status.paused ? "Lock now" : enableLabel, describedBy ? "primary" : "secondary"));
   if (status.active) actions.push(button("lock-pause", "Pause"));
   if (status.known && (status.active || status.paused)) actions.push(button("lock-disable", "Disable", "danger"));
   return `<div class="row-actions lock-actions">${actions.join("")}</div>`;
+}
+// Workers on versions without lock checks never block a lock. The gateway
+// refuses new sessions to and from them while a lock is configured, and they
+// enforce it once a managed update reaches them.
+/** @param {LockIdentity[]} workers @param {boolean} configured @returns {string} */
+function lockUpdates(workers, configured) {
+  if (!workers.length) return "";
+  const shown = workers.slice(0, 6).map((w) => esc(w.name)).join(", ");
+  const more = workers.length > 6 ? ` and ${workers.length - 6} more` : "";
+  const subject = `${plural(workers.length, "worker")} ${workers.length === 1 ? "needs" : "need"} an update to enforce the lock`;
+  const effect = configured
+    ? "Until then they accept no new work. Managed workers update automatically when they next connect."
+    : "While a lock is on, they accept no new work until then. Managed workers update automatically when they next connect.";
+  return `<p class="notice lock-updates" title="${esc(workers.map((w) => w.name).join(", "))}"><strong>${esc(subject)}:</strong> ${shown}${esc(more)}. ${esc(effect)}</p>`;
 }
 // The headline states the effective result for this fleet's workers, then
 // which switch causes it. A switch the gateway did not report is never
@@ -1966,12 +1983,13 @@ function renderLock(view) {
   if (view.globalError)
     notes.push(`Operator settings could not be read: ${view.globalError.replace(/\.?$/, ".")}${globalStatus.known ? " Showing the operator minimum as reported for this fleet." : ""}`);
   else if (!globalStatus.known) notes.push("The gateway did not report the operator minimum.");
-  // Two switches get labelled rows; a single switch keeps its actions beside
-  // the status they change. Controls stay outside the live status region.
+  // Two switches get labelled rows; a single switch puts its actions in the
+  // panel heading, like other panel actions. Controls stay outside the live
+  // status region.
   const rows = operator && view.global;
   const status = `<div class="lock-status" role="status"><strong id="lock-enforcement">${headline}</strong><p class="lock-effect">${esc(effect)}</p>${notes.map((note) => `<p>${esc(note)}</p>`).join("")}</div>`;
   const tone = enforced ? "locked" : unknown ? "unknown" : "";
-  const summary = `<div class="lock-summary padded"><span class="lock-icon ${tone}">${icon(enforced ? "lock" : "unlock")}</span><div class="lock-summary-body">${status}${rows ? "" : lockActions("fleet", fleetStatus, "Lock this fleet")}</div></div>`;
+  const summary = `<div class="lock-summary padded"><span class="lock-icon ${tone}">${icon(enforced ? "lock" : "unlock")}</span><div class="lock-summary-body">${status}${lockUpdates(fleet.updateRequired || [], fleetStatus.active || fleetStatus.paused || globalStatus.active || globalStatus.paused)}</div></div>`;
   /** @param {'fleet' | 'global'} scope @param {string} name @param {string} reach @param {LockStatus} status @returns {string} */
   const scopeRow = (scope, name, reach, status) =>
     `<li class="lock-scope" data-lock-scope="${scope}"><div class="lock-scope-name"><strong id="lock-scope-${scope}">${name}</strong><small class="muted">${reach}</small></div><div class="lock-scope-state">${toneBadge(status.label, status.tone)}${status.detail ? `<small class="muted">${esc(status.detail)}</small>` : ""}</div>${lockActions(scope, status, "Enable", "lock-scope-" + scope)}</li>`;
@@ -1981,7 +1999,7 @@ function renderLock(view) {
   const allowanceRows = fleet.allowances.map((a) =>
     `<tr${allowanceExpired(a) ? ' class="expired"' : ""} data-allowance="${esc(a.id)}"><td>${allowanceCaller(a, fleet)}</td><td>${allowanceWorkers(a, fleet)}</td><td>${allowanceExpiry(a)}</td><td class="action-column"><button class="secondary compact" data-action="allowance-revoke" data-id="${esc(a.id)}">Revoke</button></td></tr>`);
   return (
-    panel("Enforcement", summary + switches) +
+    panel("Enforcement", summary + switches, rows ? "" : lockActions("fleet", fleetStatus, "Lock this fleet")) +
     panel(
       "Allowances",
       allowanceRows.length
@@ -2099,7 +2117,7 @@ function changeLock(scope, mode) {
   const [title, message, label] = copy[mode];
   formDialog(
     title,
-    `<p>${esc(message.trim())}</p>${mode === "pause" ? durationField("pause", "Pause for", [["900", "15 minutes"], ["3600", "1 hour"], ["14400", "4 hours"], ["86400", "24 hours"]], "3600") : ""}<p class="field-help">Sent once for revision ${esc(revision)}. If another change lands first, nothing is applied.</p>`,
+    `<p>${esc(message.trim())}</p>${mode === "pause" ? durationField("pause", "Pause for", [["900", "15 minutes"], ["3600", "1 hour"], ["14400", "4 hours"], ["86400", "24 hours"]], "3600") : ""}`,
     async (fields, current) => {
       guard.check();
       /** @type {LockRequest} */
@@ -2131,7 +2149,7 @@ function addAllowance() {
     "Add allowance",
     `<label>Access key<select name="keyId"><option value="">Choose an access key</option>${fleet.keys.map((k) => `<option value="${esc(k.id)}">${esc(accessKeyName(k))} · ${esc(k.id.slice(0, 12))}</option>`).join("")}</select></label>
     <p class="field-help">Choose an active key with permission to run work.</p>
-    <label>Workers<select name="scope"><option value="all">All workers in this fleet</option><option value="selected">Selected workers</option></select></label><fieldset id="allowance-machines" class="choice-list" hidden><legend>Selected workers</legend>${fleet.machines.map((m) => `<label class="choice"><input type="checkbox" value="${esc(m.id)}" data-machine disabled><span>${esc(m.name)}</span><small class="mono muted">${esc(m.id.slice(0, 16))}</small></label>`).join("") || '<p class="field-help">No registered workers were reported.</p>'}</fieldset><p class="field-help">Workers are matched by immutable ID, so renaming a machine keeps its allowance.</p>${durationField("expiry", "Expires after", [["3600", "1 hour"], ["28800", "8 hours"], ["86400", "24 hours"], ["604800", "7 days"], ["never", "No expiration"]], "86400")}<p id="allowance-indefinite" class="notice" hidden>This allowance stays in effect until someone revokes it.</p><p class="field-help">Sent once for revision ${esc(revision)}. If another change lands first, nothing is applied.</p>`,
+    <label>Workers<select name="scope"><option value="all">All workers in this fleet</option><option value="selected">Selected workers</option></select></label><fieldset id="allowance-machines" class="choice-list" hidden><legend>Selected workers</legend>${fleet.machines.map((m) => `<label class="choice"><input type="checkbox" value="${esc(m.id)}" data-machine disabled><span>${esc(m.name)}</span><small class="mono muted">${esc(m.id.slice(0, 16))}</small></label>`).join("") || '<p class="field-help">No registered workers were reported.</p>'}</fieldset><p class="field-help">Workers are matched by immutable ID, so renaming a machine keeps its allowance.</p>${durationField("expiry", "Expires after", [["3600", "1 hour"], ["28800", "8 hours"], ["86400", "24 hours"], ["604800", "7 days"], ["never", "No expiration"]], "86400")}<p id="allowance-indefinite" class="notice" hidden>This allowance stays in effect until someone revokes it.</p>`,
     async (fields, current) => {
       guard.check();
       const form = $("#modal-form"),
@@ -2181,7 +2199,7 @@ function revokeAllowance(id) {
     caller = "key " + (key ? accessKeyName(key) : allowance.keyId);
   formDialog(
     "Revoke allowance",
-    `<p>Revoke the allowance for ${esc(caller || "this caller")} on ${allowance.allMachines ? "all workers" : esc(plural(allowance.machineIds.length, "selected worker"))}. While a lock is enforced, a caller matching no other allowance cannot start new work.</p><p class="field-help">Sent once for revision ${esc(revision)}. If another change lands first, nothing is applied.</p>`,
+    `<p>Revoke the allowance for ${esc(caller || "this caller")} on ${allowance.allMachines ? "all workers" : esc(plural(allowance.machineIds.length, "selected worker"))}. While a lock is enforced, a caller matching no other allowance cannot start new work.</p>`,
     async (_fields, current) => {
       guard.check();
       await guard.run(() => api(`fleet/vault/allowances/${encodeURIComponent(id)}`, "DELETE", { revision }));

@@ -17,10 +17,19 @@ import (
 	"github.com/koltyakov/control/internal/enrollment"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
+	"github.com/koltyakov/control/internal/protocol"
+	"google.golang.org/protobuf/proto"
 )
 
 // vaultWorker registers a machine and reports whether the gateway accepted it.
 func vaultWorker(t *testing.T, serverURL, token, name string, check bool) (*identity.Identity, bool) {
+	t.Helper()
+	id, _, ok := vaultWorkerConn(t, serverURL, token, name, check)
+	return id, ok
+}
+
+// vaultWorkerConn registers a machine and keeps its gateway connection.
+func vaultWorkerConn(t *testing.T, serverURL, token, name string, check bool) (*identity.Identity, *websocket.Conn, bool) {
 	t.Helper()
 	id, err := identity.Generate()
 	if err != nil {
@@ -44,7 +53,34 @@ func vaultWorker(t *testing.T, serverURL, token, name string, check bool) (*iden
 		t.Fatal(err)
 	}
 	_, ready, err := ws.Read(ctx)
-	return id, err == nil && string(ready) == "ready"
+	return id, ws, err == nil && string(ready) == "ready"
+}
+
+// vaultOpen sends a session open to toID, then returns the first open or
+// close packet for that session received on expect. Other gateway packets
+// are skipped. An expired read closes the connection, so read only where a
+// packet is expected.
+func vaultOpen(t *testing.T, from *websocket.Conn, toID, session string, expect *websocket.Conn) *protocol.Packet {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	data, err := proto.Marshal(&protocol.Packet{Kind: "open", To: toID, Session: session})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = from.Write(ctx, websocket.MessageBinary, data); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, b, err := expect.Read(ctx)
+		if err != nil {
+			t.Fatalf("session %s: %v", session, err)
+		}
+		var p protocol.Packet
+		if proto.Unmarshal(b, &p) == nil && p.Session == session && (p.Kind == "open" || p.Kind == "close") {
+			return &p
+		}
+	}
 }
 
 // vaultHTTP sends a bearer request and returns its status and body.
@@ -152,8 +188,8 @@ func TestFleetDecisionSelectorsAndCoverage(t *testing.T) {
 }
 
 // The console owns the policy: browser cookie, same origin and CSRF only;
-// enabling needs every registered worker to enforce it; revisions order
-// edits; pause resumes automatically; edits are audited.
+// workers that cannot enforce it are quarantined rather than blocking it;
+// revisions order edits; pause resumes automatically; edits are audited.
 func TestFleetVaultConsolePolicy(t *testing.T) {
 	g, s := installationFixture(t)
 	alice, a := createTestUser(t, s, "alice")
@@ -177,23 +213,39 @@ func TestFleetVaultConsolePolicy(t *testing.T) {
 	forged := browser
 	forged.CSRF = "wrong"
 	forged.request(t, "PUT", "/console/api/fleet/vault", map[string]any{"revision": 0, "enabled": true}, 403)
-	body, _ := browser.request(t, "PUT", "/console/api/fleet/vault", map[string]any{"revision": 0, "enabled": true}, 409)
-	if !strings.Contains(string(body), "old") {
-		t.Fatalf("refusal must name the old worker: %s", body)
-	}
-	if err := a.JSON(context.Background(), "DELETE", "/v1/fleet/nodes/"+old.ID+"?stop=true", nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := vaultWorker(t, s.URL, a.Key, "current", true); !ok {
-		t.Fatal("supporting worker rejected")
-	}
+	// A worker that cannot enforce the lock does not block enabling it; the
+	// view names it until it updates.
 	data, _ = browser.request(t, "PUT", "/console/api/fleet/vault", map[string]any{"revision": 0, "enabled": true}, 200)
-	if v = vaultView(t, data); !v.Enabled || v.Revision != 1 || !v.PausedUntil.IsZero() {
+	if v = vaultView(t, data); !v.Enabled || v.Revision != 1 || !v.PausedUntil.IsZero() || len(v.UpdateRequired) != 1 || v.UpdateRequired[0].ID != old.ID {
 		t.Fatalf("enabled view: %s", data)
 	}
 	browser.request(t, "PUT", "/console/api/fleet/vault", map[string]any{"revision": 0, "enabled": false}, 409)
-	if _, ok := vaultWorker(t, s.URL, a.Key, "old2", false); ok {
-		t.Fatal("non-supporting worker registered under a lock")
+	// Under a lock, a non-enforcing worker still connects so it can receive
+	// managed updates, but new sessions to or from it are refused.
+	old2ID, old2, ok := vaultWorkerConn(t, s.URL, a.Key, "old2", false)
+	if !ok {
+		t.Fatal("non-enforcing worker must still connect for updates under a lock")
+	}
+	currentID, current, ok := vaultWorkerConn(t, s.URL, a.Key, "current", true)
+	if !ok {
+		t.Fatal("supporting worker rejected")
+	}
+	peerID, peer, ok := vaultWorkerConn(t, s.URL, a.Key, "peer", true)
+	if !ok {
+		t.Fatal("supporting worker rejected")
+	}
+	if p := vaultOpen(t, current, old2ID.ID, "to-old", current); p.Kind != "close" || string(p.Data) != lockQuarantineReason {
+		t.Fatalf("session to a non-enforcing worker: %+v", p)
+	}
+	if p := vaultOpen(t, old2, currentID.ID, "from-old", old2); p.Kind != "close" || string(p.Data) != lockQuarantineReason {
+		t.Fatalf("session from a non-enforcing worker: %+v", p)
+	}
+	if p := vaultOpen(t, current, peerID.ID, "enforcing", peer); p.Kind != "open" {
+		t.Fatalf("session between enforcing workers: %+v", p)
+	}
+	data, _ = browser.request(t, "GET", "/console/api/fleet/vault", nil, 200)
+	if v = vaultView(t, data); len(v.UpdateRequired) != 2 {
+		t.Fatalf("both non-enforcing workers need updates: %s", data)
 	}
 	for _, bad := range []string{
 		`{"revision":1,"enabled":false,"pauseSeconds":60}`,
@@ -224,8 +276,9 @@ func TestFleetVaultConsolePolicy(t *testing.T) {
 	if !v.Enabled || v.Revision != 2 || v.PausedUntil.Before(before.Add(3600*time.Second)) || v.PausedUntil.Location() != time.UTC {
 		t.Fatalf("paused view: %s", data)
 	}
-	if _, ok := vaultWorker(t, s.URL, a.Key, "old3", false); ok {
-		t.Fatal("a paused lock must still reject non-supporting workers")
+	// A paused lock is still configured, so the quarantine remains.
+	if p := vaultOpen(t, current, old2ID.ID, "paused", current); p.Kind != "close" || string(p.Data) != lockQuarantineReason {
+		t.Fatalf("paused lock must keep quarantining: %+v", p)
 	}
 	g.mu.Lock()
 	enforced := g.fleetVaultEnforcedLocked(alice.ID, time.Now())
@@ -235,6 +288,9 @@ func TestFleetVaultConsolePolicy(t *testing.T) {
 		t.Fatal("pause must suspend enforcement and resume on its own", enforced, resumed)
 	}
 	browser.request(t, "PUT", "/console/api/fleet/vault", map[string]any{"revision": 2, "enabled": false}, 200)
+	if p := vaultOpen(t, current, old2ID.ID, "unlocked", old2); p.Kind != "open" {
+		t.Fatalf("disabling the lock must lift the quarantine: %+v", p)
+	}
 	if countAudit(t, g, "vault.lock") != 1 || countAudit(t, g, "vault.pause") != 1 || countAudit(t, g, "vault.unlock") != 1 {
 		t.Fatal("lock changes must be audited")
 	}

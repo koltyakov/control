@@ -6,7 +6,7 @@ For the opt-in local CLI/MCP approval protocol, see [Control Vault](vault.md). I
 
 ### Fleet lock admission
 
-A gateway supporting fleet locks advertises `fleetVaultCheck: true` in `GET /v1/auth`. A compatible worker advertises the same field in its signed registration. The worker asks `POST /v1/fleet/vault/check` for an admission decision with the initiating client transport ID and the participating worker IDs. The answer contains `allowed` and, when known, the execution key ID and stable owner ID. A worker can use the provenance recorded with an instruction grant to recheck it after the client disconnects. The response is a decision, not a bearer credential.
+A gateway supporting fleet locks advertises `fleetVaultCheck: true` in `GET /v1/auth`. A compatible worker advertises the same field in its signed registration. A configured lock does not require compatible workers. While the fleet or operator lock is configured, paused or not, the gateway closes every new signaling or relay session to or from a worker that did not advertise `fleetVaultCheck`, with reason `the fleet lock requires this worker to update before it accepts new sessions`. Such workers still register for presence and managed updates. The worker asks `POST /v1/fleet/vault/check` for an admission decision with the initiating client transport ID and the participating worker IDs. The answer contains `allowed` and, when known, the execution key ID and stable owner ID. A worker can use the provenance recorded with an instruction grant to recheck it after the client disconnects. The response is a decision, not a bearer credential.
 
 Each new peer request needs its own decision. A policy refusal returns `fleet_vault_denied`; failure to obtain a decision returns `fleet_vault_unavailable`. No command is queued for replay when access resumes. A task already accepted can finish, and bytes already flowing on an admitted stream continue. Opening a new stream on that same transport requires another decision.
 
@@ -15,7 +15,7 @@ The console policy routes require a browser login; writes also require the same 
 | Route | Operation |
 | --- | --- |
 | `GET`, `PUT /console/api/admin/vault` | Operator reads or sets the gateway lock with `enabled`, `revision`, and optional `pauseSeconds`. |
-| `GET`, `PUT /console/api/fleet/vault` | Read lock settings, active execution-capable access keys (`keys`, including `role`) and workers, or update the fleet lock. |
+| `GET`, `PUT /console/api/fleet/vault` | Read lock settings, active execution-capable access keys (`keys`, including `role`), workers, and `updateRequired` workers without lock checks, or update the fleet lock. |
 | `POST /console/api/fleet/vault/allowances` | Add a rule for one required `keyId`. Supply `allMachines: true` or a nonempty `machineIds` list. Optional `ttlSeconds` sets its expiry. Every orchestrator using the key shares its allowances. `ownerId` is rejected. |
 | `DELETE /console/api/fleet/vault/allowances/{id}` | Remove an allowance using the current revision. |
 

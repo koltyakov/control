@@ -87,17 +87,8 @@ func (g *Gateway) setGlobalVaultLocked(r *http.Request, revision int64, enabled 
 	if revision != g.globalVault.Revision {
 		return globalVaultState{}, http.StatusConflict, errors.New("gateway lock changed; reload before editing")
 	}
-	if enabled {
-		var incompatible int
-		for _, n := range g.nodes {
-			if !n.FleetVaultCheck {
-				incompatible++
-			}
-		}
-		if incompatible != 0 {
-			return globalVaultState{}, http.StatusConflict, fmt.Errorf("registered workers without fleet-lock support: %d; upgrade and reconnect them before enabling the gateway lock", incompatible)
-		}
-	}
+	// Workers that cannot enforce the lock do not block it: the gateway
+	// quarantines them from new sessions until they update.
 	p := globalVaultState{Enabled: enabled, Revision: revision + 1}
 	var expiry int64
 	if pauseSeconds != 0 {
@@ -123,5 +114,6 @@ ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,paused_until_ns=excluded.
 		return globalVaultState{}, http.StatusInternalServerError, errors.New("could not persist gateway lock")
 	}
 	g.globalVault = p
+	g.refreshLockedFleetsLocked()
 	return p, http.StatusOK, nil
 }
