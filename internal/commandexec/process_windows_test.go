@@ -6,12 +6,21 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
 func detachFixture(_ *exec.Cmd) {}
+
+func selfCPU() time.Duration {
+	var creation, exit, kernel, user windows.Filetime
+	if windows.GetProcessTimes(windows.CurrentProcess(), &creation, &exit, &kernel, &user) != nil {
+		return 0
+	}
+	return time.Duration(filetimeTicks(user.HighDateTime, user.LowDateTime)+filetimeTicks(kernel.HighDateTime, kernel.LowDateTime)) * 100
+}
 
 func TestRunCommandNestedJob(t *testing.T) {
 	// Simulate an enclosing Task Scheduler/service job without changing the

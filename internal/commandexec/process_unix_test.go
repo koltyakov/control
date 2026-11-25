@@ -3,18 +3,42 @@
 package commandexec
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func detachFixture(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+}
+
+func selfCPU() time.Duration {
+	var usage syscall.Rusage
+	if syscall.Getrusage(syscall.RUSAGE_SELF, &usage) != nil {
+		return 0
+	}
+	return time.Duration(usage.Utime.Nano() + usage.Stime.Nano())
+}
+
+// A program that never started has no rusage on Unix: only wall time is
+// known, and CPU and memory are omitted rather than reported as zero.
+func TestRunWithUsageOmitsUnknownReadings(t *testing.T) {
+	missing := exec.CommandContext(t.Context(), filepath.Join(t.TempDir(), "absent-command"))
+	exit, usage, err := RunWithUsage(t.Context(), missing)
+	if exit != -1 || err == nil || usage == nil || usage.WallMs == nil {
+		t.Fatalf("exit=%d err=%v usage=%+v", exit, err, usage)
+	}
+	if encoded, _ := json.Marshal(usage); !strings.HasPrefix(string(encoded), `{"wallMs":`) || strings.Count(string(encoded), ":") != 1 {
+		t.Fatalf("unknown readings were reported: %s", encoded)
+	}
 }
 
 func TestEscapedDescendantOutputIsBounded(t *testing.T) {

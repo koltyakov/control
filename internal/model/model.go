@@ -160,6 +160,8 @@ type Task struct {
 	ResultArtifact *Artifact       `json:"resultArtifact,omitempty"`
 	Artifacts      []Artifact      `json:"artifacts,omitempty"`
 	Error          string          `json:"error,omitempty"`
+	// Usage is the terminal command invocation's resource accounting, if any.
+	Usage *CommandUsage `json:"usage,omitempty"`
 	// Pruned marks a terminal task whose record, logs, result, and workspace
 	// were removed by retention. Its ID still cannot be resubmitted.
 	Pruned bool `json:"pruned,omitempty"`

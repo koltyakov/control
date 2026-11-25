@@ -42,6 +42,14 @@ func TestCommandFixture(t *testing.T) {
 		os.Exit(0)
 	case "exit":
 		os.Exit(23)
+	case "burn":
+		burnFixture()
+	case "burn-parent":
+		// Waits for its burning child, so the child's usage is reaped into it.
+		if fixtureCommand(context.Background(), "burn", path).Run() != nil {
+			os.Exit(94)
+		}
+		os.Exit(0)
 	case "argv":
 		_, _ = fmt.Fprint(os.Stdout, os.Args[0])
 		os.Exit(0)

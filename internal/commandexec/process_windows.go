@@ -80,6 +80,49 @@ func (o *ownership) close() {
 	_ = windows.CloseHandle(o.job)
 }
 
+// jobBasicAccounting is JOBOBJECT_BASIC_ACCOUNTING_INFORMATION; times are in
+// 100-nanosecond ticks and include active and terminated job processes.
+type jobBasicAccounting struct {
+	TotalUserTime             int64
+	TotalKernelTime           int64
+	ThisPeriodTotalUserTime   int64
+	ThisPeriodTotalKernelTime int64
+	TotalPageFaultCount       uint32
+	TotalProcesses            uint32
+	ActiveProcesses           uint32
+	TotalTerminatedProcesses  uint32
+}
+
+// usage reads the job after the helper is reaped and before close releases
+// it. Two non-blocking queries; any failure leaves those fields unknown.
+func (o *ownership) usage(helper *os.ProcessState) *measured {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.adopted {
+		return nil
+	}
+	var reading jobAccounting
+	var basic jobBasicAccounting
+	if windows.QueryInformationJobObject(o.job, windows.JobObjectBasicAccountingInformation, uintptr(unsafe.Pointer(&basic)), uint32(unsafe.Sizeof(basic)), nil) == nil {
+		reading.cpuKnown, reading.user, reading.kernel = true, basic.TotalUserTime, basic.TotalKernelTime
+	}
+	var limits windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+	if windows.QueryInformationJobObject(o.job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits)), nil) == nil {
+		reading.peakKnown, reading.peak = true, uint64(limits.PeakJobMemoryUsed)
+	}
+	if helper != nil {
+		if times, ok := helper.SysUsage().(*syscall.Rusage); ok && times != nil {
+			reading.helperKnown = true
+			reading.helperUser = filetimeTicks(times.UserTime.HighDateTime, times.UserTime.LowDateTime)
+			reading.helperKernel = filetimeTicks(times.KernelTime.HighDateTime, times.KernelTime.LowDateTime)
+		}
+	}
+	return reading.reading()
+}
+
+// The job measures the whole tree, so the helper reports nothing itself.
+func programUsage(*os.ProcessState) *measured { return nil }
+
 func helperFiles(statusArg, gateArg string) (*os.File, *os.File, error) {
 	statusHandle, err := strconv.ParseUint(statusArg, 10, 64)
 	if err != nil || statusHandle == 0 {

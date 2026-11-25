@@ -440,7 +440,7 @@ func (n *Node) runTask(ctx context.Context, id string, notifier *taskNotifier) {
 	n.mu.Lock()
 	task := cloneTask(n.tasks[id])
 	n.mu.Unlock()
-	ctx = context.WithValue(ctx, activityContextKey{}, activityContext{owner: task.Owner, task: id})
+	ctx = withCommandUsage(context.WithValue(ctx, activityContextKey{}, activityContext{owner: task.Owner, task: id}))
 	dir := filepath.Join(n.Config.WorkDir, "tasks", id)
 	var result any
 	err := n.stageTaskInputs(ctx, id, dir, task.Spec.Inputs)
@@ -510,6 +510,7 @@ func (n *Node) finishTask(id string, ctx context.Context, result any, artifacts 
 		task.Phase = ""
 		task.State, task.Updated, task.Artifacts = "succeeded", time.Now().UTC(), artifacts
 		task.Result, task.ResultArtifact = resultJSON, resultArtifact
+		task.Usage = taskCommandUsage(ctx)
 		if err != nil {
 			task.State, task.Error = "failed", persistedTaskError(err.Error())
 		}

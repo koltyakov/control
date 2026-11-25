@@ -28,6 +28,22 @@ func prepare(cmd *exec.Cmd, status, gate *os.File) (*ownership, [2]string, error
 func (o *ownership) adopt(_ *os.Process) error { return nil }
 func (o *ownership) close()                    {}
 
+// The parent's own wait4 of the helper would mix in the helper's resident
+// set, so Unix accounting comes from the helper's report instead.
+func (o *ownership) usage(*os.ProcessState) *measured { return nil }
+
+// programUsage reads the requested program's wait4 rusage in the helper. It
+// covers the program and every descendant that was waited for before exiting,
+// but not orphans reparented elsewhere or descendants still running when the
+// program exits; group cleanup kills those after this reading.
+func programUsage(state *os.ProcessState) *measured {
+	rusage, ok := state.SysUsage().(*syscall.Rusage)
+	if !ok || rusage == nil {
+		return nil
+	}
+	return rusageReading(rusage.Utime.Nano(), rusage.Stime.Nano(), int64(rusage.Maxrss), maxRSSUnit)
+}
+
 func (o *ownership) terminate(process *os.Process) error {
 	// Cmd.Wait reaps the process before joining CommandContext's cancellation
 	// watcher. Only the first caller may signal this group; all later callbacks

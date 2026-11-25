@@ -105,6 +105,8 @@ type commandResult struct {
 	// text marker between them is informational; these fields are exact.
 	StdoutOmitted int64 `json:"stdoutOmitted,omitempty"`
 	StderrOmitted int64 `json:"stderrOmitted,omitempty"`
+	// Usage is accounting only; numbers stay visible on the secret path.
+	Usage *model.CommandUsage `json:"usage,omitempty"`
 }
 
 const (
@@ -237,8 +239,9 @@ func runCommand(ctx context.Context, cfg Command, e Execution, input string) (co
 	stdout, stderr := &capture{keepTail: true}, &capture{keepTail: true}
 	cmd.Stdout = io.MultiWriter(stdout, e.Log)
 	cmd.Stderr = io.MultiWriter(stderr, e.Log)
-	exit, err := commandexec.Run(ctx, cmd)
-	result := commandResult{ExitCode: exit, Truncated: stdout.truncated || stderr.truncated}
+	exit, usage, err := commandexec.RunWithUsage(ctx, cmd)
+	reportCommandUsage(ctx, usage)
+	result := commandResult{ExitCode: exit, Truncated: stdout.truncated || stderr.truncated, Usage: usage}
 	result.Stdout, result.StdoutOmitted = stdout.output()
 	result.Stderr, result.StderrOmitted = stderr.output()
 	if err != nil {
