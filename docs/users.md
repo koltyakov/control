@@ -95,7 +95,7 @@ Schema version 7 adds `console_sessions`, storing cookie digests and session met
 
 **Upgrade the gateway before upgrading nodes from the pre-isolation version.** New nodes require fleet-aware authentication and refuse an older gateway. Pause automated release polling during this one-time migration. Later managed updates independently reserve eligible nodes, allowing node-before-gateway installation only with explicit executable compatibility. An older coordinator retains its previous rollout order until upgraded. SQLite migration cannot be reversed by starting the old executable against stale JSON files.
 
-To split an old shared pool into new accounts, enroll fresh node identities under those accounts in separate state directories. Existing identities and their task ownership remain in the legacy fleet. For backups, stop the gateway and copy its state directory, including the database and release storage. Node tasks, artifacts, and workspaces remain on their respective machines; executable blobs and rollout state retain their existing filesystem storage.
+To split an old shared pool into new accounts, enroll fresh node identities under those accounts in separate state directories. Existing identities and their task ownership remain in the legacy fleet. For backups, take an [online gateway backup](gateway.md#back-up-and-restore) of the database while the gateway runs. Stopping the gateway and copying its whole state directory, including the database and release storage, remains the offline alternative and also preserves rollout state. Node tasks, artifacts, and workspaces remain on their respective machines; executable blobs and rollout state retain their existing filesystem storage.
 
 ## API reference
 

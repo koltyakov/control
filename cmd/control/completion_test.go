@@ -119,8 +119,8 @@ func TestCompletionScriptsCoverVisibleCommands(t *testing.T) {
 }
 
 func TestCompletionHidesCommandsHelpHides(t *testing.T) {
-	fleet := regexp.MustCompile(`\b(users|keys|audit|console|invites|proxies|unregister|authorize|push)\b`)
-	admin := regexp.MustCompile(`\b(users|authorize|push)\b`)
+	fleet := regexp.MustCompile(`\b(users|keys|audit|console|invites|proxies|unregister|authorize|push|backup)\b`)
+	admin := regexp.MustCompile(`\b(users|authorize|push|backup)\b`)
 	for _, shell := range completionShells {
 		for role, hidden := range map[string]*regexp.Regexp{"common": fleet, "user": admin} {
 			script, err := completionScript(shell, completionRoleHelp[role])

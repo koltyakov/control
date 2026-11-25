@@ -104,6 +104,8 @@ Superuser gateway commands:
   update push DIR [--json]              Upload a bundle; print a summary or full deployment JSON
   update status                        Show rollout and node versions
   update check                         Fetch the latest configured GitHub release
+  gateway backup create FILE [--data DIR]  On the gateway host, snapshot its live database; never overwrites
+  gateway backup verify FILE           Check a backup's integrity and schema before an offline restore
 Environment: CONTROL_GATEWAY, CONTROL_SUPERUSER_KEY
 `
 

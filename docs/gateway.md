@@ -173,6 +173,73 @@ Counters reset when the gateway restarts. Prometheus `rate()` and `increase()` h
 ## Maintenance
 
 - Follow [managed updates](updates.md) for release selection and idle-only rollout. `control update` replaces the local CLI, not the gateway's selected runtime.
-- Back up the state directory while the gateway is stopped, including SQLite and update assets. Protect the environment file separately. See [backup and upgrades](users.md#persistence-and-upgrades).
+- Back up the gateway database while it runs with `control gateway backup create`. Protect the environment file separately. See [back up and restore](#back-up-and-restore).
 - Diagnose startup with `systemctl status` and `journalctl`. A permission error often means the service cannot write or execute files under its state directory.
 - This is a single-gateway deployment. Do not share its state directory between gateway processes or place it under worker-accessible storage.
+
+## Back up and restore
+
+### Online backup
+
+On the gateway host, run the backup as the gateway service account. The destination directory must already exist and be outside the state directory:
+
+```sh
+sudo install -d -o control-gateway -g control-gateway -m 0700 /var/backups/control-gateway
+sudo -u control-gateway /usr/local/bin/control gateway backup create \
+  /var/backups/control-gateway/gateway-$(date -u +%Y%m%dT%H%M%SZ).db --data /var/lib/control-gateway
+```
+
+The gateway keeps serving. The command prints JSON with the backup's `path`, `schemaVersion`, `bytes`, `sha256`, `createdAt`, and counts of accounts, machines, credentials, invitations, and identities. It never prints record contents.
+
+The command opens the database through its own SQLite connection and runs `VACUUM INTO`. Under WAL, that read transaction sees exactly the transactions committed when it starts, so the backup holds every mutation the gateway had acknowledged by then and none it had not. It does not use the gateway's mutation lock, and it does not block gateway writers. While the snapshot runs, SQLite cannot checkpoint past it, so the WAL grows by whatever is committed meanwhile; normal checkpoints resume afterwards. On a developer laptop, a 30 MB database, with the audit log at its 100,000-event ceiling, took about 0.3 seconds, and account creations committed concurrently in under 1 ms at the 99th percentile. The only write is the audit event below: one short transaction with one fsync, which a concurrent gateway commit may wait for.
+
+Safety rules:
+
+- The output is never overwritten. An existing file fails the command and is left unchanged.
+- The snapshot is written to a hidden `.control-backup-*` file in the destination directory with mode `0600`, synced, and checked with `PRAGMA integrity_check`, `PRAGMA foreign_key_check`, and the schema version. It is then published without replacement: by hard link on Unix, so the destination file system must support hard links, and by a non-replacing write-through move on Windows.
+- Interrupting the command or any failure removes the temporary file. Only a crash or power loss can leave a `.control-backup-*` file; delete it.
+- One backup runs at a time per state directory. The command holds `gateway-backup.lock` there, separate from the `gateway.lock` the serving gateway holds.
+- On Unix, the command refuses to run unless its effective user owns `gateway.db`. A SQLite connection from another account, such as root, could create `-wal`/`-shm` files the gateway account cannot open.
+- It refuses a database whose schema is newer than its executable. The installed CLI can be older than the gateway's managed runtime; after a schema-changing update, update the CLI with `control update`, which does not touch the gateway runtime. Executables without this command do not recognize it.
+
+Authority comes from filesystem access to the state directory, the same access an offline copy needs. There is no network route, the superuser key is not involved, and credential hashes never leave the host through Control. `control gateway backup` appears only in superuser help.
+
+Each published backup is recorded in the operator's activity history as `gateway.backup` ("Backed up gateway database") with the backup's SHA-256, schema version, size, and the host account, plus the `sudo` caller when present. The destination path and database contents are not recorded. The event is written before publication, so a published backup always has one, and a failed publication can leave an event without a file. Anyone who can read the state directory can still copy it without an event, so treat the record as accountability for this command, not as access control.
+
+Protect backups like the state directory. They contain credential digests, Argon2id browser password hashes, console session digests, invitations, identity ownership, and the activity log. Encrypt copies stored off the host.
+
+### What a backup contains
+
+A backup is the SQLite database: accounts, credential hashes, invitations, registrations, permanent identity and client bindings, machine policy and names, proxy dependencies, browser passwords and sessions, and the activity log.
+
+It does not contain:
+
+- Release storage under `updates/`. Executables are large and can be fetched again with `control update check` or pushed with `make update`.
+- Rollout state in `updates/deployment.json`: the selected deployment, its progress and acknowledgements, and the [persisted release version floor](updates.md#publish-github-releases). A database snapshot and a separate copy of this file cannot be made consistent while the gateway runs. Restoring an old rollout state could reselect older software or lower the floor, so it is left out deliberately.
+- The managed runtime selection (`runtime*.json`) and versioned gateway executables, which belong to the installed host.
+- The environment file with `CONTROL_SUPERUSER_KEY` and any release token, TLS certificates, and reverse-proxy configuration, which live outside the state directory. Keep them in your own secret storage.
+
+The gateway has no identity key of its own. Nodes trust it through HTTPS and authenticate with credentials whose digests are in the database.
+
+To preserve rollout state and the release floor exactly, use the offline method instead: stop the gateway and copy its whole state directory, including release storage.
+
+### Verify and restore
+
+There is no online restore. Restore while the gateway is stopped:
+
+1. Check the backup with the executable that will serve it: `control gateway backup verify FILE`. It opens the file read-only without creating SQLite sidecar files and prints the same summary. It refuses a corrupt file or a schema newer than that executable.
+2. Stop the gateway: `sudo systemctl stop control-gateway`.
+3. Move the current `gateway.db`, `gateway.db-wal`, and `gateway.db-shm` out of the state directory. Do not leave an old `-wal` or `-shm` next to the restored file: SQLite would apply it to the wrong database. Keep the moved files until the restored gateway is checked.
+4. Copy the backup to `gateway.db` in the state directory, owned by the service account with mode `0600`.
+5. Start the gateway and check `control users list`, `control machines`, and `control update status`.
+
+On the same host, keep the existing `updates/` directory and runtime files; they are current, unlike the database. On a new host, start from an empty state directory containing only the restored `gateway.db`. The gateway then has no selected deployment: it retrieves the latest release when release polling is enabled, or waits for `make update`. The release floor starts again from that selection. Confirm the selected version with `control update status` before creating invitations.
+
+After a restore:
+
+- An older schema migrates forward on startup as usual. A newer one is refused with "gateway database is newer than this executable", as for any database.
+- Everything committed after the backup is lost. Accounts and keys created later no longer authenticate. Keys, accounts, and invitations revoked later are valid again: revoke them again. Renames, enable/disable policy, and unregistrations made later revert.
+- Machines enrolled after the backup are unknown and cannot authenticate; enroll them again. Machines that existed at backup time reconnect with their existing identity and credential. CLI and MCP client sessions register again on their next connection.
+- Browser passwords and sessions are as of the backup. Sessions created later require signing in again. Sessions signed out later are valid again until their original idle or absolute expiry, and passwords changed later revert. Reset affected passwords, which also ends their sessions.
+- Activity after the backup is lost.
+- Rollout progress is not in the backup. On the same host the existing rollout state continues; nodes report their versions again when they reconnect.

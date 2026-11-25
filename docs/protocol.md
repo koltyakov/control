@@ -230,6 +230,10 @@ Production packet retention is bounded across signaling and relay, including spa
 
 Limits apply independently of a reverse proxy's admission. For expose bypass routes, see [deployment and HTTP reservation](expose.md#limits-and-troubleshooting). Raising Control's limits alone does not raise expose's route limits. Existing fleets exceeding a new live limit should configure an override before upgrading; offline records are not deleted and existing work is not migrated or replayed.
 
+### Gateway backup
+
+`control gateway backup create FILE [--data DIR]` runs on the gateway host as the service account, with no gateway credential or API route. It snapshots `DIR/gateway.db` with SQLite `VACUUM INTO` through a separate connection while the gateway serves, verifies the copy, records a `gateway.backup` audit event, and publishes `FILE` without overwriting. `--data` defaults to `.control-gateway`, like `control gateway`. `control gateway backup verify FILE` checks a backup read-only. Both print `path`, `schemaVersion`, `bytes`, `sha256`, counts of `accounts`, `machines`, `credentials`, `invitations`, and `identities`, and, for `create`, `createdAt` and `durationNs`. Only the database is included. `control gateway` now rejects unexpected positional arguments instead of starting. See [back up and restore](gateway.md#back-up-and-restore) and [D184](decisions.md#d184-online-gateway-database-backup).
+
 ### Browser console
 
 The gateway serves an embedded management console at `/console`, with `/` redirecting there and signed-out visitors sent to `/login`. Browser passwords are separate from existing bearer keys. `PUT /v1/console/password` accepts `password` and optional `username`, authenticated by an account or superuser bearer key. Account owners can select only their own account name; the superuser may select an existing account or `@operator`. Omitted username selects the caller's own browser login. Passwords must contain 12..1024 bytes. Browser self-changes additionally require `currentPassword`. Changes persist transactionally before HTTP 204 and invalidate existing sessions for that login.

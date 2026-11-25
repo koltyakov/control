@@ -1791,6 +1791,7 @@ const auditActions = {
   "account.password": ["Set browser password", ""],
   "update.publish": ["Published update", "warn"],
   "update.check": ["Checked for release", ""],
+  "gateway.backup": ["Backed up gateway database", "warn"],
 };
 /** @param {number} [before] @returns {`audit?${string}`} */
 function auditPath(before = 0) {

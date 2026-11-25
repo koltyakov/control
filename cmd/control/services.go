@@ -21,6 +21,9 @@ import (
 // gatewayCLI runs the gateway service. commandArgs are the original process
 // arguments, reused when a managed update restarts the service.
 func gatewayCLI(ctx context.Context, args, commandArgs []string, token string) error {
+	if len(args) > 0 && args[0] == "backup" {
+		return gatewayBackupCLI(ctx, args[1:])
+	}
 	f := flag.NewFlagSet("gateway", flag.ContinueOnError)
 	listen := f.String("listen", "127.0.0.1:7330", "listen address")
 	data := f.String("data", ".control-gateway", "gateway state directory")
@@ -38,6 +41,10 @@ func gatewayCLI(ctx context.Context, args, commandArgs []string, token string) e
 	f.Int64Var(&limits.QueuedBytesPerAccount, "max-queued-bytes-per-account", limits.QueuedBytesPerAccount, "retained packet byte budget per account")
 	if err := f.Parse(args); err != nil {
 		return err
+	}
+	// A mistyped subcommand must not start a gateway in the working directory.
+	if f.NArg() != 0 {
+		return errors.New("unexpected gateway arguments: " + strings.Join(f.Args(), " "))
 	}
 	if err := limits.Validate(); err != nil {
 		return err
