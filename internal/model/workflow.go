@@ -110,6 +110,9 @@ func (p WorkflowPlan) Ordered() ([]WorkflowStep, error) {
 		if step.When != "" && step.When != WorkflowWhenSuccess && step.When != WorkflowWhenAlways {
 			return nil, fmt.Errorf("workflow step %s: when must be %q or %q", step.Name, WorkflowWhenSuccess, WorkflowWhenAlways)
 		}
+		if _, err := NormalizeTaskTags(step.Task.Tags); err != nil {
+			return nil, fmt.Errorf("workflow step %s: %w", step.Name, err)
+		}
 		for _, dep := range step.Needs {
 			if !known[dep] {
 				return nil, fmt.Errorf("unknown dependency %s", dep)

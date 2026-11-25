@@ -398,7 +398,7 @@ var taskResultTools = map[string]bool{"control_task_start": true, "control_task_
 // WithoutTaskSpec drops a task record's submitted specification, which the
 // caller already holds, so CLI and MCP results do not repeat inline scripts.
 func WithoutTaskSpec(data json.RawMessage) json.RawMessage {
-	return withoutField(data, "spec")
+	return withTaskTags(withoutField(data, "spec"), data)
 }
 
 // withoutField removes one top-level member while preserving the order and

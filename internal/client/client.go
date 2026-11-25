@@ -77,6 +77,9 @@ func (c Client) Call(ctx context.Context, target, method string, params any, res
 }
 
 func (c Client) call(ctx context.Context, target, method string, params any, result any) error {
+	if err := c.requireTaskTagsOnce(ctx, target, method, params); err != nil {
+		return err
+	}
 	peer, err := c.backend(ctx)
 	if err != nil {
 		return err

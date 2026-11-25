@@ -219,6 +219,9 @@ func (n *Node) delegationMethod(ctx context.Context, caller, method string, para
 		if q.Method == "" || q.Method == "workflow.run" || q.Method == "peers.call" || q.Method == model.ConnectionTestMethod || q.Method == "access.grant" || q.Method == "access.revoke" || q.Method == "access.list" || discoveryMethod(q.Method) {
 			return nil, errors.New("delegate an execution instruction, not discovery, delegation management, or nested coordination")
 		}
+		if q.Method == model.CancelTaggedTasks {
+			return nil, errors.New("tasks.cancelTagged cannot be delegated; task grants are bound to one task ID")
+		}
 		if err := n.authorize(ctx, caller, q.Method); err != nil {
 			return nil, err
 		}

@@ -3,23 +3,35 @@ package node
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 
 	"github.com/koltyakov/control/internal/model"
 )
 
 func (n *Node) taskPage(ctx context.Context, owner, cursor string, limit int) (model.TaskPage, error) {
+	return n.taggedTaskPage(ctx, owner, cursor, "", limit)
+}
+
+// taggedTaskPage filters by tag during the same bounded scan: each retained
+// task costs at most MaxTaskTags comparisons, and no tag index is kept.
+func (n *Node) taggedTaskPage(ctx context.Context, owner, cursor, tag string, limit int) (model.TaskPage, error) {
 	if limit == 0 {
 		limit = 100
 	}
 	if limit < 1 || limit > 200 || (cursor != "" && !safeID.MatchString(cursor)) {
 		return model.TaskPage{}, errors.New("task page requires limit 1..200 and a task-ID cursor")
 	}
+	if tag != "" {
+		if err := model.ValidateTaskTag(tag); err != nil {
+			return model.TaskPage{}, err
+		}
+	}
 	// Keep only the first limit+1 IDs. Memory is bounded even with extended retention.
 	n.mu.Lock()
 	ids := make([]string, 0, limit+1)
 	for id, task := range n.tasks {
-		if id <= cursor || (task.Owner != owner && owner != n.Identity.ID) {
+		if id <= cursor || (task.Owner != owner && owner != n.Identity.ID) || (tag != "" && !slices.Contains(task.Spec.Tags, tag)) {
 			continue
 		}
 		i := sort.SearchStrings(ids, id)
@@ -40,7 +52,7 @@ func (n *Node) taskPage(ctx context.Context, owner, cursor string, limit int) (m
 	}
 	for _, id := range ids {
 		t := n.tasks[id]
-		summary := model.TaskSummary{ID: id, Capability: t.Spec.Capability, State: t.State, Phase: t.Phase, Created: t.Created, Updated: t.Updated, Error: t.Error}
+		summary := model.TaskSummary{ID: id, Capability: t.Spec.Capability, State: t.State, Phase: t.Phase, Created: t.Created, Updated: t.Updated, Error: t.Error, Tags: slices.Clone(t.Spec.Tags)}
 		if len(summary.Error) > 1024 {
 			summary.Error = summary.Error[:1024]
 			summary.ErrorTruncated = true

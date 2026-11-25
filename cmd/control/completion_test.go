@@ -73,6 +73,8 @@ func TestCompletionParsesHelpCommands(t *testing.T) {
 		"":             {"--config", "--api", "--token", "--debug"},
 		"task start":   {"--wait", "--spec"},
 		"task logs":    {"--follow", "--offset"},
+		"task list":    {"--limit", "--cursor", "--tag"},
+		"task cancel":  {"--spec", "--tag"},
 		"tunnel":       {"--reverse", "--listen"},
 		"tunnel start": {"--listen", "--reverse", "--id", "--ttl"},
 		"runbooks":     {"--node", "--local", "--source", "--file"},

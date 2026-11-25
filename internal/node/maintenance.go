@@ -31,7 +31,7 @@ func observational(method string) bool {
 }
 
 func requiresAdmission(method string) bool {
-	return !observational(method) && method != "tasks.cancel" && method != "leases.release" && method != "leases.renew" && method != "access.revoke"
+	return !observational(method) && method != "tasks.cancel" && method != model.CancelTaggedTasks && method != "leases.release" && method != "leases.renew" && method != "access.revoke"
 }
 
 func (n *Node) enterWork(ctx context.Context) (context.Context, func(), error) {

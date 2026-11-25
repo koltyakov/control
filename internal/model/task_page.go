@@ -12,6 +12,7 @@ type TaskSummary struct {
 	Updated        time.Time `json:"updated"`
 	Error          string    `json:"error,omitempty"`
 	ErrorTruncated bool      `json:"errorTruncated,omitempty"`
+	Tags           []string  `json:"tags,omitempty"`
 }
 
 type TaskPage struct {
@@ -20,7 +21,7 @@ type TaskPage struct {
 }
 
 func SummarizeTask(t Task) TaskSummary {
-	s := TaskSummary{ID: t.ID, Capability: t.Spec.Capability, State: t.State, Phase: t.Phase, Created: t.Created, Updated: t.Updated, Error: t.Error}
+	s := TaskSummary{ID: t.ID, Capability: t.Spec.Capability, State: t.State, Phase: t.Phase, Created: t.Created, Updated: t.Updated, Error: t.Error, Tags: t.Spec.Tags}
 	if len(s.Error) > 1024 {
 		s.Error = s.Error[:1024]
 		s.ErrorTruncated = true

@@ -173,6 +173,7 @@ func cloneTask(task *model.Task) model.Task {
 	t.Spec.Args = bytes.Clone(task.Spec.Args)
 	t.Spec.Inputs = slices.Clone(task.Spec.Inputs)
 	t.Spec.Outputs = slices.Clone(task.Spec.Outputs)
+	t.Spec.Tags = slices.Clone(task.Spec.Tags)
 	t.Result = bytes.Clone(task.Result)
 	if task.ResultArtifact != nil {
 		a := *task.ResultArtifact
@@ -248,6 +249,12 @@ func (n *Node) startTaskContext(parent context.Context, owner string, spec model
 	if spec.TimeoutSeconds == 0 {
 		spec.TimeoutSeconds = 3600
 	}
+	// Normalized tags make the digest order-insensitive; no tags encode as before.
+	tags, err := model.NormalizeTaskTags(spec.Tags)
+	if err != nil {
+		return model.Task{}, err
+	}
+	spec.Tags = tags
 	// One encoding of the final specification serves the size bound and the
 	// idempotency digest.
 	encoded := model.JSON(spec)
@@ -547,6 +554,9 @@ func (n *Node) taskMethod(ctx context.Context, owner, method string, args json.R
 		// Tail reads the retained end of a log beyond the head limit.
 		// Older nodes ignore it and serve an ordinary head read.
 		Tail bool `json:"tail"`
+		// Tag filters tasks.page and tasks.list; older nodes ignore it, so
+		// clients check the node.describe taskTags advertisement first.
+		Tag string `json:"tag"`
 	}
 	if err := json.Unmarshal(args, &query); err != nil {
 		return nil, err
@@ -555,18 +565,23 @@ func (n *Node) taskMethod(ctx context.Context, owner, method string, args json.R
 		return n.waitTask(ctx, owner, query.ID, time.Duration(query.WaitSeconds)*time.Second)
 	}
 	if method == "tasks.page" {
-		return n.taskPage(ctx, owner, query.Cursor, query.Limit)
+		return n.taggedTaskPage(ctx, owner, query.Cursor, query.Tag, query.Limit)
+	}
+	if method == "tasks.list" && query.Tag != "" {
+		if err := model.ValidateTaskTag(query.Tag); err != nil {
+			return nil, err
+		}
 	}
 	n.mu.Lock()
 	if method == "tasks.list" {
 		tasks := []model.Task{}
 		for _, task := range n.tasks {
-			if task.Owner == owner || owner == n.Identity.ID {
+			if (task.Owner == owner || owner == n.Identity.ID) && (query.Tag == "" || slices.Contains(task.Spec.Tags, query.Tag)) {
 				if len(tasks) == 100 {
 					n.mu.Unlock()
 					return nil, errors.New("task listing exceeds 100 records; use tasks.page with limit and cursor")
 				}
-				tasks = append(tasks, model.Task{ID: task.ID, Owner: task.Owner, Spec: model.TaskSpec{ID: task.ID, Capability: task.Spec.Capability}, State: task.State, Phase: task.Phase, Created: task.Created, Updated: task.Updated})
+				tasks = append(tasks, model.Task{ID: task.ID, Owner: task.Owner, Spec: model.TaskSpec{ID: task.ID, Capability: task.Spec.Capability, Tags: slices.Clone(task.Spec.Tags)}, State: task.State, Phase: task.Phase, Created: task.Created, Updated: task.Updated})
 			}
 		}
 		n.mu.Unlock()

@@ -684,6 +684,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		sort.Strings(agents)
 		sort.Strings(servers)
 		description := map[string]any{"id": n.Identity.ID, "name": n.fleetName(ctx), "capabilities": n.Capabilities(), "concurrency": n.concurrencySnapshot(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "transport": n.Peer.Stats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot(), "fileUpload": n.uploads.Description(), "clipboard": map[string]any{"protocol": clipboard.Protocol, "methods": []string{clipboard.OpenMethod, clipboard.PasteMethod}}, "connectionTest": map[string]any{"protocol": model.ConnectionTestProtocol, "methods": []string{model.ConnectionTestMethod, model.ConnectionOpenMethod}, "maxBytes": 256 << 20, "maxSamples": 100, "timeoutSeconds": 120}, "runbooks": map[string]any{"protocol": runbooks.Protocol, "methods": []string{"runbooks.list", "runbooks.read"}}}
+		description["taskTags"] = model.TaskTagsDescription()
 		if description["name"] != n.Config.Name {
 			description["configuredName"] = n.Config.Name
 		}
@@ -701,6 +702,8 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		return n.startTaskContext(ctx, owner, spec)
 	case "tasks.get", "tasks.cancel", "tasks.logs", "tasks.list", "tasks.page":
 		return n.taskMethod(ctx, owner, method, args)
+	case model.CancelTaggedTasks:
+		return n.cancelTagged(ctx, owner, args)
 	case "leases.acquire", "leases.renew", "leases.release", "leases.get":
 		return n.leaseMethod(owner, method, args)
 	case "artifacts.export", "artifacts.list", "artifacts.delete", "artifacts.pull", "artifacts.deliver", "artifacts.grant":

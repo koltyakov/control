@@ -348,7 +348,7 @@ func run(ctx context.Context, args []string) error {
 		return clipboardCLI(ctx, c, args[1:])
 	case "task":
 		if len(args) < 3 {
-			return errors.New("usage: control task start|get|wait|cancel|logs|list NODE [ID|JSON|@file] [--wait]")
+			return errors.New("usage: control task start|get|wait|cancel|logs|list NODE [ID|JSON|@file] [--wait] [--tag TAG]")
 		}
 		method, target := args[1], args[2]
 		if method == "start" {
@@ -358,13 +358,17 @@ func run(ctx context.Context, args []string) error {
 			f := flag.NewFlagSet("task list", flag.ContinueOnError)
 			limit := f.Int("limit", 100, "maximum task summaries, 1..200")
 			cursor := f.String("cursor", "", "nextCursor from the previous page")
+			tag := f.String("tag", "", "only tasks carrying this tag; the node must advertise task tags")
 			if err := f.Parse(args[3:]); err != nil {
 				return err
 			}
 			if f.NArg() != 0 {
 				return errors.New("unexpected task list arguments")
 			}
-			return callPrint(ctx, c, target, "tasks.page", map[string]any{"limit": *limit, "cursor": *cursor})
+			return callPrint(ctx, c, target, "tasks.page", taskPageParams(*limit, *cursor, *tag))
+		}
+		if method == "cancel" && len(args) > 3 && strings.HasPrefix(args[3], "-") {
+			return taskCancelTaggedCLI(ctx, c, target, args[3:])
 		}
 		if method == "reconcile" && len(args) == 4 {
 			report, err := c.ReconcileWorkflow(ctx, target, args[3])
@@ -686,8 +690,9 @@ Environment: CONTROL_API, CONTROL_TOKEN
   exec NODE [--detach] [--id ID] [--timeout DURATION] [--] COMMAND [ARG...]
   task start NODE JSON|@file [--wait] [--spec]  Submit a durable task; optionally wait for its result
   task get|wait|cancel NODE ID [--spec] Inspect or manage a task; --spec adds its specification
+  task cancel NODE --tag TAG           Cancel your unfinished tasks carrying TAG; lists each outcome
   task logs NODE ID [--follow | --tail] [--offset BYTES]
-  task list NODE [--limit N --cursor ID] Page through task summaries
+  task list NODE [--limit N --cursor ID] [--tag TAG]  Page through task summaries, optionally by tag
   task reconcile NODE ID               Inspect a workflow and its stable child IDs
   diagnostics NODE                     Read bounded operational counters
   artifact list NODE [--limit N --cursor C | --all]  Newest-first summaries, or every full reference

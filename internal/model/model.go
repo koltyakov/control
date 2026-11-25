@@ -96,6 +96,8 @@ type TaskSpec struct {
 	Outputs        []string        `json:"outputs,omitempty"`
 	TimeoutSeconds int             `json:"timeoutSeconds,omitempty"`
 	LeaseID        string          `json:"leaseId,omitempty"`
+	// Tags are owner metadata for listing and cancel-by-tag; see task_tags.go.
+	Tags []string `json:"tags,omitempty"`
 }
 
 type Lease struct {
