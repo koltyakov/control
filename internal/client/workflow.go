@@ -39,6 +39,12 @@ const workerTaskNotFound = "task not found"
 // ReconcileWorkflow reads the persisted plan and each stable child ID using the
 // account owner's authority. It never resubmits a child or restores a grant.
 func (c Client) ReconcileWorkflow(ctx context.Context, target, id string) (WorkflowReconciliation, error) {
+	return c.reconcileWorkflow(ctx, target, id, nil)
+}
+
+// reconcileWorkflow optionally reports, after each child query, how many
+// children were queried and how many are terminal. progress must not block.
+func (c Client) reconcileWorkflow(ctx context.Context, target, id string, progress func(queried, terminal, total int)) (WorkflowReconciliation, error) {
 	var report WorkflowReconciliation
 	observe, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -72,6 +78,20 @@ func (c Client) ReconcileWorkflow(ctx context.Context, target, id string) (Workf
 		jobs <- i
 	}
 	close(jobs)
+	var counted sync.Mutex
+	queried, terminal := 0, 0
+	count := func(task *model.TaskSummary) {
+		if progress == nil {
+			return
+		}
+		counted.Lock()
+		defer counted.Unlock()
+		queried++
+		if task != nil && (model.Task{State: task.State}).Terminal() {
+			terminal++
+		}
+		progress(queried, terminal, len(plan.Steps))
+	}
 	var wg sync.WaitGroup
 	for range min(8, len(plan.Steps)) {
 		wg.Go(func() {
@@ -79,6 +99,7 @@ func (c Client) ReconcileWorkflow(ctx context.Context, target, id string) (Workf
 				observation := &report.Steps[i]
 				if observation.ID == "" {
 					observation.Error = "plan has no stable child ID; consult the workflow log"
+					count(nil)
 					continue
 				}
 				poll, done := context.WithTimeout(observe, 6*time.Second)
@@ -98,10 +119,12 @@ func (c Client) ReconcileWorkflow(ctx context.Context, target, id string) (Workf
 						observation.Error = strings.Clone(observation.Error[:1024])
 						observation.ErrorTruncated = true
 					}
+					count(nil)
 					continue
 				}
 				summary := model.SummarizeTask(task)
 				observation.Task = &summary
+				count(&summary)
 			}
 		})
 	}

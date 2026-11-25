@@ -105,6 +105,13 @@ func (c Client) MCPServer() *mcp.Server {
 				if _, err = c.StartTask(ctx, target, spec, &result); err != nil {
 					return toolError(err), nil
 				}
+			} else if wait, notify := progressWaitSeconds(name, args), newProgressNotifier(ctx, request); wait > 0 && notify != nil {
+				// Only a client progress token changes how a wait is polled.
+				result, err = c.waitTaskWithProgress(ctx, target, args, wait, notify)
+				notify.stop()
+				if err != nil {
+					return toolError(err), nil
+				}
 			} else if err = c.Call(ctx, target, actualMethod, params, &result); err != nil {
 				return toolError(err), nil
 			}
@@ -300,7 +307,10 @@ func (c Client) MCPServer() *mcp.Server {
 		if err := json.Unmarshal(args, &q); err != nil {
 			return nil, err
 		}
-		return c.ReconcileWorkflow(ctx, q.Node, q.ID)
+		request, _ := ctx.Value(uploadProgressKey{}).(*mcp.CallToolRequest)
+		notify := newProgressNotifier(ctx, request)
+		defer notify.stop()
+		return c.reconcileWorkflow(ctx, q.Node, q.ID, reconcileProgress(notify))
 	})
 	local("control_guide", "Load detailed workflow guidance on demand. topic desktop covers agent-desktop setup, version-matched skills, observation, overlay and protected credential input; read it before GUI work.", map[string]any{"topic": map[string]any{"type": "string", "enum": []string{"desktop"}}}, []string{"topic"}, func(_ context.Context, args json.RawMessage) (any, error) {
 		var q struct {
