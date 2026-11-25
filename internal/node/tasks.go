@@ -301,6 +301,11 @@ func (n *Node) startTaskContext(parent context.Context, owner string, spec model
 		n.mu.Unlock()
 		close(reservation.done)
 	}()
+	// Duplicates of accepted IDs returned above; only new work checks the
+	// reserve, before anything is written. The cached probe never holds n.mu.
+	if err := n.admitTaskDisk(parent, "task"); err != nil {
+		return model.Task{}, err
+	}
 	// Admission waits for both the request and the node. The returned ticket
 	// does not depend on either context and moves to the accepted task.
 	admission, stopAdmission := context.WithCancel(parent)

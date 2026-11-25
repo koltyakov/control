@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/koltyakov/control/internal/identity"
@@ -33,6 +34,11 @@ type TaskSubmitError struct {
 }
 
 func (e *TaskSubmitError) Error() string {
+	var rpc *model.RPCError
+	if errors.As(e.Err, &rpc) && rpc.Outcome == model.OutcomeNotAccepted {
+		// The worker refused before accepting; there is nothing to reconcile.
+		return fmt.Sprintf("task %s was not accepted: %v", e.ID, e.Err)
+	}
 	return fmt.Sprintf("submit task %s; query this ID before retrying: %v", e.ID, e.Err)
 }
 

@@ -5,6 +5,10 @@ import (
 	"errors"
 )
 
+// OutcomeNotAccepted means the destination received the request and refused
+// it before accepting a task or starting any effect.
+const OutcomeNotAccepted = "not_accepted"
+
 // RPCError describes delivery certainty, never permission to replay a request.
 type RPCError struct {
 	Code    string `json:"code"`

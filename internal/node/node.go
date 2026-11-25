@@ -136,6 +136,7 @@ type Node struct {
 	delegationWake chan struct{}
 	runbookRoots   []runbooks.Root
 	uploads        *upload.Manager
+	taskDisk       diskGuard // Cached free space for task admission.
 	// journalDirty records that a tombstone journal write failed and the file
 	// may hold uncommitted or torn bytes. Protected by pruneMu. No append may
 	// follow until a complete, directory-synced compaction succeeds.
@@ -661,7 +662,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 	case "activities.pool":
 		return n.poolActivities(ctx, caller, args)
 	case "diagnostics.get":
-		return n.diagnostics(), nil
+		return n.diagnostics(ctx), nil
 	case "nodes.list":
 		return n.Peer.Nodes(ctx)
 	case "nodes.select":
@@ -710,6 +711,11 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		p, ok := n.providers[method]
 		if !ok {
 			return nil, fmt.Errorf("unknown method or capability %q", method)
+		}
+		if diskGuardedCall(method) {
+			if err := n.admitTaskDisk(ctx, method); err != nil {
+				return nil, err
+			}
 		}
 		if err := n.lockLeaseSettled(ctx); err != nil {
 			return nil, err

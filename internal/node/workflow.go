@@ -333,10 +333,11 @@ func (n *Node) runWorkflowStep(ctx context.Context, step WorkflowStep, upstream 
 		}
 		// Never resubmit: the outcome may be uncertain. The stable ID lets the
 		// orchestrator reconcile it. Only a request that was never sent is a
-		// known outcome; cleanup steps never start behind an uncertain one.
+		// known outcome, as is an explicit refusal before acceptance; cleanup
+		// steps never start behind an uncertain one.
 		err = fmt.Errorf("submit %s (task %s on %s): %w", step.Name, step.Task.ID, step.Target, err)
 		var rpc *model.RPCError
-		if !errors.As(err, &rpc) || rpc.Outcome != "not_sent" {
+		if !errors.As(err, &rpc) || (rpc.Outcome != "not_sent" && rpc.Outcome != model.OutcomeNotAccepted) {
 			err = unresolvedStepError{err}
 		}
 		return model.Task{}, err
