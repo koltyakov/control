@@ -629,6 +629,21 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 		if err != nil {
 			return nil, err
 		}
+		// The derived access keeps the authority's principal and is checked
+		// for this destination and the resolved recipient together.
+		var vault *fleetVaultBinding
+		if parent := fleetVaultBindingFor(ctx); parent != nil {
+			recipients := []string{}
+			if peer.ClientOwner == "" && !peer.ExecutionAuthority {
+				recipients = append(recipients, peer.ID)
+			}
+			vault = parent.derive(nil)
+			if !n.fleetVaultEnforced() {
+				vault.unchecked = true
+			} else if err := n.admitFleetVault(ctx, vault, recipients); err != nil {
+				return nil, err
+			}
+		}
 		if q.TTLSeconds == 0 {
 			q.TTLSeconds = 3600
 		}
@@ -647,7 +662,7 @@ func (n *Node) artifactMethod(ctx context.Context, caller, method string, args j
 		if expiresAt.Before(g.Expires) {
 			g.Expires = expiresAt
 		}
-		if err := n.addDelegation(&delegationState{grant: g, ctx: grantCtx, cancel: cancel, lastActivity: time.Now(), expiresAt: expiresAt}); err != nil {
+		if err := n.addDelegation(&delegationState{grant: g, ctx: grantCtx, cancel: cancel, lastActivity: time.Now(), expiresAt: expiresAt, vault: vault}); err != nil {
 			return nil, err
 		}
 		proof := artifactGrant{Subject: peer.ID, Artifact: a.ID, Expires: expiresAt.Unix(), Access: g.ID}

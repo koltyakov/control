@@ -66,6 +66,10 @@ type Node struct {
 	// ExecutionAuthority is assigned by the gateway, never by enrollment metadata.
 	ExecutionAuthority    bool `json:"executionAuthority,omitempty"`
 	InstructionDelegation bool `json:"instructionDelegation,omitempty"`
+	// FleetVaultCheck means this worker asks its gateway for a fleet vault
+	// decision before admitting new peer work. Workers advertise it only to a
+	// gateway that advertises the check; older workers omit it.
+	FleetVaultCheck bool `json:"fleetVaultCheck,omitempty"`
 	// UpdateUntil is gateway-owned display grace, not connection presence.
 	UpdateUntil time.Time `json:"updateUntil,omitzero"`
 	// ProxyEndpoints are explicitly configured CONNECT proxies on this worker.

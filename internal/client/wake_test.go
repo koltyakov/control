@@ -96,7 +96,7 @@ func TestWakeDirectoryAndAccountChecks(t *testing.T) {
 	}
 	common := (Client{}).WithStandalone(ctx, StandaloneConfig{Gateway: Admin{URL: admin.URL, Key: workers[0].Config.Token}, StateDir: t.TempDir(), RelayOnly: true, AccountRouting: true})
 	defer func() { _ = common.Close() }()
-	if _, err := common.Wake(ctx, WakeSpec{Node: "third", From: "local"}); err == nil || !strings.Contains(err.Error(), "account key") {
+	if _, err := common.Wake(ctx, WakeSpec{Node: "third", From: "local"}); err == nil || !strings.Contains(err.Error(), "account or orchestrator key") {
 		t.Fatal("common key reached local sender", err)
 	}
 	if err := workers[2].Close(); err != nil {

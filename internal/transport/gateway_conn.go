@@ -59,6 +59,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		ClientOwners      bool     `json:"clientOwners"`
 		PeerChannels      bool     `json:"peerChannels"`
 		Delegation        bool     `json:"delegation"`
+		FleetVaultCheck   bool     `json:"fleetVaultCheck"`
 		LargePackets      bool     `json:"largePackets"`
 		NodeBytes         bool     `json:"nodeBytes"`
 		MachineStatePush  bool     `json:"machineStatePush"`
@@ -132,6 +133,10 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		p.iceServers = []webrtc.ICEServer{{URLs: scope.STUNServers}}
 	}
 	p.cfg.Node.InstructionDelegation = scope.Delegation && !p.cfg.Client
+	// Receivers enforce the policy only for a gateway that answers checks.
+	// Advertise it only in exact signed bytes, which older gateways ignore.
+	p.fleetVaultCheck.Store(scope.FleetVaultCheck && !p.cfg.Client)
+	p.cfg.Node.FleetVaultCheck = scope.FleetVaultCheck && scope.NodeBytes && !p.cfg.Client
 	nodeBytes := scope.NodeBytes
 	if p.cfg.ClientOwner != nil {
 		p.cfg.Node.ClientOwner = p.cfg.ClientOwner.ID
@@ -175,6 +180,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 			hello.Node.GatewayProxyManagement = false
 			hello.Node.SecretManagementKey = nil
 			hello.Node.SecretPolicy = false
+			hello.Node.FleetVaultCheck = false
 			hello.Node.Software.Runtime = ""
 			hello.Node.Software.GatewayProtocol = 0
 			hello.Node.Software.NodeGatewayMin, hello.Node.Software.NodeGatewayMax = 0, 0

@@ -66,6 +66,11 @@ func (g *Gateway) manageSecrets(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if g.vaultBearerDeniedLocked(r, p, n.ID) {
+		g.mu.Unlock()
+		http.Error(w, fleetVaultBearerDenied, http.StatusForbidden)
+		return
+	}
 	peer := g.peers[n.ID]
 	if !n.Online || peer == nil || n.Disabled || g.machinePending(n.ID) || !secrets.ValidManagementKey(n.SecretManagementKey) {
 		g.mu.Unlock()

@@ -52,6 +52,15 @@ func (c Admin) request(ctx context.Context, method, path string, body io.Reader,
 	return nil
 }
 
+// OwnerRole reports credentials that administer a fleet: account (user) and
+// superuser keys.
+func OwnerRole(role string) bool { return role == "user" || role == "superuser" }
+
+// ExecutionRole reports credentials whose account-client sessions receive
+// execution authority. Execution-only orchestrator keys qualify without fleet
+// administration; common and installation keys remain discovery-only.
+func ExecutionRole(role string) bool { return OwnerRole(role) || role == "orchestrator" }
+
 func (c Admin) IsSuperuser(ctx context.Context) bool {
 	return c.Role(ctx) == "superuser"
 }

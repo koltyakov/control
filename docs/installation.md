@@ -100,9 +100,11 @@ Enter your gateway account key at the hidden prompt. Login validates it through 
 
 A superuser login also persists gateway-scoped update authorization in `update-admin.json`. A later normal account login does not erase it. `make update` reuses this authorization without asking for a key; an ordinary account alone still lacks gateway-wide update permission. See [development updates](updates.md#push-from-a-development-machine).
 
-For automation, pipe a key into `control login --gateway URL --key-stdin`. Login also accepts `--api-key` or the existing credential environment variables. Subsequent `control machines`, `control machines add`, and `control dashboard` commands use the saved login without environment variables or repeated keys. These gateway commands need no local node. A common node key can read the directory and gateway status, but invitation creation requires an account key.
+For automation, pipe a key into `control login --gateway URL --key-stdin`. Login also accepts `--api-key` or the existing credential environment variables. Subsequent `control machines`, `control machines add`, and `control dashboard` commands use the saved login without environment variables or repeated keys. These gateway commands need no local node. A common node key can read the directory and gateway status, but invitation creation requires an account key. Login also accepts an execution-only orchestrator key from `control keys create NAME --role orchestrator`. It can run CLI/MCP work, tunnels, Wake-on-LAN, and a [Control Vault](vault.md) broker, but not machine, key, or invitation management, and `control setup` refuses it.
 
 ## Standalone CLI and MCP
+
+To require explicit approval of local CLI and MCP callers, use [Control Vault](vault.md). It is opt-in; ordinary standalone login follows below.
 
 After `control login`, remote commands work without `control setup` or a running local service when the gateway and target nodes support client sessions:
 

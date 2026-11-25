@@ -1,0 +1,24 @@
+{
+  "name": "control-vault-opencode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenCode V2 plugin that routes Control MCP calls through a private Vault process per session",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@opencode/plugin": "2.4.1",
+    "@types/bun": "1.4.5",
+    "@types/node": "24.19.4",
+    "typescript": "7.0.2"
+  }
+}

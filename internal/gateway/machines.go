@@ -17,6 +17,8 @@ import (
 func (g *Gateway) machineRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/node/state", g.nodeState)
 	mux.HandleFunc("PATCH /v1/fleet/nodes/{id}", g.fleetAdmin(g.setMachineState))
+	// Bearer machine operations follow the fleet lock inside each handler's
+	// admission lock; wake checks its target and relay together.
 	mux.HandleFunc("POST /v1/fleet/nodes/{id}/wake", g.fleetAdmin(g.wakeMachine))
 	mux.HandleFunc("POST /v1/fleet/nodes/{id}/startup", g.fleetAdmin(g.changeStartup))
 }
@@ -130,6 +132,12 @@ func (g *Gateway) setMachineState(w http.ResponseWriter, r *http.Request) {
 		g.renameMachine(w, r, n, *q.Name, q.Force)
 		return
 	}
+	// A state or label change reaches only this machine; a rename may also
+	// rename its paired context and is checked in renameMachine.
+	if g.vaultBearerDeniedLocked(r, p, n.ID) {
+		http.Error(w, fleetVaultBearerDenied, http.StatusForbidden)
+		return
+	}
 	if q.Labels != nil {
 		g.setMachineLabels(w, r, n, *q.Labels)
 		return
@@ -183,6 +191,15 @@ func (g *Gateway) renameMachine(w http.ResponseWriter, r *http.Request, n model.
 			http.Error(w, "hybrid names must be at most 56 characters to leave room for -system", http.StatusBadRequest)
 			return
 		}
+	}
+	// One key-only rule must cover every renamed context.
+	ids := make([]string, 0, len(targets))
+	for _, target := range targets {
+		ids = append(ids, target.ID)
+	}
+	if g.vaultBearerDeniedLocked(r, g.requestPrincipal(r), ids...) {
+		http.Error(w, fleetVaultBearerDenied, http.StatusForbidden)
+		return
 	}
 	retracted := map[string]installation{}
 	for _, target := range targets {

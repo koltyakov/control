@@ -98,6 +98,7 @@ func consoleSecret() string {
 }
 
 func (g *Gateway) consoleRoutes(mux *http.ServeMux) {
+	g.globalVaultRoutes(mux)
 	mux.Handle("PUT /v1/console/password", g.consoleHeaders(http.HandlerFunc(g.fleetAdmin(g.consolePasswordHTTP))))
 	static, _ := fs.Sub(consoleFiles, "consoleweb")
 	files := http.FileServerFS(static)
@@ -246,6 +247,18 @@ func (g *Gateway) consoleSession(r *http.Request) (consoleContext, consoleSessio
 	}
 	p := g.console.passwords[s.Username]
 	return consoleContext{principal: principal{Role: p.Role, UserID: p.UserID}, Username: s.Username, Revision: s.Revision}, s, true
+}
+
+// A policy write may have waited for its request body after consoleGuard
+// authenticated it. Check revocation again under the same lock as the write.
+func (g *Gateway) consolePolicySessionLiveLocked(r *http.Request) bool {
+	c, ok := r.Context().Value(consoleContextKey{}).(consoleContext)
+	cookie, err := r.Cookie(g.consoleCookieName(r))
+	if !ok || err != nil {
+		return false
+	}
+	s, ok := g.console.sessions[tokenHash(cookie.Value)]
+	return ok && c.Username == s.Username && c.Revision == s.Revision && g.validConsoleSession(s, time.Now())
 }
 
 func (g *Gateway) consoleGuard(next http.Handler) http.Handler {
@@ -504,8 +517,15 @@ func (g *Gateway) consolePasswordHTTP(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	// Do not let concurrent changes or account revocation overwrite a reset.
-	if g.console.passwords[username].Revision != old.Revision || g.users[record.UserID].Disabled || (browser && (g.console.passwords[c.Username].Revision != c.Revision || g.users[c.UserID].Disabled)) {
+	if g.console.passwords[username].Revision != old.Revision || g.users[record.UserID].Disabled || (browser && !g.consolePolicySessionLiveLocked(r)) {
 		http.Error(w, "account changed; sign in again before retrying", http.StatusConflict)
+		return
+	}
+	// A bearer key must not obtain a browser login that can change a
+	// configured fleet or gateway lock, even a paused one. Console sessions
+	// keep administrative recovery.
+	if _, provisioned := g.console.passwords[username]; !browser && g.vaultPasswordResetBlockedLocked(record, provisioned) {
+		http.Error(w, "a fleet lock is configured; change this console password from a signed-in browser session", http.StatusForbidden)
 		return
 	}
 	g.console.passwords[username] = record

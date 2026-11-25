@@ -30,6 +30,8 @@ An explicit ID makes uncertain starts reconcilable. The CLI prints the ID before
 
 ## Lifetime and recovery
 
+With [Control Vault](vault.md#tunnels-and-proxies), managing a tunnel requires an approved caller. Traffic through the listener, foreground ownership, restore, and absolute TTL follow the same rules below.
+
 Without `--ttl`, a definition remains until disposed. A TTL is measured once from creation:
 
 ```sh

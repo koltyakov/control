@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -128,14 +129,55 @@ Your fleet:
   machines rename NAME NEW_NAME [--force] Change alias; force retracts a pending invitation
   machines label NAME [KEY=VALUE|KEY-]... [--reset KEY]  Set or remove owner labels; no change shows origins
   machines unregister NAME              Unregister a machine and request node uninstall
-  keys create NAME                     Issue a common key, shown once
-  keys list                            List common keys
+  keys create NAME                     Issue a key, shown once; the default common role is discovery-only
+    --role common|orchestrator         Orchestrator keys run work but cannot administer the fleet or enroll machines
+  keys list                            List fleet keys and their roles
   keys rename ID NAME                  Rename a key
-  keys revoke ID                       Revoke a common key
+  keys revoke ID                       Revoke a key and close its sessions
   audit list [N]                       Show recent sign-ins and management changes
   audit clear [DAYS]                   Remove events, or only those older than DAYS
 Environment: CONTROL_GATEWAY, CONTROL_USER_KEY
 `
+
+const keysCreateUsage = "usage: control keys create NAME [--role common|orchestrator]"
+
+// parseKeyCreate accepts NAME and an optional --role in either order. The
+// default common role stays implicit so older gateways accept the request.
+func parseKeyCreate(args []string) (map[string]string, error) {
+	flags := flag.NewFlagSet("keys create", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	role, roleSet := "", false
+	flags.Func("role", "key role: common (discovery-only) or orchestrator (execution-only)", func(value string) error {
+		if roleSet {
+			return errors.New("--role is repeated")
+		}
+		switch value {
+		case "common", "orchestrator":
+			role, roleSet = value, true
+			return nil
+		}
+		return fmt.Errorf("unknown key role %q; use common or orchestrator", value)
+	})
+	if err := flags.Parse(args); err != nil {
+		return nil, fmt.Errorf("%w; %s", err, keysCreateUsage)
+	}
+	if flags.NArg() == 0 {
+		return nil, errors.New(keysCreateUsage)
+	}
+	name := flags.Arg(0)
+	// Flags may also follow NAME.
+	if err := flags.Parse(flags.Args()[1:]); err != nil {
+		return nil, fmt.Errorf("%w; %s", err, keysCreateUsage)
+	}
+	if flags.NArg() != 0 || strings.HasPrefix(name, "-") {
+		return nil, errors.New(keysCreateUsage)
+	}
+	request := map[string]string{"name": name}
+	if role == "orchestrator" {
+		request["role"] = role
+	}
+	return request, nil
+}
 
 func adminCLI(ctx context.Context, c client.Admin, args []string) error {
 	help := len(args) < 2 || args[1] == "--help" || args[1] == "help"
@@ -189,10 +231,16 @@ func adminCLI(ctx context.Context, c client.Admin, args []string) error {
 	case "keys list":
 		err = c.JSON(ctx, http.MethodGet, "/v1/fleet/keys", nil, &result)
 	case "keys create":
-		if len(args) != 3 {
-			return errors.New("usage: control keys create NAME")
+		request, parseErr := parseKeyCreate(args[2:])
+		if parseErr != nil {
+			return parseErr
 		}
-		err = c.JSON(ctx, http.MethodPost, "/v1/fleet/keys", map[string]string{"name": args[2]}, &result)
+		if request["role"] == "orchestrator" {
+			// Checks gateway support before sending and verifies the issued role.
+			result, err = c.CreateOrchestratorKey(ctx, request["name"])
+			break
+		}
+		err = c.JSON(ctx, http.MethodPost, "/v1/fleet/keys", request, &result)
 	case "keys rename":
 		if len(args) != 4 {
 			return errors.New("usage: control keys rename ID NAME")

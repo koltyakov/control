@@ -89,7 +89,7 @@ func loginCLI(ctx context.Context, args []string, config string) error {
 	if err != nil {
 		return err
 	}
-	if role != "user" && role != "superuser" && role != "common" {
+	if !client.ExecutionRole(role) && role != "common" {
 		return errors.New("gateway returned an unsupported credential role")
 	}
 	profile := installation.AdminProfile{Gateway: gatewayURL, Key: *key}

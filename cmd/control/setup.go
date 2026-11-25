@@ -114,8 +114,11 @@ func setupCLI(ctx context.Context, args []string, config string) error {
 	if err = admin.JSON(ctx, "GET", "/v1/auth", nil, &auth); err != nil {
 		return err
 	}
+	if auth.Role == "orchestrator" {
+		return errors.New("orchestrator keys run work but cannot enroll machines; use an account key or a machine invitation")
+	}
 	credential, createdKey := key, ""
-	if auth.Role == "superuser" || auth.Role == "user" {
+	if client.OwnerRole(auth.Role) {
 		var created struct {
 			Key   struct{ ID string } `json:"key"`
 			Token string              `json:"token"`

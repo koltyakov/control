@@ -727,6 +727,19 @@ func (g *Gateway) revokeInstallation(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Revoking a redeemed invitation revokes its registered machines'
+	// credentials and stops them; unredeemed invitations affect no worker.
+	affected := []string{}
+	for _, candidate := range previous {
+		if n, ok := g.nodes[candidate.RedeemedID]; ok && n.UserID == p.UserID {
+			affected = append(affected, n.ID)
+		}
+	}
+	if len(affected) != 0 && g.vaultBearerDeniedLocked(r, p, affected...) {
+		g.mu.Unlock()
+		http.Error(w, fleetVaultBearerDenied, http.StatusForbidden)
+		return
+	}
 	persisted := change{audit: []AuditEvent{g.auditEventLocked(r, "", "invitation.revoke", g.installationName(old), old.ID, "")}}
 	peers := []*connection{}
 	for h, candidate := range previous {
@@ -861,6 +874,12 @@ func (g *Gateway) forgetMachine(w http.ResponseWriter, r *http.Request) {
 	if !ok || n.UserID != p.UserID {
 		g.mu.Unlock()
 		http.NotFound(w, r)
+		return
+	}
+	// Unregistering revokes the machine's credential and may stop it now.
+	if g.vaultBearerDeniedLocked(r, p, id) {
+		g.mu.Unlock()
+		http.Error(w, fleetVaultBearerDenied, http.StatusForbidden)
 		return
 	}
 	peer := g.peers[id]

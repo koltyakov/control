@@ -178,8 +178,8 @@ func (c Client) ensureTunnelService(ctx context.Context, dir string, create bool
 		if authErr != nil {
 			return authErr
 		}
-		if role != "user" && role != "superuser" {
-			return errors.New("persistent tunnels require account credentials")
+		if !ExecutionRole(role) {
+			return errors.New("persistent tunnels require an account or orchestrator key")
 		}
 		saved = c.routing.cfg
 		saved.StateDir, err = filepath.Abs(saved.StateDir)

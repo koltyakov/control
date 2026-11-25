@@ -37,6 +37,11 @@ func (n *Node) wakeTarget(ctx context.Context, name string) (model.WakeResult, e
 		if target.ID == n.Identity.ID || target.Online {
 			return model.WakeResult{}, errors.New("wake target must be another offline machine")
 		}
+		// Bind the directory's current ID, which the admitted name may no
+		// longer denote, before any packet is sent.
+		if err := n.bindFleetVaultTarget(ctx, target.ID); err != nil {
+			return model.WakeResult{}, err
+		}
 		packets, err := n.sendWake(ctx, n.Identity.ID, target)
 		return model.WakeResult{Target: target.ID, Source: n.Identity.ID, Packets: packets}, err
 	}

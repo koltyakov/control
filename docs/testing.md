@@ -6,6 +6,12 @@ Use Docker Compose for repeatable integration testing. Docker supplies Go, FFmpe
 
 ## Run the tests
 
+`TestVaultGrantSeparatesFleetCommandsFromForwardTraffic` uses a temporary gateway, two workers and a pinned local broker over both transports. One approved connection reaches both workers; the second connection stays locked. After revocation the first connection cannot stop its forward, but a **new** HTTP connection still traverses the established listener. Nothing uses a saved login or changes the host's service configuration.
+
+Run `go test -race ./cmd/control -run '^TestFleetLock'` to exercise console-managed worker admission. The fixture uses a temporary gateway, browser login and three workers. It checks direct and delegated operations over WebRTC and relay, including the destination provider's call count for denied instructions. The gateway policy tests also cover restart, audit write failure, independent operator and fleet settings, and an operator session revoked while a write is in flight.
+
+Run `sh tests/compose/vault-smoke.sh` for the [separate-account Linux test](../tests/compose/vault-smoke.md). It drives the actual CLI and MCP server in a disposable container, including terminal passphrase entry and OS permission denials.
+
 Review regressions cover failed tombstone appends and durable recovery before further appends, atomic task-output reader pins through terminal publication, nonblocking input-destination validation, workflow observation failures without mutation replay, retryable client initialization and completed-forward capacity reclamation. Fault fixtures use temporary state and controlled failures; they never corrupt a real node journal. Console smoke fixtures delay mutation and audit responses to exercise stale dialogs, session changes, category changes, pagination and event bursts.
 
 Native Windows tombstone-restart cases also require the journal reader to close before compaction replaces that path. Keeping the reader open makes both torn-tail recovery and expired-tombstone cleanup fail with access denied despite passing on Unix.

@@ -2,6 +2,27 @@
 
 [Contributor guide](../AGENTS.md) · [Architecture](architecture.md) · [Engineering principles](principles.md) · [Design decisions](decisions.md)
 
+For the opt-in local CLI/MCP approval protocol, see [Control Vault](vault.md). Its connection grants do not replace peer or workflow delegation.
+
+### Fleet lock admission
+
+A gateway supporting fleet locks advertises `fleetVaultCheck: true` in `GET /v1/auth`. A compatible worker advertises the same field in its signed registration. The worker asks `POST /v1/fleet/vault/check` for an admission decision with the initiating client transport ID and the participating worker IDs. The answer contains `allowed` and, when known, the execution key ID and stable owner ID. A worker can use the provenance recorded with an instruction grant to recheck it after the client disconnects. The response is a decision, not a bearer credential.
+
+Each new peer request needs its own decision. A policy refusal returns `fleet_vault_denied`; failure to obtain a decision returns `fleet_vault_unavailable`. No command is queued for replay when access resumes. A task already accepted can finish, and bytes already flowing on an admitted stream continue. Opening a new stream on that same transport requires another decision.
+
+The console policy routes require a browser login; writes also require the same origin and CSRF token. Policy edits carry the last observed integer `revision`. A stale edit receives HTTP 409. Do not replay it: read the current state and decide whether to make a new change.
+
+| Route | Operation |
+| --- | --- |
+| `GET`, `PUT /console/api/admin/vault` | Operator reads or sets the gateway lock with `enabled`, `revision`, and optional `pauseSeconds`. |
+| `GET`, `PUT /console/api/fleet/vault` | Fleet owner reads the effective settings and key, host and machine choices, or updates the fleet lock. |
+| `POST /console/api/fleet/vault/allowances` | Add a rule with `keyId`, `ownerId`, or both. Supply `allMachines: true` or a nonempty `machineIds` list. Optional `ttlSeconds` sets its expiry. |
+| `DELETE /console/api/fleet/vault/allowances/{id}` | Remove an allowance using the current revision. |
+
+Pauses and finite allowances use whole seconds, up to 365 days. Omit the lifetime for an allowance that lasts until revoked. A fleet can have up to 256 active allowances. Each check covers at most 256 distinct worker IDs; an all-machines allowance can serve different groups across the fleet. A pause applies only to the selected lock; either active lock requires a matching fleet allowance. See [console examples](console.md#lock-worker-access).
+
+An issued fleet key has its own immutable ID. In the operator's legacy fleet, `superuser` names the configured operator credential, so replacing the operator secret does not change that selector. Use an issued orchestrator key when an allowance must be specific to one issued credential.
+
 ## Node configuration
 
 New installation URLs use 8-character base64url tickets with 48 bits of cryptographic randomness. Creation checks ticket hashes across all retained invitations, including derived Hybrid companions, and fails after eight collisions without replacing any record. Public download and redemption routes also accept existing 43-character tickets. Expiry, revocation, signed single-identity redemption, and response recovery are unchanged. Installed nodes retain separate 256-bit credentials and Ed25519 identities. See [single use and recovery](installation.md#single-use-and-recovery).
@@ -98,6 +119,18 @@ Run a handwritten configuration with `control node --config /absolute/path/to/co
 The removed top-level `rpa` setting is rejected whenever present, including `null`. Remove it and migrate explicitly to `desktop.library` and `desktop.run`/`control_desktop`. There is no automatic conversion or feature parity for batches, screenshot artifacts, or physical input. See [migration differences](desktop.md#migrate-from-rpa).
 
 The configured token can be a user's issued common key or redeemed installation key. The optional gateway bootstrap token belongs only to the legacy fleet. User fleet management uses `CONTROL_USER_KEY`; gateway administration uses a separate `CONTROL_SUPERUSER_KEY`. `GET /v1/auth` returns `role`, `userId`, management capabilities, and, for account and superuser keys, the browser `username` (`@operator` for the superuser). Directory records include the authoritative `userId`, and new peers require fleet-aware gateway authentication. See [managed updates](updates.md) for release settings, bundle manifests, and update control messages. Machine registration includes `software` with the running version, OS, architecture, and executable SHA-256. Version JSON and administrative update status also include the embedded `releaseRepo` and UTC `buildTime` when injected. `CONTROL_RELEASE_REPO` overrides the embedded repository; an explicitly empty value disables release polling.
+
+### Fleet key roles
+
+`POST /v1/fleet/keys` (account key or console) and `POST /v1/admin/keys` (superuser, legacy fleet) accept `{"name": NAME, "role"?: "common"|"orchestrator"}`. An omitted role issues `common`. Any other value, including `user` or `superuser`, returns 400. The response is `{key: {id, userId, name, role, createdAt, revoked}, token}`. The token is shown once. `GET` lists the fleet's keys with their `role`, including its `user` account key. A role cannot be changed; `PATCH` changes only `name`. `DELETE` revokes a key and closes its gateway connections. Creating an orchestrator key records `key.create` with detail `role orchestrator`. Gateways supporting the role advertise `orchestratorKeys: true` in `GET /v1/auth`. An older gateway ignores `role` and issues a common key, which can enroll machines. `control keys create NAME --role orchestrator` therefore refuses before sending when the advertisement is absent. It never retries creation. It prints the response only after checking that the issued `role` is `orchestrator`. Otherwise it withholds the secret and names the key ID to revoke. After a transport failure, an unreadable response, or a non-4xx error status, it reports an uncertain outcome to inspect with `control keys list`. The default common path is unchanged. The console is embedded in the gateway, so it always matches that gateway's support.
+
+| Role | `/v1/auth` `role` | Account-client `executionAuthority` | Machine enrollment (`/v1/connect`) | Fleet administration |
+| --- | --- | --- | --- | --- |
+| `user`, `superuser` | same | yes | yes, without execution authority | yes |
+| `orchestrator` | `orchestrator` | yes | refused with 403 | no; every `/v1/fleet/*`, `/v1/audit`, `/v1/admin/*`, and console-password route returns 403 |
+| `common`, installation | `common` | no | yes | no |
+
+An orchestrator key authenticates discovery (`/v1/nodes`, `/v1/status`, `/v1/peers/{id}`) and account-client sessions in its issuing fleet only. Owner-only status fields such as health summaries, proxy readiness, and update progress stay hidden from it. The gateway derives its fleet and role from the stored credential, never from handshake fields. The standalone client owner identity stays scoped by gateway URL and fleet, whichever execution key a host uses. Host allowances therefore survive key rotation, and a Vault migration keeps the same owner. Tasks belong to that proven owner. Admission distinguishes keys by the gateway-attested key ID of each client session. After a gateway downgrade, an older gateway keeps the stored role. It grants that key neither execution nor administration, but does not refuse machine enrollment with it.
 
 `iceServers` uses Pion's JSON configuration, including `urls`, `username`, and `credential` for TURN. Omitted or `null` inherits the gateway's `stunServers` defaults at each authenticated connection. An explicit `[]` selects host-only connectivity, even when the gateway provides defaults; a nonempty list replaces those defaults. This applies to nodes, standalone CLI/MCP clients, and retained tunnel clients. `relayOnly` skips WebRTC entirely.
 

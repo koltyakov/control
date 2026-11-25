@@ -578,6 +578,393 @@ async function assertAuditRequestOwnership(browser) {
     await context.close();
   }
 }
+// Shared access-lock fixtures. IDs are immutable and deliberately differ from
+// display names; one name is markup that must render as text.
+const lockIds = {
+  key: "key-orchestrator-0001",
+  accountKey: "key-account-0002",
+  host: "owner-host-0123456789abcdef",
+  worker: "machine-worker-0001",
+  other: "machine-other-0002",
+  missing: "machine-retired-0099",
+};
+const lockKeyName = 'CI runner <img src=x onerror="alert(1)">';
+function lockFixture(overrides = {}) {
+  return {
+    enabled: true,
+    revision: 7,
+    globalEnabled: false,
+    allowances: [
+      { id: "allow-key", keyId: lockIds.key, allMachines: true, machineIds: [], expiresAt: new Date(Date.now() + 2 * 3600000).toISOString() },
+      { id: "allow-host", keyId: lockIds.key, ownerId: lockIds.host, allMachines: false, machineIds: [lockIds.worker, lockIds.missing] },
+    ],
+    keys: [{ id: lockIds.key, name: lockKeyName }, { id: lockIds.accountKey, name: "Account key" }],
+    hosts: [{ id: lockIds.host, name: "cli-owner-host-0123" }],
+    machines: [{ id: lockIds.worker, name: "gpu-worker" }, { id: lockIds.other, name: "mac-worker" }],
+    ...overrides,
+  };
+}
+
+// An in-browser stand-in for the lock API with revision checks. Successful
+// mutations reply 204 so the console must reload instead of trusting a body.
+// `next` injects one outcome: "abort" loses the reply after applying the
+// change; {status, body} rejects without applying it.
+async function routeLock(page, server) {
+  const match = (url) => url.pathname.startsWith("/console/api/fleet/vault") || url.pathname === "/console/api/admin/vault";
+  const handler = async (route) => {
+    const request = route.request(),
+      url = new URL(request.url()),
+      method = request.method(),
+      global = url.pathname === "/console/api/admin/vault",
+      target = global ? server.global : server.fleet;
+    if (method === "GET") {
+      const failure = global ? server.failGlobal : server.failFleet;
+      if (failure) return route.fulfill({ status: 503, body: failure });
+      return route.fulfill({ json: target });
+    }
+    const body = request.postDataJSON();
+    server.attempts.push({ method, path: url.pathname, body });
+    const injected = server.next;
+    server.next = null;
+    if (injected && injected !== "abort") return route.fulfill({ status: injected.status, body: injected.body });
+    if (body?.revision !== target.revision)
+      return route.fulfill({ status: 409, body: global ? "gateway lock changed; reload before editing" : "fleet lock changed; reload before editing" });
+    server.writes.push({ method, path: url.pathname, body });
+    target.revision++;
+    if (method === "PUT") {
+      target.enabled = body.enabled;
+      delete target.pausedUntil;
+      if (body.pauseSeconds) target.pausedUntil = new Date(Date.now() + body.pauseSeconds * 1000).toISOString();
+      if (global) {
+        server.fleet.globalEnabled = target.enabled;
+        server.fleet.globalPausedUntil = target.pausedUntil;
+      }
+    } else if (method === "POST") {
+      target.allowances.push({
+        id: "allow-" + target.revision, keyId: body.keyId, ownerId: body.ownerId,
+        allMachines: body.allMachines, machineIds: body.machineIds,
+        expiresAt: body.ttlSeconds ? new Date(Date.now() + body.ttlSeconds * 1000).toISOString() : undefined,
+      });
+    } else if (method === "DELETE") {
+      const id = decodeURIComponent(url.pathname.split("/").pop());
+      target.allowances = target.allowances.filter((a) => a.id !== id);
+    }
+    if (injected === "abort") return route.abort("failed");
+    return route.fulfill({ status: 204 });
+  };
+  await page.route(match, handler);
+  return () => page.unroute(match, handler);
+}
+function lockServer(fleet, global = null) {
+  return { fleet, global, writes: [], attempts: [], next: null, failFleet: "", failGlobal: "" };
+}
+async function submitModal(page) {
+  await page.locator("#modal-form button[type=submit]").click();
+}
+async function modalError(page, text) {
+  await page.locator("#modal-form .form-error").filter({ hasText: text }).waitFor();
+}
+async function lockSummary(page) {
+  return (await page.locator(".lock-summary").innerText()).replace(/\s+/g, " ");
+}
+
+// Owner view: enforcement scope, escaped identities, every lock transition,
+// allowance validation and payloads, conflicts, uncertain replies, and the
+// orchestrator key type, all against the shared fixtures.
+async function assertAccessLockFixtures(browser) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const server = lockServer(lockFixture());
+  const unroute = await routeLock(page, server);
+  try {
+    await login(page, "browser-owner");
+    await pageLink(page, "lock");
+    await page.locator("#lock-enforcement").filter({ hasText: "Locked" }).waitFor();
+    let summary = await lockSummary(page);
+    assert.match(summary, /Enforced by this fleet's lock\. .*within 2 active allowances/);
+    assert.equal(await page.locator("img").count(), 0, "Identity names must not become markup");
+    await page.getByText(lockKeyName, { exact: true }).first().waitFor();
+    const hostRow = page.locator('tr[data-allowance="allow-host"]');
+    assert.match(await hostRow.innerText(), /cli-owner-host-0123/);
+    assert.match(await hostRow.innerText(), /gpu-worker/);
+    assert.match(await hostRow.innerText(), new RegExp(lockIds.missing + "\\s+Not registered"), "Unknown worker IDs must stay visible");
+    assert.match(await hostRow.innerText(), /No expiration/);
+    assert.match(await page.locator('tr[data-allowance="allow-key"]').innerText(), /All workers[\s\S]*in 1h 5\dm|All workers[\s\S]*in 2h 0m/);
+    assert.equal(await page.locator('[data-id="global"]').count(), 0, "Fleet owners must not get operator controls");
+    const notice = await page.locator(".notice").last().textContent();
+    assert.match(notice, /Common worker keys never grant ambient execution/);
+    assert.match(notice, /open sessions do not bypass instruction grants/);
+
+    // A custom pause beyond the gateway bound is rejected before sending.
+    await page.locator('[data-action="lock-pause"][data-id="fleet"]').click();
+    await page.locator("#modal-form select[name=pause]").selectOption("custom");
+    await page.locator("#modal-form input[name=pauseAmount]").fill("366");
+    await page.locator("#modal-form select[name=pauseUnit]").selectOption("86400");
+    await submitModal(page);
+    await modalError(page, "at most 365 days");
+    assert.equal(server.attempts.length, 0);
+    await page.locator("#modal-form input[name=pauseAmount]").fill("90");
+    await page.locator("#modal-form select[name=pauseUnit]").selectOption("60");
+    await submitModal(page);
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    assert.deepEqual(server.writes.at(-1).body, { revision: 7, enabled: true, pauseSeconds: 5400 });
+    await page.locator("#lock-enforcement").filter({ hasText: "Unlocked" }).waitFor();
+    assert.match(await lockSummary(page), /Enforcement resumes automatically .*\(in 1h 2\dm\)/);
+
+    // An active operator minimum keeps the paused fleet locked.
+    server.fleet.globalEnabled = true;
+    await refreshPage(page);
+    summary = await lockSummary(page);
+    assert.match(summary, /^Locked Enforced by the operator minimum\./);
+    assert.match(summary, /Pausing this fleet does not lift the operator minimum\./);
+    await page.locator('[data-action="lock-enable"][data-id="fleet"]').filter({ hasText: "Lock now" }).click();
+    await submitModal(page);
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    assert.deepEqual(server.writes.at(-1).body, { revision: 8, enabled: true }, "Lock now must clear the pause without a duration");
+    await page.locator("#lock-enforcement").filter({ hasText: "Locked" }).waitFor();
+    await until(async () => /Enforced by the operator minimum and this fleet's lock/.test(await lockSummary(page)), "Both enforcement sources were not shown");
+    await page.locator('[data-action="lock-disable"][data-id="fleet"]').click();
+    await page.getByText("The operator minimum is active and still locks this fleet.", { exact: false }).waitFor();
+    await submitModal(page);
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    assert.deepEqual(server.writes.at(-1).body, { revision: 9, enabled: false });
+
+    // An elapsed pause is enforced even before the gateway reports it.
+    Object.assign(server.fleet, { enabled: true, globalEnabled: false, pausedUntil: new Date(Date.now() - 1000).toISOString() });
+    await refreshPage(page);
+    await page.locator("#lock-enforcement").filter({ hasText: "Locked" }).waitFor();
+
+    // Allowances need a server-reported caller and at least one worker.
+    await page.locator('[data-action="allowance-add"]').click();
+    await submitModal(page);
+    await modalError(page, "Select an account execution key, an orchestrator host, or both.");
+    assert.equal(await page.locator("#allowance-machines").isHidden(), true);
+    await page.locator("#modal-form select[name=keyId]").selectOption(lockIds.key);
+    await page.locator("#modal-form select[name=ownerId]").selectOption(lockIds.host);
+    await page.locator("#modal-form select[name=scope]").selectOption("selected");
+    await page.locator("#allowance-machines").waitFor();
+    await submitModal(page);
+    await modalError(page, "Select at least one worker.");
+    assert.equal(server.attempts.length, 3);
+    await page.locator("#allowance-machines label").filter({ hasText: "gpu-worker" }).locator("input").check();
+    await page.locator("#modal-form select[name=expiry]").selectOption("custom");
+    await page.locator("#modal-form input[name=expiryAmount]").fill("2");
+    await page.locator("#modal-form select[name=expiryUnit]").selectOption("86400");
+    await submitModal(page);
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    assert.deepEqual(server.writes.at(-1), {
+      method: "POST", path: "/console/api/fleet/vault/allowances",
+      body: { revision: 10, keyId: lockIds.key, ownerId: lockIds.host, allMachines: false, machineIds: [lockIds.worker], ttlSeconds: 172800 },
+    });
+    await page.locator('tr[data-allowance="allow-11"]').waitFor();
+    await page.locator('[data-action="allowance-add"]').click();
+    await page.locator("#modal-form select[name=ownerId]").selectOption(lockIds.host);
+    await page.locator("#modal-form select[name=expiry]").selectOption("never");
+    await page.locator("#allowance-indefinite").waitFor();
+    await submitModal(page);
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    assert.deepEqual(server.writes.at(-1).body, { revision: 11, ownerId: lockIds.host, allMachines: true, machineIds: [] },
+      "Indefinite allowances must omit ttlSeconds");
+
+    await page.locator('tr[data-allowance="allow-12"]').waitFor();
+    await page.locator('[data-action="allowance-revoke"][data-id="allow-key"]').click();
+    await page.getByText("Revoke the allowance for key " + lockKeyName + " on all workers.", { exact: false }).waitFor();
+    await submitModal(page);
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    assert.deepEqual(server.writes.at(-1), { method: "DELETE", path: "/console/api/fleet/vault/allowances/allow-key", body: { revision: 12 } });
+    await page.locator('tr[data-allowance="allow-key"]').waitFor({ state: "detached" });
+
+    // A change made elsewhere is a revision conflict that is never resent.
+    await page.locator('[data-action="lock-pause"][data-id="fleet"]').click();
+    server.fleet.revision += 5;
+    let attempts = server.attempts.length;
+    await submitModal(page);
+    await modalError(page, "changed after this dialog opened");
+    await submitModal(page);
+    await modalError(page, "Close this dialog and review");
+    assert.equal(server.attempts.length, attempts + 1, "A stale revision must not be resent");
+    await page.locator("#modal-form [data-action=close]").click();
+
+    // Other conflicts are definite rejections with the gateway's reason.
+    await refreshPage(page);
+    await page.locator('[data-action="lock-disable"][data-id="fleet"]').click();
+    server.next = { status: 409, body: "upgrade these registered workers to a version that enforces the fleet lock before enabling it: old-worker" };
+    attempts = server.attempts.length;
+    await submitModal(page);
+    await modalError(page, "old-worker");
+    await submitModal(page);
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    assert.equal(server.attempts.length, attempts + 2, "A definite rejection may be corrected and retried");
+
+    // A lost reply may have applied the change; the dialog asks for a reload.
+    await refreshPage(page);
+    await page.locator('[data-action="allowance-add"]').click();
+    await page.locator("#modal-form select[name=keyId]").selectOption(lockIds.accountKey);
+    server.next = "abort";
+    attempts = server.attempts.length;
+    await submitModal(page);
+    await modalError(page, "may have completed");
+    await submitModal(page);
+    await modalError(page, "Reload the access lock to check");
+    assert.equal(server.attempts.length, attempts + 1, "An uncertain allowance must not be replayed");
+    await page.locator("#modal-form [data-action=close]").click();
+
+    server.failFleet = "Fleet lock unavailable.";
+    await refreshPage(page);
+    assert.match(await page.locator("#stale-banner").textContent(), /^Fleet lock unavailable\./);
+    server.failFleet = "";
+    await refreshPage(page);
+    assert.equal(await page.locator("#stale-banner").isHidden(), true);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.ok(await page.locator("#app").evaluate((element) => element.scrollWidth <= element.clientWidth), "The lock page must fit narrow screens");
+    if (process.env.CONTROL_CONSOLE_SCREENSHOTS)
+      await page.screenshot({ path: path.join(process.env.CONTROL_CONSOLE_SCREENSHOTS, "access-lock-mobile.png"), fullPage: true });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    if (process.env.CONTROL_CONSOLE_SCREENSHOTS)
+      await page.screenshot({ path: path.join(process.env.CONTROL_CONSOLE_SCREENSHOTS, "access-lock.png"), fullPage: true });
+
+    // Key creation offers an execution-only orchestrator type.
+    const issued = [];
+    const keys = [
+      { id: "fixture-common", name: "Common fixture", role: "common", createdAt: new Date().toISOString() },
+      { id: "fixture-orchestrator", name: "Orchestrator fixture", role: "orchestrator", createdAt: new Date().toISOString() },
+      { id: "fixture-account", name: "Account fixture", role: "user", createdAt: new Date().toISOString() },
+    ];
+    const keyRoute = (route) => {
+      if (route.request().method() === "GET") return route.fulfill({ json: keys });
+      issued.push(route.request().postDataJSON());
+      return route.fulfill({ json: { token: "ctl_fixture_" + issued.length } });
+    };
+    await page.route("**/console/api/fleet/keys", keyRoute);
+    try {
+      await pageLink(page, "keys");
+      const orchestratorRow = page.locator("tr").filter({ hasText: "Orchestrator fixture" });
+      await orchestratorRow.getByText("Orchestrator", { exact: true }).waitFor();
+      assert.equal(await page.getByText("Account fixture", { exact: true }).count(), 0, "Account keys stay unlisted");
+      await page.getByRole("button", { name: "Create key", exact: false }).click();
+      await page.locator("#modal-form input[name=name]").fill("CI runner");
+      await page.locator("#modal-form select[name=role]").selectOption("orchestrator");
+      await submitModal(page);
+      await page.getByRole("dialog", { name: "Save your new orchestrator key", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Done", exact: true }).click();
+      await page.getByRole("button", { name: "Create key", exact: false }).click();
+      assert.match(await page.locator("#modal-form").textContent(), /cannot manage the fleet or enroll machines/);
+      await page.locator("#modal-form input[name=name]").fill("Plain common");
+      await submitModal(page);
+      await page.getByRole("dialog", { name: "Save your new key", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Done", exact: true }).click();
+      assert.deepEqual(issued, [{ name: "CI runner", role: "orchestrator" }, { name: "Plain common" }], "Common keys keep the default request");
+    } finally {
+      await page.unroute("**/console/api/fleet/keys", keyRoute);
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await unroute();
+    await context.close();
+  }
+}
+
+// The operator also controls the gateway-wide minimum from the same panel.
+// Pausing it never lifts a fleet's own active lock.
+async function assertOperatorLockFixtures(browser) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await context.newPage();
+  const server = lockServer(
+    lockFixture({ enabled: true, globalEnabled: true, revision: 2, keys: [{ id: "superuser", name: "operator key" }] }),
+    { enabled: true, revision: 3 },
+  );
+  const unroute = await routeLock(page, server);
+  try {
+    await login(page, "@operator");
+    await pageLink(page, "lock");
+    await page.locator("#lock-enforcement").filter({ hasText: "Locked" }).waitFor();
+    assert.match(await lockSummary(page), /Enforced by the operator minimum and this fleet's lock/);
+    await page.locator('[data-action="lock-pause"][data-id="global"]').click();
+    await page.getByText("Fleets that enabled their own lock stay locked.", { exact: false }).waitFor();
+    await page.locator("#modal-form select[name=pause]").selectOption("900");
+    await submitModal(page);
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    assert.deepEqual(server.writes.at(-1), { method: "PUT", path: "/console/api/admin/vault", body: { revision: 3, enabled: true, pauseSeconds: 900 } });
+    await until(async () => /operator minimum is paused, but this fleet's own lock still applies/.test(await lockSummary(page)), "Operator pause bypassed the fleet lock");
+    assert.match(await lockSummary(page), /^Locked Enforced by this fleet's lock\./);
+    const globalRow = page.locator(".lock-settings tbody tr").first();
+    await globalRow.getByText("Paused", { exact: true }).waitFor();
+    await globalRow.locator('[data-action="lock-enable"]').filter({ hasText: "Lock now" }).waitFor();
+    await globalRow.locator('[data-action="lock-disable"]').click();
+    await submitModal(page);
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    assert.deepEqual(server.writes.at(-1).body, { revision: 4, enabled: false });
+    await globalRow.getByText("Off", { exact: true }).waitFor();
+    await globalRow.locator('[data-action="lock-enable"]').filter({ hasText: "Enable lock" }).click();
+    await submitModal(page);
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    assert.deepEqual(server.writes.at(-1).body, { revision: 5, enabled: true });
+
+    // A failed operator read keeps the fleet view and withholds its controls.
+    server.failGlobal = "Operator lock unavailable";
+    await refreshPage(page);
+    await until(async () => /Operator settings could not be read: Operator lock unavailable\. Showing the operator minimum as reported for this fleet\./.test(await lockSummary(page)), "Operator read failure was not shown");
+    assert.equal(await page.locator('[data-id="global"]').count(), 0);
+    assert.equal(await page.locator("#stale-banner").isHidden(), true, "An operator read failure must not mark the fleet view stale");
+  } finally {
+    await unroute();
+    await context.close();
+  }
+}
+
+// The real gateway: lock the fixture fleet, allow an orchestrator key on one
+// worker, revoke it, and unlock again so later bearer requests still work.
+async function assertAccessLockGateway(page) {
+  await pageLink(page, "keys");
+  await page.getByRole("button", { name: "Create key", exact: false }).click();
+  await page.locator("#modal-form input[name=name]").fill("Lock orchestrator");
+  await page.locator("#modal-form select[name=role]").selectOption("orchestrator");
+  await submitModal(page);
+  await page.locator("#secret-value").waitFor();
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await page.locator("tr").filter({ hasText: "Lock orchestrator" }).getByText("Orchestrator", { exact: true }).waitFor();
+  await pageLink(page, "lock");
+  await page.locator("#lock-enforcement").filter({ hasText: "Unlocked" }).waitFor();
+  try {
+    await page.locator('[data-action="lock-enable"][data-id="fleet"]').click();
+    await submitModal(page);
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    await page.locator("#lock-enforcement").filter({ hasText: "Locked" }).waitFor();
+    assert.match(await lockSummary(page), /No allowance is active, so account execution on this fleet's workers is refused\./);
+    await page.locator('[data-action="allowance-add"]').click();
+    const key = page.locator("#modal-form select[name=keyId] option").filter({ hasText: "Lock orchestrator" });
+    await page.locator("#modal-form select[name=keyId]").selectOption(await key.getAttribute("value"));
+    await page.locator("#modal-form select[name=scope]").selectOption("selected");
+    await page.locator("#allowance-machines label").filter({ hasText: "renamed-worker" }).locator("input").check();
+    await page.locator("#modal-form select[name=expiry]").selectOption("3600");
+    await submitModal(page);
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    const row = page.locator(".lock-allowances tbody tr").filter({ hasText: "Lock orchestrator" });
+    await row.getByText("renamed-worker", { exact: true }).waitFor();
+    assert.match(await row.innerText(), /in (59m|1h 0m)/);
+    await row.locator('[data-action="allowance-revoke"]').click();
+    await submitModal(page);
+    await page.locator("#dialog").waitFor({ state: "hidden" });
+    await page.getByText("No allowances", { exact: true }).waitFor();
+  } finally {
+    if (await page.locator('[data-action="lock-disable"][data-id="fleet"]').count()) {
+      await page.locator('[data-action="lock-disable"][data-id="fleet"]').click();
+      await submitModal(page);
+      await page.locator("#dialog").waitFor({ state: "hidden" });
+    }
+  }
+  await page.locator("#lock-enforcement").filter({ hasText: "Unlocked" }).waitFor();
+  await pageLink(page, "activity");
+  await page.locator("#audit-category").selectOption("vault");
+  // Enabling may be audited as vault.enable or vault.lock; both are labelled.
+  for (const label of [/Enabled fleet lock|Locked fleet/, "Added lock allowance", "Revoked lock allowance", "Disabled fleet lock"])
+    await page.locator("tbody tr").filter({ hasText: label }).first().waitFor();
+  assert.equal(await page.locator("tbody tr").filter({ hasText: /vault\./ }).count(), 0, "Vault audit actions must be labelled");
+  await page.locator("#audit-category").selectOption("");
+}
 async function pageLink(page, hash) {
   await page.locator(`nav a[href="#${hash}"]`).click();
   await page.waitForFunction(
@@ -586,6 +973,7 @@ async function pageLink(page, hash) {
     {
       machines: "Machines",
       keys: "Access keys",
+      lock: "Access lock",
       activity: "Activity",
       invitations: "Invitations",
       users: "Accounts",
@@ -2281,6 +2669,8 @@ try {
   await login(page, "browser-owner");
   await assertAsyncConsoleOwnership(browser);
   await assertAuditRequestOwnership(browser);
+  await assertAccessLockFixtures(browser);
+  await assertOperatorLockFixtures(browser);
   await assertBrandAssets(page);
   await page
     .getByRole("button", { name: "browser-worker", exact: true })
@@ -2486,6 +2876,7 @@ try {
     .fill("Renamed browser key");
   await page.locator("#modal-form button[type=submit]").click();
   await page.getByText("Renamed browser key", { exact: true }).waitFor();
+  await assertAccessLockGateway(page);
 
   // The rename above is attributed to this browser login in the audit log.
   await pageLink(page, "activity");
@@ -2920,7 +3311,7 @@ try {
   await page.getByText("Selected version", { exact: true }).waitFor();
   assert.deepEqual(errors, []);
   console.log(
-    "Console browser smoke passed: login, fleet isolation, search, machine context menus, confirmed lifecycle actions, rename, owner labels, escaped keys, enrollment commands, confirmed invitation replacement, stale views, themes, mobile layout, password change, logout, and operator pages.",
+    "Console browser smoke passed: login, fleet isolation, search, machine context menus, confirmed lifecycle actions, rename, owner labels, escaped keys, enrollment commands, confirmed invitation replacement, access lock and allowances, orchestrator keys, stale views, themes, mobile layout, password change, logout, and operator pages.",
   );
 } catch (error) {
   console.error(logs.join(""));

@@ -420,7 +420,8 @@ func (n *Node) observeWorkflowChild(ctx context.Context, step WorkflowStep, last
 // that may clear on reconnect, so repeating the read-only request is
 // meaningful. Delivery outcome alone is not enough. Errors decoded from a
 // remote reply (auth, ownership, validation, protocol or missing-task errors)
-// carry no local cause and are permanent. The caller's own cancellation or
+// carry no local cause and are permanent, except a destination's unavailable
+// fleet vault decision. The caller's own cancellation or
 // deadline is permanent too. Connection-specific classification of the local
 // cause belongs to the transport.
 func transientObservation(ctx context.Context, err error) bool {
@@ -430,6 +431,12 @@ func transientObservation(ctx context.Context, err error) bool {
 	var rpc *model.RPCError
 	if !errors.As(err, &rpc) || rpc.Cause == nil {
 		return false
+	}
+	if rpc.Code == model.FleetVaultUnavailable && rpc.Outcome == model.OutcomeNotAccepted {
+		// The destination refused this read before admission because it could
+		// not reach its gateway. Repeating a status read is safe; a denial is
+		// still permanent.
+		return true
 	}
 	return transport.RetryableDelivery(rpc.Cause)
 }

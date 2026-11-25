@@ -146,6 +146,9 @@ type Peer struct {
 	gatewaySession   atomic.Uint64
 	clientSessions   bool
 	machineStatePush atomic.Bool
+	// fleetVaultCheck records that the authenticated gateway advertised
+	// receiver fleet vault decisions. It changes only after authentication.
+	fleetVaultCheck  atomic.Bool
 	machineStateWake chan struct{}
 	networkSnapshot  func() (string, error)
 	wakeSnapshot     func() ([]model.WakeInterface, error)

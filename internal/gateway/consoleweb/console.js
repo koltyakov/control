@@ -93,16 +93,43 @@
  * @typedef {{id: string, expiresAt: number, key: string, nonce: string, ciphertext: string}} SecretEnvelope
  * @typedef {{removed: number, hidden?: number}} ClearResult
  * @typedef {{token: string}} IssuedKey
+ * @typedef {{name: string, role?: 'orchestrator'}} KeyRequest Omitting role creates a common key.
+ * @typedef {{id: string, name: string}} LockIdentity Server-discovered key, host or machine; IDs are immutable.
+ * @typedef {object} LockAllowance
+ * @property {string} id
+ * @property {string} [keyId] Account execution key the caller must use.
+ * @property {string} [ownerId] Stable orchestrator host the caller must run on.
+ * @property {boolean} allMachines
+ * @property {string[]} machineIds Immutable worker IDs when allMachines is false.
+ * @property {string} [expiresAt] Absent for an allowance that lasts until revoked.
+ * @typedef {object} FleetLock
+ * @property {boolean} enabled
+ * @property {string} [pausedUntil]
+ * @property {number} revision
+ * @property {boolean} [globalEnabled] Operator minimum; unknown when an older gateway omits it.
+ * @property {string} [globalPausedUntil]
+ * @property {LockAllowance[]} allowances
+ * @property {LockIdentity[]} keys
+ * @property {LockIdentity[]} hosts
+ * @property {LockIdentity[]} machines
+ * @typedef {{enabled: boolean, pausedUntil?: string, revision: number}} GlobalLock
+ * @typedef {{revision: number, enabled: boolean, pauseSeconds?: number}} LockRequest
+ * @typedef {{revision: number, keyId?: string, ownerId?: string, allMachines: boolean, machineIds: string[], ttlSeconds?: number}} AllowanceRequest
+ * @typedef {{fleet: FleetLock, global: GlobalLock | null, globalError: string}} LockView
+ * @typedef {{enabled?: boolean, pausedUntil?: string}} LockSetting
+ * @typedef {{known: boolean, active: boolean, paused: boolean, label: string, tone: string, detail: string}} LockStatus
+ * @typedef {{check: () => void, run: <T>(request: () => Promise<T>) => Promise<T>}} MutationGuard
  * @typedef {{name: string, autoName?: boolean, os: string, serviceMode: string, ttlSeconds: number, gateway: string, force: boolean, proxyWorker?: string, proxyUrl?: string}} InstallationRequest
- * @typedef {{login: {username: string, password: string}, logout: never, 'fleet/installations': InstallationRequest, 'fleet/keys': {name: string}, 'admin/users': {name: string}, 'admin/updates/check': never} & Record<`fleet/nodes/${string}/startup`, {mode: string}> & Record<`fleet/nodes/${string}/wake`, never>} PostBody
- * @typedef {{'console/password': {username?: string, currentPassword?: string, password: string}} & Record<`fleet/nodes/${string}/secrets/${string}`, SecretEnvelope> & Record<`fleet/nodes/${string}/proxy`, ProxySetupRequest>} PutBody
+ * @typedef {{login: {username: string, password: string}, logout: never, 'fleet/installations': InstallationRequest, 'fleet/keys': KeyRequest, 'admin/users': {name: string}, 'admin/updates/check': never, 'fleet/vault/allowances': AllowanceRequest} & Record<`fleet/nodes/${string}/startup`, {mode: string}> & Record<`fleet/nodes/${string}/wake`, never>} PostBody
+ * @typedef {{'console/password': {username?: string, currentPassword?: string, password: string}, 'fleet/vault': LockRequest, 'admin/vault': LockRequest} & Record<`fleet/nodes/${string}/secrets/${string}`, SecretEnvelope> & Record<`fleet/nodes/${string}/proxy`, ProxySetupRequest>} PutBody
  * @typedef {Record<`fleet/nodes/${string}/proxy`, ProxySetup>} PutAPI
  * @typedef {{set?: Record<string, string>, remove?: string[], reset?: string[]}} LabelPatch
  * @typedef {Record<`fleet/nodes/${string}`, {name?: string, force?: boolean, disabled?: boolean, labels?: LabelPatch}> & Record<`fleet/keys/${string}`, {name: string}>} PatchBody
- * @typedef {{session: ConsoleSession, status: FleetSnapshot, 'fleet/installations': Invitation[], 'fleet/keys': FleetKey[], 'admin/users': FleetUser[], 'admin/updates': UpdateResult} & Record<`audit?${string}`, AuditPage> & Record<`fleet/nodes/${string}/secrets`, SecretList> & Record<`fleet/nodes/${string}/proxy`, ProxySetup>} GetAPI
- * @typedef {{login: ConsoleSession, logout: null, 'fleet/installations': InstallationLink, 'fleet/keys': IssuedKey, 'admin/users': IssuedKey, 'admin/updates/check': unknown} & Record<`fleet/nodes/${string}/startup`, StartupResult> & Record<`fleet/nodes/${string}/wake`, {source: string}>} PostAPI
+ * @typedef {{session: ConsoleSession, status: FleetSnapshot, 'fleet/installations': Invitation[], 'fleet/keys': FleetKey[], 'admin/users': FleetUser[], 'admin/updates': UpdateResult, 'fleet/vault': FleetLock, 'admin/vault': GlobalLock} & Record<`audit?${string}`, AuditPage> & Record<`fleet/nodes/${string}/secrets`, SecretList> & Record<`fleet/nodes/${string}/proxy`, ProxySetup>} GetAPI
+ * @typedef {{login: ConsoleSession, logout: null, 'fleet/installations': InstallationLink, 'fleet/keys': IssuedKey, 'admin/users': IssuedKey, 'admin/updates/check': unknown, 'fleet/vault/allowances': unknown} & Record<`fleet/nodes/${string}/startup`, StartupResult> & Record<`fleet/nodes/${string}/wake`, {source: string}>} PostAPI
  * @typedef {{'fleet/installations': ClearResult} & Record<`audit${string}`, ClearResult> & Record<`fleet/nodes/${string}` | `fleet/keys/${string}` | `fleet/installations/${string}` | `admin/users/${string}`, unknown>} DeleteAPI
- * @typedef {{page: 'invitations', data: Invitation[]} | {page: 'keys', data: FleetKey[]} | {page: 'users', data: FleetUser[]} | {page: 'updates', data: UpdateResult} | {page: 'activity', data: AuditPage}} Auxiliary
+ * @typedef {Record<`fleet/vault/allowances/${string}`, {revision: number}>} DeleteBody
+ * @typedef {{page: 'invitations', data: Invitation[]} | {page: 'keys', data: FleetKey[]} | {page: 'users', data: FleetUser[]} | {page: 'updates', data: UpdateResult} | {page: 'activity', data: AuditPage} | {page: 'lock', data: LockView}} Auxiliary
  * @typedef {object} ConsoleState
  * @property {ConsoleSession | null} session
  * @property {FleetSnapshot | null} snapshot
@@ -220,6 +247,7 @@ const icons = {
     '<circle cx="12" cy="12" r="3"/><path d="M3 12h6m6 0h6M12 3v6m0 6v6"/>',
   tunnel: '<path d="M4 20V11a8 8 0 0 1 16 0v9M9 20v-5a3 3 0 0 1 6 0v5"/>',
   activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+  lock: '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 4v3"/>',
   logout:
     '<path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l5-5-5-5m5 5H3"/>',
 };
@@ -261,7 +289,8 @@ const pages = {
     "Invitations",
     "One-time installation links and enrollment status.",
   ],
-  keys: ["Access keys", "Credentials for machine enrollment and discovery."],
+  keys: ["Access keys", "Credentials for machine enrollment, discovery and orchestration."],
+  lock: ["Access lock", "Which callers can start work on this fleet's workers."],
   account: ["Account", "Manage your browser login."],
   activity: ["Activity", "Sign-ins and management changes, newest first."],
   users: ["Accounts", "Private fleets and browser access on this gateway."],
@@ -387,6 +416,14 @@ new ResizeObserver(fitNav).observe($(".topbar"));
  * @param {DP} path
  * @param {'DELETE'} method
  * @returns {Promise<DeleteAPI[DP]>}
+ */
+/**
+ * @template {keyof DeleteBody} DB
+ * @overload
+ * @param {DB} path
+ * @param {'DELETE'} method
+ * @param {DeleteBody[DB]} body
+ * @returns {Promise<unknown>}
  */
 /**
  * @template {keyof PutBody} UP
@@ -1709,27 +1746,32 @@ function renderInvitations(items) {
 }
 /** @param {FleetKey[]} items @returns {string} */
 function renderKeys(items) {
-  const keys = items.filter((k) => k.role === "common");
+  const keys = items.filter((k) => keyTypes[k.role]);
   return (
     panel(
       "Fleet keys",
       keys.length
         ? table(
-            ["Name", "Status", "Created", "Key ID", ""],
+            ["Name", "Type", "Status", "Created", "Key ID", ""],
             keys.map(
               (k) =>
-                `<tr><td><strong>${esc(k.name)}</strong></td><td>${badge(k.revoked ? "Revoked" : "Active")}</td><td class="muted">${esc(date(k.createdAt))}</td><td class="mono muted">${esc(k.id)}</td><td class="action-column"><div class="row-actions"><button class="secondary compact" data-action="rename-key" data-id="${esc(k.id)}" data-name="${esc(k.name)}">Rename</button>${k.revoked ? "" : `<button class="secondary compact" data-action="revoke-key" data-id="${esc(k.id)}">Revoke</button>`}</div></td></tr>`,
+                `<tr><td><strong>${esc(k.name)}</strong></td><td title="${esc(keyTypes[k.role][1])}">${esc(keyTypes[k.role][0])}</td><td>${badge(k.revoked ? "Revoked" : "Active")}</td><td class="muted">${esc(date(k.createdAt))}</td><td class="mono muted">${esc(k.id)}</td><td class="action-column"><div class="row-actions"><button class="secondary compact" data-action="rename-key" data-id="${esc(k.id)}" data-name="${esc(k.name)}">Rename</button>${k.revoked ? "" : `<button class="secondary compact" data-action="revoke-key" data-id="${esc(k.id)}">Revoke</button>`}</div></td></tr>`,
             ),
           )
         : empty(
-            "No common keys",
+            "No fleet keys",
             "Installed machines normally use invitation-bound keys.",
           ),
       `<button class="secondary compact" data-action="create-key">${icon("plus")}Create key</button>`,
     ) +
-    '<p class="notice">Common keys allow enrollment and discovery, not independent task execution. Account keys are not listed here. Keep keys out of worker-accessible files.</p>'
+    '<p class="notice">Common keys allow enrollment and discovery, never task execution. Orchestrator keys allow account execution only; they cannot manage the fleet or enroll machines, and the <a class="inline-link" href="#lock">access lock</a> and worker rules still apply. Account keys are not listed here. Keep keys out of worker-accessible files.</p>'
   );
 }
+/** Key roles this page manages; account and invitation keys are excluded. @type {Record<string, [string, string]>} */
+const keyTypes = {
+  common: ["Common", "Enrollment and discovery only"],
+  orchestrator: ["Orchestrator", "Account execution only; no fleet management or enrollment"],
+};
 /** @param {FleetUser[]} items @returns {string} */
 function renderUsers(items) {
   return panel(
@@ -1776,6 +1818,367 @@ function renderUpdates(result) {
       : "")
   );
 }
+// Access lock. Enforcement is evaluated against the browser clock between
+// polls so an elapsed pause is never presented as still lifting the lock. The
+// gateway remains authoritative; this view only explains its reported state.
+/** @param {ConsoleSession} session @returns {Promise<LockView>} */
+async function loadLockView(session) {
+  const fleet = await api("fleet/vault");
+  /** @type {GlobalLock | null} */
+  let global = null;
+  let globalError = "";
+  if (session.role === "superuser") {
+    // The operator minimum is optional to this page; a failed read must not
+    // hide the fleet's own enforcement state.
+    try {
+      global = await api("admin/vault");
+    } catch (error) {
+      globalError = errorMessage(error);
+    }
+  }
+  return { fleet, global, globalError };
+}
+/** @returns {LockView | null} */
+function currentLockView() {
+  return state.auxiliary?.page === "lock" ? state.auxiliary.data : null;
+}
+/** @param {string | undefined} value @returns {boolean} */
+function inFuture(value) {
+  return known(value) && Date.parse(value) > Date.now();
+}
+/** @param {string} value @returns {string} */
+function timeLeft(value) {
+  const seconds = (Date.parse(value) - Date.now()) / 1000;
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  if (seconds < 60) return "in under a minute";
+  if (seconds < 3600) return "in " + Math.floor(seconds / 60) + "m";
+  if (seconds < 86400) return "in " + Math.floor(seconds / 3600) + "h " + Math.floor((seconds % 3600) / 60) + "m";
+  return "in " + Math.floor(seconds / 86400) + "d " + Math.floor((seconds % 86400) / 3600) + "h";
+}
+/** @param {LockSetting | null} setting @returns {LockStatus} */
+function lockStatus(setting) {
+  if (!setting || typeof setting.enabled !== "boolean")
+    return { known: false, active: false, paused: false, label: "Not reported", tone: "", detail: "The gateway did not report this setting." };
+  if (!setting.enabled)
+    return { known: true, active: false, paused: false, label: "Off", tone: "", detail: "Off until someone enables it." };
+  if (setting.pausedUntil && inFuture(setting.pausedUntil))
+    return { known: true, active: false, paused: true, label: "Paused", tone: "warn", detail: `Resumes automatically ${date(setting.pausedUntil)} (${timeLeft(setting.pausedUntil)}).` };
+  return { known: true, active: true, paused: false, label: "Locked", tone: "good", detail: "Enforced until someone pauses or disables it." };
+}
+/** @param {LockView} view @returns {LockSetting | null} */
+function globalSetting(view) {
+  if (view.global) return view.global;
+  return typeof view.fleet.globalEnabled === "boolean"
+    ? { enabled: view.fleet.globalEnabled, pausedUntil: view.fleet.globalPausedUntil }
+    : null;
+}
+/** @param {LockAllowance} allowance @returns {boolean} */
+function allowanceExpired(allowance) {
+  return !!allowance.expiresAt && !inFuture(allowance.expiresAt);
+}
+/** @param {string} label @param {string} tone @returns {string} */
+function toneBadge(label, tone) {
+  return `<span class="badge ${esc(tone)}"><span class="status-dot"></span>${esc(label)}</span>`;
+}
+/** @param {LockIdentity[]} items @param {string} id @returns {string} */
+function identityName(items, id) {
+  return items.find((item) => item.id === id)?.name || "";
+}
+/** @param {string} kind @param {string} name @param {string} id @returns {string} */
+function identityLine(kind, name, id) {
+  return `<span class="lock-identity"><span class="muted">${esc(kind)}</span> ${name ? `<strong>${esc(name)}</strong>` : '<strong class="warn-text">Not reported</strong>'}<small class="mono muted id-line">${esc(id)}</small></span>`;
+}
+/** @param {LockAllowance} a @param {FleetLock} fleet @returns {string} */
+function allowanceCaller(a, fleet) {
+  return [
+    a.keyId ? identityLine("Key", identityName(fleet.keys, a.keyId), a.keyId) : "",
+    a.ownerId ? identityLine("Host", identityName(fleet.hosts, a.ownerId), a.ownerId) : "",
+  ].join("") || '<span class="warn-text">No caller identity</span>';
+}
+/** @param {LockAllowance} a @param {FleetLock} fleet @returns {string} */
+function allowanceWorkers(a, fleet) {
+  if (a.allMachines) return "<strong>All workers</strong>";
+  if (!a.machineIds.length) return '<span class="warn-text">No workers</span>';
+  return `<ul class="lock-workers">${a.machineIds.map((id) => {
+    const name = identityName(fleet.machines, id);
+    return `<li title="${esc(id)}">${name ? esc(name) : `<span class="mono">${esc(id)}</span> <small class="warn-text">Not registered</small>`}</li>`;
+  }).join("")}</ul>`;
+}
+/** @param {LockAllowance} a @returns {string} */
+function allowanceExpiry(a) {
+  if (!a.expiresAt) return '<span>No expiration</span><small class="muted cell-detail">Until revoked</small>';
+  if (allowanceExpired(a)) return `${toneBadge("Expired", "bad")}<small class="muted cell-detail">${esc(date(a.expiresAt))}</small>`;
+  return `<span>${esc(date(a.expiresAt))}</span><small class="muted cell-detail">${esc(timeLeft(a.expiresAt))}</small>`;
+}
+/** @param {'fleet' | 'global'} scope @param {LockStatus} status @returns {string} */
+function lockActions(scope, status) {
+  /** @param {string} action @param {string} label @param {string} [kind] @returns {string} */
+  const button = (action, label, kind = "secondary") =>
+    `<button class="${kind} compact" data-action="${action}" data-id="${scope}">${esc(label)}</button>`;
+  const actions = [];
+  if (!status.active) actions.push(button("lock-enable", status.paused ? "Lock now" : "Enable lock", "primary"));
+  if (status.active) actions.push(button("lock-pause", "Pause"));
+  if (status.known && (status.active || status.paused)) actions.push(button("lock-disable", "Disable", "danger"));
+  return `<div class="row-actions">${actions.join("")}</div>`;
+}
+/** @param {LockView} view @returns {string} */
+function renderLock(view) {
+  const fleet = view.fleet,
+    operator = state.session?.role === "superuser",
+    fleetStatus = lockStatus(fleet),
+    globalStatus = lockStatus(globalSetting(view)),
+    enforced = fleetStatus.active || globalStatus.active,
+    current = fleet.allowances.filter((a) => !allowanceExpired(a)),
+    sources = [globalStatus.active && "the operator minimum", fleetStatus.active && "this fleet's lock"].filter(Boolean);
+  /** @type {string[]} */
+  const notes = [];
+  if (enforced)
+    notes.push(current.length
+      ? `Enforced by ${sources.join(" and ")}. Account clients can start work on this fleet's workers only within ${plural(current.length, "active allowance")}.`
+      : `Enforced by ${sources.join(" and ")}. No allowance is active, so account execution on this fleet's workers is refused.`);
+  else
+    notes.push("Not enforced. Account clients can start work, subject to each worker's allow rules and instruction grants. Allowances take effect only while a lock is enforced.");
+  if (fleetStatus.paused && globalStatus.active)
+    notes.push("Pausing this fleet does not lift the operator minimum.");
+  if (globalStatus.paused && fleetStatus.active)
+    notes.push("The operator minimum is paused, but this fleet's own lock still applies.");
+  if (!enforced) {
+    const resumes = [fleetStatus.paused && fleet.pausedUntil, globalStatus.paused && globalSetting(view)?.pausedUntil]
+      .filter((value) => typeof value === "string")
+      .sort((a, b) => Date.parse(a) - Date.parse(b))[0];
+    if (resumes) notes.push(`Enforcement resumes automatically ${date(resumes)} (${timeLeft(resumes)}).`);
+  }
+  if (view.globalError)
+    notes.push(`Operator settings could not be read: ${view.globalError.replace(/\.?$/, ".")}${globalStatus.known ? " Showing the operator minimum as reported for this fleet." : ""}`);
+  else if (!globalStatus.known) notes.push("The gateway did not report the operator minimum.");
+  const globalRow = `<tr><td><strong>Operator minimum</strong><small class="muted cell-detail">Every fleet on this gateway${operator ? "" : " · Set by the gateway operator"}</small></td><td>${toneBadge(globalStatus.label, globalStatus.tone)}<small class="muted cell-detail">${esc(globalStatus.detail)}</small></td><td class="action-column">${operator && view.global ? lockActions("global", globalStatus) : ""}</td></tr>`,
+    fleetRow = `<tr><td><strong>This fleet</strong><small class="muted cell-detail">Revision ${esc(fleet.revision)}</small></td><td>${toneBadge(fleetStatus.label, fleetStatus.tone)}<small class="muted cell-detail">${esc(fleetStatus.detail)}</small></td><td class="action-column">${lockActions("fleet", fleetStatus)}</td></tr>`;
+  const summary = `<div class="lock-summary padded" role="status"><span class="lock-icon ${enforced ? "locked" : ""}">${icon("lock")}</span><div><strong id="lock-enforcement">${enforced ? "Locked" : "Unlocked"}</strong>${notes.map((note) => `<p>${esc(note)}</p>`).join("")}</div></div>`;
+  const rows = fleet.allowances.map((a) =>
+    `<tr${allowanceExpired(a) ? ' class="expired"' : ""} data-allowance="${esc(a.id)}"><td>${allowanceCaller(a, fleet)}</td><td>${allowanceWorkers(a, fleet)}</td><td>${allowanceExpiry(a)}</td><td class="action-column"><button class="secondary compact" data-action="allowance-revoke" data-id="${esc(a.id)}">Revoke</button></td></tr>`);
+  return (
+    panel("Enforcement", summary + `<div class="table-wrap lock-settings" role="region" aria-label="Lock settings" tabindex="0"><table><thead><tr><th scope="col">Scope</th><th scope="col">State</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${globalRow}${fleetRow}</tbody></table></div>`) +
+    panel(
+      "Allowances",
+      rows.length
+        ? `<div class="table-wrap lock-allowances" role="region" aria-label="Allowances" tabindex="0"><table><thead><tr><th scope="col">Caller</th><th scope="col">Workers</th><th scope="col">Expires</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`
+        : empty("No allowances", "While a lock is enforced, add an allowance to let a specific orchestrator start work."),
+      `<button class="secondary compact" data-action="allowance-add">${icon("plus")}Add allowance</button>`,
+    ) +
+    '<p class="notice">An allowance matches the caller\'s account execution key, its stable orchestrator host, or both together, and covers all workers or the selected worker IDs. Common worker keys never grant ambient execution and cannot be selected. Allowances and open sessions do not bypass instruction grants or each worker\'s allow rules.</p>'
+  );
+}
+// The gateway accepts pauses and allowance lifetimes of up to 365 days.
+const maxLockSeconds = 365 * 86400;
+/** @param {string} name @param {string} label @param {[string, string][]} choices @param {string} selected @returns {string} */
+function durationField(name, label, choices, selected) {
+  return `<label>${esc(label)}<select name="${name}">${choices.map(([value, text]) => `<option value="${esc(value)}"${value === selected ? " selected" : ""}>${esc(text)}</option>`).join("")}<option value="custom">Custom duration</option></select></label><div class="form-grid" data-custom-duration="${name}" hidden><label>Amount<input name="${name}Amount" type="number" min="1" step="1" inputmode="numeric" disabled></label><label>Unit<select name="${name}Unit" disabled><option value="60">Minutes</option><option value="3600" selected>Hours</option><option value="86400">Days</option></select></label></div>`;
+}
+/** @param {HTMLFormElement} form @returns {void} */
+function bindDurations(form) {
+  const sync = () => {
+    /** @type {NodeListOf<HTMLElement>} */ (form.querySelectorAll("[data-custom-duration]")).forEach((group) => {
+      const choice = find(`select[name="${CSS.escape(group.dataset.customDuration || "")}"]`, form);
+      const custom = choice instanceof HTMLSelectElement && choice.value === "custom";
+      group.hidden = !custom;
+      /** @type {NodeListOf<HTMLInputElement | HTMLSelectElement>} */ (group.querySelectorAll("input, select")).forEach((field) => {
+        field.disabled = !custom;
+      });
+    });
+  };
+  form.addEventListener("change", sync);
+  sync();
+}
+/** @param {Record<string, string>} fields @param {string} name @returns {number | undefined} Undefined selects no expiration. */
+function durationSeconds(fields, name) {
+  const choice = fields[name];
+  if (choice === "never") return undefined;
+  if (choice === "custom") {
+    const amount = Number(fields[name + "Amount"]),
+      unit = Number(fields[name + "Unit"]);
+    if (!Number.isSafeInteger(amount) || amount < 1)
+      throw new Error("Enter a whole number of at least 1 for the custom duration.");
+    if (![60, 3600, 86400].includes(unit)) throw new Error("Select a duration unit.");
+    const seconds = amount * unit;
+    if (seconds > maxLockSeconds) throw new Error("Choose a duration of at most 365 days.");
+    return seconds;
+  }
+  const seconds = Number(choice);
+  if (!Number.isSafeInteger(seconds) || seconds < 1) throw new Error("Select a duration.");
+  return seconds;
+}
+// Lock changes carry the revision shown when the dialog opened. A conflict or
+// lost response leaves the outcome to inspect, never a request to repeat.
+/** @returns {MutationGuard} */
+function mutationGuard() {
+  let blocked = "";
+  return {
+    check() {
+      if (blocked) throw new Error(blocked);
+    },
+    async run(request) {
+      try {
+        return await request();
+      } catch (error) {
+        const status = error instanceof Error && "status" in error ? error.status : undefined;
+        // Other conflicts, such as workers that cannot enforce a lock, are
+        // definite rejections whose reason the gateway explains.
+        if (status === 409 && error instanceof Error && /changed; reload/.test(error.message)) {
+          blocked = "Close this dialog and review the refreshed access lock before submitting another change.";
+          if (state.busy) pendingRefresh = true;
+          else refresh();
+          throw new Error("The access lock changed after this dialog opened, so nothing was applied. Close this dialog and review the current settings before trying again.");
+        }
+        if (status === undefined)
+          blocked = "Reload the access lock to check whether the previous change was applied before submitting another change.";
+        throw error;
+      }
+    },
+  };
+}
+/** @param {'fleet' | 'global'} scope @param {'enable' | 'pause' | 'disable'} mode @returns {void} */
+function changeLock(scope, mode) {
+  const view = currentLockView();
+  if (!view) throw new Error("The access lock is still loading.");
+  const operatorScope = scope === "global";
+  if (operatorScope && (!view.global || state.session?.role !== "superuser"))
+    throw new Error("Only the gateway operator can change the operator minimum.");
+  const setting = operatorScope && view.global ? view.global : view.fleet,
+    revision = setting.revision,
+    path = operatorScope ? "admin/vault" : "fleet/vault",
+    subject = operatorScope ? "the operator minimum" : "this fleet's lock",
+    other = operatorScope ? lockStatus(view.fleet) : lockStatus(globalSetting(view)),
+    guard = mutationGuard();
+  const otherNote = operatorScope
+    ? "Fleets that enabled their own lock stay locked."
+    : other.active
+      ? "The operator minimum is active and still locks this fleet."
+      : "";
+  const scopeText = operatorScope ? "every fleet on this gateway" : "this fleet's workers";
+  /** @type {Record<typeof mode, [string, string, string]>} */
+  const copy = {
+    enable: [
+      operatorScope ? "Lock every fleet now?" : "Lock this fleet now?",
+      `Account clients can start work on ${scopeText} only within an unexpired allowance. The lock stays on until someone pauses or disables it.`,
+      "Lock now",
+    ],
+    pause: [
+      operatorScope ? "Pause the operator minimum" : "Pause this fleet's lock",
+      `Pausing lifts ${subject} until the selected time, then it is enforced again automatically. ${otherNote}`,
+      "Pause lock",
+    ],
+    disable: [
+      operatorScope ? "Disable the operator minimum?" : "Disable this fleet's lock?",
+      `${subject[0].toUpperCase() + subject.slice(1)} stays off until someone enables it again. ${otherNote}`,
+      "Disable lock",
+    ],
+  };
+  const [title, message, label] = copy[mode];
+  formDialog(
+    title,
+    `<p>${esc(message.trim())}</p>${mode === "pause" ? durationField("pause", "Pause for", [["900", "15 minutes"], ["3600", "1 hour"], ["14400", "4 hours"], ["86400", "24 hours"]], "3600") : ""}<p class="field-help">Sent once for revision ${esc(revision)}. If another change lands first, nothing is applied.</p>`,
+    async (fields, current) => {
+      guard.check();
+      /** @type {LockRequest} */
+      const request = { revision, enabled: mode !== "disable" };
+      if (mode === "pause") {
+        const seconds = durationSeconds(fields, "pause");
+        if (seconds === undefined) throw new Error("Select a pause duration.");
+        request.pauseSeconds = seconds;
+      }
+      await guard.run(() => api(path, "PUT", request));
+      if (current())
+        toast(mode === "enable" ? "Lock enforced" : mode === "pause" ? "Lock paused" : "Lock disabled");
+    },
+    label,
+    mode === "disable",
+  );
+  if (mode === "pause") bindDurations($("#modal-form"));
+}
+/** @param {LockIdentity} item @returns {string} */
+function identityOption(item) {
+  return `<option value="${esc(item.id)}">${esc(item.name)} · ${esc(item.id.slice(0, 12))}</option>`;
+}
+/** @returns {void} */
+function addAllowance() {
+  const view = currentLockView();
+  if (!view) throw new Error("The access lock is still loading.");
+  const fleet = view.fleet,
+    revision = fleet.revision,
+    keys = new Set(fleet.keys.map((k) => k.id)),
+    hosts = new Set(fleet.hosts.map((h) => h.id)),
+    machines = new Set(fleet.machines.map((m) => m.id)),
+    guard = mutationGuard();
+  formDialog(
+    "Add allowance",
+    `<p>Let a specific orchestrator start work while a lock is enforced. Select an account execution key, a stable orchestrator host, or both. A caller must match every selection.</p><div class="form-grid"><label>Account execution key<select name="keyId"><option value="">Any key</option>${fleet.keys.map(identityOption).join("")}</select></label><label>Orchestrator host<select name="ownerId"><option value="">Any host</option>${fleet.hosts.map(identityOption).join("")}</select></label></div><p class="field-help">Only identities reported by the gateway are listed. Common worker keys cannot be selected and never grant ambient execution.</p><label>Workers<select name="scope"><option value="all">All workers in this fleet</option><option value="selected">Selected workers</option></select></label><fieldset id="allowance-machines" class="choice-list" hidden><legend>Selected workers</legend>${fleet.machines.map((m) => `<label class="choice"><input type="checkbox" value="${esc(m.id)}" data-machine disabled><span>${esc(m.name)}</span><small class="mono muted">${esc(m.id.slice(0, 16))}</small></label>`).join("") || '<p class="field-help">No registered workers were reported.</p>'}</fieldset><p class="field-help">Workers are matched by immutable ID, so renaming a machine keeps its allowance.</p>${durationField("expiry", "Expires after", [["3600", "1 hour"], ["28800", "8 hours"], ["86400", "24 hours"], ["604800", "7 days"], ["never", "No expiration"]], "86400")}<p id="allowance-indefinite" class="notice" hidden>This allowance stays in effect until someone revokes it.</p><p class="field-help">Sent once for revision ${esc(revision)}. If another change lands first, nothing is applied.</p>`,
+    async (fields, current) => {
+      guard.check();
+      const form = $("#modal-form"),
+        keyId = fields.keyId || "",
+        ownerId = fields.ownerId || "",
+        allMachines = fields.scope !== "selected",
+        machineIds = allMachines
+          ? []
+          : [.../** @type {NodeListOf<HTMLInputElement>} */ (form.querySelectorAll("input[data-machine]:checked"))].map((input) => input.value);
+      if (!keyId && !ownerId)
+        throw new Error("Select an account execution key, an orchestrator host, or both.");
+      if ((keyId && !keys.has(keyId)) || (ownerId && !hosts.has(ownerId)))
+        throw new Error("Select a key and host reported by the gateway.");
+      if (!allMachines && !machineIds.length) throw new Error("Select at least one worker.");
+      if (machineIds.some((id) => !machines.has(id))) throw new Error("Select workers reported by the gateway.");
+      const ttlSeconds = durationSeconds(fields, "expiry");
+      /** @type {AllowanceRequest} */
+      const request = { revision, allMachines, machineIds };
+      if (keyId) request.keyId = keyId;
+      if (ownerId) request.ownerId = ownerId;
+      if (ttlSeconds !== undefined) request.ttlSeconds = ttlSeconds;
+      await guard.run(() => api("fleet/vault/allowances", "POST", request));
+      if (current()) toast("Allowance added");
+    },
+    "Add allowance",
+  );
+  const form = $("#modal-form"),
+    scope = $('#modal-form select[name="scope"]'),
+    expiry = $('#modal-form select[name="expiry"]'),
+    list = $("#allowance-machines", form);
+  const sync = () => {
+    const selected = scope.value === "selected";
+    list.hidden = !selected;
+    /** @type {NodeListOf<HTMLInputElement>} */ (list.querySelectorAll("input[data-machine]")).forEach((input) => {
+      input.disabled = !selected;
+    });
+    $("#allowance-indefinite", form).hidden = expiry.value !== "never";
+  };
+  form.addEventListener("change", sync);
+  bindDurations(form);
+  sync();
+}
+/** @param {string} id @returns {void} */
+function revokeAllowance(id) {
+  const view = currentLockView();
+  if (!view) throw new Error("The access lock is still loading.");
+  const allowance = view.fleet.allowances.find((a) => a.id === id);
+  if (!allowance) throw new Error("This allowance is no longer listed. Refresh to review the current settings.");
+  const fleet = view.fleet,
+    revision = fleet.revision,
+    guard = mutationGuard(),
+    caller = [
+      allowance.keyId && "key " + (identityName(fleet.keys, allowance.keyId) || allowance.keyId),
+      allowance.ownerId && "host " + (identityName(fleet.hosts, allowance.ownerId) || allowance.ownerId),
+    ].filter(Boolean).join(" on ");
+  formDialog(
+    "Revoke allowance",
+    `<p>Revoke the allowance for ${esc(caller || "this caller")} on ${allowance.allMachines ? "all workers" : esc(plural(allowance.machineIds.length, "selected worker"))}. While a lock is enforced, a caller matching no other allowance cannot start new work.</p><p class="field-help">Sent once for revision ${esc(revision)}. If another change lands first, nothing is applied.</p>`,
+    async (_fields, current) => {
+      guard.check();
+      await guard.run(() => api(`fleet/vault/allowances/${encodeURIComponent(id)}`, "DELETE", { revision }));
+      if (current()) toast("Allowance revoked");
+    },
+    "Revoke allowance",
+    true,
+  );
+}
 /** @type {Record<string, [string, string]>} */
 const auditActions = {
   "session.signin": ["Signed in", "good"],
@@ -1804,6 +2207,14 @@ const auditActions = {
   "update.publish": ["Published update", "warn"],
   "update.check": ["Checked for release", ""],
   "gateway.backup": ["Backed up gateway database", "warn"],
+  "vault.enable": ["Enabled fleet lock", "good"],
+  "vault.lock": ["Locked fleet", "good"],
+  "vault.disable": ["Disabled fleet lock", "warn"],
+  "vault.unlock": ["Disabled fleet lock", "warn"],
+  "vault.pause": ["Paused fleet lock", "warn"],
+  "vault.allow": ["Added lock allowance", ""],
+  "vault.revoke": ["Revoked lock allowance", ""],
+  "vault.gateway": ["Changed operator lock", "warn"],
 };
 /** @param {number} [before] @returns {`audit?${string}`} */
 function auditPath(before = 0) {
@@ -1850,6 +2261,7 @@ function renderActivity() {
       ["invitation", "Invitations"],
       ["machine", "Machines"],
       ["account", "Accounts"],
+      ["vault", "Access lock"],
       ...(operator ? [["update", "Updates"]] : []),
     ];
   const rows = (data?.events || []).map((e) => {
@@ -1946,7 +2358,7 @@ function render() {
     }
   }
   if (state.page === "account") content.innerHTML = renderAccount();
-  if (["invitations", "keys", "users", "updates"].includes(state.page)) {
+  if (["invitations", "keys", "users", "updates", "lock"].includes(state.page)) {
     const auxiliary = state.auxiliary;
     if (!auxiliary || auxiliary.page !== state.page)
       content.innerHTML = empty("Loading", "Fetching current records from the gateway.");
@@ -1955,6 +2367,7 @@ function render() {
       case "keys": content.innerHTML = renderKeys(auxiliary.data); break;
       case "users": content.innerHTML = renderUsers(auxiliary.data); break;
       case "updates": content.innerHTML = renderUpdates(auxiliary.data); break;
+      case "lock": content.innerHTML = renderLock(auxiliary.data); break;
     }
   }
   enhanceSelects(content);
@@ -2008,6 +2421,7 @@ async function refresh(manual = false) {
       case "keys": auxiliary = {page, data: await api("fleet/keys")}; break;
       case "users": auxiliary = {page, data: await api("admin/users")}; break;
       case "updates": auxiliary = {page, data: await api("admin/updates")}; break;
+      case "lock": auxiliary = {page, data: await loadLockView(session)}; break;
       case "activity":
         if (generation !== auditGeneration) return;
         auxiliary = {page, data: await api(auditPath())};
@@ -2509,7 +2923,11 @@ function formDialog(title, html, handler, label = "Save", danger = false, classN
         if (pendingIssuance === form) pendingIssuance = null;
         if (keep !== false) closeDialog();
       }
-      if (session === state.session) refresh();
+      if (session === state.session) {
+        // A poll already in flight may predate this change; read again after it.
+        if (state.busy) pendingRefresh = true;
+        else refresh();
+      }
     } catch (error) {
       if (!current()) return;
       errorBox.textContent = errorMessage(error);
@@ -3545,14 +3963,20 @@ document.addEventListener("click", async (event) => {
     if (action === "create-key")
       formDialog(
         "Create fleet key",
-        '<p>Common keys permit enrollment and discovery only. The new secret is shown once.</p><label>Name<input name="name" required maxlength="128"></label>',
+        '<p>The new secret is shown once.</p><label>Name<input name="name" required maxlength="128"></label><label>Key type<select name="role"><option value="common" selected>Common: enrollment and discovery</option><option value="orchestrator">Orchestrator: execution only</option></select></label><p class="field-help">Common keys enroll machines and discover peers, and never permit task execution. Orchestrator keys let a CLI or agent host start work, subject to the access lock, worker allow rules and instruction grants. They cannot manage the fleet or enroll machines.</p>',
         async (fields, current) => {
-          const issued = await api("fleet/keys", "POST", { name: fields.name });
+          const orchestrator = fields.role === "orchestrator";
+          /** @type {KeyRequest} */
+          const request = { name: fields.name };
+          if (orchestrator) request.role = "orchestrator";
+          const issued = await api("fleet/keys", "POST", request);
           if (!current()) return false;
           showSecret(
-            "Save your new key",
+            orchestrator ? "Save your new orchestrator key" : "Save your new key",
             issued.token,
-            "Store this credential securely. It cannot be retrieved after closing this dialog.",
+            orchestrator
+              ? "Store this credential only on the orchestrator host that uses it. It cannot be retrieved after closing this dialog."
+              : "Store this credential securely. It cannot be retrieved after closing this dialog.",
           );
           return false;
         },
@@ -3619,6 +4043,10 @@ document.addEventListener("click", async (event) => {
         },
         "Set password",
       );
+    if (action === "lock-enable" || action === "lock-pause" || action === "lock-disable")
+      changeLock(id === "global" ? "global" : "fleet", action === "lock-enable" ? "enable" : action === "lock-pause" ? "pause" : "disable");
+    if (action === "allowance-add") addAllowance();
+    if (action === "allowance-revoke") revokeAllowance(id);
     if (action === "check-release")
       confirmAction(
         "Check for a stable release",

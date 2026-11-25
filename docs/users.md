@@ -41,16 +41,19 @@ To also execute requested work on an orchestrator machine, run `control setup --
 
 | Credential | Scope |
 | --- | --- |
-| User account key | Manage that user's invitations, common keys, and registrations; enroll and discover machines; initiate execution through account-client sessions, subject to destination access rules |
+| User account key | Manage that user's invitations, issued keys, and registrations; enroll and discover machines; initiate execution through account-client sessions, subject to destination access rules |
+| Orchestrator key | Initiate work as an account client in the issuing fleet; cannot administer the fleet or enroll machines |
 | Common key | Enroll and discover machines in its owning fleet; no account, fleet-management, or update administration |
 | Redeemed installation key | Common permissions, with registration restricted to its bound identity, name, OS, and architecture |
 | Gateway superuser | Provision/disable accounts and publish gateway-wide software updates; fleet management and account-client execution operate only on the operator's legacy fleet |
 
 Account owners can also set, override and remove machine labels on the gateway with `control machines label` or the console. Labels remain discovery and selection metadata that grant no authority, and common keys cannot change them. See [owner labels](protocol.md#owner-labels).
 
-Users issue, list, rename, and revoke their own keys with `control keys create|list|rename|revoke`; `PATCH /v1/fleet/keys/{id}` with `{"name":...}` changes only the label. They cannot issue account keys for other users, change credential ownership, publish executable updates, or inspect gateway-wide rollout status. Fleet-management commands appear in user-account help. Gateway administration appears only for the superuser. Common-key help exposes neither.
+Users issue, list, rename, and revoke their own keys with `control keys create|list|rename|revoke`. `control keys create NAME --role orchestrator` issues an execution-only key; the default `--role common` issues a discovery key. A fleet can hold any number of each, so access can be narrowed to one key while the account key stays reserved for administration. `PATCH /v1/fleet/keys/{id}` with `{"name":...}` changes only the label; a key's role is fixed at issuance. They cannot issue account keys for other users, change credential ownership, publish executable updates, or inspect gateway-wide rollout status. Fleet-management commands appear in user-account help. Gateway administration appears only for the superuser. Common-key help exposes neither.
 
 Only account-authenticated client sessions initiate execution authority. Enrolling a node with an account key does not grant its node identity that authority. Keep account keys off execution workers, since someone who steals one can authenticate a new orchestrator client. Worker installation/common keys do not independently execute peer commands, including through the local API or a new common-key client session.
+
+For a build host that needs to run work, create a key with `control keys create build-host --role orchestrator`. Use that key for `control login` on the host. In the [web console](console.md#lock-worker-access), turn on the fleet lock and give the key an allowance for the intended workers. Without a lock, the key can request work on any worker its other access rules permit.
 
 Fleet account owners can manage worker secrets through encrypted CLI/console routes, subject to destination `secrets.manage` permission. Common keys cannot list metadata, set or delete through those routes. This is fixed fleet management, not a worker execution grant or value-read permission. See [remote secrets](secrets.md#manage-a-worker-from-the-orchestrator).
 
@@ -67,7 +70,7 @@ The gateway operator remains trusted. The operator owns the database and release
 
 Task ownership remains narrower than fleet membership. One orchestrator can use a worker without gaining permission to cancel another orchestrator's tasks. Node-wide monitoring remains read-only and scoped to the fleet.
 
-Revoking a key or disabling a user rejects subsequent gateway authentication and disconnects affected gateway sessions. It does not terminate already accepted work or an established direct session inside that same fleet. Existing direct sessions can survive a gateway outage because their authenticated identities cannot change fleet ownership.
+Revoking a key or disabling a user rejects subsequent gateway authentication and disconnects affected gateway sessions. It does not terminate already accepted work or close an established direct session inside that same fleet. A surviving transport is not permission to dispatch a new instruction: a worker that negotiated fleet-lock checks needs a gateway decision for new peer admissions, even over a warm connection.
 
 ## Persistence and upgrades
 
@@ -97,6 +100,8 @@ Schema version 8 adds `proxy_dependencies` for managed gateway proxy listeners. 
 
 Schema version 9 adds `machine_labels`, referencing permanent identities and the owning user, and storing each fleet owner's label overlay without changing the machine's signed registration. Versions 1 through 8 upgrade transactionally. Unregistering a machine deletes its overlay in the same transaction. Older gateways reject schema version 9. See [owner labels](protocol.md#owner-labels).
 
+Schema version 10 adds the operator lock and each fleet's policy and allowances. Upgrading leaves both locks off. Pauses and finite allowances use absolute UTC deadlines, so restarting the gateway does not renew them. An older gateway cannot open the upgraded database.
+
 `CONTROL_TOKEN` on the gateway is an optional bootstrap common key for the legacy fleet only. For a new shared gateway, omit it and configure `CONTROL_SUPERUSER_KEY`, then create separate accounts. Do not give unrelated users the same account key or legacy bootstrap token.
 
 **Upgrade the gateway before upgrading nodes from the pre-isolation version.** New nodes require fleet-aware authentication and refuse an older gateway. Pause automated release polling during this one-time migration. Later managed updates independently reserve eligible nodes, allowing node-before-gateway installation only with explicit executable compatibility. An older coordinator retains its previous rollout order until upgraded. SQLite migration cannot be reversed by starting the old executable against stale JSON files.
@@ -116,7 +121,7 @@ To split an old shared pool into new accounts, enroll fresh node identities unde
 | `GET /v1/client/connect` | Authenticated, unbound credential | Role-proven client session, without machine enrollment |
 | `GET /v1/peers/{id}` | Authenticated | Same-account machine identity or a connected client's transient identity; other IDs return 404 |
 | `GET /v1/status` | Authenticated | Gateway version, URL, resources, and own directory; account keys also receive fresh aggregate health for their fleet |
-| `POST /v1/fleet/keys` | Fleet owner | JSON `name`; returns common key metadata and one-time `token` |
+| `POST /v1/fleet/keys` | Fleet owner | JSON `name` and optional `role` (`common` by default, or `orchestrator`); returns key metadata and one-time `token` |
 | `GET /v1/fleet/keys` | Fleet owner | Own credential metadata |
 | `DELETE /v1/fleet/keys/{id}` | Fleet owner | Revoke own credential |
 | `/v1/fleet/installations` | Fleet owner | Scoped installation management, detailed in [installation](installation.md) |

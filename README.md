@@ -44,6 +44,8 @@ control install-skill claude
 
 Supported names are `opencode`, `codex`, `claude`, `cursor`, `copilot`, `windsurf`, `antigravity`, and `agents`. See [connect an AI client](#4-connect-an-ai-client).
 
+To approve a local CLI command or agent session, see [Control Vault](docs/vault.md). To restrict a key or orchestrator host to selected workers, use the [fleet access lock in the web console](docs/console.md#lock-worker-access).
+
 From then on the agent has what it needs to turn a sentence into work on a named machine:
 
 - Machine names, with each machine's OS, resources, and current load.

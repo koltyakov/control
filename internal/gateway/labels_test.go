@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -480,7 +481,7 @@ func TestOwnerLabelSchemaMigration(t *testing.T) {
 		t.Fatal("migrate version 8", err)
 	}
 	var version int
-	if err := g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 9 {
+	if err := g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != currentSchemaVersion {
 		t.Fatal("schema version", version, err)
 	}
 	s := httptest.NewServer(g.Handler())
@@ -495,7 +496,7 @@ func TestOwnerLabelSchemaMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec(`PRAGMA user_version=10;`); err != nil {
+	if _, err = db.Exec(fmt.Sprintf(`PRAGMA user_version=%d;`, currentSchemaVersion+1)); err != nil {
 		t.Fatal(err)
 	}
 	_ = db.Close()

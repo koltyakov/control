@@ -4,7 +4,7 @@
 
 Fleet membership permits discovery, not execution. An account-authenticated CLI or MCP client initiates work. An enrolled node, its local API token, an installation key, or an unbound common key cannot independently execute commands on another worker. Static `allow` rules do not override this boundary.
 
-The gateway assigns `executionAuthority` to live client sessions authenticated with an account key, or the superuser for its legacy fleet. Machines cannot claim it through enrollment metadata or labels. The destination checks this authority before dispatch, on both WebRTC and relay, including existing sessions and streaming methods. Its `allow` rules still restrict account clients. `@orchestrator` in `allow` selects account-authenticated clients; full stable owner IDs allow narrower restrictions.
+The gateway assigns `executionAuthority` to live client sessions authenticated with an account key, an execution-only orchestrator key, or the superuser for its legacy fleet. Machines cannot claim it through enrollment metadata or labels. The destination checks this authority before dispatch, on both WebRTC and relay, including existing sessions and streaming methods. Its `allow` rules still restrict account clients. `@orchestrator` in `allow` selects account-authenticated clients; full stable owner IDs allow narrower restrictions.
 
 Worker discovery covers `nodes.list`, `nodes.select`, `node.describe`, and `capabilities.list`. `mcp.discover` requires execution authority or an exact instruction grant, including when listing server names. Selecting an MCP server can start its configured subprocess or connect to its URL as the node's OS user.
 
@@ -70,6 +70,10 @@ At most 4,096 grants are retained per destination. `maxDelegationsPerOwner` defa
 `files.upload.open`, `files.upload.status`, and `files.upload.abort` require current execution authority and their destination method permissions. Upload IDs and durable partials grant no access. Ownership uses the stable client owner, allowing a fresh CLI process with the same client state to resume, but excluding other owners sharing the fleet account. Each System upload attempt obtains an exact single-use stream grant binding its ID, destination, size, digest, and resume intent; closing the stream revokes that temporary grant. Restart retains checkpoints, not grants. Revocation/expiry cancels admitted streams without publishing incomplete content. `peers.call` remains JSON-only and rejects the raw upload method. See [streaming uploads](uploads.md).
 
 ## Upgrade and credential boundaries
+
+On an orchestrator, [Control Vault](vault.md) can require operator approval before a local CLI or MCP connection uses the account client. This is separate from the destination's instruction grants.
+
+The [fleet access lock](console.md#lock-worker-access) further limits the initiating key or client owner to a set of workers. A destination still verifies its own instruction grant. Combining separate allowances must never add a peer that the initiating allowance did not cover.
 
 Upgrade the gateway and every execution node. `GET /v1/auth` advertises `delegation`; compatible nodes advertise `instructionDelegation`. Default CLI/MCP account routing refuses older gateways and targets before execution. Older receivers retain their old trust rules until upgraded, so a mixed fleet does not provide this protection everywhere.
 

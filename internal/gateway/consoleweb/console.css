@@ -718,6 +718,94 @@ meter:-moz-meter-sub-sub-optimum::-moz-meter-bar {
 .notice code {
   color: var(--text);
 }
+.inline-link {
+  color: var(--action);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Access lock */
+.lock-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.lock-summary strong {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+}
+.lock-summary p {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.lock-icon {
+  display: inline-flex;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--muted);
+}
+.lock-icon.locked {
+  color: var(--accent);
+}
+.lock-icon .icon {
+  width: 20px;
+  height: 20px;
+}
+.lock-settings td,
+.lock-allowances td {
+  vertical-align: top;
+  white-space: normal;
+}
+.lock-identity {
+  display: block;
+}
+.lock-identity + .lock-identity {
+  margin-top: 8px;
+}
+.lock-workers {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lock-allowances tr.expired td:not(.action-column) {
+  color: var(--muted);
+}
+.choice-list {
+  margin: 12px 0 0;
+  padding: 4px 12px 10px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.choice-list legend {
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.choice {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  font-weight: 400;
+}
+.choice input {
+  width: 16px;
+  min-height: 16px;
+  margin: 0;
+  accent-color: var(--focus);
+}
+.choice span,
+.choice small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 
 /* Gateway */
 .gateway-card {

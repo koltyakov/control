@@ -134,9 +134,11 @@ type Node struct {
 	delegations         map[string]*delegationState
 	// delegationWake starts the expiry sweep when the first grant arrives.
 	delegationWake chan struct{}
-	runbookRoots   []runbooks.Root
-	uploads        *upload.Manager
-	taskDisk       diskGuard // Cached free space for task admission.
+	// fleetVault asks the gateway to admit each new peer request.
+	fleetVault   fleetVaultChecks
+	runbookRoots []runbooks.Root
+	uploads      *upload.Manager
+	taskDisk     diskGuard // Cached free space for task admission.
 	// journalDirty records that a tombstone journal write failed and the file
 	// may hold uncommitted or torn bytes. Protected by pruneMu. No append may
 	// follow until a complete, directory-synced compaction succeeds.
@@ -260,6 +262,7 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 		Gateway: cfg.Gateway, Token: cfg.Token, Identity: id, RelayOnly: cfg.RelayOnly, ICEServers: cfg.ICEServers, Route: n.route,
 		Node: model.Node{ID: id.ID, Name: cfg.Name, PublicKey: id.Public, OS: runtime.GOOS, Labels: cfg.Labels, Capabilities: n.Capabilities(), RunAs: processutil.RunAs(), InstructionOnly: cfg.InstructionOnly, GatewayWake: !cfg.InstructionOnly && accountMayCall(cfg.Allow, "network.wake"), ProxyEndpoints: advertisedProxyEndpoints(endpoints), GatewayProxy: cfg.GatewayProxy},
 	}, n.handle, peerOptions...)
+	n.fleetVault.enforced, n.fleetVault.check = n.Peer.FleetVaultEnforced, n.Peer.CheckFleetVault
 	n.configureProxyManagement()
 	if err = n.configureSecrets(); err != nil {
 		_ = root.Close()
@@ -465,7 +468,14 @@ func (n *Node) handle(caller string, conn net.Conn) {
 	}
 	authorityCtx, release, err := n.acceptAuthority(ctx, caller, request)
 	if err != nil {
-		_ = writeFrame(conn, model.Response{Error: err.Error()})
+		response := model.Response{Error: err.Error()}
+		var rpc *model.RPCError
+		if errors.As(err, &rpc) {
+			// Coded refusals, such as fleet vault decisions, tell the caller
+			// the request was not accepted.
+			response = model.ErrorResponse(err)
+		}
+		_ = writeFrame(conn, response)
 		return
 	}
 	defer release()

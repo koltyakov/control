@@ -198,6 +198,8 @@ This lets the dashboard identify and monitor the remote gateway even when the ob
 
 Separate saved update authorization extends this design in [D035](#d035-separate-saved-authorization-for-development-updates).
 
+[D194](#d194-opt-in-local-vault-for-cli-and-mcp-authority) supersedes automatic credential loading for Vault frontends.
+
 `control login` validates an API key against the selected gateway and saves both in the existing private `admin.json` profile. Later gateway commands load that credential automatically. Explicit credentials override saved ones; saved keys are never reused for another gateway URL. Failed validation leaves the previous login intact. This follows expose's saved server/key model while adding validation before saving.
 
 Directory listing, invitations, and gateway observation need no local node. `setup` reuses the login to issue a separate node credential and start the host for peer execution. This extends D015 and D018 without putting account keys in node configuration or MCP entries. See [installation](installation.md).
@@ -1695,3 +1697,21 @@ Windows owns descendants through a Job Object. On Linux the worker keeps the exi
 ## D193: Start User shells in the worker account's home directory
 
 An interactive User shell starts in the home directory reported by the worker's OS environment. Use the same OS account classification as worker registration, rather than the caller's home directory, the machine name, or an instruction-only flag. A Hybrid System profile, a System account, or an unknown OS account classification retains `workDir`. An unavailable User home fails the open instead of silently choosing another directory. This does not change task workspaces, filesystem roots, execution authority, or the shell wire protocol. See [interactive shells](protocol.md#interactive-shells).
+
+## D194: Opt-in local Vault for CLI and MCP authority
+
+An enabled frontend contacts a pinned loopback broker running under a different OS identity. The broker keeps the fleet credential and binds approval to one live connection. CLI and MCP use the same boundary. A code identifies a request; an operator must separately prove approval. No account key passes to the approved process. The approval covers all nodes subject to destination permissions, and makes no change to the gateway or worker protocol.
+
+Tunnel management crosses this boundary; traffic through a listener does not. Retained definitions and their restoration authority stay in the broker account. Grant expiry does not change tunnel TTLs or cancel accepted worker tasks. See [Control Vault](vault.md).
+
+## D195: Gateway and fleet locks restrict worker admission
+
+The operator may require an access allowance across all fleets; a fleet owner may require one independently. A lock is a restriction on existing execution authority. Each allowance matches the authenticated orchestrator key, its stable owner identity, or both, and specifies all workers or particular immutable worker IDs. One allowance must cover the workers involved in the instruction. A delegated worker still needs its destination-issued instruction grant. Common and installation credentials do not become execution keys.
+
+The console manages policy with a browser session and CSRF protection. Changing local Vault settings cannot change fleet policy. Workers check admission on established peer sessions as well as new ones, because rejecting gateway signaling alone cannot stop new commands over a warm WebRTC connection. The gateway decides access from identities and timestamps without receiving command payloads. See [lock worker access](console.md#lock-worker-access).
+
+## D196: Execution-only orchestrator keys
+
+A fleet previously had one execution credential, its account key, which also administers the fleet. Owners can now issue any number of `orchestrator` keys through `POST /v1/fleet/keys`. The gateway gives their account-client sessions `executionAuthority`. It refuses them for machine enrollment and every fleet, audit, console-password, and gateway administration route. Common and installation keys stay discovery-only and are never promoted. Owners cannot issue `user` or `superuser` keys this way. Older gateways ignore the role and would issue a common key, so the CLI requires the `orchestratorKeys` advertisement before sending. It verifies the issued role and withholds a mismatched secret instead of retrying.
+
+The standalone client owner identity stays scoped by gateway URL and fleet, not by key. One host keeps a stable owner selector across key rotation, account and orchestrator logins, and Vault migration. Tasks belong to that proven owner, and the same OS account is not a sandbox between keys. Admission distinguishes keys only by the gateway-attested key ID of each client session. CLI login, tunnels, Wake-on-LAN, and Vault provisioning and runtime accept the role; fleet administration commands do not. Worker `allow` rules and fleet locks still restrict it like any account client. See [fleet key roles](protocol.md#fleet-key-roles).

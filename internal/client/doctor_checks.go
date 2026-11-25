@@ -60,6 +60,8 @@ func (d *doctorRun) loginCheck() DoctorCheck {
 			if d.auth.Username != "" {
 				c.Detail += " (user " + d.auth.Username + ")"
 			}
+		case "orchestrator":
+			c.Detail = "orchestrator key from " + source + "; it permits account-client execution, not fleet administration"
 		case "common":
 			c.Detail = "common key from " + source + "; it permits discovery and gateway status, not account-client execution"
 		default:
@@ -817,8 +819,8 @@ func (d *doctorRun) diagnosticsCheck() DoctorCheck {
 		return c
 	case doctorNotPermitted(d.diagErr):
 		c.Status, c.Detail = DoctorSkipped, "not permitted: "+doctorErr(d.diagErr)
-		if !d.owner() {
-			c.Detail += "; diagnostics.get requires execution authority from an account key"
+		if !ExecutionRole(d.role()) {
+			c.Detail += "; diagnostics.get requires execution authority from an account or orchestrator key"
 		}
 		return c
 	case d.diagErr != nil:

@@ -53,7 +53,7 @@ const (
 
 const auditSignInFailed = "session.signin_failed"
 
-var auditCategories = map[string]bool{"session": true, "key": true, "invitation": true, "machine": true, "account": true, "update": true}
+var auditCategories = map[string]bool{"session": true, "key": true, "invitation": true, "machine": true, "account": true, "update": true, "vault": true}
 
 // auditPruneSlack is how many events may be written between retention passes.
 // Each pass walks up to a budget of index entries, so pruning on every

@@ -1,0 +1,16 @@
+[Unit]
+Description=Control Vault broker
+After=network.target
+
+[Service]
+Type=simple
+User=control-vault
+Group=control-vault
+ExecStart=/usr/local/bin/control vault serve
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

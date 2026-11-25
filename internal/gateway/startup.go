@@ -37,6 +37,11 @@ func (g *Gateway) changeStartup(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if g.vaultBearerDeniedLocked(r, p, n.ID) {
+		g.mu.Unlock()
+		http.Error(w, fleetVaultBearerDenied, http.StatusForbidden)
+		return
+	}
 	result := model.StartupReply{Status: "manual"}
 	switch {
 	case n.RunAs != "user":

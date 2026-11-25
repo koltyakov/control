@@ -129,6 +129,7 @@ func (c *connection) requestProbe() {
 // Gateway manages fleet membership and connectivity for nodes and clients.
 type Gateway struct {
 	db               *sql.DB
+	globalVault      globalVaultState // Operator's minimum access policy, protected by mu.
 	users            map[string]User
 	owners           map[string]string
 	clientOwners     map[string]bool
@@ -178,7 +179,8 @@ type Gateway struct {
 	presenceWG     sync.WaitGroup
 	startedAt      time.Time
 	machineStates  map[string]model.MachineState
-	labelOverlays  map[string]labelOverlay // Owner label overlays by identity; see effectiveNodeLocked.
+	labelOverlays  map[string]labelOverlay     // Owner label overlays by identity; see effectiveNodeLocked.
+	vaultPolicies  map[string]fleetVaultPolicy // Fleet lock policies by user; protected by mu.
 	// proxyDependencies keeps managed proxy listeners active for enrolled and
 	// retiring children, keyed by child identity. Protected by mu.
 	proxyDependencies map[string]proxyDependency
@@ -240,6 +242,11 @@ func New(dir, token string, options ...Options) (*Gateway, error) {
 		if g.db != nil {
 			_ = g.db.Close()
 		}
+		_ = lock.Close()
+		return nil, err
+	}
+	if err := g.loadGlobalVault(); err != nil {
+		_ = g.db.Close()
 		_ = lock.Close()
 		return nil, err
 	}
@@ -358,6 +365,7 @@ func (g *Gateway) Handler() http.Handler {
 	g.machineRoutes(mux)
 	g.managedProxyRoutes(mux)
 	g.secretRoutes(mux)
+	g.fleetVaultRoutes(mux)
 	g.consoleRoutes(mux)
 	return g.maintenanceHandler(mux)
 }
@@ -429,6 +437,11 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		http.Error(w, "installation credentials cannot open client sessions", http.StatusForbidden)
 		return
 	}
+	// Execution-only keys open account-client sessions; they never enroll machines.
+	if !client && principal.Role == roleOrchestrator {
+		http.Error(w, "orchestrator keys cannot enroll machines", http.StatusForbidden)
+		return
+	}
 	reservation, ok := g.admission.reserve(principal.UserID, client)
 	if !ok {
 		w.Header().Set("Retry-After", "1")
@@ -473,7 +486,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		g.mu.Unlock()
 		return
 	}
-	if p.UserID == "" || p.UserID != reservation.user || (n.UserID != "" && n.UserID != p.UserID) || (g.owners[n.ID] != "" && g.owners[n.ID] != p.UserID) {
+	if p.UserID == "" || p.UserID != reservation.user || (!client && p.Role == roleOrchestrator) || (n.UserID != "" && n.UserID != p.UserID) || (g.owners[n.ID] != "" && g.owners[n.ID] != p.UserID) {
 		g.mu.Unlock()
 		return
 	}
@@ -482,7 +495,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	n.HybridID, n.HybridRole = "", ""
 	stripOwnerLabels(&n)
 	// A machine or common key cannot claim orchestrator authority in its proof.
-	n.ExecutionAuthority = client && (p.Role == "user" || p.Role == "superuser")
+	// Account, superuser, and execution-only orchestrator keys grant it only to
+	// account-client sessions.
+	n.ExecutionAuthority = client && executionRole(p.Role)
 	if g.machineStates[n.ID].Unregistered {
 		g.mu.Unlock()
 		_ = ws.Close(websocket.StatusPolicyViolation, "machine was unregistered")
@@ -528,6 +543,13 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		if g.clientNameReserved(n.UserID, n.Name) {
 			g.mu.Unlock()
 			_ = ws.Close(websocket.StatusPolicyViolation, "name is reserved for a client identity")
+			return
+		}
+		// A configured fleet lock, even paused, admits only workers that ask
+		// the gateway for access decisions.
+		if !g.vaultRegistrationAllowedLocked(n.UserID, n.FleetVaultCheck) {
+			g.mu.Unlock()
+			_ = ws.Close(websocket.StatusPolicyViolation, "the fleet lock requires a worker that enforces it; upgrade this machine")
 			return
 		}
 		for id, existing := range g.nodes {

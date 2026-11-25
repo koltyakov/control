@@ -28,6 +28,35 @@ type keyRecord struct {
 	Hash string `json:"hash"`
 }
 
+// Credential roles. Owner roles administer a fleet. An orchestrator key is an
+// execution-only fleet key: its account-client sessions receive execution
+// authority, but it cannot administer the fleet or enroll machines. Common and
+// installation credentials remain discovery-only.
+const (
+	roleSuperuser    = "superuser"
+	roleUser         = "user"
+	roleOrchestrator = "orchestrator"
+	roleCommon       = "common"
+)
+
+// ownerRole reports credentials that administer their fleet.
+func ownerRole(role string) bool { return role == roleUser || role == roleSuperuser }
+
+// executionRole reports credentials whose client sessions may execute work.
+func executionRole(role string) bool { return ownerRole(role) || role == roleOrchestrator }
+
+// issuableKeyRole maps a requested fleet key role to the stored role. Owners
+// may issue only discovery (common) and execution-only (orchestrator) keys.
+func issuableKeyRole(requested string) (string, bool) {
+	switch requested {
+	case "", roleCommon:
+		return roleCommon, true
+	case roleOrchestrator:
+		return roleOrchestrator, true
+	}
+	return "", false
+}
+
 func tokenHash(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
@@ -123,17 +152,27 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		case "user":
 			username = p.Username
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"role": p.Role, "userId": p.UserID, "username": username, "capabilities": capabilities, "nodeHealth": true, "clientSessions": true, "clientOwners": true, "peerChannels": true, "delegation": true, "largePackets": true, "nodeBytes": true, "machineStatePush": true, "gatewayHeartbeat": true, "telemetryLiveness": true, "relayDrain": true, "gatewayProtocol": g.options.Software.GatewayProtocol, "trickleICE": true, "lanDiscovery": true, "lanView": true, "gatewayProxy": true, "managedGatewayProxy": true, "machineLabels": true, "stunServers": g.options.STUNServers})
+		_ = json.NewEncoder(w).Encode(map[string]any{"role": p.Role, "userId": p.UserID, "username": username, "capabilities": capabilities, "nodeHealth": true, "clientSessions": true, "clientOwners": true, "peerChannels": true, "delegation": true, "largePackets": true, "nodeBytes": true, "machineStatePush": true, "gatewayHeartbeat": true, "telemetryLiveness": true, "relayDrain": true, "gatewayProtocol": g.options.Software.GatewayProtocol, "trickleICE": true, "lanDiscovery": true, "lanView": true, "gatewayProxy": true, "managedGatewayProxy": true, "machineLabels": true, "fleetVaultCheck": true, "orchestratorKeys": true, "stunServers": g.options.STUNServers})
 	}))
 	create := func(w http.ResponseWriter, r *http.Request) {
 		p := g.requestPrincipal(r)
 		r.Body = http.MaxBytesReader(w, r.Body, 4096)
 		var q struct {
 			Name string `json:"name"`
+			Role string `json:"role"`
 		}
 		if json.NewDecoder(r.Body).Decode(&q) != nil || q.Name == "" || len(q.Name) > 128 {
 			http.Error(w, "name is required, maximum 128 bytes", http.StatusBadRequest)
 			return
+		}
+		role, ok := issuableKeyRole(q.Role)
+		if !ok {
+			http.Error(w, `role must be "common" or "orchestrator"`, http.StatusBadRequest)
+			return
+		}
+		detail := ""
+		if role != roleCommon {
+			detail = "role " + role
 		}
 		var secret [32]byte
 		if _, err := rand.Read(secret[:]); err != nil {
@@ -141,10 +180,10 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 			return
 		}
 		token := "ctl_" + base64.RawURLEncoding.EncodeToString(secret[:])
-		key := APIKey{ID: identity.NewID(), UserID: p.UserID, Name: q.Name, Role: "common", CreatedAt: time.Now().UTC()}
+		key := APIKey{ID: identity.NewID(), UserID: p.UserID, Name: q.Name, Role: role, CreatedAt: time.Now().UTC()}
 		g.mu.Lock()
 		g.keys[key.ID] = keyRecord{APIKey: key, Hash: tokenHash(token)}
-		err := g.commit(change{keys: []string{key.ID}, audit: []AuditEvent{g.auditEventLocked(r, "", "key.create", key.Name, key.ID, "")}})
+		err := g.commit(change{keys: []string{key.ID}, audit: []AuditEvent{g.auditEventLocked(r, "", "key.create", key.Name, key.ID, detail)}})
 		if err != nil {
 			delete(g.keys, key.ID)
 		}

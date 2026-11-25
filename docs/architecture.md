@@ -10,6 +10,10 @@ The optional [agent-browser integration](browser.md) registers `browser.run` for
 
 ## Roles and components
 
+An opt-in [Vault frontend](vault.md) sends supported operations over one pinned local TLS connection to a broker in a separate OS account. The connection, not a caller-supplied session ID, holds the approval. The broker runs the existing account client and retains the stable task owner. Workers authenticate that client and apply their usual access and delegation checks. The gateway does not issue a new credential or route Vault commands.
+
+The [fleet access lock](console.md#lock-worker-access) applies to worker admission regardless of which client sends the request. The gateway evaluates the authenticated key, stable client owner and participating worker IDs against the operator and fleet policies. Decisions restrict admission; they never replace the destination's instruction-bound grant.
+
 An orchestrator coordinates work through a CLI or MCP client. A worker is a node executing requested work. The gateway handles enrollment, discovery, signaling, encrypted relay fallback, and fleet administration, not application execution. A node can perform both orchestrator and worker roles. AI agents are optional callers or providers, not Control service types. See [terminology](terminology.md) for naming rules.
 
 ![Control components and connections: the client and worker nodes keep outbound WebSockets to the gateway, while work and artifacts travel on direct pinned-TLS peer sessions](../assets/architecture.svg)

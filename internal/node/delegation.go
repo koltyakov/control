@@ -27,12 +27,17 @@ type delegationState struct {
 	expiresAt    time.Time // Absolute limit for derived artifact access.
 	activeTasks  int
 	used         bool
+	// vault is the receiver-owned fleet vault principal and machine set.
+	vault *fleetVaultBinding
 }
 
 type authorityContextKey struct{}
 type authority struct {
 	owner string
 	grant *delegationState
+	// vault is a direct account client's checked principal. Delegated
+	// authority uses grant.vault instead.
+	vault *fleetVaultBinding
 }
 
 func discoveryMethod(method string) bool {
@@ -54,6 +59,8 @@ func (n *Node) executionOwner(ctx context.Context, caller string) string {
 // bypass fleet membership and are not installed as ambient worker permissions.
 func (n *Node) acceptAuthority(ctx context.Context, caller string, request model.Request) (context.Context, func(), error) {
 	ctx = model.WithDelegations(ctx, request.Delegations)
+	// Fleet vault decisions are shared only by checks within this admission.
+	ctx = withFleetVaultMemo(ctx)
 	if request.Delegation == "" {
 		if request.Method == "artifacts.open" {
 			var q struct {
@@ -70,6 +77,9 @@ func (n *Node) acceptAuthority(ctx context.Context, caller string, request model
 	}
 	if request.Delegation == "" {
 		if discoveryMethod(request.Method) {
+			if err := n.admitFleetVaultDiscovery(ctx, caller); err != nil {
+				return ctx, nil, err
+			}
 			return ctx, func() {}, nil
 		}
 		peer, err := n.Peer.Lookup(ctx, caller)
@@ -82,7 +92,19 @@ func (n *Node) acceptAuthority(ctx context.Context, caller string, request model
 		if n.Config.InstructionOnly && request.Method != "access.grant" && request.Method != "access.list" && request.Method != "access.revoke" {
 			return ctx, nil, errors.New("system execution requires an exact instruction-bound delegation; upgrade the client or use peers.call")
 		}
-		ctx = context.WithValue(ctx, authorityContextKey{}, authority{owner: n.Peer.Owner(caller)})
+		// Every new request is checked live, including reads, cancellation
+		// and revocation; already admitted tasks and streams continue.
+		binding := &fleetVaultBinding{issuer: caller, unchecked: !n.fleetVaultEnforced()}
+		if !binding.unchecked {
+			machines, err := n.fleetVaultImplicated(ctx, request.Method, request.Params)
+			if err != nil {
+				return ctx, nil, fleetVaultUnavailable(err)
+			}
+			if err := n.admitFleetVault(ctx, binding, machines); err != nil {
+				return ctx, nil, err
+			}
+		}
+		ctx = context.WithValue(ctx, authorityContextKey{}, authority{owner: n.Peer.Owner(caller), vault: binding})
 		return ctx, func() {}, nil
 	}
 	n.delegationMu.Lock()
@@ -95,20 +117,31 @@ func (n *Node) acceptAuthority(ctx context.Context, caller string, request model
 		n.delegationMu.Unlock()
 		return ctx, nil, errors.New("delegation belongs to another orchestrator")
 	}
-	if request.Method == "tasks.start" && len(s.grant.InputsFrom) != 0 {
-		// Validate signed output provenance outside the grant lock, then recheck
-		// its lifetime before admitting the instruction.
-		grant := s.grant
+	checkInputs := request.Method == "tasks.start" && len(s.grant.InputsFrom) != 0
+	checkVault := n.fleetVaultEnforced()
+	if checkInputs || checkVault {
+		// Validate signed output provenance and ask for the fleet vault
+		// decision outside the grant lock, then recheck its lifetime before
+		// admitting the instruction. The recheck uses the issuer's principal
+		// recorded with this grant, never the calling worker's credentials.
+		grant, binding := s.grant, s.vault
 		n.delegationMu.Unlock()
-		var expected, actual model.TaskSpec
-		_ = json.Unmarshal(grant.Params, &expected)
-		_ = json.Unmarshal(request.Params, &actual)
-		for i, input := range grant.InputsFrom {
-			artifact := actual.Inputs[len(expected.Inputs)+i].Artifact
-			peer, err := n.Peer.Lookup(ctx, input.Node)
-			var proof artifactGrant
-			if err != nil || !decodeArtifactGrant(artifact.Grant, peer.PublicKey, &proof) || proof.TaskID != input.TaskID || proof.Output != input.Artifact || proof.Subject != n.Identity.ID || proof.Artifact != artifact.ID || proof.Expires <= time.Now().Unix() {
-				return ctx, nil, errors.New("delegated input is not the authorized upstream task output")
+		if checkInputs {
+			var expected, actual model.TaskSpec
+			_ = json.Unmarshal(grant.Params, &expected)
+			_ = json.Unmarshal(request.Params, &actual)
+			for i, input := range grant.InputsFrom {
+				artifact := actual.Inputs[len(expected.Inputs)+i].Artifact
+				peer, err := n.Peer.Lookup(ctx, input.Node)
+				var proof artifactGrant
+				if err != nil || !decodeArtifactGrant(artifact.Grant, peer.PublicKey, &proof) || proof.TaskID != input.TaskID || proof.Output != input.Artifact || proof.Subject != n.Identity.ID || proof.Artifact != artifact.ID || proof.Expires <= time.Now().Unix() {
+					return ctx, nil, errors.New("delegated input is not the authorized upstream task output")
+				}
+			}
+		}
+		if checkVault {
+			if err := n.recheckFleetVault(ctx, binding); err != nil {
+				return ctx, nil, err
 			}
 		}
 		n.delegationMu.Lock()
@@ -269,6 +302,12 @@ func (n *Node) delegationMethod(ctx context.Context, caller, method string, para
 		if (subject.ClientOwner != "" || subject.ExecutionAuthority) && (!n.Config.InstructionOnly || subject.ID != caller) {
 			return nil, errors.New("delegation subject must be a worker node")
 		}
+		// Every worker this grant lets the subject reach is checked together:
+		// the destination, the subject, upstream sources and recipients.
+		machines := []string{}
+		if subject.ClientOwner == "" && !subject.ExecutionAuthority {
+			machines = append(machines, subject.ID)
+		}
 		for _, input := range q.InputsFrom {
 			if !filepath.IsLocal(input.Path) || !safeID.MatchString(input.TaskID) || input.Artifact < 0 {
 				return nil, errors.New("delegated input paths must be workspace-relative")
@@ -277,6 +316,7 @@ func (n *Node) delegationMethod(ctx context.Context, caller, method string, para
 			if err != nil || peer.ID != input.Node {
 				return nil, errors.New("delegated inputs require same-fleet source identities")
 			}
+			machines = append(machines, peer.ID)
 		}
 		for i, target := range q.DeliverTo {
 			peer, err := n.Peer.Lookup(ctx, target)
@@ -284,11 +324,24 @@ func (n *Node) delegationMethod(ctx context.Context, caller, method string, para
 				return nil, err
 			}
 			q.DeliverTo[i] = peer.ID
+			if peer.ClientOwner == "" && !peer.ExecutionAuthority {
+				machines = append(machines, peer.ID)
+			}
+		}
+		binding := &fleetVaultBinding{issuer: caller, unchecked: !n.fleetVaultEnforced()}
+		if !binding.unchecked {
+			implicated, err := n.fleetVaultImplicated(ctx, q.Method, q.Params)
+			if err != nil {
+				return nil, fleetVaultUnavailable(err)
+			}
+			if err := n.admitFleetVault(ctx, binding, append(machines, implicated...)); err != nil {
+				return nil, err
+			}
 		}
 		q.ID, q.Subject, q.Target, q.Owner = identity.NewID(), subject.ID, n.Identity.ID, a.owner
 		q.Expires = time.Now().Add(delegationIdleTimeout).UTC()
 		grantCtx, cancel := context.WithCancel(n.ctx)
-		s := &delegationState{grant: q, ctx: grantCtx, cancel: cancel, lastActivity: time.Now()}
+		s := &delegationState{grant: q, ctx: grantCtx, cancel: cancel, lastActivity: time.Now(), vault: binding}
 		if err := n.addDelegation(s); err != nil {
 			return nil, err
 		}

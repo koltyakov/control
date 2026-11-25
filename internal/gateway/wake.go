@@ -95,6 +95,14 @@ func (g *Gateway) wakeMachine(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no online machine on this LAN can send a wake packet", http.StatusConflict)
 		return
 	}
+	// The gateway chooses the relay, so under an enforced fleet lock one
+	// key-only rule must cover both it and the sleeping machine. Console
+	// sessions remain the recovery path.
+	if g.vaultBearerDeniedLocked(r, p, target.ID, sender.ID) {
+		g.mu.Unlock()
+		http.Error(w, "the fleet lock does not allow this credential to wake this machine through its relay; use the web console", http.StatusForbidden)
+		return
+	}
 	for _, pending := range g.wakes {
 		if pending.target == target.ID {
 			g.mu.Unlock()

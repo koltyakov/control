@@ -24,6 +24,8 @@ Use outbound connections so private-network nodes remain reachable without inbou
 
 Transport choice must not change identity verification, authorization, task ownership, or the interpretation of an operation. A connection failure can interrupt a stream; it must not silently start the same command again.
 
+Apply the fleet lock at worker admission, including on previously established transports. Keep the initiating key and owner attached to delegated instructions. One allowance must cover all participating machines; never combine permissions from unrelated allowances into a new route.
+
 ## Accepted work has an identity and a lifecycle
 
 Persist a task before acknowledging acceptance. Keep its ID, owner, specification, state, logs, and result available for reconciliation after a caller disconnects.
@@ -37,6 +39,8 @@ Use structured control messages for arguments, status, and artifact references. 
 Keep artifacts immutable and content-addressed. Resume partial transfers by offset and verify the complete content before publishing a received artifact. The orchestrator should not need to download and re-upload another node's output.
 
 ## Authority is explicit at the destination
+
+For a [Vault frontend](vault.md), approve one live connection before starting an operation, without publishing a reusable account credential. Keep tunnel management inside this check and established listener traffic outside it. Preserve the lifetime of work the caller already started.
 
 Each user owns a separate fleet. Derive ownership from authenticated credentials, scope all gateway discovery and routing to that fleet, and verify membership at peer acceptance and dispatch. Client-supplied labels, names, access rules, artifact grants, and cached connections must never override the user boundary. Identity ownership is immutable, including after a registration is forgotten.
 

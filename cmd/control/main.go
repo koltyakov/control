@@ -39,6 +39,18 @@ func main() {
 		_ = json.NewEncoder(os.Stdout).Encode(enrollment.InstallerFeatures{GatewayProxy: true})
 		return
 	}
+	if len(args) != 0 && strings.HasPrefix(args[0], "__") {
+		// Internal service entry points run before the CLI parser. In particular,
+		// a retired tunnel startup entry must not reload its saved credential.
+		marker, err := currentVault()
+		if err != nil || marker != nil {
+			if err == nil {
+				err = errors.New("vault frontend cannot start legacy Control helpers")
+			}
+			fmt.Fprintln(os.Stderr, "control:", err)
+			os.Exit(1)
+		}
+	}
 	if len(args) > 0 && args[0] == "__desktop" {
 		desktop.RunHelper(os.Stdin, os.Stdout, args[1:])
 		return
@@ -121,6 +133,20 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	commandArgs := append([]string(nil), args...)
+	// Provisioning, cutover, and the broker have their own OS-verified entry
+	// points. They must work before activation or during an interrupted cutover.
+	if len(args) >= 2 && args[0] == "vault" {
+		switch args[1] {
+		case "enable", "provision", "serve", "migrate", "rollback":
+			return vaultSetup(ctx, args[1:])
+		}
+	}
+	// Decide whether this is a Vault frontend before even role-aware help can
+	// load an account key. Services don't acquire authority from this decision.
+	vault, err := currentVault()
+	if err != nil {
+		return err
+	}
 	flags := flag.NewFlagSet("control", flag.ContinueOnError)
 	profile := flags.String("config", installation.ConfigPath(), "saved local node configuration for CLI/MCP")
 	api := flags.String("api", env("CONTROL_API", "http://127.0.0.1:7331"), "local node API URL")
@@ -135,7 +161,13 @@ func run(ctx context.Context, args []string) error {
 		})
 		return c
 	}
-	flags.Usage = func() { fmt.Print(commandHelp(ctx, admin())) }
+	flags.Usage = func() {
+		if vault != nil {
+			fmt.Print(vaultUsage)
+			return
+		}
+		fmt.Print(commandHelp(ctx, admin()))
+	}
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -143,6 +175,20 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	args = flags.Args()
+	if len(args) > 0 && args[0] == "vault" {
+		if flags.NFlag() != 0 {
+			return errors.New("vault subcommands do not accept global routing or configuration flags")
+		}
+		return vaultCLI(ctx, vault, args[1:])
+	}
+	if vault != nil {
+		return vaultRoute(ctx, vault, flags, args)
+	}
+	// A session adapter explicitly asking for Vault must never start the
+	// legacy credentialed MCP server if activation is missing.
+	if len(args) > 1 && args[0] == "mcp" {
+		return errors.New("control mcp takes no arguments outside Vault mode")
+	}
 	if len(args) == 2 && args[0] == "shell" && (args[1] == "--help" || args[1] == "-h") {
 		fmt.Println(shellUsage)
 		return nil
@@ -683,6 +729,7 @@ Environment: CONTROL_API, CONTROL_TOKEN
   gateway [--listen ADDRESS] [--data DIR] [--tls-cert PEM --tls-key PEM]
   node --config control.json
   login --gateway URL [--key-stdin]      Save an API key for future commands
+  vault                                 Protect local CLI and MCP access; show setup and approval commands
   secrets set NAME [--stdin] [--node WORKER]  Enter a secret outside chat; remote values are encrypted
       --use USES --host PATTERN --plain-http --clear-policy  Replace its use policy with the value
   secrets list [--metadata] [--node WORKER]   List names and optional timestamps and policies, never values

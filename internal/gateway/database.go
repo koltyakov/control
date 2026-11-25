@@ -73,8 +73,8 @@ CREATE TABLE client_identities (id TEXT PRIMARY KEY REFERENCES identities(id), d
 CREATE TABLE client_transports (id TEXT PRIMARY KEY REFERENCES identities(id), owner_id TEXT NOT NULL REFERENCES client_identities(id), data BLOB NOT NULL);
 CREATE INDEX client_identity_prefix ON client_identities(substr(id,1,16));
 CREATE TABLE console_passwords (username TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL);
-` + auditSchema + consoleSessionSchema + proxyDependencySchema + machineLabelSchema + `
-PRAGMA user_version=9;`); err != nil {
+` + auditSchema + consoleSessionSchema + proxyDependencySchema + machineLabelSchema + fleetVaultSchema + globalVaultSchema + `
+PRAGMA user_version=10;`); err != nil {
 			return err
 		}
 		if err = g.writeState(tx); err != nil {
@@ -192,6 +192,20 @@ PRAGMA user_version=9;`); err != nil {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		version = 9
+	}
+	if version == 9 {
+		tx, err := g.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec(fleetVaultSchema + globalVaultSchema + ` PRAGMA user_version=10;`); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
 	}
 	g.users = map[string]User{}
 	g.owners = map[string]string{}
@@ -203,6 +217,7 @@ PRAGMA user_version=9;`); err != nil {
 	g.machineStates = map[string]model.MachineState{}
 	g.proxyDependencies = map[string]proxyDependency{}
 	g.labelOverlays = map[string]labelOverlay{}
+	g.vaultPolicies = map[string]fleetVaultPolicy{}
 	if _, err = g.db.Exec(`CREATE INDEX IF NOT EXISTS client_identity_prefix ON client_identities(substr(id,1,16))`); err != nil {
 		return err
 	}
@@ -219,6 +234,9 @@ PRAGMA user_version=9;`); err != nil {
 		return err
 	}
 	if err = readRecords(g.db, "machine_labels", "id", g.labelOverlays); err != nil {
+		return err
+	}
+	if err = readRecords(g.db, "fleet_vault", "user_id", g.vaultPolicies); err != nil {
 		return err
 	}
 	if err = readRecords(g.db, "users", "id", g.users); err != nil {
@@ -275,6 +293,7 @@ func (g *Gateway) importLegacy(dir string) error {
 	g.machineStates = map[string]model.MachineState{}
 	g.proxyDependencies = map[string]proxyDependency{}
 	g.labelOverlays = map[string]labelOverlay{}
+	g.vaultPolicies = map[string]fleetVaultPolicy{}
 	g.users = map[string]User{legacyUser: {ID: legacyUser, Name: "legacy", CreatedAt: time.Now().UTC()}}
 	g.owners = map[string]string{}
 	g.keys = map[string]keyRecord{}
@@ -335,6 +354,8 @@ type change struct {
 	proxyDependencies []string
 	// labels are owner label overlays, keyed by machine identity.
 	labels []string
+	// vaultPolicies are fleet lock policies, keyed by user.
+	vaultPolicies []string
 	// audit events commit in the same transaction as the change they describe.
 	audit []AuditEvent
 }
@@ -431,6 +452,13 @@ func (g *Gateway) writeChange(tx *sql.Tx, c change) error {
 			}
 		}
 	}
+	for _, id := range c.vaultPolicies {
+		if _, ok := g.vaultPolicies[id]; !ok {
+			if err := exec(`DELETE FROM fleet_vault WHERE user_id=?`, id); err != nil {
+				return err
+			}
+		}
+	}
 	for _, id := range c.users {
 		u, ok := g.users[id]
 		if !ok {
@@ -499,6 +527,14 @@ func (g *Gateway) writeChange(tx *sql.Tx, c change) error {
 	for _, id := range c.labels {
 		if o, ok := g.labelOverlays[id]; ok {
 			if err := exec(`INSERT INTO machine_labels(id,user_id,data) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id,data=excluded.data`, id, o.UserID, model.JSON(o)); err != nil {
+				return err
+			}
+		}
+	}
+	// Users are written above, so a policy's fleet reference is satisfied.
+	for _, id := range c.vaultPolicies {
+		if p, ok := g.vaultPolicies[id]; ok {
+			if err := exec(`INSERT INTO fleet_vault(user_id,data) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data`, id, model.JSON(p)); err != nil {
 				return err
 			}
 		}
@@ -593,6 +629,11 @@ func (g *Gateway) writeState(tx *sql.Tx) error {
 	}
 	for id, o := range g.labelOverlays {
 		if _, err := tx.Exec(`INSERT INTO machine_labels(id,user_id,data) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id,data=excluded.data`, id, o.UserID, model.JSON(o)); err != nil {
+			return err
+		}
+	}
+	for id, p := range g.vaultPolicies {
+		if _, err := tx.Exec(`INSERT INTO fleet_vault(user_id,data) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data`, id, model.JSON(p)); err != nil {
 			return err
 		}
 	}

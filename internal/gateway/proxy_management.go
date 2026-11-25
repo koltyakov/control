@@ -66,6 +66,11 @@ func (g *Gateway) manageProxy(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if g.vaultBearerDeniedLocked(r, p, n.ID) {
+		g.mu.Unlock()
+		http.Error(w, fleetVaultBearerDenied, http.StatusForbidden)
+		return
+	}
 	peer := g.peers[n.ID]
 	counts := g.proxyCountsLocked(p.UserID, n.ID)
 	if !n.GatewayProxyManagement {
