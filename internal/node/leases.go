@@ -63,16 +63,16 @@ func (n *Node) lockLeaseSettled(ctx context.Context) error {
 	}
 }
 
-// reserveLeaseSensitiveStream orders workspace uploads and clipboard access
-// against lease acquisition. Artifact and TCP streams deliberately do not use
-// this guard. Maintenance admission is separate and must already be held.
+// reserveLeaseSensitiveStream orders uploads, clipboard, and interactive
+// shells against lease acquisition. Artifact and TCP streams deliberately do
+// not use this guard. Maintenance admission must already be held.
 func (n *Node) reserveLeaseSensitiveStream(ctx context.Context) (func(), error) {
 	if err := n.lockLeaseSettled(ctx); err != nil {
 		return nil, err
 	}
 	defer n.mu.Unlock()
 	if n.lease != nil && (time.Now().Before(n.lease.Expires) || n.leaseBusy()) {
-		return nil, &model.RPCError{Code: "node_leased", Outcome: "unknown", Message: "node is leased; upload and clipboard streams require an unleased node"}
+		return nil, &model.RPCError{Code: "node_leased", Outcome: "unknown", Message: "node is leased; this stream requires an unleased node"}
 	}
 	// The check and reservation share n.mu with leases.acquire. Neither side
 	// can pass admission in the gap between the other's check and publication.

@@ -273,7 +273,7 @@ func checkPeerCall(args json.RawMessage) (string, string) {
 		return model.TaskCheckFail, "target and method are required"
 	}
 	switch q.Method {
-	case "artifacts.open", "tcp.open", "tcp.listen", clipboard.OpenMethod, clipboard.PasteMethod, upload.OpenMethod:
+	case "artifacts.open", "tcp.open", "tcp.listen", clipboard.OpenMethod, clipboard.PasteMethod, upload.OpenMethod, model.ShellOpenMethod:
 		return model.TaskCheckFail, "peers.call supports JSON instructions, not raw streaming methods"
 	}
 	return model.TaskCheckPass, "the target was not contacted; its authority, arguments and state are checked only when the instruction runs"

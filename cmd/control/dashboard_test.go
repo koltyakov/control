@@ -52,7 +52,7 @@ func TestDashboardLogsDoNotWriteIntoLiveTerminal(t *testing.T) {
 
 	var peerLogger *slog.Logger
 	func() {
-		restore := suspendDashboardLogs(true)
+		restore := suspendTerminalLogs(true)
 		defer restore()
 		// Transport peers keep this logger for later reconnects and shutdown.
 		peerLogger = slog.Default()
@@ -83,7 +83,7 @@ func TestDashboardPreservesRedirectedLogs(t *testing.T) {
 	var output bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
-	restore := suspendDashboardLogs(false)
+	restore := suspendTerminalLogs(false)
 	defer restore()
 	if slog.Default() != logger {
 		t.Fatal("dashboard replaced redirected logging")

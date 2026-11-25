@@ -110,6 +110,10 @@ func main() {
 		go func() { _, _ = io.Copy(io.Discard, os.Stdin); cancel() }()
 	}
 	if err := run(ctx, args); err != nil {
+		var status shellExitStatus
+		if errors.As(err, &status) {
+			os.Exit(int(status))
+		}
 		fmt.Fprintln(os.Stderr, "control:", err)
 		os.Exit(1)
 	}
@@ -139,6 +143,10 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	args = flags.Args()
+	if len(args) == 2 && args[0] == "shell" && (args[1] == "--help" || args[1] == "-h") {
+		fmt.Println(shellUsage)
+		return nil
+	}
 	if len(args) > 0 && args[0] == "runbooks" {
 		q, err := parseRunbookQuery(args[1:])
 		if errors.Is(err, flag.ErrHelp) {
@@ -180,6 +188,9 @@ func run(ctx context.Context, args []string) error {
 			}
 		})
 		userAPI := explicitAPI || os.Getenv("CONTROL_API") != ""
+		if args[0] == "shell" && userAPI {
+			return errors.New("shell requires account-client routing; remove --api and unset CONTROL_API")
+		}
 		if !userAPI && cfg.Name != "" {
 			c.URL = installation.API(cfg)
 		}
@@ -193,7 +204,7 @@ func run(ctx context.Context, args []string) error {
 			}
 		}
 		switch args[0] {
-		case "mcp", "system", "call", "exec", "task", "artifact", "upload", "tunnel", "session", "clipboard", "dashboard", "speedtest", "diagnostics", "wake", "runbooks", "browser", "doctor":
+		case "mcp", "system", "call", "exec", "shell", "task", "artifact", "upload", "tunnel", "session", "clipboard", "dashboard", "speedtest", "diagnostics", "wake", "runbooks", "browser", "doctor":
 			if !explicitAPI && os.Getenv("CONTROL_API") == "" {
 				var override *string
 				if explicitToken {
@@ -330,6 +341,8 @@ func run(ctx context.Context, args []string) error {
 		return callPrint(ctx, c, args[1], "diagnostics.get", map[string]any{})
 	case "exec":
 		return execCLI(ctx, c, args[1:])
+	case "shell":
+		return shellCLI(ctx, c, args[1:])
 	case "session":
 		if len(args) != 1 {
 			return errors.New("usage: control session")
@@ -696,6 +709,8 @@ Environment: CONTROL_API, CONTROL_TOKEN
   browser view NODE [--port 4848] [--listen 127.0.0.1:0]
                                        Forward a worker browser dashboard to a local URL
   exec NODE [--detach] [--id ID] [--timeout DURATION] [--] COMMAND [ARG...]
+  shell NODE [--] bash|cmd|powershell|pwsh
+                                       Open an interactive terminal using your account login
   task start NODE JSON|@file [--wait] [--spec] [--check]
                                        Submit a durable task and optionally wait; --check only reports
                                        whether it would be accepted (advisory, submits nothing)

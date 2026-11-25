@@ -111,6 +111,8 @@ type Config struct {
 	// Desktop opts into worker-local agent-desktop control.
 	Desktop *DesktopConfig `json:"desktop,omitempty"`
 	Browser *BrowserConfig `json:"browser,omitempty"`
+	// ShellEnabled opts into an interactive terminal as the worker OS account.
+	ShellEnabled bool `json:"shellEnabled,omitempty"`
 }
 
 // UnmarshalJSON rejects the removed RPA setting instead of silently disabling

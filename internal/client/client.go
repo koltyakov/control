@@ -80,6 +80,9 @@ func (c Client) Call(ctx context.Context, target, method string, params any, res
 }
 
 func (c Client) call(ctx context.Context, target, method string, params any, result any) error {
+	if method == model.ShellOpenMethod {
+		return errors.New("use control shell for interactive shell streams")
+	}
 	// Resolve workflow select/each targets before any grant or submission, on
 	// every route, so no coordinator or worker ever chooses machines.
 	if method == "workflow.run" || method == "tasks.start" || method == model.TaskCheckMethod {

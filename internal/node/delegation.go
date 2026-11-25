@@ -263,6 +263,9 @@ func (n *Node) delegationMethod(ctx context.Context, caller, method string, para
 		if err != nil {
 			return nil, err
 		}
+		if q.Method == model.ShellOpenMethod && (!n.Config.ShellEnabled || !n.Config.InstructionOnly || subject.ID != caller) {
+			return nil, errors.New("shell streams are not delegable to another worker or client")
+		}
 		if (subject.ClientOwner != "" || subject.ExecutionAuthority) && (!n.Config.InstructionOnly || subject.ID != caller) {
 			return nil, errors.New("delegation subject must be a worker node")
 		}
@@ -413,7 +416,7 @@ func (n *Node) peerCall(ctx context.Context, args json.RawMessage, _ Execution) 
 	if q.Target == "" || q.Method == "" {
 		return nil, errors.New("target and method are required")
 	}
-	if q.Method == "artifacts.open" || q.Method == "tcp.open" || q.Method == "tcp.listen" || q.Method == "clipboard.open" || q.Method == "clipboard.paste" || q.Method == upload.OpenMethod {
+	if q.Method == "artifacts.open" || q.Method == "tcp.open" || q.Method == "tcp.listen" || q.Method == "clipboard.open" || q.Method == "clipboard.paste" || q.Method == upload.OpenMethod || q.Method == model.ShellOpenMethod {
 		return nil, errors.New("peers.call supports JSON instructions, not raw streaming methods")
 	}
 	var result json.RawMessage

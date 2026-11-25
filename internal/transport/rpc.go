@@ -39,7 +39,7 @@ func (p *Peer) OpenRPCWithReceipt(ctx context.Context, target, method string, pa
 	if method == "artifacts.open" || method == "clipboard.open" || method == "clipboard.paste" || method == model.ConnectionOpenMethod || method == upload.OpenMethod {
 		lane = BulkLane
 	}
-	if method == "tcp.open" || method == "tcp.listen" {
+	if method == "tcp.open" || method == "tcp.listen" || method == model.ShellOpenMethod {
 		lane = InteractiveLane
 	}
 	raw := model.JSON(params)

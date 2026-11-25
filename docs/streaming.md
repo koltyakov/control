@@ -12,6 +12,7 @@
 | Send a request to a service that waits for EOF before responding | Forwarding closed the response direction too | Negotiated EOF records preserve the opposite direction across peer streams and the local WebSocket API |
 | Open an orchestrator-local dev server in a remote browser | Only local-to-remote forwarding existed | Process-owned reverse TCP listeners with HTTP, WebSocket, and duplex forwarding |
 | Follow several long-running jobs | Each follower queried logs four times a second | One offset-based stream per follower, awakened by log appends and completion |
+| Open a terminal without SSH | Command tasks had fixed input and no pseudoterminal | Opted-in workers attach an installed shell to an interactive peer stream with input, output, resize, and exit records |
 | Fetch files continuously from many workers | Receive packets allocated a new byte slice for every message | Sized buffer pools with copying, bounded queues, and explicit release on consumption and shutdown |
 | Diagnose connection pressure | Connection inspection reported only a transport per peer | Session inspection includes lanes and active incoming/outgoing stream counts, and `node.describe` reports cumulative transport counters |
 | Stream a large artifact over the relay | 60% of carrier messages were headers or record tails under 128 bytes | Each multiplexer frame is sealed into full packets; compatible peers negotiate 64 KiB packets |
@@ -28,7 +29,7 @@ Each outgoing peer has lazily created lanes:
 
 - `control` carries ordinary RPCs, task submission, status, and cancellation.
 - `bulk` carries streamed artifacts. Its caller-side receive window is 4 MiB instead of the default 256 KiB, allowing more bytes in flight on higher-latency links.
-- `interactive` carries TCP tunnels, followed task logs, and blocking task waits. Its caller-side receive window is 1 MiB.
+- `interactive` carries TCP tunnels, remote shells, followed task logs, and blocking task waits. Its caller-side receive window is 1 MiB.
 
 Accepted sessions use a 1 MiB receive window, which governs uploads such as clipboard pastes. Per-stream throughput is at most one window per round trip: about 40 MB/s for bulk downloads at 100 ms. WebRTC carriers use a 4 MiB SCTP receive buffer, shared by every lane on the carrier. Each data channel lets up to 4 MiB of unacknowledged data wait before its sender blocks, matching that buffer. Every WebRTC UDP socket requests 4 MiB operating-system send and receive buffers, because default buffers drop bursts on busy or one-vCPU receivers and each drop shrinks the SCTP window. Linux caps unprivileged requests at `net.core.rmem_max`/`wmem_max`, 208 KiB by default; System nodes running as root use the privileged option instead. For Linux User nodes, set both limits to at least 4 MiB, for example `sysctl -w net.core.rmem_max=8388608 net.core.wmem_max=8388608` persisted under `/etc/sysctl.d`. Node diagnostics report the smallest granted size as `transport.udpReceiveBufferBytes`. See [D161](decisions.md#d161-webrtc-socket-buffers-and-data-channel-send-window).
 
@@ -96,13 +97,16 @@ go test ./internal/transport -run '^$' -bench 'Benchmark(PacketConn|Duplex)' -be
 
 On a local macOS arm64 Apple M4 Pro, the 16 KiB packet adapter benchmark allocated 16,480 bytes per operation before receive-buffer pooling and 96 bytes afterward. The three local runs changed from 1.82–2.40 microseconds to 0.51–0.52 microseconds per operation. The 1 KiB case changed from 1,120 to 96 allocated bytes. These are in-process adapter measurements, not network throughput guarantees. Real throughput also depends on RTT, ICE route, SCTP congestion control, gateway capacity, disk speed, and encryption.
 
+## Interactive shells
+
+`control shell` uses a single peer stream and terminates the worker's pseudoterminal on disconnect. It does not send commands through a forward or start an SSH listener. See [interactive shells](protocol.md#interactive-shells) for setup, protocol, and limits.
+
 ## Remaining work
 
 These gaps are not implemented:
 
 | Capability | Useful scenario | Constraint before implementing |
 | --- | --- | --- |
-| Interactive process stdin and PTYs | Drive a persistent remote shell or REPL | Explicit process ownership, input framing, resize, reconnect, and OS-specific terminal lifecycle |
 | UDP forwarding | Tunnel a UDP protocol | Bounded datagrams, size limits, and explicit loss/lifetime semantics |
 | GPU reservations | Hold accelerator capacity between selection and execution | GPU selection is advisory; destination-owned reservations and admission for GPU memory or devices are still needed |
 | Weighted relay bandwidth guarantees | Reserve a share of a saturated link | Round-robin session service does not provide per-user bandwidth guarantees or preempt writes |

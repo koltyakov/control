@@ -82,6 +82,19 @@ func (p *providerPool) release() {
 	p.mu.Unlock()
 }
 
+// Interactive callers do not queue behind detached commands.
+func (p *providerPool) tryAcquire() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	select {
+	case p.slots <- struct{}{}:
+		p.inUse++
+		return true
+	default:
+		return false
+	}
+}
+
 func (p *providerPool) snapshot() model.ConcurrencyPool {
 	p.mu.Lock()
 	defer p.mu.Unlock()

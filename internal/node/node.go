@@ -275,6 +275,9 @@ func (n *Node) Register(p Provider) error {
 	if c.Name == "" || !json.Valid(c.InputSchema) {
 		return errors.New("provider requires a name and valid input schema")
 	}
+	if c.Name == model.ShellOpenMethod {
+		return errors.New("shell.open is reserved for interactive shell streams")
+	}
 	if _, exists := n.providers[c.Name]; exists {
 		return fmt.Errorf("duplicate capability %s", c.Name)
 	}
@@ -498,6 +501,10 @@ func (n *Node) handle(caller string, conn net.Conn) {
 		n.serveTCPListener(ctx, caller, conn, request.Params)
 		return
 	}
+	if request.Method == model.ShellOpenMethod {
+		n.serveShell(ctx, caller, conn, request.Params)
+		return
+	}
 	if request.Method == "tasks.logs" {
 		var q struct {
 			Follow bool `json:"follow"`
@@ -538,6 +545,9 @@ func (n *Node) Call(ctx context.Context, target, method string, params any, resu
 }
 
 func (n *Node) callWithReceipt(ctx context.Context, target, method string, params any, result any) (*model.TaskSubmissionReceipt, error) {
+	if method == model.ShellOpenMethod {
+		return nil, errors.New("use control shell for interactive shell streams")
+	}
 	local := target == "" || target == n.Config.Name || target == n.Identity.ID
 	if requiresAdmission(method) && (!local || method != "tasks.start") {
 		workCtx, release, err := n.enterWork(ctx)
@@ -690,6 +700,7 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 		description := map[string]any{"id": n.Identity.ID, "name": n.fleetName(ctx), "capabilities": n.Capabilities(), "concurrency": n.concurrencySnapshot(), "connections": n.Peer.Connections(), "sessions": n.Peer.SessionStats(), "transport": n.Peer.Stats(), "agents": agents, "mcpServers": servers, "system": n.system.Snapshot(), "fileUpload": n.uploads.Description(), "clipboard": map[string]any{"protocol": clipboard.Protocol, "methods": []string{clipboard.OpenMethod, clipboard.PasteMethod}}, "connectionTest": map[string]any{"protocol": model.ConnectionTestProtocol, "methods": []string{model.ConnectionTestMethod, model.ConnectionOpenMethod}, "maxBytes": 256 << 20, "maxSamples": 100, "timeoutSeconds": 120}, "runbooks": map[string]any{"protocol": runbooks.Protocol, "methods": []string{"runbooks.list", "runbooks.read"}}}
 		description["taskTags"] = model.TaskTagsDescription()
 		description["artifactExport"] = artifactExportDescription()
+		description["shell"] = model.ShellDescription{Protocol: model.ShellProtocol, Method: model.ShellOpenMethod, Enabled: n.Config.ShellEnabled}
 		if description["name"] != n.Config.Name {
 			description["configuredName"] = n.Config.Name
 		}

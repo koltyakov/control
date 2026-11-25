@@ -88,6 +88,19 @@ Workers keep finished records, logs, and workspaces for seven days and up to 10,
 
 A busy worker still accepts independent work. By default it runs four commands and eight built-in file or HTTP operations at once, and queues the rest. See [worker concurrency](docs/protocol.md#worker-concurrency).
 
+### Open a remote terminal without SSH
+
+Set `"shellEnabled": true` in the target node's config and restart that node. From a local terminal with an account login:
+
+```sh
+control shell linux-box -- bash
+control shell windows-box -- cmd
+control shell windows-box -- powershell
+control shell windows-box -- pwsh
+```
+
+Use a shell installed on the worker. A User shell starts in the remote user's home directory. A System shell starts in the worker's `workDir`. The session runs as the worker's OS account, supports keyboard input and resizing, and ends on exit or disconnect. There is no SSH server or additional listening port. See [interactive shells](docs/protocol.md#interactive-shells) for permissions and limits.
+
 ### Chain steps across machines
 
 > Generate a test clip on `source`, encode it on `worker`, and tell me when both steps are done.
