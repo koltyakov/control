@@ -789,7 +789,7 @@ func verifyHello(handshake context.Context, ws *websocket.Conn, client bool) (He
 	if !ed25519.Verify(n.PublicKey, hello.Message(challenge), hello.Signature) {
 		return Hello{}, model.Node{}, "", false
 	}
-	if len(n.SecretManagementKey) != 0 && (client || !secrets.ValidManagementKey(n.SecretManagementKey)) {
+	if (len(n.SecretManagementKey) != 0 && (client || !secrets.ValidManagementKey(n.SecretManagementKey))) || (n.SecretPolicy && len(n.SecretManagementKey) == 0) {
 		return Hello{}, model.Node{}, "", false
 	}
 	ownerID := n.ID

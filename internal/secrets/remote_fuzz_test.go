@@ -3,14 +3,17 @@ package secrets
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 )
 
 // FuzzOpenEnvelope decodes arbitrary JSON as a management request and, for a
 // genuinely sealed envelope, applies one fuzzer-chosen change to its
-// ciphertext, nonce, key, ID, expiry, recipient node or name. Only the
-// unmodified envelope may open, and it must return the sealed value.
+// ciphertext, nonce, key, ID, expiry, recipient node, name or version. A
+// field of 128 or more seals a policy-bearing envelope instead of a
+// value-only one. Only the unmodified envelope may open, and it must return
+// the sealed value and, for policy envelopes, the sealed policy.
 func FuzzOpenEnvelope(f *testing.F) {
 	private, err := NewManagementKey()
 	if err != nil {
@@ -32,6 +35,11 @@ func FuzzOpenEnvelope(f *testing.F) {
 		{`{"operation":"delete","name":"a"}`, "y", 5, 0, 1},
 		{`[]`, "z", 6, 0, 1},
 		{`{"envelope":{"id":""}}`, "w", 7, 0, 1},
+		{`{"envelope":{"version":2}}`, "policy-value", 128, 0, 0},
+		{`{"operation":"list","policies":true}`, "p", 128, 5, 1},
+		{`{}`, "p", 131, 9, 0x40},
+		{`{}`, "p", 136, 0, 2},
+		{`{}`, "p", 8, 0, 2},
 	} {
 		f.Add([]byte(seed.raw), seed.value, seed.field, seed.offset, seed.flip)
 	}
@@ -50,12 +58,21 @@ func FuzzOpenEnvelope(f *testing.F) {
 			}
 			// A fuzzer cannot forge GCM authentication under a fresh key.
 			if request.Envelope != nil {
-				if got, err := Open(private, "node", request.Name, *request.Envelope); err == nil {
-					t.Fatalf("opened an unsealed envelope: %q", got)
+				if got, err := OpenWrite(private, "node", request.Name, *request.Envelope); err == nil {
+					t.Fatalf("opened an unsealed envelope: %+v", got)
 				}
 			}
 		}
-		envelope, err := Seal("node", "db.password", value, public)
+		withPolicy := field >= 128
+		field &= 0x7f
+		policy := &Policy{Uses: []Use{UseHTTP}, Hosts: []string{"*.example.com", "api.example.net:8443"}}
+		var envelope Envelope
+		var err error
+		if withPolicy {
+			envelope, err = SealPolicy("node", "db.password", value, policy, public)
+		} else {
+			envelope, err = Seal("node", "db.password", value, public)
+		}
 		if err != nil {
 			if validValue(value) {
 				t.Fatalf("cannot seal a valid value: %v", err)
@@ -72,7 +89,7 @@ func FuzzOpenEnvelope(f *testing.F) {
 			b[int(offset)%len(b)] ^= flip
 			return b
 		}
-		switch field % 8 {
+		switch field % 9 {
 		case 0:
 			envelope.Ciphertext = mutate(envelope.Ciphertext)
 		case 1:
@@ -93,16 +110,22 @@ func FuzzOpenEnvelope(f *testing.F) {
 			if changed {
 				envelope.Ciphertext = envelope.Ciphertext[:int(offset)%len(envelope.Ciphertext)]
 			}
+		case 8:
+			// Relabelling must not strip a policy or reinterpret a value.
+			envelope.Version ^= int(flip)
 		}
-		got, err := Open(private, node, name, envelope)
+		got, err := OpenWrite(private, node, name, envelope)
 		if !changed {
-			if err != nil || got != value {
-				t.Fatalf("unmodified envelope: %q, %v", got, err)
+			if err != nil || got.Value != value || got.ReplacePolicy != withPolicy || (withPolicy && !reflect.DeepEqual(got.Policy, policy)) {
+				t.Fatalf("unmodified envelope: %+v, %v", got, err)
+			}
+			if plain, err := Open(private, node, name, envelope); withPolicy == (err == nil) || (!withPolicy && plain != value) {
+				t.Fatalf("value-only Open of policy=%v envelope: %q, %v", withPolicy, plain, err)
 			}
 			return
 		}
 		if err == nil {
-			t.Fatalf("field %d changed by %#x at %d still opened: %q", field%8, flip, offset, got)
+			t.Fatalf("field %d changed by %#x at %d still opened: %+v", field%9, flip, offset, got)
 		}
 	})
 }

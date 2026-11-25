@@ -46,17 +46,14 @@ var downloadHeaders = []string{"Content-Type", "Content-Length", "Content-Dispos
 // nothing. There is no retry or Range resume.
 func (n *Node) httpDownload(ctx context.Context, args json.RawMessage, e Execution) (_ any, runErr error) {
 	var input struct {
-		URL           string            `json:"url"`
-		Method        string            `json:"method"`
-		Headers       map[string]string `json:"headers"`
-		HeaderSecrets map[string]struct {
-			Secret string `json:"secret"`
-			Prefix string `json:"prefix"`
-		} `json:"headerSecrets"`
-		SHA256       string `json:"sha256"`
-		MaxBytes     int64  `json:"maxBytes"`
-		Name         string `json:"name"`
-		StallSeconds int    `json:"stallSeconds"`
+		URL           string                  `json:"url"`
+		Method        string                  `json:"method"`
+		Headers       map[string]string       `json:"headers"`
+		HeaderSecrets map[string]headerSecret `json:"headerSecrets"`
+		SHA256        string                  `json:"sha256"`
+		MaxBytes      int64                   `json:"maxBytes"`
+		Name          string                  `json:"name"`
+		StallSeconds  int                     `json:"stallSeconds"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
 		return nil, err
@@ -87,11 +84,11 @@ func (n *Node) httpDownload(ctx context.Context, args json.RawMessage, e Executi
 	if input.Name != "" && (len(input.Name) > 255 || !utf8.ValidString(input.Name) || strings.ContainsAny(input.Name, "/\\\x00") || input.Name == "." || input.Name == "..") {
 		return nil, errors.New("name must be a file name of at most 255 bytes")
 	}
-	values, err := n.secretValues()
+	resolver, err := n.secretResolver()
 	if err != nil {
 		return nil, err
 	}
-	redactor := secrets.NewRedactor(values)
+	redactor := secrets.NewRedactor(resolver.Masking())
 	defer func() {
 		if runErr != nil && redactor.Text(runErr.Error()) != runErr.Error() {
 			runErr = errors.New(redactor.Text(runErr.Error()))
@@ -113,15 +110,8 @@ func (n *Node) httpDownload(ctx context.Context, args json.RawMessage, e Executi
 	for k, v := range input.Headers {
 		req.Header.Set(k, v)
 	}
-	for k, ref := range input.HeaderSecrets {
-		if req.Header.Values(k) != nil {
-			return nil, errors.New("header cannot have both a literal value and a secret reference")
-		}
-		value, err := resolveSecret(values, ref.Secret)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set(k, ref.Prefix+value)
+	if err := applyHeaderSecrets(req, resolver, input.HeaderSecrets); err != nil {
+		return nil, err
 	}
 	name := input.Name
 	if name == "" {

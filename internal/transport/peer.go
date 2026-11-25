@@ -217,6 +217,7 @@ func (p *Peer) SetStartupHandler(handler func([]byte)) {
 func (p *Peer) SetSecretsHandler(key []byte, handler func([]byte)) {
 	p.secrets = handler
 	p.cfg.Node.SecretManagementKey = key
+	p.cfg.Node.SecretPolicy = handler != nil && len(key) != 0
 }
 
 // SetProxyManagementHandler installs the fixed owner-management handler.

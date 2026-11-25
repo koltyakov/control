@@ -267,15 +267,12 @@ func (n *Node) agentRun(ctx context.Context, args json.RawMessage, e Execution) 
 
 func (n *Node) httpRequest(ctx context.Context, args json.RawMessage, e Execution) (_ any, runErr error) {
 	var input struct {
-		URL           string            `json:"url"`
-		Method        string            `json:"method"`
-		Encoding      string            `json:"encoding"`
-		Headers       map[string]string `json:"headers"`
-		Body          string            `json:"body"`
-		HeaderSecrets map[string]struct {
-			Secret string `json:"secret"`
-			Prefix string `json:"prefix"`
-		} `json:"headerSecrets"`
+		URL           string                  `json:"url"`
+		Method        string                  `json:"method"`
+		Encoding      string                  `json:"encoding"`
+		Headers       map[string]string       `json:"headers"`
+		Body          string                  `json:"body"`
+		HeaderSecrets map[string]headerSecret `json:"headerSecrets"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
 		return nil, err
@@ -286,10 +283,11 @@ func (n *Node) httpRequest(ctx context.Context, args json.RawMessage, e Executio
 	if err := validEncoding(input.Encoding); err != nil {
 		return nil, err
 	}
-	values, err := n.secretValues()
+	resolver, err := n.secretResolver()
 	if err != nil {
 		return nil, err
 	}
+	values := resolver.Masking()
 	redactor := secrets.NewRedactor(values)
 	defer func() {
 		if runErr != nil && redactor.Text(runErr.Error()) != runErr.Error() {
@@ -309,15 +307,8 @@ func (n *Node) httpRequest(ctx context.Context, args json.RawMessage, e Executio
 	for k, v := range input.Headers {
 		req.Header.Set(k, v)
 	}
-	for k, ref := range input.HeaderSecrets {
-		if req.Header.Values(k) != nil {
-			return nil, errors.New("header cannot have both a literal value and a secret reference")
-		}
-		value, err := resolveSecret(values, ref.Secret)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set(k, ref.Prefix+value)
+	if err := applyHeaderSecrets(req, resolver, input.HeaderSecrets); err != nil {
+		return nil, err
 	}
 	httpClient := &http.Client{Timeout: 5 * time.Minute}
 	if len(input.HeaderSecrets) != 0 {

@@ -83,16 +83,29 @@ func (m *secretManagement) run(ctx context.Context, n *Node, q secrets.Managemen
 	switch q.Operation {
 	case "list":
 		reply.Secrets, err = s.List()
+		if !q.Policies {
+			// Gateways that did not ask predate policy metadata and refuse
+			// unknown reply fields.
+			for i := range reply.Secrets {
+				reply.Secrets[i].Policy, reply.Secrets[i].PolicyInvalid = nil, false
+			}
+		}
 	case "delete":
 		err = s.Delete(ctx, q.Name)
 	case "set":
-		var value string
-		value, err = secrets.Open(m.key, n.Identity.ID, q.Name, *q.Envelope)
+		var w secrets.Write
+		w, err = secrets.OpenWrite(m.key, n.Identity.ID, q.Name, *q.Envelope)
 		if err != nil {
 			reply.Error = "invalid"
 			return reply
 		}
-		err = s.Set(ctx, q.Name, value)
+		if w.ReplacePolicy {
+			err = s.SetWithPolicy(ctx, q.Name, w.Value, w.Policy)
+		} else {
+			// Value-only writes, including older clients and the console,
+			// keep the stored policy.
+			err = s.Set(ctx, q.Name, w.Value)
+		}
 	}
 	if err != nil {
 		// Filesystem, decoder and credential diagnostics never cross the gateway.

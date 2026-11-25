@@ -19,31 +19,66 @@ import (
 // Credentials use hidden input or explicit stdin, never CLI arguments or MCP.
 func secretsCLI(ctx context.Context, args []string, profile string, tokenOverride ...*string) error {
 	if len(args) == 0 {
-		return errors.New("usage: control secrets set NAME [--stdin] [--node WORKER] | list [--metadata] [--node WORKER] | delete NAME [--node WORKER]")
+		return errors.New("usage: control secrets set NAME [--stdin] [--node WORKER] [--use USES --host PATTERN --plain-http | --clear-policy] | list [--metadata] [--node WORKER] | delete NAME [--node WORKER] | policy NAME (--use USES [--host PATTERN] [--plain-http] | --clear)")
 	}
 	operation, name, rest := args[0], "", args[1:]
-	if operation == "set" || operation == "delete" {
+	if operation == "set" || operation == "delete" || operation == "policy" {
 		if len(rest) == 0 || !secrets.ValidName(rest[0]) {
-			return errors.New("secret set and delete require a valid name")
+			return errors.New("secret set, delete and policy require a valid name")
 		}
 		name, rest = rest[0], rest[1:]
 	} else if operation != "list" {
-		return errors.New("unknown secrets command; use set, list, or delete")
+		return errors.New("unknown secrets command; use set, list, delete, or policy")
 	}
 	f := flag.NewFlagSet("secrets "+operation, flag.ContinueOnError)
 	target := f.String("node", "", "manage secrets on this explicit worker using fleet account authorization")
-	var stdin, metadata bool
+	var stdin, metadata, plainHTTP, clearPolicy bool
+	var uses string
+	var hosts []string
 	if operation == "set" {
 		f.BoolVar(&stdin, "stdin", false, "read the value from stdin instead of a hidden prompt")
+		f.BoolVar(&clearPolicy, "clear-policy", false, "remove the use policy, making the secret unrestricted")
+	}
+	if operation == "policy" {
+		f.BoolVar(&clearPolicy, "clear", false, "remove the use policy, making the secret unrestricted")
+	}
+	if operation == "set" || operation == "policy" {
+		f.StringVar(&uses, "use", "", "replace the use policy: comma-separated http, exec, desktop")
+		f.Func("host", "permitted HTTP destination pattern; repeatable", func(value string) error {
+			hosts = append(hosts, value)
+			return nil
+		})
+		f.BoolVar(&plainHTTP, "plain-http", false, "also permit unencrypted http:// destinations")
 	}
 	if operation == "list" {
-		f.BoolVar(&metadata, "metadata", false, "include creation and update timestamps, never values")
+		f.BoolVar(&metadata, "metadata", false, "include timestamps and use policies, never values")
 	}
 	if err := f.Parse(rest); err != nil {
 		return err
 	}
 	if f.NArg() != 0 {
 		return errors.New("unexpected secret arguments; values cannot be supplied as arguments")
+	}
+	changePolicy := uses != "" || len(hosts) != 0 || plainHTTP || clearPolicy
+	var policy *secrets.Policy
+	switch {
+	case clearPolicy && (uses != "" || len(hosts) != 0 || plainHTTP):
+		return errors.New("clearing a use policy cannot be combined with --use, --host or --plain-http")
+	case changePolicy && !clearPolicy && uses == "":
+		return errors.New("a use policy requires --use with http, exec and/or desktop")
+	case changePolicy && !clearPolicy:
+		var err error
+		if policy, err = secrets.NewPolicy(strings.Split(uses, ","), hosts, plainHTTP); err != nil {
+			return err
+		}
+	case operation == "policy" && !changePolicy:
+		return errors.New("secrets policy requires --use with optional --host and --plain-http, or --clear")
+	}
+	if operation == "policy" && *target != "" {
+		// Remote envelopes are encrypted but not sender-authenticated, so a
+		// value-free remote policy change would let a compromised gateway
+		// weaken the restriction of a credential it cannot read.
+		return errors.New("remote policy changes re-enter the value: use control secrets set NAME --node WORKER with --use/--host or --clear-policy")
 	}
 	emptyTarget := false
 	f.Visit(func(option *flag.Flag) {
@@ -103,7 +138,22 @@ func secretsCLI(ctx context.Context, args []string, profile string, tokenOverrid
 			return remote.DeleteSecret(ctx, id, name)
 		}
 		return s.Delete(ctx, name)
+	case "policy":
+		if err := s.SetPolicy(ctx, name, policy); err != nil {
+			return err
+		}
+		if policy == nil {
+			fmt.Println("Secret use policy cleared; the secret is unrestricted.")
+		} else {
+			fmt.Println("Secret use policy saved. The value was not changed.")
+		}
+		return nil
 	case "set":
+		if changePolicy && *target != "" && !listing.Policies {
+			// Refuse before reading the value: an older worker would store
+			// it unrestricted.
+			return client.ErrSecretPolicyUnsupported
+		}
 		var b []byte
 		if stdin {
 			b, err = io.ReadAll(io.LimitReader(os.Stdin, secrets.MaxValue+3))
@@ -121,9 +171,15 @@ func secretsCLI(ctx context.Context, args []string, profile string, tokenOverrid
 			return errors.New("cannot read secret value")
 		}
 		defer clear(b)
-		if *target == "" {
+		switch {
+		case *target == "" && changePolicy:
+			err = s.SetWithPolicy(ctx, name, string(b), policy)
+		case *target == "":
 			err = s.Set(ctx, name, string(b))
-		} else {
+		case changePolicy:
+			err = remote.SetSecretWithPolicy(ctx, id, name, string(b), policy, listing)
+		default:
+			// A value-only write keeps the worker's stored policy.
 			err = remote.SetSecret(ctx, id, name, string(b), listing.Key)
 		}
 		if err != nil {

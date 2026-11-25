@@ -58,6 +58,9 @@ type Node struct {
 	ProxyManagementPending bool `json:"proxyManagementPending,omitempty"`
 	// SecretManagementKey is a process-local P-256 public key for encrypted writes.
 	SecretManagementKey []byte `json:"secretManagementKey,omitempty"`
+	// SecretPolicy accepts policy-bearing envelopes and listings. Older
+	// workers omit it, and clients never send them a policy they would ignore.
+	SecretPolicy bool `json:"secretPolicy,omitempty"`
 	// LargePackets advertises that this receiver accepts 64 KiB carrier packets.
 	LargePackets bool `json:"largePackets,omitempty"`
 	// ExecutionAuthority is assigned by the gateway, never by enrollment metadata.

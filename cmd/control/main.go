@@ -671,8 +671,10 @@ Environment: CONTROL_API, CONTROL_TOKEN
   node --config control.json
   login --gateway URL [--key-stdin]      Save an API key for future commands
   secrets set NAME [--stdin] [--node WORKER]  Enter a secret outside chat; remote values are encrypted
-  secrets list [--metadata] [--node WORKER]   List names and optional timestamps, never values
+      --use USES --host PATTERN --plain-http --clear-policy  Replace its use policy with the value
+  secrets list [--metadata] [--node WORKER]   List names and optional timestamps and policies, never values
   secrets delete NAME [--node WORKER]        Delete a secret; no value-read command
+  secrets policy NAME [--use USES] [--host PATTERN] [--plain-http] [--clear]  Change a local use policy only
   update [--version TAG]                Update this CLI from GitHub Releases; alias: upgrade
   setup [--gateway URL] --name NAME [--client opencode]  Configure and start this host
   service start|stop|status|uninstall    Manage the installed background node

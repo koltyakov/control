@@ -14,10 +14,15 @@ import (
 	"github.com/koltyakov/control/internal/update"
 )
 
+// maxPolicySecretsReply bounds a listing of 128 secrets with maximal policies.
+const maxPolicySecretsReply = 512 << 10
+
 type pendingSecrets struct {
 	node, operation string
-	peer            *connection
-	reply           chan secrets.ManagementReply
+	// policies records whether a list asked the worker for policy metadata.
+	policies bool
+	peer     *connection
+	reply    chan secrets.ManagementReply
 }
 
 func (g *Gateway) secretRoutes(mux *http.ServeMux) {
@@ -67,6 +72,13 @@ func (g *Gateway) manageSecrets(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "machine must be online, enabled, and support secrets.manage; update its node and check allow rules", http.StatusConflict)
 		return
 	}
+	if q.Envelope != nil && q.Envelope.Version != 0 && !n.SecretPolicy {
+		// An older worker cannot open or enforce a policy-bearing envelope.
+		g.mu.Unlock()
+		http.Error(w, "machine does not support secret use policies; update its node. Nothing was sent", http.StatusConflict)
+		return
+	}
+	q.Policies = q.Operation == "list" && n.SecretPolicy
 	for _, pending := range g.secretRequests {
 		if pending.node == n.ID {
 			g.mu.Unlock()
@@ -85,7 +97,7 @@ func (g *Gateway) manageSecrets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply := make(chan secrets.ManagementReply, 1)
-	g.secretRequests[q.ID] = pendingSecrets{node: n.ID, operation: q.Operation, peer: peer, reply: reply}
+	g.secretRequests[q.ID] = pendingSecrets{node: n.ID, operation: q.Operation, policies: q.Policies, peer: peer, reply: reply}
 	if q.Operation != "list" {
 		// Neither names nor ciphertext enter audit records, including when a
 		// caller accidentally supplies a credential as its secret name.
@@ -134,14 +146,16 @@ func (g *Gateway) manageSecrets(w http.ResponseWriter, r *http.Request) {
 		if entries == nil {
 			entries = []secrets.Metadata{}
 		}
-		consoleJSON(w, secrets.RemoteList{Key: n.SecretManagementKey, Secrets: entries})
+		consoleJSON(w, secrets.RemoteList{Key: n.SecretManagementKey, Secrets: entries, Policies: n.SecretPolicy})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (g *Gateway) receiveSecrets(n model.Node, peer *connection, data []byte) bool {
-	if len(data) > 64<<10 {
+	// Policy metadata can reach about 2.4 KiB per secret; listings that did
+	// not request it keep the original 64 KiB bound, checked below.
+	if len(data) > maxPolicySecretsReply {
 		return false
 	}
 	var reply secrets.ManagementReply
@@ -156,11 +170,13 @@ func (g *Gateway) receiveSecrets(n model.Node, peer *connection, data []byte) bo
 		return false
 	}
 	seen := map[string]bool{}
+	withPolicies := false
 	for _, entry := range reply.Secrets {
-		if !secrets.ValidName(entry.Name) || seen[entry.Name] {
+		if !secrets.ValidName(entry.Name) || seen[entry.Name] || (entry.Policy != nil && (entry.PolicyInvalid || entry.Policy.Validate() != nil)) {
 			return false
 		}
 		seen[entry.Name] = true
+		withPolicies = withPolicies || entry.Policy != nil || entry.PolicyInvalid
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -168,7 +184,7 @@ func (g *Gateway) receiveSecrets(n model.Node, peer *connection, data []byte) bo
 	if !ok {
 		return true
 	}
-	if pending.node != n.ID || pending.peer != peer || g.peers[n.ID] != peer || (pending.operation != "list" && len(reply.Secrets) != 0) {
+	if pending.node != n.ID || pending.peer != peer || g.peers[n.ID] != peer || (pending.operation != "list" && len(reply.Secrets) != 0) || (!pending.policies && (withPolicies || len(data) > 64<<10)) {
 		return false
 	}
 	select {

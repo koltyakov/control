@@ -97,15 +97,17 @@ func (n *Node) desktopRun(ctx context.Context, args json.RawMessage, e Execution
 	if r.Command != "cli" && n.Config.Desktop.Library == "" && n.Config.Desktop.Command.Command == "" {
 		return nil, errors.New("protected native commands require desktop.library or an explicit native helper")
 	}
-	values, err := n.secretValues()
+	resolver, err := n.secretResolver()
 	if err != nil {
 		return nil, errors.New("cannot load worker-local credentials")
 	}
+	values := resolver.Masking()
 	if r.Secret != "" {
-		value, err := resolveSecret(values, r.Secret)
+		resolved, err := resolver.Resolve([]secrets.Reference{{Name: r.Secret, Use: secrets.UseDesktop}})
 		if err != nil {
 			return nil, err
 		}
+		value := resolved[r.Secret]
 		r.Text, r.Secret = &value, ""
 	}
 	if r.Command != "cli" {

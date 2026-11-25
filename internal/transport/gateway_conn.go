@@ -173,6 +173,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		if !nodeBytes {
 			hello.Node.GatewayProxyManagement = false
 			hello.Node.SecretManagementKey = nil
+			hello.Node.SecretPolicy = false
 			hello.Node.Software.Runtime = ""
 			hello.Node.Software.GatewayProtocol = 0
 			hello.Node.Software.NodeGatewayMin, hello.Node.Software.NodeGatewayMax = 0, 0

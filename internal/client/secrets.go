@@ -59,6 +59,31 @@ func (c Admin) SetSecret(ctx context.Context, id, name, value string, public []b
 	return c.JSON(ctx, http.MethodPut, secretRoute(id, name), envelope, nil)
 }
 
+// ErrSecretPolicyUnsupported means the worker did not advertise use-policy
+// support. An older worker would store the value unrestricted, so nothing is
+// sent.
+var ErrSecretPolicyUnsupported = errors.New("worker does not support secret use policies; update its node first. Nothing was sent")
+
+// SetSecretWithPolicy replaces a value and its use policy in one encrypted
+// write; a nil policy explicitly makes the secret unrestricted. It refuses
+// before sealing or sending anything unless target advertises policy support.
+func (c Admin) SetSecretWithPolicy(ctx context.Context, id, name, value string, policy *secrets.Policy, target secrets.RemoteList) error {
+	if !target.Policies {
+		return ErrSecretPolicyUnsupported
+	}
+	if !secrets.SecureURL(c.URL) || c.Key == "" {
+		return errors.New("remote secrets require authenticated HTTPS or direct loopback development")
+	}
+	envelope, err := secrets.SealPolicy(id, name, value, policy, target.Key)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	// There is one HTTP attempt. A lost acknowledgement never replays a write.
+	return c.JSON(ctx, http.MethodPut, secretRoute(id, name), envelope, nil)
+}
+
 func (c Admin) DeleteSecret(ctx context.Context, id, name string) error {
 	if !secrets.SecureURL(c.URL) || c.Key == "" || !secrets.ValidName(name) {
 		return errors.New("remote secret deletion requires a valid name and authenticated HTTPS or direct loopback development")

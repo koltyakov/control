@@ -49,7 +49,7 @@ func TestCompletionParsesHelpCommands(t *testing.T) {
 		"task":             {"start", "get", "wait", "cancel", "logs", "list", "reconcile"},
 		"tunnel":           {"start", "list", "dispose"},
 		"upload":           {"start", "resume", "status", "abort"},
-		"secrets":          {"set", "list", "delete"},
+		"secrets":          {"set", "list", "delete", "policy"},
 		"artifact":         {"list", "export", "deliver", "get"},
 		"service":          {"start", "stop", "status", "uninstall", "firewall"},
 		"browser":          {"run", "view"},

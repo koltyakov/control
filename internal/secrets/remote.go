@@ -1,6 +1,7 @@
 package secrets
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
@@ -16,23 +17,39 @@ import (
 )
 
 const RemoteProtocol = "control-secrets-v1"
+
+// PolicyProtocol labels version 2 envelopes, whose plaintext carries an
+// explicit use policy with the value. The label is in both the HKDF info and
+// the AAD, so changing an envelope's version makes it fail to open, and a
+// worker that predates policies can never decrypt one as a bare value.
+const PolicyProtocol = "control-secrets-v2"
+
+// PolicyVersion is the Envelope.Version of policy-bearing envelopes.
+const PolicyVersion = 2
+
 const MaxRemoteMessage = 12 << 10
 
 // Envelope carries only ciphertext. Its key is the sender's ephemeral P-256
-// public key, not the worker's private decryption key.
+// public key, not the worker's private decryption key. Version is absent for
+// value-only envelopes, which keep a stored policy, and PolicyVersion for
+// envelopes that replace the value and its policy together.
 type Envelope struct {
 	ID         string `json:"id"`
 	ExpiresAt  int64  `json:"expiresAt"`
+	Version    int    `json:"version,omitempty"`
 	Key        []byte `json:"key"`
 	Nonce      []byte `json:"nonce"`
 	Ciphertext []byte `json:"ciphertext"`
 }
 
+// ManagementRequest is sent by the gateway. Policies asks a list reply to
+// include use policies; gateways send it only to workers advertising support.
 type ManagementRequest struct {
 	ID        string    `json:"id"`
 	Operation string    `json:"operation"`
 	Name      string    `json:"name,omitempty"`
 	ExpiresAt int64     `json:"expiresAt"`
+	Policies  bool      `json:"policies,omitempty"`
 	Envelope  *Envelope `json:"envelope,omitempty"`
 }
 
@@ -43,9 +60,12 @@ type ManagementReply struct {
 	Secrets []Metadata `json:"secrets,omitempty"`
 }
 
+// RemoteList is the gateway's listing. Policies reports that the worker
+// advertised use-policy support in its signed registration.
 type RemoteList struct {
-	Key     []byte     `json:"key"`
-	Secrets []Metadata `json:"secrets"`
+	Key      []byte     `json:"key"`
+	Secrets  []Metadata `json:"secrets"`
+	Policies bool       `json:"policies,omitempty"`
 }
 
 func NewManagementKey() (*ecdh.PrivateKey, error) { return ecdh.P256().GenerateKey(rand.Reader) }
@@ -65,8 +85,17 @@ func ValidDeadline(expires int64, now time.Time) bool {
 }
 
 func (e Envelope) Valid(now time.Time) bool {
+	limit := MaxValue + 16
+	switch e.Version {
+	case 0:
+	case PolicyVersion:
+		// Policy JSON, one NUL separator and the value.
+		limit = MaxPolicy + 1 + MaxValue + 16
+	default:
+		return false
+	}
 	return ValidRequestID(e.ID) && ValidDeadline(e.ExpiresAt, now) && ValidManagementKey(e.Key) &&
-		len(e.Nonce) == 12 && len(e.Ciphertext) >= 17 && len(e.Ciphertext) <= MaxValue+16
+		len(e.Nonce) == 12 && len(e.Ciphertext) >= 17 && len(e.Ciphertext) <= limit
 }
 
 func (q ManagementRequest) Valid(now time.Time) bool {
@@ -77,18 +106,25 @@ func (q ManagementRequest) Valid(now time.Time) bool {
 	case "list":
 		return q.Name == "" && q.Envelope == nil
 	case "delete":
-		return ValidName(q.Name) && q.Envelope == nil
+		return ValidName(q.Name) && q.Envelope == nil && !q.Policies
 	case "set":
-		return ValidName(q.Name) && q.Envelope != nil && q.Envelope.ID == q.ID && q.Envelope.ExpiresAt == q.ExpiresAt && q.Envelope.Valid(now)
+		return ValidName(q.Name) && !q.Policies && q.Envelope != nil && q.Envelope.ID == q.ID && q.Envelope.ExpiresAt == q.ExpiresAt && q.Envelope.Valid(now)
 	}
 	return false
 }
 
-func envelopeAAD(node, name string, e Envelope) []byte {
-	return []byte(RemoteProtocol + "\x00" + node + "\x00" + name + "\x00" + e.ID + "\x00" + strconv.FormatInt(e.ExpiresAt, 10))
+func envelopeProtocol(e Envelope) string {
+	if e.Version == PolicyVersion {
+		return PolicyProtocol
+	}
+	return RemoteProtocol
 }
 
-func managementCipher(private *ecdh.PrivateKey, public []byte, node string) (cipher.AEAD, error) {
+func envelopeAAD(node, name string, e Envelope) []byte {
+	return []byte(envelopeProtocol(e) + "\x00" + node + "\x00" + name + "\x00" + e.ID + "\x00" + strconv.FormatInt(e.ExpiresAt, 10))
+}
+
+func managementCipher(private *ecdh.PrivateKey, public []byte, node string, protocol string) (cipher.AEAD, error) {
 	key, err := ecdh.P256().NewPublicKey(public)
 	if err != nil {
 		return nil, errors.New("invalid secret management key")
@@ -97,7 +133,7 @@ func managementCipher(private *ecdh.PrivateKey, public []byte, node string) (cip
 	if err != nil {
 		return nil, errors.New("cannot derive secret management key")
 	}
-	derived, err := hkdf.Key(sha256.New, shared, nil, RemoteProtocol+"\x00"+node, 32)
+	derived, err := hkdf.Key(sha256.New, shared, nil, protocol+"\x00"+node, 32)
 	clear(shared)
 	if err != nil {
 		return nil, errors.New("cannot derive secret management key")
@@ -110,43 +146,106 @@ func managementCipher(private *ecdh.PrivateKey, public []byte, node string) (cip
 	return cipher.NewGCM(block)
 }
 
+// Seal encrypts a value-only write, which keeps any policy stored on the worker.
 func Seal(node, name, value string, public []byte) (Envelope, error) {
 	if node == "" || !ValidName(name) || !validValue(value) {
 		return Envelope{}, errors.New("secret requires a valid name and 1..4096 UTF-8 bytes without NUL")
 	}
+	return seal(node, name, []byte(value), 0, public)
+}
+
+// SealPolicy encrypts a write that replaces the value and its use policy
+// together; a nil policy explicitly makes the secret unrestricted. The policy
+// is inside the authenticated plaintext, so a relay cannot strip or alter it.
+// Send it only to a worker advertising policy support.
+func SealPolicy(node, name, value string, policy *Policy, public []byte) (Envelope, error) {
+	if node == "" || !ValidName(name) || !validValue(value) {
+		return Envelope{}, errors.New("secret requires a valid name and 1..4096 UTF-8 bytes without NUL")
+	}
+	encoded := []byte("null")
+	if policy != nil {
+		var err error
+		if encoded, err = encodePolicy(policy); err != nil {
+			return Envelope{}, err
+		}
+	}
+	plaintext := append(append(encoded, 0), value...)
+	defer clear(plaintext)
+	return seal(node, name, plaintext, PolicyVersion, public)
+}
+
+func seal(node, name string, plaintext []byte, version int, public []byte) (Envelope, error) {
 	private, err := NewManagementKey()
 	if err != nil {
 		return Envelope{}, err
 	}
-	aead, err := managementCipher(private, public, node)
+	e := Envelope{Version: version}
+	aead, err := managementCipher(private, public, node, envelopeProtocol(e))
 	if err != nil {
 		return Envelope{}, err
 	}
 	var id [16]byte
 	_, _ = rand.Read(id[:])
-	e := Envelope{ID: hex.EncodeToString(id[:]), ExpiresAt: time.Now().Add(30 * time.Second).Unix(), Key: private.PublicKey().Bytes(), Nonce: make([]byte, aead.NonceSize())}
+	e.ID, e.ExpiresAt, e.Key, e.Nonce = hex.EncodeToString(id[:]), time.Now().Add(30*time.Second).Unix(), private.PublicKey().Bytes(), make([]byte, aead.NonceSize())
 	_, _ = rand.Read(e.Nonce)
-	e.Ciphertext = aead.Seal(nil, e.Nonce, []byte(value), envelopeAAD(node, name, e))
+	e.Ciphertext = aead.Seal(nil, e.Nonce, plaintext, envelopeAAD(node, name, e))
 	return e, nil
 }
 
+// Open decrypts a value-only envelope. Policy-bearing envelopes need OpenWrite.
 func Open(private *ecdh.PrivateKey, node, name string, e Envelope) (string, error) {
+	w, err := OpenWrite(private, node, name, e)
+	if err != nil {
+		return "", err
+	}
+	if w.ReplacePolicy {
+		return "", errors.New("secret envelope carries a use policy")
+	}
+	return w.Value, nil
+}
+
+// Write is one decrypted remote set. ReplacePolicy is false for value-only
+// envelopes, which keep the stored policy; otherwise Policy replaces it, and
+// nil makes the secret unrestricted.
+type Write struct {
+	Value         string
+	ReplacePolicy bool
+	Policy        *Policy
+}
+
+// OpenWrite authenticates and decrypts either envelope version.
+func OpenWrite(private *ecdh.PrivateKey, node, name string, e Envelope) (Write, error) {
 	if private == nil || !ValidName(name) || !e.Valid(time.Now()) {
-		return "", errors.New("invalid or expired secret envelope")
+		return Write{}, errors.New("invalid or expired secret envelope")
 	}
-	aead, err := managementCipher(private, e.Key, node)
+	aead, err := managementCipher(private, e.Key, node, envelopeProtocol(e))
 	if err != nil {
-		return "", errors.New("invalid secret envelope")
+		return Write{}, errors.New("invalid secret envelope")
 	}
-	value, err := aead.Open(nil, e.Nonce, e.Ciphertext, envelopeAAD(node, name, e))
+	plaintext, err := aead.Open(nil, e.Nonce, e.Ciphertext, envelopeAAD(node, name, e))
 	if err != nil {
-		return "", errors.New("invalid secret envelope")
+		return Write{}, errors.New("invalid secret envelope")
 	}
-	defer clear(value)
+	defer clear(plaintext)
+	w := Write{}
+	value := plaintext
+	if e.Version == PolicyVersion {
+		encoded, rest, found := bytes.Cut(plaintext, []byte{0})
+		if !found {
+			return Write{}, errors.New("invalid secret envelope")
+		}
+		w.ReplacePolicy, value = true, rest
+		if string(encoded) != "null" {
+			if w.Policy, err = DecodePolicy(encoded); err != nil {
+				return Write{}, errors.New("invalid secret use policy")
+			}
+		}
+	}
 	if !validValue(string(value)) {
-		return "", errors.New("invalid secret value")
+		return Write{}, errors.New("invalid secret value")
 	}
-	return string(value), nil
+	w.Value = string(value)
+	return w, nil
 }
 
 // SecureURL permits authenticated HTTPS or direct loopback development only.

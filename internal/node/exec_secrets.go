@@ -51,26 +51,31 @@ func (n *Node) execRun(ctx context.Context, args json.RawMessage, e Execution) (
 	if input.StdinSecret == nil && len(input.EnvSecrets) == 0 {
 		return runCommand(ctx, input.Command, e, stdin)
 	}
-	values, err := n.secretValues()
+	resolver, err := n.secretResolver()
 	if err != nil {
 		return nil, err
 	}
-	redactor := secrets.NewRedactor(values)
+	refs := make([]secrets.Reference, 0, len(input.EnvSecrets)+1)
+	for _, ref := range input.EnvSecrets {
+		refs = append(refs, secrets.Reference{Name: ref, Use: secrets.UseExec})
+	}
+	if input.StdinSecret != nil {
+		refs = append(refs, secrets.Reference{Name: *input.StdinSecret, Use: secrets.UseExec})
+	}
+	// Every reference passes its use policy before any value is injected.
+	resolved, err := resolver.Resolve(refs)
+	if err != nil {
+		return nil, err
+	}
+	redactor := secrets.NewRedactor(resolver.Masking())
 	if input.Env == nil {
 		input.Env = map[string]string{}
 	}
 	for name, ref := range input.EnvSecrets {
-		value, err := resolveSecret(values, ref)
-		if err != nil {
-			return nil, err
-		}
-		input.Env[name] = value
+		input.Env[name] = resolved[ref]
 	}
 	if input.StdinSecret != nil {
-		stdin, err = resolveSecret(values, *input.StdinSecret)
-		if err != nil {
-			return nil, err
-		}
+		stdin = resolved[*input.StdinSecret]
 	}
 	// Never stream raw chunks: credentials may cross write/capture boundaries.
 	// The original JSON and persisted task arguments retain only references.
