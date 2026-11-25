@@ -19,12 +19,10 @@ import (
 // SOCKS5 (RFC 1928) mode of a process-owned forward: one local listener, one
 // CONNECT per accepted socket, each opened as an ordinary tcp.open stream.
 const (
-	DefaultSOCKSConnections = 256
-	MaxSOCKSConnections     = 384
-	socksWaiters            = 32
-	socksSlotWait           = 500 * time.Millisecond
-	socksQueuedHandshake    = time.Second
-	socksOverflowTimeout    = 100 * time.Millisecond
+	socksWaiters         = 32
+	socksSlotWait        = 500 * time.Millisecond
+	socksQueuedHandshake = time.Second
+	socksOverflowTimeout = 100 * time.Millisecond
 
 	socksVersion          = 5
 	socksHandshakeTimeout = 10 * time.Second
@@ -50,12 +48,12 @@ const (
 
 var (
 	errSOCKSNonLoopback     = errors.New("SOCKS listeners default to loopback; a non-loopback SOCKS listener is an unauthenticated open proxy into the fleet and requires allowNonLoopback (CLI --allow-non-loopback)")
-	errSOCKSInstructionOnly = errors.New("SOCKS forwards are refused for instruction-only destinations, such as Hybrid System companions, because each connection there needs an exact grant for an explicitly chosen address; use an ordinary forward to a fixed HOST:PORT")
+	errProxyInstructionOnly = errors.New("browser proxies are refused for instruction-only destinations, such as Hybrid System companions, because each connection there needs an exact grant for an explicitly chosen address; use an ordinary forward to a fixed HOST:PORT")
 )
 
 func validateSOCKSForward(spec ForwardSpec) error {
-	if spec.MaxConnections < 0 || spec.MaxConnections > MaxSOCKSConnections {
-		return fmt.Errorf("maxConnections must be between 1 and %d, or zero for the default", MaxSOCKSConnections)
+	if err := validateProxyConnectionLimit(spec.MaxConnections); err != nil {
+		return err
 	}
 	if spec.Reverse {
 		return errors.New("SOCKS mode cannot be combined with reverse forwarding")
@@ -66,7 +64,21 @@ func validateSOCKSForward(spec ForwardSpec) error {
 	if spec.Listen == "" || spec.AllowNonLoopback {
 		return nil
 	}
-	host, _, err := net.SplitHostPort(spec.Listen)
+	return validateProxyLoopback(spec.Listen, errSOCKSNonLoopback)
+}
+
+func validateProxyConnectionLimit(limit int) error {
+	if limit < 0 || limit > MaxProxyConnections {
+		return fmt.Errorf("maxConnections must be between 1 and %d, or zero for the default", MaxProxyConnections)
+	}
+	return nil
+}
+
+func validateProxyLoopback(listen string, nonLoopback error) error {
+	if listen == "" {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(listen)
 	if err != nil {
 		return fmt.Errorf("listen address: %w", err)
 	}
@@ -75,7 +87,7 @@ func validateSOCKSForward(spec ForwardSpec) error {
 	if ip, err := netip.ParseAddr(host); host == "localhost" || (err == nil && ip.Unmap().IsLoopback()) {
 		return nil
 	}
-	return errSOCKSNonLoopback
+	return nonLoopback
 }
 
 func loopbackListener(addr net.Addr) bool {
@@ -83,9 +95,9 @@ func loopbackListener(addr net.Addr) bool {
 	return ok && tcp.IP.IsLoopback()
 }
 
-// checkSOCKSTarget refuses instruction-only destinations before binding a
-// listener. openSOCKSPeerTCP repeats the check for every socket.
-func (c Client) checkSOCKSTarget(ctx context.Context, target string) error {
+// checkProxyTarget refuses instruction-only destinations before binding a
+// listener. openProxyPeerTCP repeats the check for every destination socket.
+func (c Client) checkProxyTarget(ctx context.Context, target string) error {
 	peer, err := c.backend(ctx)
 	if err != nil {
 		return err
@@ -96,7 +108,7 @@ func (c Client) checkSOCKSTarget(ctx context.Context, target string) error {
 			return err
 		}
 		if destination.InstructionOnly {
-			return errSOCKSInstructionOnly
+			return errProxyInstructionOnly
 		}
 		return nil
 	}
@@ -110,22 +122,22 @@ func (c Client) checkSOCKSTarget(ctx context.Context, target string) error {
 	}
 	for _, m := range machines {
 		if m.InstructionOnly {
-			return errSOCKSInstructionOnly
+			return errProxyInstructionOnly
 		}
 	}
 	return nil
 }
 
-// openSOCKSPeerTCP never prepares a grant. Unlike openPeerTCP, the address
-// comes from an arbitrary local SOCKS client rather than an instruction the
+// openProxyPeerTCP never prepares a grant. Unlike openPeerTCP, the address
+// comes from an arbitrary local proxy client rather than an instruction the
 // user named, so an instruction-only destination is refused instead.
-func openSOCKSPeerTCP(ctx context.Context, peer *transport.Peer, target, address string) (net.Conn, error) {
+func openProxyPeerTCP(ctx context.Context, peer *transport.Peer, target, address string) (net.Conn, error) {
 	destination, err := peer.Lookup(ctx, target)
 	if err != nil {
 		return nil, err
 	}
 	if destination.InstructionOnly {
-		return nil, errSOCKSInstructionOnly
+		return nil, errProxyInstructionOnly
 	}
 	return peer.OpenTCP(ctx, destination.ID, address)
 }
@@ -194,7 +206,7 @@ func (f *Forward) bridgeSOCKS(c Client, local net.Conn, admitted bool) {
 	if f.ctx.Err() != nil {
 		return
 	}
-	remote, err := c.tunnel(f.ctx, f.info.Node, address, openSOCKSPeerTCP)
+	remote, err := c.tunnel(f.ctx, f.info.Node, address, openProxyPeerTCP)
 	if err != nil {
 		if transport.IsStreamCapacity(err) {
 			f.rejectSOCKSCapacity(local, err)
@@ -289,7 +301,7 @@ func readSOCKSRequest(r io.Reader, w io.Writer) (string, byte, error) {
 		if _, err := io.ReadFull(r, name); err != nil {
 			return "", 0, err
 		}
-		if !validSOCKSDomain(name) {
+		if !validProxyHost(name) {
 			return "", socksReplyGeneralFailure, errors.New("invalid SOCKS domain name")
 		}
 		host = string(name)
@@ -309,9 +321,9 @@ func readSOCKSRequest(r io.Reader, w io.Writer) (string, byte, error) {
 	return net.JoinHostPort(host, strconv.Itoa(port)), 0, nil
 }
 
-// validSOCKSDomain accepts DNS names and unzoned IP literals that some
+// validProxyHost accepts DNS names and unzoned IP literals that some
 // clients send as names. Anything else cannot be a dialable host.
-func validSOCKSDomain(name []byte) bool {
+func validProxyHost(name []byte) bool {
 	if len(name) == 0 {
 		return false
 	}
@@ -334,7 +346,7 @@ func socksReply(code byte) []byte {
 // socksReplyCode maps dial and authorization failures, which can arrive as
 // remote error text from any worker OS, to RFC 1928 reply codes.
 func socksReplyCode(err error) byte {
-	if errors.Is(err, errSOCKSInstructionOnly) {
+	if errors.Is(err, errProxyInstructionOnly) {
 		return socksReplyNotAllowed
 	}
 	message := strings.ToLower(err.Error())

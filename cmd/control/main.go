@@ -715,6 +715,7 @@ Environment: CONTROL_API, CONTROL_TOKEN
   upload status|abort NODE ID          Reconcile publication or abandon staging
   tunnel NODE HOST:PORT [--reverse] [--listen ADDRESS]
   tunnel NODE --socks [--listen ADDRESS] [--max-connections N] [--allow-non-loopback]  Local SOCKS5 proxy through NODE
+  tunnel NODE --https-proxy [--listen ADDRESS] [--max-connections N]  Loopback HTTPS/HTTP2 CONNECT proxy through NODE
   tunnel start NODE HOST:PORT --listen ADDRESS [--reverse] [--id ID] [--ttl DURATION]
   tunnel list
   tunnel dispose ID

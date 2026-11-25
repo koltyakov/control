@@ -24,13 +24,15 @@ func newFrameConn(secure net.Conn, packets *packetConn) *frameConn {
 func (c *frameConn) Write(b []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.holding {
+	body := c.holding
+	if !body {
 		c.packets.holdWrites()
 		c.holding = true
 	}
 	n, err := c.Conn.Write(b)
 	// yamux's single send loop always writes a data header's body next.
-	if err == nil && yamuxDataHeader(b) {
+	// A body can itself have the same length and prefix as a data header.
+	if err == nil && !body && yamuxDataHeader(b) {
 		return n, nil
 	}
 	c.holding = false

@@ -224,7 +224,7 @@ func (c Client) Tunnel(ctx context.Context, target, address string) (net.Conn, e
 	return c.tunnel(ctx, target, address, openPeerTCP)
 }
 
-// tunnel lets SOCKS sockets replace the peer opener; see openSOCKSPeerTCP.
+// tunnel lets proxy sockets replace the peer opener; see openProxyPeerTCP.
 func (c Client) tunnel(ctx context.Context, target, address string, openPeer func(context.Context, *transport.Peer, string, string) (net.Conn, error)) (net.Conn, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	stopLifetime := func() bool { return false }

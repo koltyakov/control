@@ -117,11 +117,11 @@ func tunnelCLI(ctx context.Context, c client.Client, args []string) error {
 			return persistentTunnelCLI(ctx, c, args)
 		}
 	}
-	const usage = "usage: control tunnel NODE HOST:PORT [--reverse] [--listen 127.0.0.1:PORT], or control tunnel NODE --socks [--listen 127.0.0.1:PORT] [--max-connections N] [--allow-non-loopback]"
+	const usage = "usage: control tunnel NODE HOST:PORT [--reverse] [--listen ADDRESS], or control tunnel NODE (--socks | --https-proxy) [--listen ADDRESS] [--max-connections N]"
 	if len(args) < 2 {
 		return errors.New(usage)
 	}
-	// SOCKS mode has no destination argument; flags follow NODE directly.
+	// Proxy modes have no destination argument; flags follow NODE directly.
 	address, flags := args[1], args[2:]
 	if strings.HasPrefix(address, "-") {
 		address, flags = "", args[1:]
@@ -130,25 +130,30 @@ func tunnelCLI(ctx context.Context, c client.Client, args []string) error {
 	listen := f.String("listen", "127.0.0.1:0", "listen address, on the remote machine with --reverse")
 	reverse := f.Bool("reverse", false, "forward a remote listener to HOST:PORT on this machine")
 	socks := f.Bool("socks", false, "run a local SOCKS5 proxy; NODE resolves and dials each requested host")
-	maxConnections := f.Int("max-connections", 0, fmt.Sprintf("SOCKS connection limit (1..%d; zero selects %d)", client.MaxSOCKSConnections, client.DefaultSOCKSConnections))
+	httpsProxy := f.Bool("https-proxy", false, "run a loopback HTTPS proxy using HTTP/2 CONNECT")
+	maxConnections := f.Int("max-connections", 0, fmt.Sprintf("proxy connection limit (1..%d; zero selects %d)", client.MaxProxyConnections, client.DefaultProxyConnections))
 	allowNonLoopback := f.Bool("allow-non-loopback", false, "permit a non-loopback --socks listener, an unauthenticated open proxy into the fleet")
 	if err := f.Parse(flags); err != nil {
 		return err
 	}
-	if f.NArg() != 0 || (address == "") != *socks {
+	if f.NArg() != 0 || (address == "") != (*socks || *httpsProxy) {
 		return errors.New(usage)
 	}
-	forward, err := c.StartForward(ctx, client.ForwardSpec{Node: args[0], Address: address, Listen: *listen, Reverse: *reverse, SOCKS: *socks, AllowNonLoopback: *allowNonLoopback, MaxConnections: *maxConnections})
+	forward, err := c.StartForward(ctx, client.ForwardSpec{Node: args[0], Address: address, Listen: *listen, Reverse: *reverse, SOCKS: *socks, HTTPSProxy: *httpsProxy, AllowNonLoopback: *allowNonLoopback, MaxConnections: *maxConnections})
 	if err != nil {
 		return err
 	}
 	defer func() {
 		forward.Close()
 		if rejected := forward.Info().CapacityRejections; rejected != 0 {
-			fmt.Fprintln(os.Stderr, "SOCKS5 capacity rejections:", rejected)
+			fmt.Fprintln(os.Stderr, "Proxy capacity rejections:", rejected)
 		}
 	}()
-	if *socks {
+	if *httpsProxy {
+		info := forward.Info()
+		fmt.Fprintf(os.Stderr, "HTTPS proxy listening on %s through %s (HTTP/2, connection limit %d)\n", info.ProxyURL, args[0], info.ConnectionLimit)
+		fmt.Fprintln(os.Stderr, "Proxy SPKI SHA-256:", info.ProxySPKI)
+	} else if *socks {
 		info := forward.Info()
 		fmt.Fprintf(os.Stderr, "SOCKS5 proxy listening on %s through %s (connection limit %d)\n", info.Listen, args[0], info.ConnectionLimit)
 	} else if *reverse {

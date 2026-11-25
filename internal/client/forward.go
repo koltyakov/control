@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -16,6 +17,8 @@ import (
 
 const maxForwards = 32
 const maxForwardConnections = 128
+const DefaultProxyConnections = 256
+const MaxProxyConnections = 384
 
 type ForwardSpec struct {
 	Node    string `json:"node"`
@@ -25,8 +28,9 @@ type ForwardSpec struct {
 	// SOCKS reads each socket's destination from a SOCKS5 CONNECT request
 	// instead of Address. AllowNonLoopback opts in to an open proxy listener.
 	SOCKS            bool `json:"socks,omitempty"`
+	HTTPSProxy       bool `json:"httpsProxy,omitempty"`
 	AllowNonLoopback bool `json:"allowNonLoopback,omitempty"`
-	MaxConnections   int  `json:"maxConnections,omitempty"` // SOCKS only; zero selects the default.
+	MaxConnections   int  `json:"maxConnections,omitempty"` // Browser proxies only; zero selects the default.
 }
 
 type ForwardInfo struct {
@@ -36,6 +40,9 @@ type ForwardInfo struct {
 	Listen             string `json:"listen"`
 	Reverse            bool   `json:"reverse,omitempty"`
 	SOCKS              bool   `json:"socks,omitempty"`
+	HTTPSProxy         bool   `json:"httpsProxy,omitempty"`
+	ProxyURL           string `json:"proxyUrl,omitempty"`
+	ProxySPKI          string `json:"proxySpki,omitempty"`
 	Active             int    `json:"activeConnections"`
 	ConnectionLimit    int    `json:"connectionLimit,omitempty"`
 	WaitingConnections int    `json:"waitingConnections,omitempty"`
@@ -91,6 +98,7 @@ type Forward struct {
 	mu          sync.Mutex
 	connections map[net.Conn]net.Conn
 	socksSlots  chan struct{} // When non-nil, connections also includes bounded SOCKS waiters.
+	httpsProxy  *httpsForwardProxy
 	wg          sync.WaitGroup
 	done        chan struct{}
 	once        sync.Once
@@ -106,6 +114,10 @@ func (f *Forward) Info() ForwardInfo {
 		info.Active = len(f.socksSlots)
 		info.WaitingConnections = len(f.connections) - info.Active
 	}
+	if f.httpsProxy != nil {
+		info.Active = len(f.httpsProxy.slots)
+		info.WaitingConnections = len(f.httpsProxy.waiters)
+	}
 	return info
 }
 
@@ -113,6 +125,9 @@ func (f *Forward) Done() <-chan struct{} { return f.done }
 
 func (f *Forward) closeConnections() {
 	_ = f.listener.Close()
+	if f.httpsProxy != nil {
+		_ = f.httpsProxy.server.Close()
+	}
 	f.mu.Lock()
 	connections := make([]net.Conn, 0, 2*len(f.connections))
 	for local, remote := range f.connections {
@@ -146,24 +161,33 @@ func (c Client) StartForward(ctx context.Context, spec ForwardSpec) (*Forward, e
 	if spec.Node == "" {
 		return nil, errors.New("forwarding requires a target machine")
 	}
-	if spec.SOCKS {
+	switch {
+	case spec.SOCKS && spec.HTTPSProxy:
+		return nil, errors.New("socks and httpsProxy are mutually exclusive")
+	case spec.SOCKS:
 		if err := validateSOCKSForward(spec); err != nil {
 			return nil, err
 		}
-	} else if spec.MaxConnections != 0 {
-		return nil, errors.New("maxConnections applies only to SOCKS forwards")
-	} else if spec.AllowNonLoopback {
+	case spec.HTTPSProxy:
+		if err := validateHTTPSForward(spec); err != nil {
+			return nil, err
+		}
+	case spec.MaxConnections != 0:
+		return nil, errors.New("maxConnections applies only to browser proxies")
+	case spec.AllowNonLoopback:
 		return nil, errors.New("allowNonLoopback applies only to SOCKS forwards")
-	} else if _, _, err := net.SplitHostPort(spec.Address); err != nil {
-		return nil, fmt.Errorf("destination address: %w", err)
+	default:
+		if _, _, err := net.SplitHostPort(spec.Address); err != nil {
+			return nil, fmt.Errorf("destination address: %w", err)
+		}
 	}
 	// Select the backend before publishing a local port. Never create a dummy
 	// remote TCP connection just to probe readiness or replay a failed stream.
 	if _, err := c.backend(ctx); err != nil {
 		return nil, err
 	}
-	if spec.SOCKS {
-		if err := c.checkSOCKSTarget(ctx, spec.Node); err != nil {
+	if spec.SOCKS || spec.HTTPSProxy {
+		if err := c.checkProxyTarget(ctx, spec.Node); err != nil {
 			return nil, err
 		}
 	}
@@ -200,14 +224,27 @@ func (c Client) StartForward(ctx context.Context, spec ForwardSpec) (*Forward, e
 		stop()
 	} else {
 		listener, err = net.Listen("tcp", spec.Listen)
-		if err == nil && spec.SOCKS && !spec.AllowNonLoopback && !loopbackListener(listener.Addr()) {
+		if err == nil && (spec.HTTPSProxy || spec.SOCKS && !spec.AllowNonLoopback) && !loopbackListener(listener.Addr()) {
 			_ = listener.Close()
 			err = errSOCKSNonLoopback
+			if spec.HTTPSProxy {
+				err = errHTTPSProxyNonLoopback
+			}
 		}
 	}
 	if err != nil {
 		cancel()
 		return nil, err
+	}
+	var certificate tls.Certificate
+	var pin string
+	if spec.HTTPSProxy {
+		certificate, pin, err = newHTTPSProxyCertificate(listener.Addr().(*net.TCPAddr).IP)
+		if err != nil {
+			_ = listener.Close()
+			cancel()
+			return nil, err
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -218,13 +255,20 @@ func (c Client) StartForward(ctx context.Context, spec ForwardSpec) (*Forward, e
 	}
 	f := &Forward{ctx: forwardCtx, cancel: cancel, listener: listener, connections: map[net.Conn]net.Conn{}, done: make(chan struct{}),
 		info: ForwardInfo{ID: identity.NewID(), Node: spec.Node, Address: spec.Address, Listen: listener.Addr().String(), Reverse: spec.Reverse, SOCKS: spec.SOCKS}}
-	if spec.SOCKS {
+	if spec.SOCKS || spec.HTTPSProxy {
 		limit := spec.MaxConnections
 		if limit == 0 {
-			limit = DefaultSOCKSConnections
+			limit = DefaultProxyConnections
 		}
-		f.socksSlots = make(chan struct{}, limit)
 		f.info.ConnectionLimit = limit
+		if spec.SOCKS {
+			f.socksSlots = make(chan struct{}, limit)
+		} else {
+			f.info.HTTPSProxy = true
+			f.info.ProxyURL = "https://" + f.info.Listen
+			f.info.ProxySPKI = pin
+			f.httpsProxy = newHTTPSForwardProxy(c, f, limit, certificate)
+		}
 	}
 	r.forwards[f.info.ID] = f
 	f.retire = func() {
@@ -239,7 +283,11 @@ func (c Client) StartForward(ctx context.Context, spec ForwardSpec) (*Forward, e
 		r.mu.Unlock()
 	}
 	f.wg.Add(1)
-	go f.serve(c)
+	if f.httpsProxy != nil {
+		go f.serveHTTPSProxy()
+	} else {
+		go f.serve(c)
+	}
 	return f, nil
 }
 

@@ -348,7 +348,7 @@ func (c Client) MCPServer() *mcp.Server {
 		}
 		return c.PasteClipboard(ctx, spec)
 	})
-	local("control_forward_start", "Forward a local TCP port to HOST:PORT through a named fleet machine. With reverse: true, bind listen on that machine and forward to address on this orchestrator, for example a local dev server. Defaults to loopback on an ephemeral port. Returns immediately and survives tool-call completion until stopped or this process exits. Requires remote tcp.open permission, or tcp.listen for reverse forwarding. Existing sockets are never replayed. socks: true, without address, serves a SOCKS5 CONNECT proxy; the node resolves and dials each host. maxConnections sets the SOCKS connection limit (zero or omitted selects the default). Not for reverse or instruction-only targets. Non-loopback SOCKS is an open proxy: needs allowNonLoopback, only on user request.", map[string]any{"node": text, "address": text, "listen": text, "reverse": map[string]any{"type": "boolean"}, "socks": map[string]any{"type": "boolean"}, "allowNonLoopback": map[string]any{"type": "boolean"}, "maxConnections": map[string]any{"type": "integer", "minimum": 0, "maximum": MaxSOCKSConnections, "default": DefaultSOCKSConnections}}, []string{"node"}, func(ctx context.Context, args json.RawMessage) (any, error) {
+	local("control_forward_start", "Start a process-owned forward. Default is loopback. reverse binds on node; socks or httpsProxy uses worker DNS and takes no address, reverse, or instruction-only target. httpsProxy returns proxyUrl and proxySpki for HTTP/2 CONNECT. allowNonLoopback exposes an open SOCKS proxy; set only on explicit request. Requires tcp.open or, for reverse, tcp.listen. No replay.", map[string]any{"node": text, "address": text, "listen": text, "reverse": map[string]any{"type": "boolean"}, "socks": map[string]any{"type": "boolean"}, "httpsProxy": map[string]any{"type": "boolean"}, "allowNonLoopback": map[string]any{"type": "boolean"}, "maxConnections": map[string]any{"type": "integer", "minimum": 0, "maximum": MaxProxyConnections}}, []string{"node"}, func(ctx context.Context, args json.RawMessage) (any, error) {
 		var spec ForwardSpec
 		if err := json.Unmarshal(args, &spec); err != nil {
 			return nil, err
@@ -359,7 +359,7 @@ func (c Client) MCPServer() *mcp.Server {
 		}
 		return f.Info(), nil
 	})
-	local("control_forward_list", "List active local and reverse port forwards owned by this MCP process, including connection counts and last connection errors. SOCKS entries include the configured limit, queued connections when nonzero, and cumulative capacity rejections. Completed forwards are removed automatically and release listener capacity.", map[string]any{}, nil, func(context.Context, json.RawMessage) (any, error) {
+	local("control_forward_list", "List active forwards, connection counts, limits, capacity rejections, and last errors for this process.", map[string]any{}, nil, func(context.Context, json.RawMessage) (any, error) {
 		return c.Forwards(), nil
 	})
 	local("control_forward_stop", "Close this process's port forward by ID, including its listener and active sockets. Acknowledges and forgets a recently completed ID among the latest 32 completions; unknown or forgotten IDs fail. Does not stop the remote service or durable tasks.", map[string]any{"id": text}, []string{"id"}, func(_ context.Context, args json.RawMessage) (any, error) {

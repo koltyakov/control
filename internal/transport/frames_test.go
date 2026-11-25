@@ -81,6 +81,32 @@ func countedMux(t *testing.T, packetSize int) (*yamux.Session, *yamux.Session, *
 	return clientMux, serverMux, counter
 }
 
+func TestFrameBodyFlushesWithoutAnotherWrite(t *testing.T) {
+	t.Parallel()
+	client, server, _ := countedMux(t, legacyPacketSize)
+	out, err := client.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Close() }()
+	in, err := server.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = in.Close() }()
+	_ = in.SetReadDeadline(time.Now().Add(2 * time.Second))
+	// A duplex record carrying eight bytes can look like another yamux
+	// header. Its body must flush even while the sender waits for a reply.
+	body := []byte("\x00\x00\x00\x08abcdefgh")
+	if _, err = out.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(body))
+	if _, err = io.ReadFull(in, got); err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("frame body %q, want %q: %v", got, body, err)
+	}
+}
+
 func TestBulkFramesUseFullPackets(t *testing.T) {
 	const size = 8 << 20
 	const frames = size / (32 << 10)

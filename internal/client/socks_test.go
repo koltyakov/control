@@ -147,7 +147,7 @@ func TestSOCKSReplyCodes(t *testing.T) {
 			t.Errorf("%q: reply %d, want %d", message, got, want)
 		}
 	}
-	if got := socksReplyCode(fmt.Errorf("wrapped: %w", errSOCKSInstructionOnly)); got != socksReplyNotAllowed {
+	if got := socksReplyCode(fmt.Errorf("wrapped: %w", errProxyInstructionOnly)); got != socksReplyNotAllowed {
 		t.Errorf("instruction-only refusal reply %d", got)
 	}
 }
@@ -163,7 +163,7 @@ func TestSOCKSForwardValidation(t *testing.T) {
 		{Node: "w", SOCKS: true, Listen: "192.168.1.5:1080"},
 		{Node: "w", SOCKS: true, Listen: "proxy.example:1080"},
 		{Node: "w", SOCKS: true, MaxConnections: -1},
-		{Node: "w", SOCKS: true, MaxConnections: MaxSOCKSConnections + 1},
+		{Node: "w", SOCKS: true, MaxConnections: MaxProxyConnections + 1},
 	} {
 		if validateSOCKSForward(spec) == nil {
 			t.Errorf("accepted %+v", spec)
@@ -176,7 +176,7 @@ func TestSOCKSForwardValidation(t *testing.T) {
 		{Node: "w", SOCKS: true, Listen: "localhost:0"},
 		{Node: "w", SOCKS: true, Listen: "0.0.0.0:1080", AllowNonLoopback: true},
 		{Node: "w", SOCKS: true, MaxConnections: 1},
-		{Node: "w", SOCKS: true, MaxConnections: MaxSOCKSConnections},
+		{Node: "w", SOCKS: true, MaxConnections: MaxProxyConnections},
 	} {
 		if err := validateSOCKSForward(spec); err != nil {
 			t.Errorf("refused %+v: %v", spec, err)
@@ -293,14 +293,14 @@ func TestSOCKSForward(t *testing.T) {
 				t.Fatal("non-loopback SOCKS listener without opt-in", err)
 			}
 			// Instruction-only destinations get no automatic per-socket grant.
-			if _, err := c.StartForward(ctx, ForwardSpec{Node: "second", SOCKS: true}); !errors.Is(err, errSOCKSInstructionOnly) {
+			if _, err := c.StartForward(ctx, ForwardSpec{Node: "second", SOCKS: true}); !errors.Is(err, errProxyInstructionOnly) {
 				t.Fatal("SOCKS toward an instruction-only destination", err)
 			}
 			peer, err := c.backend(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if conn, err := openSOCKSPeerTCP(ctx, peer, "second", echo.Addr().String()); !errors.Is(err, errSOCKSInstructionOnly) {
+			if conn, err := openProxyPeerTCP(ctx, peer, "second", echo.Addr().String()); !errors.Is(err, errProxyInstructionOnly) {
 				if conn != nil {
 					_ = conn.Close()
 				}
@@ -397,7 +397,7 @@ func TestSOCKSForward(t *testing.T) {
 
 			// Hold 256 established CONNECTs across the same peer session,
 			// exceeding both previous transport budgets.
-			idle := make([]net.Conn, 0, DefaultSOCKSConnections)
+			idle := make([]net.Conn, 0, DefaultProxyConnections)
 			defer func() {
 				for _, conn := range idle {
 					_ = conn.Close()
@@ -412,14 +412,14 @@ func TestSOCKSForward(t *testing.T) {
 				time.Sleep(10 * time.Millisecond)
 			}
 			request := socksRequest(socksCommandConnect, socksAddressIPv4, []byte{127, 0, 0, 1}, port)
-			for len(idle) < DefaultSOCKSConnections-1 {
+			for len(idle) < DefaultProxyConnections-1 {
 				conn, reply := socksOpen(t, info.Listen, request, nil)
 				if reply != socksReplySucceeded {
 					t.Fatalf("CONNECT %d reply: %d", len(idle)+2, reply)
 				}
 				idle = append(idle, conn)
 			}
-			if got := f.Info().Active; got != DefaultSOCKSConnections {
+			if got := f.Info().Active; got != DefaultProxyConnections {
 				t.Fatal("socket count", got)
 			}
 			started := time.Now()

@@ -90,3 +90,34 @@ curl --socks5-hostname 127.0.0.1:1080 https://api.internal/health
 MCP `control_forward_start` takes `socks: true` without `address`. Each SOCKS `CONNECT` opens its own `tcp.open` stream through the worker, which resolves domain names with its own DNS and network. Use `socks5h://` or `--socks5-hostname` so clients send names unresolved. Only "no authentication" and `CONNECT` are supported. A SOCKS listener must be on loopback unless `--allow-non-loopback` is given; a non-loopback listener is an unauthenticated open proxy into everything the worker can reach. SOCKS mode is refused for instruction-only destinations such as Hybrid System companions, and for `--reverse`. Retained `control tunnel start` definitions do not support SOCKS mode in this version. See [SOCKS forwarding details](protocol.md#orchestrator-sessions-and-forwards).
 
 SOCKS defaults to 256 connections per listener. Set `--max-connections N` or MCP `maxConnections` to 1–384; zero or omission uses the default. Connections share the same interactive peer session. Upgrade both ends for more than 128 streams on that session; with explicit local API routing, upgrade the local node too. When slots are busy, a SOCKS request can wait briefly and receives general failure (`0x01`) if admission still fails. MCP `control_forward_list` and `control_session` show the per-listener limit and cumulative `capacityRejections`; a foreground CLI prints nonzero rejections when it exits.
+
+## HTTPS proxies over HTTP/2
+
+Use `control tunnel worker --https-proxy` or MCP `control_forward_start` with `httpsProxy: true` instead of `socks`. The listener is loopback only. Apps explicitly configured to use its URL share an HTTP/2 connection to the listener. HTTPS sites use `CONNECT`, with no website TLS interception. Plain `http://` requests also go through the worker, but are still unencrypted between the worker and the site. The proxy opens an authorized `tcp.open` stream for each `CONNECT` or plain HTTP request. It does not accept HTTP/1.1 proxy clients. Use SOCKS5 for clients that support it, or a fixed TCP forward for an app pointed at one destination.
+
+```sh
+control tunnel tallinn --https-proxy --listen 127.0.0.1:8443
+```
+
+Use the printed proxy URL and public key pin, or read `proxyUrl` and `proxySpki` from MCP. Each start has a fresh, in-memory proxy certificate, so reuse neither the old pin nor a system-wide certificate override.
+
+For Chrome on macOS, set `PROXY_PIN` to the printed base64 pin and choose a separate profile directory:
+
+```sh
+open -n -a "Google Chrome" --args \
+  --user-data-dir="$HOME/Library/Application Support/Control/Chrome-Tallinn" \
+  --proxy-server=https://127.0.0.1:8443 \
+  --ignore-certificate-errors-spki-list="$PROXY_PIN" \
+  --force-webrtc-ip-handling-policy=disable_non_proxied_udp
+```
+
+The pin permits only certificates matching the proxy key in this launch. Don't use the unscoped `--ignore-certificate-errors` flag. The profile and proxy flags leave system proxy settings and ordinary Chrome launches unchanged; the listener is not exclusive to Chrome. Quit the separate instance before relaunching it with a new pin.
+
+For curl builds with HTTP/2 proxy support, `--proxy-http2 --proxytunnel` selects the same channel without Chrome. `--proxy-insecure` below skips the normal CA check for the self-signed proxy only; the proxy pin is still checked and origin TLS is verified normally.
+
+```sh
+curl --proxy-http2 --proxytunnel --proxy https://127.0.0.1:8443 \
+  --proxy-insecure --proxy-pinnedpubkey "sha256//$PROXY_PIN" https://example.com/
+```
+
+HTTPS uses the same 256 default and 1–384 configurable destination limit as SOCKS. A busy listener briefly queues up to 32 requests before returning HTTP 503 and counting capacity rejections. Closing the forward closes its local listener and all active streams. Older workers can serve this mode with their existing `tcp.open` support, within their peer stream limit.
