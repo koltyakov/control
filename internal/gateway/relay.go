@@ -58,7 +58,25 @@ type GatewayMetrics struct {
 	RelayDropped int64 `json:"relayDropped"`
 }
 
-func (g *Gateway) metricsHandler(w http.ResponseWriter, _ *http.Request) {
+func (g *Gateway) metricsHandler(w http.ResponseWriter, r *http.Request) {
+	text, ok := metricsTextRequested(r)
+	if !ok {
+		http.Error(w, "format must be json or prometheus", http.StatusBadRequest)
+		return
+	}
+	m := g.metricsSnapshot()
+	if text {
+		g.writeMetricsText(w, m)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(m)
+}
+
+// metricsSnapshot reads the counters, admission state, and route table once.
+// It holds only the admission and route locks, never the gateway mutation lock.
+func (g *Gateway) metricsSnapshot() GatewayMetrics {
 	m := GatewayMetrics{
 		Connects: g.counters.connects.Load(), Disconnects: g.counters.disconnects.Load(),
 		AuthFailures: g.counters.authFailures.Load(), RelayPackets: g.counters.relayPackets.Load(),
@@ -83,9 +101,7 @@ func (g *Gateway) metricsHandler(w http.ResponseWriter, _ *http.Request) {
 		m.QueuedRelayBytes += c.queued.Load()
 	}
 	g.routeMu.RUnlock()
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(m)
+	return m
 }
 
 // route returns the connected destination within the sender's fleet. It uses

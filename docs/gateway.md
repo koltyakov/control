@@ -122,6 +122,54 @@ With the saved operator login, run `control console password` and enter a separa
 
 Keep `CONTROL_PUBLIC_URL` set to the exact HTTPS origin and preserve the Host header at the loopback proxy. No extra port, frontend build, or web service is needed. See [web console](console.md) for security, sessions, and supported actions.
 
+## Metrics
+
+Superuser `GET /v1/admin/metrics` returns gateway-wide diagnostics as JSON by default. Add `?format=prometheus`, or send an `Accept` header that prefers `text/plain` or `application/openmetrics-text`, to receive the classic Prometheus text format (`text/plain; version=0.0.4`). Prometheus and compatible scrapers accept this format even when they prefer OpenMetrics. There is no unauthenticated metrics endpoint or separate listener. Use the gateway's public HTTPS URL. Other credentials receive HTTP 403.
+
+Only the superuser key can read the route. A scrape host that holds it can also administer the gateway, so keep the key in a file readable only by the scraper's service account:
+
+```sh
+sudo install -m 0400 -o prometheus -g prometheus /dev/stdin /etc/prometheus/control-superuser-key
+```
+
+Paste the key, press Enter, then Ctrl-D. Then add a scrape job:
+
+```yaml
+scrape_configs:
+  - job_name: control-gateway
+    scheme: https
+    metrics_path: /v1/admin/metrics
+    params:
+      format: [prometheus]
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/control-superuser-key
+    static_configs:
+      - targets: ['control.example.com']
+```
+
+The format exports only aggregates for the whole gateway, the same data as the JSON response. The JSON response also holds only aggregates, so the text format leaves nothing out. No account, node, credential, or address appears as a label, so series count stays fixed regardless of fleet size:
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `control_gateway_build_info{version,gateway_protocol,goos,goarch,goversion}` | gauge | Always 1; running build metadata |
+| `control_gateway_start_time_seconds` | gauge | Gateway start time, Unix seconds |
+| `control_gateway_routed_connections{kind="client"\|"node"}` | gauge | Registered connections currently routed |
+| `control_gateway_admitted_connections`, `control_gateway_active_handshakes` | gauge | Admission reservations held, and those still in handshake |
+| `control_gateway_queued_packet_bytes`, `control_gateway_queued_packet_peak_bytes` | gauge | Retained packet bytes, including writes in progress, and the high-water mark since startup |
+| `control_gateway_queued_relay_bytes` | gauge | Queued relay data payload bytes |
+| `control_gateway_limit_connections{scope}`, `control_gateway_limit_handshakes{scope}`, `control_gateway_limit_queued_packet_bytes{scope}` | gauge | Configured limits; `scope` is `gateway` or `account` |
+| `control_gateway_limit_account_clients`, `control_gateway_limit_account_nodes`, `control_gateway_limit_account_new_identities_per_minute` | gauge | Configured per-account limits |
+| `control_gateway_connects_total`, `control_gateway_disconnects_total` | counter | Node and client registrations and closures |
+| `control_gateway_auth_failures_total` | counter | Requests and connections with no valid credential |
+| `control_gateway_admission_rejects_total`, `control_gateway_new_identity_rejects_total`, `control_gateway_packet_queue_rejects_total` | counter | Admission, new-identity rate, and packet budget refusals |
+| `control_gateway_packet_write_failures_total` | counter | Failed queued packet writes |
+| `control_gateway_handshake_duration_seconds_sum`, `_count` | summary | Handshake time and attempts, including failures |
+| `control_gateway_relay_packets_total`, `control_gateway_relay_bytes_total` | counter | Relay data packets and payload bytes forwarded |
+| `control_gateway_relay_overflows_total`, `control_gateway_relay_dropped_packets_total` | counter | Relay sessions closed for a full destination queue, and dropped signaling packets |
+
+Counters reset when the gateway restarts. Prometheus `rate()` and `increase()` handle resets, and `control_gateway_start_time_seconds` shows when one happened. The browser console keeps using JSON: its `/console/api/admin/metrics` proxy ignores the format parameter and `Accept`. See [gateway observation](protocol.md#gateway-observation) for negotiation details.
+
 ## Maintenance
 
 - Follow [managed updates](updates.md) for release selection and idle-only rollout. `control update` replaces the local CLI, not the gateway's selected runtime.
