@@ -24,8 +24,18 @@ var ErrOrchestratorKeysUnsupported = errors.New("gateway does not support execut
 // a refusal, an uncertain result to inspect, or a key with a different role to
 // revoke by ID.
 func (c Admin) CreateOrchestratorKey(ctx context.Context, name string) (json.RawMessage, error) {
+	return c.CreateExecutionKey(ctx, name, "orchestrator")
+}
+
+// CreateExecutionKey issues the requested execution role only after checking
+// that the gateway understands it. Never retry a key issuance.
+func (c Admin) CreateExecutionKey(ctx context.Context, name, role string) (json.RawMessage, error) {
+	if role != "orchestrator" && role != "orchestrator-enroll" {
+		return nil, fmt.Errorf("unknown execution key role %q", role)
+	}
 	var auth struct {
-		OrchestratorKeys bool `json:"orchestratorKeys"`
+		OrchestratorKeys       bool `json:"orchestratorKeys"`
+		OrchestratorEnrollKeys bool `json:"orchestratorEnrollKeys"`
 	}
 	authCtx, cancel := context.WithTimeout(ctx, accountTimeout)
 	err := c.request(authCtx, http.MethodGet, "/v1/auth", nil, 0, "application/json", &auth)
@@ -33,10 +43,13 @@ func (c Admin) CreateOrchestratorKey(ctx context.Context, name string) (json.Raw
 	if err != nil {
 		return nil, fmt.Errorf("authenticate with gateway %s: %w", c.URL, err)
 	}
-	if !auth.OrchestratorKeys {
+	if role == "orchestrator-enroll" && !auth.OrchestratorEnrollKeys {
+		return nil, errors.New("upgrade the gateway to issue a key that can enroll and run work; no key was created")
+	}
+	if role == "orchestrator" && !auth.OrchestratorKeys {
 		return nil, ErrOrchestratorKeysUnsupported
 	}
-	body, err := json.Marshal(map[string]string{"name": name, "role": "orchestrator"})
+	body, err := json.Marshal(map[string]string{"name": name, "role": role})
 	if err != nil {
 		return nil, err
 	}
@@ -77,8 +90,8 @@ func (c Admin) CreateOrchestratorKey(ctx context.Context, name string) (json.Raw
 	if err := json.Unmarshal(data, &created); err != nil || created.Key.ID == "" {
 		return nil, uncertain(errors.New("unreadable creation response"))
 	}
-	if created.Key.Role != "orchestrator" || created.Token == "" {
-		return nil, fmt.Errorf("gateway issued key %s with role %q instead of an orchestrator key; its secret was withheld. Revoke it with control keys revoke %s; it was not retried", created.Key.ID, created.Key.Role, created.Key.ID)
+	if created.Key.Role != role || created.Token == "" {
+		return nil, fmt.Errorf("gateway issued key %s with role %q instead of %q; its secret was withheld. Revoke it with control keys revoke %s; it was not retried", created.Key.ID, created.Key.Role, role, created.Key.ID)
 	}
 	return data, nil
 }

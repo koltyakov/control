@@ -14,6 +14,7 @@ func TestParseKeyCreateRole(t *testing.T) {
 		{[]string{"ci"}, map[string]string{"name": "ci"}},
 		{[]string{"ci", "--role", "common"}, map[string]string{"name": "ci"}},
 		{[]string{"ci", "--role", "orchestrator"}, map[string]string{"name": "ci", "role": "orchestrator"}},
+		{[]string{"mac", "--role", "orchestrator-enroll"}, map[string]string{"name": "mac", "role": "orchestrator-enroll"}},
 		{[]string{"--role=orchestrator", "ci"}, map[string]string{"name": "ci", "role": "orchestrator"}},
 		{[]string{"-role", "orchestrator", "ci"}, map[string]string{"name": "ci", "role": "orchestrator"}},
 	} {

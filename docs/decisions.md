@@ -1706,6 +1706,8 @@ Tunnel management crosses this boundary; traffic through a listener does not. Re
 
 ## D195: Gateway and fleet locks restrict worker admission
 
+The owner selector in this decision is superseded by [D198](#d198-select-access-by-key).
+
 The operator may require an access allowance across all fleets; a fleet owner may require one independently. A lock is a restriction on existing execution authority. Each allowance matches the authenticated orchestrator key, its stable owner identity, or both, and specifies all workers or particular immutable worker IDs. One allowance must cover the workers involved in the instruction. A delegated worker still needs its destination-issued instruction grant. Common and installation credentials do not become execution keys.
 
 The console manages policy with a browser session and CSRF protection. Changing local Vault settings cannot change fleet policy. Workers check admission on established peer sessions as well as new ones, because rejecting gateway signaling alone cannot stop new commands over a warm WebRTC connection. The gateway decides access from identities and timestamps without receiving command payloads. See [lock worker access](console.md#lock-worker-access).
@@ -1718,4 +1720,18 @@ The standalone client owner identity stays scoped by gateway URL and fleet, not 
 
 ## D197: Label saved client profiles independently of execution authority
 
+Superseded by [D198](#d198-select-access-by-key).
+
 Access lock refers to stable owner identities as client profiles: multiple profiles may run on one computer. The fleet owner can label a profile after matching `control session`'s `ownerId`. The gateway records connection and disconnection times; legacy records have no historical timestamp. Labels and presence help people choose an identity. They neither replace the signed owner nor change an allowance. See [Lock worker access](console.md#lock-worker-access).
+
+## D198: Select access by key
+
+This replaces D195's owner selector and D197's profile picker. Each allowance names one key, its workers and an optional expiry. Orchestrators sharing a key share its access; separate keys can have different allowances. Internal owner identities still bind tasks and instruction grants. Upgrades remove host-restricted allowances instead of broadening them.
+
+Owners can issue `orchestrator-enroll` for enrollment, discovery and account-client execution without fleet administration. Existing `common` and `orchestrator` keys keep their original permissions. The console defaults to the combined choice; the default for existing CLI and API calls stays `common`. See [fleet key roles](protocol.md#fleet-key-roles).
+
+## D199: Select key permissions individually and recover through the console
+
+The console shows granted permissions instead of role presets. Discovery is inherent to fleet membership; enrollment and execution are independent. The [permission-list endpoint](protocol.md#fleet-key-roles) rejects unsupported permissions and preserves existing role-based clients.
+
+Revocation stops key authentication. A fleet owner can restore the original credential through the password-authenticated console or permanently remove its revoked record. Only the console can reactivate keys because restoring the same ID also restores any still-valid key allowances. For compromise, the owner can leave the old key revoked and obtain a fresh account key even after removing the old record. Only one account key can be active per fleet. A replacement never inherits allowances by name. Renaming changes only the label.

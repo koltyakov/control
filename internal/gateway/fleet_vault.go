@@ -30,7 +30,6 @@ const (
 	maxFleetVaultAllowances = 256
 	maxFleetVaultMachines   = 256
 	maxFleetVaultSeconds    = 365 * 24 * 60 * 60
-	maxFleetVaultHosts      = 1024
 	maxFleetVaultIDBytes    = 128
 	superuserKeyID          = "superuser"
 )
@@ -46,13 +45,10 @@ type fleetVaultPolicy struct {
 	Allowances  []fleetVaultAllowance `json:"allowances,omitempty"`
 }
 
-// fleetVaultAllowance lets account clients matching every present selector
-// reach the listed workers. KeyID names an execution-capable credential;
-// OwnerID is an attested stable client owner identity, never a host name.
+// fleetVaultAllowance covers every orchestrator using this access key.
 type fleetVaultAllowance struct {
 	ID          string    `json:"id"`
-	KeyID       string    `json:"keyId,omitempty"`
-	OwnerID     string    `json:"ownerId,omitempty"`
+	KeyID       string    `json:"keyId"`
 	AllMachines bool      `json:"allMachines"`
 	MachineIDs  []string  `json:"machineIds,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
@@ -68,13 +64,9 @@ func (a fleetVaultAllowance) active(now time.Time) bool {
 	return a.ExpiresAt.IsZero() || now.Before(a.ExpiresAt)
 }
 
-// covers reports whether this one rule matches the identity for every
-// machine. Both selectors present means both must match.
-func (a fleetVaultAllowance) covers(keyID, ownerID string, machineIDs []string) bool {
-	if (a.KeyID == "" && a.OwnerID == "") || len(machineIDs) == 0 {
-		return false
-	}
-	if (a.KeyID != "" && a.KeyID != keyID) || (a.OwnerID != "" && a.OwnerID != ownerID) {
+// covers requires the same nonempty key and one rule covering every machine.
+func (a fleetVaultAllowance) covers(keyID string, machineIDs []string) bool {
+	if keyID == "" || a.KeyID != keyID || len(machineIDs) == 0 {
 		return false
 	}
 	if a.AllMachines {
@@ -89,12 +81,10 @@ func (a fleetVaultAllowance) covers(keyID, ownerID string, machineIDs []string) 
 }
 
 // fleetDecision is the pure allowance evaluation: one active rule must cover
-// the key and owner for every machine. It ignores whether the lock is
-// enabled; callers combine it with fleetVaultEnforcedLocked. Empty keyID or
-// ownerID means that selector is unknown and only rules without it can match.
-func fleetDecision(policy fleetVaultPolicy, keyID, ownerID string, machineIDs []string, now time.Time) bool {
+// the access key for every machine. Callers check enforcement separately.
+func fleetDecision(policy fleetVaultPolicy, keyID string, machineIDs []string, now time.Time) bool {
 	for _, a := range policy.Allowances {
-		if a.active(now) && a.covers(keyID, ownerID, machineIDs) {
+		if a.active(now) && a.covers(keyID, machineIDs) {
 			return true
 		}
 	}
@@ -139,7 +129,7 @@ func (g *Gateway) vaultExecutionKeyLocked(user, keyID string) bool {
 		return user == legacyUser && g.superuser != ""
 	}
 	k, ok := g.keys[keyID]
-	if !ok || k.Revoked || k.UserID != user || k.Hash == "" || (k.Role != roleUser && k.Role != roleOrchestrator) {
+	if !ok || k.Revoked || k.UserID != user || k.Hash == "" || !executionRole(k.Role) {
 		return false
 	}
 	u, ok := g.users[user]
@@ -159,14 +149,12 @@ func (g *Gateway) vaultClientOwnerLocked(user, id string) (bool, error) {
 }
 
 // vaultBearerAllowedLocked gates direct gateway-managed machine operations
-// for a bearer credential. A bearer request has no client owner proof, so
-// only a rule naming its key without an owner selector admits it while the
-// lock is enforced. Caller holds g.mu.
+// for a bearer credential by its authenticated access key. Caller holds g.mu.
 func (g *Gateway) vaultBearerAllowedLocked(p principal, machineIDs []string, now time.Time) bool {
 	if !g.fleetVaultEnforcedLocked(p.UserID, now) {
 		return true
 	}
-	return g.vaultExecutionKeyLocked(p.UserID, p.KeyID) && fleetDecision(g.vaultPolicies[p.UserID], p.KeyID, "", machineIDs, now)
+	return g.vaultExecutionKeyLocked(p.UserID, p.KeyID) && fleetDecision(g.vaultPolicies[p.UserID], p.KeyID, machineIDs, now)
 }
 
 // fleetVaultBearerDenied is the refusal for a bearer machine mutation.
@@ -221,7 +209,6 @@ func (g *Gateway) fleetVaultRoutes(mux *http.ServeMux) {
 	}
 	mux.Handle("GET /console/api/fleet/vault", browser(g.getFleetVault))
 	mux.Handle("PUT /console/api/fleet/vault", browser(g.setFleetVault))
-	mux.Handle("PUT /console/api/fleet/vault/profiles/{id}", browser(g.labelClientProfile))
 	mux.Handle("POST /console/api/fleet/vault/allowances", browser(g.addFleetVaultAllowance))
 	mux.Handle("DELETE /console/api/fleet/vault/allowances/{id}", browser(g.removeFleetVaultAllowance))
 	mux.HandleFunc("POST "+model.FleetVaultCheckPath, g.auth(g.fleetVaultCheckHTTP))
@@ -235,8 +222,7 @@ type fleetVaultChoice struct {
 
 type fleetVaultAllowanceView struct {
 	ID          string    `json:"id"`
-	KeyID       string    `json:"keyId,omitempty"`
-	OwnerID     string    `json:"ownerId,omitempty"`
+	KeyID       string    `json:"keyId"`
 	AllMachines bool      `json:"allMachines"`
 	MachineIDs  []string  `json:"machineIds"`
 	ExpiresAt   time.Time `json:"expiresAt,omitzero"`
@@ -251,13 +237,12 @@ type fleetVaultView struct {
 	GlobalPausedUntil time.Time                 `json:"globalPausedUntil,omitzero"`
 	Allowances        []fleetVaultAllowanceView `json:"allowances"`
 	Keys              []fleetVaultChoice        `json:"keys"`
-	Hosts             []clientProfileChoice     `json:"hosts"`
 	Machines          []fleetVaultChoice        `json:"machines"`
 }
 
 // fleetVaultViewLocked projects user's policy and the choices its console
 // may select. Caller holds g.mu.
-func (g *Gateway) fleetVaultViewLocked(user string, now time.Time) (fleetVaultView, error) {
+func (g *Gateway) fleetVaultViewLocked(user string, now time.Time) fleetVaultView {
 	p := g.vaultPolicies[user]
 	v := fleetVaultView{Enabled: p.Enabled, Revision: p.Revision, GlobalEnabled: g.globalVault.Enabled, Allowances: []fleetVaultAllowanceView{}, Keys: []fleetVaultChoice{}, Machines: []fleetVaultChoice{}}
 	if p.Enabled && now.Before(p.PausedUntil) {
@@ -270,10 +255,11 @@ func (g *Gateway) fleetVaultViewLocked(user string, now time.Time) (fleetVaultVi
 		if !a.active(now) {
 			continue
 		}
-		v.Allowances = append(v.Allowances, fleetVaultAllowanceView{ID: a.ID, KeyID: a.KeyID, OwnerID: a.OwnerID, AllMachines: a.AllMachines, MachineIDs: append([]string{}, a.MachineIDs...), ExpiresAt: a.ExpiresAt})
+		v.Allowances = append(v.Allowances, fleetVaultAllowanceView{ID: a.ID, KeyID: a.KeyID, AllMachines: a.AllMachines, MachineIDs: append([]string{}, a.MachineIDs...), ExpiresAt: a.ExpiresAt})
 	}
 	if user == legacyUser && g.superuser != "" {
-		v.Keys = append(v.Keys, fleetVaultChoice{ID: superuserKeyID, Name: "operator key", Role: roleSuperuser})
+		k := operatorAPIKey()
+		v.Keys = append(v.Keys, fleetVaultChoice{ID: k.ID, Name: k.Name, Role: k.Role})
 	}
 	for id, k := range g.keys {
 		if g.vaultExecutionKeyLocked(user, id) {
@@ -285,11 +271,6 @@ func (g *Gateway) fleetVaultViewLocked(user string, now time.Time) (fleetVaultVi
 			v.Machines = append(v.Machines, fleetVaultChoice{ID: n.ID, Name: n.Name})
 		}
 	}
-	profiles, err := g.clientProfilesLocked(user)
-	if err != nil {
-		return fleetVaultView{}, err
-	}
-	v.Hosts = profiles
 	for _, list := range [][]fleetVaultChoice{v.Keys, v.Machines} {
 		sort.Slice(list, func(i, j int) bool {
 			if list[i].Name != list[j].Name {
@@ -298,17 +279,13 @@ func (g *Gateway) fleetVaultViewLocked(user string, now time.Time) (fleetVaultVi
 			return list[i].ID < list[j].ID
 		})
 	}
-	return v, nil
+	return v
 }
 
 // fleetVaultResultLocked builds the response view after a successful read or
 // write. Caller holds g.mu.
 func (g *Gateway) fleetVaultResultLocked(user string, status int) (fleetVaultView, int, string) {
-	v, err := g.fleetVaultViewLocked(user, time.Now())
-	if err != nil {
-		return fleetVaultView{}, http.StatusInternalServerError, "could not read fleet lock"
-	}
-	return v, status, ""
+	return g.fleetVaultViewLocked(user, time.Now()), status, ""
 }
 
 // respondFleetVault runs fn under g.mu and encodes its view only after
@@ -439,17 +416,16 @@ func (g *Gateway) addFleetVaultAllowance(w http.ResponseWriter, r *http.Request)
 	var q struct {
 		Revision    *int64   `json:"revision"`
 		KeyID       string   `json:"keyId"`
-		OwnerID     string   `json:"ownerId"`
 		AllMachines bool     `json:"allMachines"`
 		MachineIDs  []string `json:"machineIds"`
 		TTLSeconds  *int64   `json:"ttlSeconds"`
 	}
 	if !decodeStrict(w, r, 64<<10, &q) || q.Revision == nil || !validVaultSeconds(q.TTLSeconds) {
-		http.Error(w, "supply revision, selectors, machines, and an optional lifetime of up to 365 days in whole seconds", http.StatusBadRequest)
+		http.Error(w, "supply revision, keyId, machines, and an optional lifetime of up to 365 days in whole seconds", http.StatusBadRequest)
 		return
 	}
-	if (q.KeyID == "" && q.OwnerID == "") || len(q.KeyID) > maxFleetVaultIDBytes || len(q.OwnerID) > maxFleetVaultIDBytes {
-		http.Error(w, "select an execution credential, a client profile, or both", http.StatusBadRequest)
+	if q.KeyID == "" || len(q.KeyID) > maxFleetVaultIDBytes {
+		http.Error(w, "select an access key", http.StatusBadRequest)
 		return
 	}
 	if q.AllMachines == (len(q.MachineIDs) != 0) || len(q.MachineIDs) > maxFleetVaultMachines {
@@ -471,17 +447,8 @@ func (g *Gateway) addFleetVaultAllowance(w http.ResponseWriter, r *http.Request)
 		if *q.Revision != g.vaultPolicies[p.UserID].Revision {
 			return fleetVaultView{}, http.StatusConflict, fleetVaultConflict
 		}
-		if q.KeyID != "" && !g.vaultExecutionKeyLocked(p.UserID, q.KeyID) {
+		if !g.vaultExecutionKeyLocked(p.UserID, q.KeyID) {
 			return fleetVaultView{}, http.StatusBadRequest, "key is not a current execution-capable key of this fleet"
-		}
-		if q.OwnerID != "" {
-			owner, err := g.vaultClientOwnerLocked(p.UserID, q.OwnerID)
-			if err != nil {
-				return fleetVaultView{}, http.StatusInternalServerError, "could not verify client profile"
-			}
-			if !owner {
-				return fleetVaultView{}, http.StatusBadRequest, "profile is not a client owner identity of this fleet"
-			}
 		}
 		for _, id := range machines {
 			if n, ok := g.nodes[id]; !ok || n.UserID != p.UserID {
@@ -492,7 +459,7 @@ func (g *Gateway) addFleetVaultAllowance(w http.ResponseWriter, r *http.Request)
 		if len(next.Allowances) >= maxFleetVaultAllowances {
 			return fleetVaultView{}, http.StatusConflict, "allowance limit reached; remove one first"
 		}
-		a := fleetVaultAllowance{ID: identity.NewID(), KeyID: q.KeyID, OwnerID: q.OwnerID, AllMachines: q.AllMachines, MachineIDs: machines, CreatedAt: now}
+		a := fleetVaultAllowance{ID: identity.NewID(), KeyID: q.KeyID, AllMachines: q.AllMachines, MachineIDs: machines, CreatedAt: now}
 		if q.TTLSeconds != nil && *q.TTLSeconds > 0 {
 			a.ExpiresAt = now.Add(time.Duration(*q.TTLSeconds) * time.Second)
 		}
@@ -550,13 +517,7 @@ func (g *Gateway) removeFleetVaultAllowance(w http.ResponseWriter, r *http.Reque
 // allowanceDetail summarizes a rule for the audit log. Identifiers are not
 // secrets; machine lists are summarized by count.
 func allowanceDetail(a fleetVaultAllowance) string {
-	parts := []string{}
-	if a.KeyID != "" {
-		parts = append(parts, "key "+a.KeyID)
-	}
-	if a.OwnerID != "" {
-		parts = append(parts, "profile "+a.OwnerID)
-	}
+	parts := []string{"key " + a.KeyID}
 	if a.AllMachines {
 		parts = append(parts, "all machines")
 	} else {
@@ -619,9 +580,8 @@ func (g *Gateway) resolveVaultIssuerLocked(fleet string, q model.FleetVaultCheck
 
 // fleetVaultCheckLocked decides one worker request. While the lock is
 // enforced, it allows only a current execution key together with a proven
-// stable owner, both covered by one allowance for every machine: a durable
-// owner alone never admits a disconnected issuer, a revoked key, or a
-// discovery-only client, even under a host-only rule. An unenforced lock
+// stable owner for provenance. Only the key selects the allowance for the
+// participating machines. An unenforced lock
 // allows unknown issuers but still reports a resolvable identity. Caller holds
 // g.mu.
 func (g *Gateway) fleetVaultCheckLocked(fleet string, q model.FleetVaultCheck, now time.Time) (model.FleetVaultDecision, error) {
@@ -642,7 +602,7 @@ func (g *Gateway) fleetVaultCheckLocked(fleet string, q model.FleetVaultCheck, n
 			return result, nil
 		}
 	}
-	result.Allowed = fleetDecision(g.vaultPolicies[fleet], keyID, ownerID, q.MachineIDs, now)
+	result.Allowed = fleetDecision(g.vaultPolicies[fleet], keyID, q.MachineIDs, now)
 	return result, nil
 }
 

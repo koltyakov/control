@@ -130,16 +130,17 @@ Your fleet:
   machines label NAME [KEY=VALUE|KEY-]... [--reset KEY]  Set or remove owner labels; no change shows origins
   machines unregister NAME              Unregister a machine and request node uninstall
   keys create NAME                     Issue a key, shown once; the default common role is discovery-only
-    --role common|orchestrator         Orchestrator keys run work but cannot administer the fleet or enroll machines
+    --role common|orchestrator|orchestrator-enroll    Use orchestrator-enroll to enroll, discover and run work with one key
   keys list                            List fleet keys and their roles
   keys rename ID NAME                  Rename a key
   keys revoke ID                       Revoke a key and close its sessions
+  keys remove ID                       Remove a revoked key from inventory; keep its audit history
   audit list [N]                       Show recent sign-ins and management changes
   audit clear [DAYS]                   Remove events, or only those older than DAYS
 Environment: CONTROL_GATEWAY, CONTROL_USER_KEY
 `
 
-const keysCreateUsage = "usage: control keys create NAME [--role common|orchestrator]"
+const keysCreateUsage = "usage: control keys create NAME [--role common|orchestrator|orchestrator-enroll]"
 
 // parseKeyCreate accepts NAME and an optional --role in either order. The
 // default common role stays implicit so older gateways accept the request.
@@ -147,16 +148,16 @@ func parseKeyCreate(args []string) (map[string]string, error) {
 	flags := flag.NewFlagSet("keys create", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	role, roleSet := "", false
-	flags.Func("role", "key role: common (discovery-only) or orchestrator (execution-only)", func(value string) error {
+	flags.Func("role", "key role: common, orchestrator or orchestrator-enroll", func(value string) error {
 		if roleSet {
 			return errors.New("--role is repeated")
 		}
 		switch value {
-		case "common", "orchestrator":
+		case "common", "orchestrator", "orchestrator-enroll":
 			role, roleSet = value, true
 			return nil
 		}
-		return fmt.Errorf("unknown key role %q; use common or orchestrator", value)
+		return fmt.Errorf("unknown key role %q; use common, orchestrator or orchestrator-enroll", value)
 	})
 	if err := flags.Parse(args); err != nil {
 		return nil, fmt.Errorf("%w; %s", err, keysCreateUsage)
@@ -173,7 +174,7 @@ func parseKeyCreate(args []string) (map[string]string, error) {
 		return nil, errors.New(keysCreateUsage)
 	}
 	request := map[string]string{"name": name}
-	if role == "orchestrator" {
+	if role != "" && role != "common" {
 		request["role"] = role
 	}
 	return request, nil
@@ -235,9 +236,9 @@ func adminCLI(ctx context.Context, c client.Admin, args []string) error {
 		if parseErr != nil {
 			return parseErr
 		}
-		if request["role"] == "orchestrator" {
+		if role := request["role"]; role != "" {
 			// Checks gateway support before sending and verifies the issued role.
-			result, err = c.CreateOrchestratorKey(ctx, request["name"])
+			result, err = c.CreateExecutionKey(ctx, request["name"], role)
 			break
 		}
 		err = c.JSON(ctx, http.MethodPost, "/v1/fleet/keys", request, &result)
@@ -275,6 +276,11 @@ func adminCLI(ctx context.Context, c client.Admin, args []string) error {
 			return errors.New("usage: control keys revoke ID")
 		}
 		return c.JSON(ctx, http.MethodDelete, "/v1/fleet/keys/"+url.PathEscape(args[2]), nil, nil)
+	case "keys remove":
+		if len(args) != 3 {
+			return errors.New("usage: control keys remove ID")
+		}
+		return c.JSON(ctx, http.MethodDelete, "/v1/fleet/keys/"+url.PathEscape(args[2])+"/record", nil, nil)
 	default:
 		return errors.New("unknown administrative command")
 	}

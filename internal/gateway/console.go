@@ -123,6 +123,11 @@ func (g *Gateway) consoleRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /console", page)
 	mux.Handle("POST /console/api/login", g.consoleHeaders(http.HandlerFunc(g.consoleLogin)))
 	mux.Handle("GET /console/api/session", g.consoleHeaders(http.HandlerFunc(g.consoleWhoami)))
+	// Recovery uses the owner's independent browser login, never a bearer key.
+	mux.Handle("POST /console/api/fleet/account-key", g.consoleHeaders(g.consoleGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		g.issueFleetKey(w, r, "account", roleUser)
+	}))))
+	mux.Handle("POST /console/api/fleet/keys/{id}/reactivate", g.consoleHeaders(g.consoleGuard(http.HandlerFunc(g.reactivateKey))))
 	mux.Handle("POST /console/api/logout", g.consoleHeaders(g.consoleGuard(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		cookie, _ := r.Cookie(g.consoleCookieName(r))
@@ -145,7 +150,7 @@ func (g *Gateway) consoleRoutes(mux *http.ServeMux) {
 	// artifact, node-state, or general-purpose forwarding endpoint is exposed.
 	for _, route := range []string{
 		"GET status", "GET nodes", "PUT console/password",
-		"GET fleet/keys", "POST fleet/keys", "PATCH fleet/keys/{id}", "DELETE fleet/keys/{id}",
+		"GET fleet/keys", "POST fleet/keys", "POST fleet/keys/issue", "PATCH fleet/keys/{id}", "DELETE fleet/keys/{id}", "DELETE fleet/keys/{id}/record",
 		"GET fleet/installations", "POST fleet/installations", "DELETE fleet/installations", "DELETE fleet/installations/{id}",
 		"PATCH fleet/nodes/{id}", "DELETE fleet/nodes/{id}", "POST fleet/nodes/{id}/wake",
 		"POST fleet/nodes/{id}/startup",

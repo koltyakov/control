@@ -156,7 +156,7 @@ func (r *Runtime) checkAccount(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if role != "user" && role != "orchestrator" {
+	if role == "superuser" || !client.ExecutionRole(role) {
 		return fmt.Errorf("broker credentials have role %q; fleet operations require an account or orchestrator key", role)
 	}
 	r.mu.Lock()

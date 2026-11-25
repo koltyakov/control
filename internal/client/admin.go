@@ -57,9 +57,11 @@ func (c Admin) request(ctx context.Context, method, path string, body io.Reader,
 func OwnerRole(role string) bool { return role == "user" || role == "superuser" }
 
 // ExecutionRole reports credentials whose account-client sessions receive
-// execution authority. Execution-only orchestrator keys qualify without fleet
-// administration; common and installation keys remain discovery-only.
-func ExecutionRole(role string) bool { return OwnerRole(role) || role == "orchestrator" }
+// execution authority. Both orchestrator roles qualify without fleet
+// administration; common and installation keys cannot run work.
+func ExecutionRole(role string) bool {
+	return OwnerRole(role) || role == "orchestrator" || role == "orchestrator-enroll"
+}
 
 func (c Admin) IsSuperuser(ctx context.Context) bool {
 	return c.Role(ctx) == "superuser"

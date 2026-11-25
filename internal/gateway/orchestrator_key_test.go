@@ -42,6 +42,7 @@ func TestOrchestratorKeysGrantExecutionOnly(t *testing.T) {
 	explicitCommon := issueFleetKey(t, account, "discovery-explicit", "common")
 	first := issueFleetKey(t, account, "ci", "orchestrator")
 	second := issueFleetKey(t, account, "agent", "orchestrator")
+	combined := issueFleetKey(t, account, "build-mac", "orchestrator-enroll")
 	if common.Key.Role != "common" || explicitCommon.Key.Role != "common" || first.Key.Role != "orchestrator" || second.Key.Role != "orchestrator" || first.Key.UserID != user.ID || first.Key.ID == second.Key.ID {
 		t.Fatal("issued key roles", common.Key, explicitCommon.Key, first.Key, second.Key)
 	}
@@ -83,6 +84,7 @@ func TestOrchestratorKeysGrantExecutionOnly(t *testing.T) {
 		{"common", common.Token, true, false},
 		{"orchestrator", first.Token, false, true},
 		{"second orchestrator", second.Token, false, true},
+		{"orchestrator with enrollment", combined.Token, false, true},
 		{"account", account.Key, false, true},
 	} {
 		id, err := identity.Generate()
@@ -124,6 +126,23 @@ func TestOrchestratorKeysGrantExecutionOnly(t *testing.T) {
 	if !enrolled {
 		t.Fatal("common key enrollment did not register")
 	}
+	combinedClient := testAdmin{URL: s.URL, Key: combined.Token}
+	combinedID, err := identity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rawPeer(t, s.URL, combined.Token, "combined-worker", user.ID, combinedID) == nil {
+		t.Fatal("combined key could not enroll a machine")
+	}
+	if err := combinedClient.JSON(ctx, http.MethodGet, "/v1/nodes", nil, &nodes); err != nil {
+		t.Fatal("combined key discovery", err)
+	}
+	g.mu.Lock()
+	authority := g.nodes[combinedID.ID].ExecutionAuthority
+	g.mu.Unlock()
+	if authority {
+		t.Fatal("enrolling a worker must not give its worker session execution authority")
+	}
 
 	// No fleet or gateway administration, including key issuance.
 	forbidden := []struct{ method, path string }{
@@ -152,6 +171,9 @@ func TestOrchestratorKeysGrantExecutionOnly(t *testing.T) {
 		err := orchestrator.JSON(ctx, request.method, request.path, body, nil)
 		if err == nil || !strings.Contains(err.Error(), "403") {
 			t.Fatal("orchestrator key reached", request.method, request.path, err)
+		}
+		if err := combinedClient.JSON(ctx, request.method, request.path, body, nil); err == nil || !strings.Contains(err.Error(), "403") {
+			t.Fatal("combined key reached", request.method, request.path, err)
 		}
 	}
 	g.mu.Lock()

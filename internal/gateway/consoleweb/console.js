@@ -82,7 +82,9 @@
  * @typedef {{enabled: boolean, interface?: string, address?: string, port?: number, sources?: string[]}} ProxySetupRequest
  * @typedef {{id: string, name: string, autoName?: boolean, expiresAt: string, revoked?: boolean, redeemedId?: string, serviceMode?: string, hybridId?: string, hybridRole?: string, asset?: {os: string}, gatewayProxy?: GatewayProxy}} Invitation
  * @typedef {Invitation & {command: string, proxyActivation?: string}} InstallationLink
- * @typedef {{id: string, name: string, role: string, createdAt: string, revoked?: boolean}} FleetKey
+ * @typedef {'discover' | 'enroll' | 'run'} WorkerPermission
+ * @typedef {WorkerPermission | 'manage-fleet' | 'manage-gateway'} KeyPermission
+ * @typedef {{id: string, name: string, role: string, permissions: KeyPermission[], createdAt?: string, revoked?: boolean, gatewayConfigured?: boolean}} FleetKey
  * @typedef {{id: string, name: string, createdAt: string, disabled?: boolean}} FleetUser
  * @typedef {{id: number, at: string, userId: string, fleet?: string, actor: string, via: string, keyId?: string, action: string, target?: string, targetId?: string, detail?: string, sourceIp?: string}} AuditEvent
  * @typedef {{events: AuditEvent[], next?: number}} AuditPage
@@ -93,14 +95,12 @@
  * @typedef {{id: string, expiresAt: number, key: string, nonce: string, ciphertext: string}} SecretEnvelope
  * @typedef {{removed: number, hidden?: number}} ClearResult
  * @typedef {{token: string}} IssuedKey
- * @typedef {{name: string, role?: 'orchestrator'}} KeyRequest Omitting role creates a common key.
+ * @typedef {{name: string, permissions: WorkerPermission[]}} KeyRequest
  * @typedef {{id: string, name: string}} LockIdentity Gateway-reported identity; IDs are immutable.
  * @typedef {LockIdentity & {role?: string}} LockCredential
- * @typedef {LockIdentity & {lastSeen?: string, online: boolean}} ClientProfile
  * @typedef {object} LockAllowance
  * @property {string} id
- * @property {string} [keyId] Account execution key the caller must use.
- * @property {string} [ownerId] Stable client profile the caller must use.
+ * @property {string} keyId Access key the orchestrator must use.
  * @property {boolean} allMachines
  * @property {string[]} machineIds Immutable worker IDs when allMachines is false.
  * @property {string} [expiresAt] Absent for an allowance that lasts until revoked.
@@ -112,23 +112,22 @@
  * @property {string} [globalPausedUntil]
  * @property {LockAllowance[]} allowances
  * @property {LockCredential[]} keys
- * @property {ClientProfile[]} hosts
  * @property {LockIdentity[]} machines
  * @typedef {{enabled: boolean, pausedUntil?: string, revision: number}} GlobalLock
  * @typedef {{revision: number, enabled: boolean, pauseSeconds?: number}} LockRequest
- * @typedef {{revision: number, keyId?: string, ownerId?: string, allMachines: boolean, machineIds: string[], ttlSeconds?: number}} AllowanceRequest
+ * @typedef {{revision: number, keyId: string, allMachines: boolean, machineIds: string[], ttlSeconds?: number}} AllowanceRequest
  * @typedef {{fleet: FleetLock, global: GlobalLock | null, globalError: string}} LockView
  * @typedef {{enabled?: boolean, pausedUntil?: string}} LockSetting
  * @typedef {{known: boolean, active: boolean, paused: boolean, label: string, tone: string, detail: string}} LockStatus
  * @typedef {{check: () => void, run: <T>(request: () => Promise<T>) => Promise<T>}} MutationGuard
  * @typedef {{name: string, autoName?: boolean, os: string, serviceMode: string, ttlSeconds: number, gateway: string, force: boolean, proxyWorker?: string, proxyUrl?: string}} InstallationRequest
- * @typedef {{login: {username: string, password: string}, logout: never, 'fleet/installations': InstallationRequest, 'fleet/keys': KeyRequest, 'admin/users': {name: string}, 'admin/updates/check': never, 'fleet/vault/allowances': AllowanceRequest} & Record<`fleet/nodes/${string}/startup`, {mode: string}> & Record<`fleet/nodes/${string}/wake`, never>} PostBody
- * @typedef {{'console/password': {username?: string, currentPassword?: string, password: string}, 'fleet/vault': LockRequest, 'admin/vault': LockRequest} & Record<`fleet/vault/profiles/${string}`, {label: string, previousLabel: string}> & Record<`fleet/nodes/${string}/secrets/${string}`, SecretEnvelope> & Record<`fleet/nodes/${string}/proxy`, ProxySetupRequest>} PutBody
+ * @typedef {{login: {username: string, password: string}, logout: never, 'fleet/installations': InstallationRequest, 'fleet/keys/issue': KeyRequest, 'fleet/account-key': never, 'admin/users': {name: string}, 'admin/updates/check': never, 'fleet/vault/allowances': AllowanceRequest} & Record<`fleet/nodes/${string}/startup`, {mode: string}> & Record<`fleet/nodes/${string}/wake` | `fleet/keys/${string}/reactivate`, never>} PostBody
+ * @typedef {{'console/password': {username?: string, currentPassword?: string, password: string}, 'fleet/vault': LockRequest, 'admin/vault': LockRequest} & Record<`fleet/nodes/${string}/secrets/${string}`, SecretEnvelope> & Record<`fleet/nodes/${string}/proxy`, ProxySetupRequest>} PutBody
  * @typedef {Record<`fleet/nodes/${string}/proxy`, ProxySetup>} PutAPI
  * @typedef {{set?: Record<string, string>, remove?: string[], reset?: string[]}} LabelPatch
  * @typedef {Record<`fleet/nodes/${string}`, {name?: string, force?: boolean, disabled?: boolean, labels?: LabelPatch}> & Record<`fleet/keys/${string}`, {name: string}>} PatchBody
  * @typedef {{session: ConsoleSession, status: FleetSnapshot, 'fleet/installations': Invitation[], 'fleet/keys': FleetKey[], 'admin/users': FleetUser[], 'admin/updates': UpdateResult, 'fleet/vault': FleetLock, 'admin/vault': GlobalLock} & Record<`audit?${string}`, AuditPage> & Record<`fleet/nodes/${string}/secrets`, SecretList> & Record<`fleet/nodes/${string}/proxy`, ProxySetup>} GetAPI
- * @typedef {{login: ConsoleSession, logout: null, 'fleet/installations': InstallationLink, 'fleet/keys': IssuedKey, 'admin/users': IssuedKey, 'admin/updates/check': unknown, 'fleet/vault/allowances': unknown} & Record<`fleet/nodes/${string}/startup`, StartupResult> & Record<`fleet/nodes/${string}/wake`, {source: string}>} PostAPI
+ * @typedef {{login: ConsoleSession, logout: null, 'fleet/installations': InstallationLink, 'fleet/keys/issue': IssuedKey, 'fleet/account-key': IssuedKey, 'admin/users': IssuedKey, 'admin/updates/check': unknown, 'fleet/vault/allowances': unknown} & Record<`fleet/nodes/${string}/startup`, StartupResult> & Record<`fleet/nodes/${string}/wake`, {source: string}> & Record<`fleet/keys/${string}/reactivate`, null>} PostAPI
  * @typedef {{'fleet/installations': ClearResult} & Record<`audit${string}`, ClearResult> & Record<`fleet/nodes/${string}` | `fleet/keys/${string}` | `fleet/installations/${string}` | `admin/users/${string}`, unknown>} DeleteAPI
  * @typedef {Record<`fleet/vault/allowances/${string}`, {revision: number}>} DeleteBody
  * @typedef {{page: 'invitations', data: Invitation[]} | {page: 'keys', data: FleetKey[]} | {page: 'users', data: FleetUser[]} | {page: 'updates', data: UpdateResult} | {page: 'activity', data: AuditPage} | {page: 'lock', data: LockView}} Auxiliary
@@ -1746,34 +1745,45 @@ function renderInvitations(items) {
       : "",
   );
 }
-/** @param {FleetKey[]} items @returns {string} */
-function renderKeys(items) {
-  const keys = items.filter((k) => keyTypes[k.role]);
+/** @param {FleetKey[]} keys @returns {string} */
+function renderKeys(keys) {
+  const hasAccountKey = keys.some((k) => k.role === "user" && !k.revoked);
+  const needsAccountKey = state.session?.role === "user" && !hasAccountKey;
   return (
     panel(
       "Fleet keys",
       keys.length
         ? table(
-            ["Name", "Type", "Status", "Created", "Key ID", ""],
-            keys.map(
-              (k) =>
-                `<tr><td><strong>${esc(k.name)}</strong></td><td title="${esc(keyTypes[k.role][1])}">${esc(keyTypes[k.role][0])}</td><td>${badge(k.revoked ? "Revoked" : "Active")}</td><td class="muted">${esc(date(k.createdAt))}</td><td class="mono muted">${esc(k.id)}</td><td class="action-column"><div class="row-actions"><button class="secondary compact" data-action="rename-key" data-id="${esc(k.id)}" data-name="${esc(k.name)}">Rename</button>${k.revoked ? "" : `<button class="secondary compact" data-action="revoke-key" data-id="${esc(k.id)}">Revoke</button>`}</div></td></tr>`,
-            ),
+            ["Name", "Permissions", "Status", "Created", "Key ID", ""],
+            keys.map((k) => {
+              const permissions = k.permissions.map((p) => permissionLabel[p] || p).join(", ");
+              const target = `data-id="${esc(k.id)}" data-name="${esc(accessKeyName(k))}"`;
+              const rename = `<button class="secondary compact" data-action="rename-key" ${target}>Rename</button>`;
+              const revoke = `<button class="secondary compact" data-action="revoke-key" ${target} data-role="${esc(k.role)}">Revoke</button>`;
+              const reactivate = `<button class="secondary compact" data-action="reactivate-key" ${target}${k.role === "user" && hasAccountKey ? ' disabled title="Revoke the active account key first"' : ""}>Reactivate</button>`;
+              const remove = `<button class="secondary compact" data-action="remove-key" ${target}>Remove</button>`;
+              const actions = k.gatewayConfigured ? "Gateway configuration" : `<div class="row-actions">${rename}${k.revoked ? reactivate + remove : revoke}</div>`;
+              return `<tr><td><strong>${esc(accessKeyName(k))}</strong></td><td>${esc(permissions)}</td><td>${badge(k.revoked ? "Revoked" : "Active")}</td><td class="muted">${esc(date(k.createdAt))}</td><td class="mono muted">${esc(k.id)}</td><td class="action-column">${actions}</td></tr>`;
+            }),
           )
         : empty(
             "No fleet keys",
             "Installed machines normally use invitation-bound keys.",
           ),
-      `<button class="secondary compact" data-action="create-key">${icon("plus")}Create key</button>`,
+      `<div class="row-actions">${needsAccountKey ? '<button class="secondary compact" data-action="replace-account-key">Issue account key</button>' : ""}<button class="secondary compact" data-action="create-key">${icon("plus")}Create key</button></div>`,
     ) +
-    '<p class="notice">Common keys allow enrollment and discovery only. Orchestrator keys can request work but cannot manage the fleet or enroll machines. The <a class="inline-link" href="#lock">Access lock</a> credential selector also includes the fleet account key issued with the account. That key is not managed on this page.</p>'
+    '<p class="notice"><a class="inline-link" href="#lock">Access lock</a> lists active keys with permission to run work.</p>'
   );
 }
-/** Key roles this page manages; account and invitation keys are excluded. @type {Record<string, [string, string]>} */
-const keyTypes = {
-  common: ["Common", "Enrollment and discovery only"],
-  orchestrator: ["Orchestrator", "Account execution only; no fleet management or enrollment"],
+/** @type {Record<KeyPermission, string>} */
+const permissionLabel = {
+  discover: "Discover machines", enroll: "Enroll machines", run: "Run work",
+  "manage-fleet": "Manage fleet", "manage-gateway": "Manage gateway",
 };
+/** @param {LockCredential} key @returns {string} */
+function accessKeyName(key) {
+  return key.role === "user" && key.name === "account" ? "Fleet account key" : key.name;
+}
 /** @param {FleetUser[]} items @returns {string} */
 function renderUsers(items) {
   return panel(
@@ -1886,18 +1896,10 @@ function toneBadge(label, tone) {
 function identityName(items, id) {
   return items.find((item) => item.id === id)?.name || "";
 }
-/** @param {string} kind @param {string} name @param {string} id @returns {string} */
-function identityLine(kind, name, id) {
-  return `<span class="lock-identity"><span class="muted">${esc(kind)}</span> ${name ? `<strong>${esc(name)}</strong>` : '<strong class="warn-text">Not reported</strong>'}<small class="mono muted id-line">${esc(id)}</small></span>`;
-}
 /** @param {LockAllowance} a @param {FleetLock} fleet @returns {string} */
 function allowanceCaller(a, fleet) {
-  const key = fleet.keys.find((k) => k.id === a.keyId),
-    profile = fleet.hosts.find((p) => p.id === a.ownerId);
-  return [
-    a.keyId ? identityLine("Credential", key ? credentialName(key) : "", a.keyId) : "",
-    a.ownerId ? identityLine("Client profile", profile ? profile.name || "Unnamed profile" : "", a.ownerId) : "",
-  ].join("") || '<span class="warn-text">No caller identity</span>';
+  const key = fleet.keys.find((k) => k.id === a.keyId);
+  return `<span class="lock-identity">${key ? `<strong>${esc(accessKeyName(key))}</strong>` : '<strong class="warn-text">Key no longer available</strong>'}<small class="mono muted id-line">${esc(a.keyId)}</small></span>`;
 }
 /** @param {LockAllowance} a @param {FleetLock} fleet @returns {string} */
 function allowanceWorkers(a, fleet) {
@@ -1965,11 +1967,11 @@ function renderLock(view) {
     panel(
       "Allowances",
       rows.length
-        ? `<div class="table-wrap lock-allowances" role="region" aria-label="Allowances" tabindex="0"><table><thead><tr><th scope="col">Caller</th><th scope="col">Workers</th><th scope="col">Expires</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`
-        : empty("No allowances", "While a lock is enforced, add an allowance to let a specific orchestrator start work."),
-      `<div class="row-actions">${fleet.hosts.length ? '<button class="secondary compact" data-action="profile-label">Label a profile</button>' : ""}<button class="secondary compact" data-action="allowance-add">${icon("plus")}Add allowance</button></div>`,
+        ? `<div class="table-wrap lock-allowances" role="region" aria-label="Allowances" tabindex="0"><table><thead><tr><th scope="col">Access key</th><th scope="col">Workers</th><th scope="col">Expires</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`
+        : empty("No allowances", "Add an allowance to let an access key run work while the lock is on."),
+      `<button class="secondary compact" data-action="allowance-add">${icon("plus")}Add allowance</button>`,
     ) +
-    '<p class="notice">Select a credential, a client profile, or both. When both are set, the caller must match both. Workers still require their usual permissions and instruction grants.</p>'
+    '<p class="notice">Orchestrators that share an access key share its allowances. To give them different access, create separate keys in <a class="inline-link" href="#keys">Access keys</a>.</p>'
   );
 }
 // The gateway accepts pauses and allowance lifetimes of up to 365 days.
@@ -2099,57 +2101,6 @@ function changeLock(scope, mode) {
   );
   if (mode === "pause") bindDurations($("#modal-form"));
 }
-/** @param {LockCredential} key @returns {string} */
-function credentialName(key) {
-  if (key.role === "user") return key.name === "account" ? "Fleet account key" : `${key.name} (account key)`;
-  if (key.role === "orchestrator") return `${key.name} (orchestrator key)`;
-  return key.role === "superuser" ? "Gateway operator key" : key.name;
-}
-/** @param {ClientProfile} profile @returns {string} */
-function profileOption(profile) {
-  const when = profile.online ? "Connected now" : profile.lastSeen ? `Last seen ${date(profile.lastSeen)}` : "Last seen unknown";
-  return `<option value="${esc(profile.id)}">${esc(profile.name || "Unnamed profile")} · ${esc(profile.id.slice(0, 16))} · ${esc(when)}</option>`;
-}
-/** @param {ClientProfile[]} profiles @param {boolean} allowAny @returns {string} */
-function profileField(profiles, allowAny) {
-  return `<label>Client profile<select name="ownerId"${allowAny ? "" : " required"}><option value="">${allowAny ? "Any client profile" : "Choose a profile"}</option>${profiles.map(profileOption).join("")}</select></label>
-    <p class="field-help">One computer can have several saved CLI or MCP profiles. Offline profiles stay listed. Match the <code>ownerId</code> from <code>control session</code>.</p>
-    <small class="muted mono id-line" data-profile-id hidden></small>`;
-}
-/** Show the full fingerprint for a precise comparison (even for duplicate labels).
- * @param {HTMLFormElement} form @param {ClientProfile[]} profiles @param {(profile: ClientProfile | undefined) => void} [onSelect] @returns {void} */
-function bindProfileField(form, profiles, onSelect) {
-  const select = $('#modal-form select[name="ownerId"]', form), detail = $("[data-profile-id]", form);
-  const sync = () => {
-    const profile = profiles.find((p) => p.id === select.value);
-    detail.hidden = !profile;
-    detail.textContent = profile ? `Owner ID: ${profile.id}` : "";
-    onSelect?.(profile);
-  };
-  select.addEventListener("change", sync);
-  sync();
-}
-/** @returns {void} */
-function labelProfile() {
-  const view = currentLockView();
-  if (!view) throw new Error("The access lock is still loading.");
-  const profiles = view.fleet.hosts, guard = mutationGuard("profile label");
-  formDialog("Label a client profile",
-    `${profileField(profiles, false)}<label>Profile label<input name="label" maxlength="64" placeholder="e.g. Build Mac"></label><p class="field-help">This name is shared with your fleet. Leave it blank to remove it. Changing a label does not change access.</p>`,
-    async (fields, current) => {
-      guard.check();
-      const profile = profiles.find((p) => p.id === fields.ownerId);
-      if (!profile) throw new Error("Choose a client profile.");
-      const label = fields.label.trim();
-      if (label !== profile.name) await guard.run(() => api(`fleet/vault/profiles/${encodeURIComponent(profile.id)}`, "PUT", {label, previousLabel: profile.name}));
-      if (current()) toast("Profile label saved");
-    }, "Save label");
-  const form = $("#modal-form"), input = $('input[name="label"]', form);
-  bindProfileField(form, profiles, (profile) => {
-    input.disabled = !profile;
-    input.value = profile?.name || "";
-  });
-}
 /** @returns {void} */
 function addAllowance() {
   const view = currentLockView();
@@ -2157,35 +2108,27 @@ function addAllowance() {
   const fleet = view.fleet,
     revision = fleet.revision,
     keys = new Set(fleet.keys.map((k) => k.id)),
-    hosts = new Set(fleet.hosts.map((h) => h.id)),
     machines = new Set(fleet.machines.map((m) => m.id)),
     guard = mutationGuard();
   formDialog(
     "Add allowance",
-    `<p>Choose a credential, a client profile, or both. If you choose both, only that combination is allowed.</p>
-    <label>Execution credential<select name="keyId"><option value="">Any execution credential</option>${fleet.keys.map((k) => `<option value="${esc(k.id)}">${esc(credentialName(k))} · ${esc(k.id.slice(0, 12))}</option>`).join("")}</select></label>
-    <p class="field-help">The fleet account key and orchestrator keys can request work. Common keys are for enrollment and discovery only.</p>
-    ${profileField(fleet.hosts, true)}<label>Workers<select name="scope"><option value="all">All workers in this fleet</option><option value="selected">Selected workers</option></select></label><fieldset id="allowance-machines" class="choice-list" hidden><legend>Selected workers</legend>${fleet.machines.map((m) => `<label class="choice"><input type="checkbox" value="${esc(m.id)}" data-machine disabled><span>${esc(m.name)}</span><small class="mono muted">${esc(m.id.slice(0, 16))}</small></label>`).join("") || '<p class="field-help">No registered workers were reported.</p>'}</fieldset><p class="field-help">Workers are matched by immutable ID, so renaming a machine keeps its allowance.</p>${durationField("expiry", "Expires after", [["3600", "1 hour"], ["28800", "8 hours"], ["86400", "24 hours"], ["604800", "7 days"], ["never", "No expiration"]], "86400")}<p id="allowance-indefinite" class="notice" hidden>This allowance stays in effect until someone revokes it.</p><p class="field-help">Sent once for revision ${esc(revision)}. If another change lands first, nothing is applied.</p>`,
+    `<label>Access key<select name="keyId"><option value="">Choose an access key</option>${fleet.keys.map((k) => `<option value="${esc(k.id)}">${esc(accessKeyName(k))} · ${esc(k.id.slice(0, 12))}</option>`).join("")}</select></label>
+    <p class="field-help">Choose an active key with permission to run work.</p>
+    <label>Workers<select name="scope"><option value="all">All workers in this fleet</option><option value="selected">Selected workers</option></select></label><fieldset id="allowance-machines" class="choice-list" hidden><legend>Selected workers</legend>${fleet.machines.map((m) => `<label class="choice"><input type="checkbox" value="${esc(m.id)}" data-machine disabled><span>${esc(m.name)}</span><small class="mono muted">${esc(m.id.slice(0, 16))}</small></label>`).join("") || '<p class="field-help">No registered workers were reported.</p>'}</fieldset><p class="field-help">Workers are matched by immutable ID, so renaming a machine keeps its allowance.</p>${durationField("expiry", "Expires after", [["3600", "1 hour"], ["28800", "8 hours"], ["86400", "24 hours"], ["604800", "7 days"], ["never", "No expiration"]], "86400")}<p id="allowance-indefinite" class="notice" hidden>This allowance stays in effect until someone revokes it.</p><p class="field-help">Sent once for revision ${esc(revision)}. If another change lands first, nothing is applied.</p>`,
     async (fields, current) => {
       guard.check();
       const form = $("#modal-form"),
         keyId = fields.keyId || "",
-        ownerId = fields.ownerId || "",
         allMachines = fields.scope !== "selected",
         machineIds = allMachines
           ? []
           : [.../** @type {NodeListOf<HTMLInputElement>} */ (form.querySelectorAll("input[data-machine]:checked"))].map((input) => input.value);
-      if (!keyId && !ownerId)
-        throw new Error("Select an execution credential, a client profile, or both.");
-      if ((keyId && !keys.has(keyId)) || (ownerId && !hosts.has(ownerId)))
-        throw new Error("Select a credential and profile listed by the gateway.");
+      if (!keys.has(keyId)) throw new Error("Choose an access key.");
       if (!allMachines && !machineIds.length) throw new Error("Select at least one worker.");
       if (machineIds.some((id) => !machines.has(id))) throw new Error("Select workers reported by the gateway.");
       const ttlSeconds = durationSeconds(fields, "expiry");
       /** @type {AllowanceRequest} */
-      const request = { revision, allMachines, machineIds };
-      if (keyId) request.keyId = keyId;
-      if (ownerId) request.ownerId = ownerId;
+      const request = { revision, keyId, allMachines, machineIds };
       if (ttlSeconds !== undefined) request.ttlSeconds = ttlSeconds;
       await guard.run(() => api("fleet/vault/allowances", "POST", request));
       if (current()) toast("Allowance added");
@@ -2205,7 +2148,6 @@ function addAllowance() {
     $("#allowance-indefinite", form).hidden = expiry.value !== "never";
   };
   form.addEventListener("change", sync);
-  bindProfileField(form, fleet.hosts);
   bindDurations(form);
   sync();
 }
@@ -2218,10 +2160,8 @@ function revokeAllowance(id) {
   const fleet = view.fleet,
     revision = fleet.revision,
     guard = mutationGuard(),
-    caller = [
-      allowance.keyId && "key " + (identityName(fleet.keys, allowance.keyId) || allowance.keyId),
-      allowance.ownerId && "profile " + [identityName(fleet.hosts, allowance.ownerId), allowance.ownerId.slice(0, 16)].filter(Boolean).join(" · "),
-    ].filter(Boolean).join(" on ");
+    key = fleet.keys.find((k) => k.id === allowance.keyId),
+    caller = "key " + (key ? accessKeyName(key) : allowance.keyId);
   formDialog(
     "Revoke allowance",
     `<p>Revoke the allowance for ${esc(caller || "this caller")} on ${allowance.allMachines ? "all workers" : esc(plural(allowance.machineIds.length, "selected worker"))}. While a lock is enforced, a caller matching no other allowance cannot start new work.</p><p class="field-help">Sent once for revision ${esc(revision)}. If another change lands first, nothing is applied.</p>`,
@@ -2242,6 +2182,8 @@ const auditActions = {
   "key.create": ["Created key", "good"],
   "key.rename": ["Renamed key", ""],
   "key.revoke": ["Revoked key", "bad"],
+  "key.reactivate": ["Reactivated key", "warn"],
+  "key.remove": ["Removed revoked key", ""],
   "invitation.create": ["Created invitation", "good"],
   "invitation.revoke": ["Revoked invitation", "bad"],
   "invitation.clear": ["Cleared invitation history", ""],
@@ -2269,7 +2211,7 @@ const auditActions = {
   "vault.pause": ["Paused fleet lock", "warn"],
   "vault.allow": ["Added lock allowance", ""],
   "vault.revoke": ["Revoked lock allowance", ""],
-  "vault.profile_label": ["Changed client profile label", ""],
+  "vault.profile_label": ["Changed saved client name", ""],
   "vault.gateway": ["Changed operator lock", "warn"],
 };
 /** @param {number} [before] @returns {`audit?${string}`} */
@@ -4019,20 +3961,22 @@ document.addEventListener("click", async (event) => {
     if (action === "create-key")
       formDialog(
         "Create fleet key",
-        '<p>The new secret is shown once.</p><label>Name<input name="name" required maxlength="128"></label><label>Key type<select name="role"><option value="common" selected>Common: enrollment and discovery</option><option value="orchestrator">Orchestrator: execution only</option></select></label><p class="field-help">Common keys enroll machines and discover peers, and never permit task execution. Orchestrator keys let a CLI or agent host start work, subject to the access lock, worker allow rules and instruction grants. They cannot manage the fleet or enroll machines.</p>',
+        `<label>Name<input name="name" required maxlength="128"></label><fieldset class="choice-list"><legend>Permissions</legend>
+        <label class="choice"><input type="checkbox" checked disabled><span>${permissionLabel.discover} (always included)</span></label>
+        <label class="choice"><input type="checkbox" name="enroll" checked><span>${permissionLabel.enroll}</span></label>
+        <label class="choice"><input type="checkbox" name="run" checked><span>${permissionLabel.run}</span></label></fieldset>
+        <p class="field-help">The secret is shown once.</p>`,
         async (fields, current) => {
-          const orchestrator = fields.role === "orchestrator";
           /** @type {KeyRequest} */
-          const request = { name: fields.name };
-          if (orchestrator) request.role = "orchestrator";
-          const issued = await api("fleet/keys", "POST", request);
+          const request = { name: fields.name, permissions: ["discover"] };
+          if (fields.enroll === "on") request.permissions.push("enroll");
+          if (fields.run === "on") request.permissions.push("run");
+          const issued = await api("fleet/keys/issue", "POST", request);
           if (!current()) return false;
           showSecret(
-            orchestrator ? "Save your new orchestrator key" : "Save your new key",
+            "Save your new key",
             issued.token,
-            orchestrator
-              ? "Store this credential only on the orchestrator host that uses it. It cannot be retrieved after closing this dialog."
-              : "Store this credential securely. It cannot be retrieved after closing this dialog.",
+            "Store this credential securely. It cannot be retrieved after closing this dialog.",
           );
           return false;
         },
@@ -4053,10 +3997,35 @@ document.addEventListener("click", async (event) => {
       );
     if (action === "revoke-key")
       confirmAction(
-        "Revoke fleet key",
-        "New authentication with this key will fail and its gateway sessions will disconnect. Existing direct sessions and accepted work are not cancelled.",
+        "Revoke " + name + "?",
+        "New authentication with this key will fail and its gateway sessions will disconnect. Existing direct sessions and accepted work are not cancelled." +
+          (button.dataset.role === "user" ? " Your browser login stays active. You can issue a replacement account key here." : ""),
         () => api(`fleet/keys/${encodeURIComponent(id)}`, "DELETE"),
         "Revoke key",
+      );
+    if (action === "remove-key")
+      confirmAction(
+        "Remove " + name + "?",
+        `Permanently remove revoked key ${id}? It cannot be reactivated after removal. Its audit history will remain.`,
+        () => api(`fleet/keys/${encodeURIComponent(id)}/record`, "DELETE"),
+        "Remove key",
+      );
+    if (action === "reactivate-key")
+      confirmAction(
+        "Reactivate " + name + "?",
+        `Every copy of the original secret for key ${id} will work again, with its current permissions and any still-valid allowances. If the secret was compromised, issue a new key instead.`,
+        () => api(`fleet/keys/${encodeURIComponent(id)}/reactivate`, "POST"),
+        "Reactivate key",
+      );
+    if (action === "replace-account-key")
+      formDialog(
+        "Issue fleet account key",
+        "<p>This key can administer your fleet. It gets a new ID and does not inherit the revoked key's Access lock allowances.</p>",
+        async (_fields, current) => {
+          const issued = await api("fleet/account-key", "POST");
+          if (current()) showSecret("Save your fleet account key", issued.token, "Update clients that used your old key. This secret is shown only once.");
+          return false;
+        }, "Issue account key", false, "", true,
       );
     if (action === "create-user")
       formDialog(
@@ -4102,7 +4071,6 @@ document.addEventListener("click", async (event) => {
     if (action === "lock-enable" || action === "lock-pause" || action === "lock-disable")
       changeLock(id === "global" ? "global" : "fleet", action === "lock-enable" ? "enable" : action === "lock-pause" ? "pause" : "disable");
     if (action === "allowance-add") addAllowance();
-    if (action === "profile-label") labelProfile();
     if (action === "allowance-revoke") revokeAllowance(id);
     if (action === "check-release")
       confirmAction(

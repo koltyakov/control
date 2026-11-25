@@ -447,7 +447,7 @@ async function assertAsyncConsoleOwnership(browser) {
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  const keys = [{ id: "async-key", name: "Async fixture key", role: "common", createdAt: new Date().toISOString() }];
+  const keys = [{ id: "async-key", name: "Async fixture key", role: "common", permissions: ["discover","enroll"], createdAt: new Date().toISOString() }];
   await page.route("**/console/api/fleet/keys", (route) =>
     route.request().method() === "GET" ? route.fulfill({ json: keys }) : route.fallback());
   try {
@@ -476,7 +476,7 @@ async function assertAsyncConsoleOwnership(browser) {
         if (outcome === "uncertain") await login(page, "browser-owner");
         await pageLink(page, "keys");
       }
-      const held = await holdRequest(page, "**/console/api/fleet/keys", "POST");
+      const held = await holdRequest(page, "**/console/api/fleet/keys/issue", "POST");
       await page.getByRole("button", { name: "Create key", exact: false }).click();
       await page.locator("#modal-form input[name=name]").fill("Private pending name");
       const submitted = await page.locator("#modal-form button[type=submit]").elementHandle();
@@ -583,7 +583,6 @@ async function assertAuditRequestOwnership(browser) {
 const lockIds = {
   key: "key-orchestrator-0001",
   accountKey: "key-account-0002",
-  host: "owner-host-0123456789abcdef",
   worker: "machine-worker-0001",
   other: "machine-other-0002",
   missing: "machine-retired-0099",
@@ -596,10 +595,9 @@ function lockFixture(overrides = {}) {
     globalEnabled: false,
     allowances: [
       { id: "allow-key", keyId: lockIds.key, allMachines: true, machineIds: [], expiresAt: new Date(Date.now() + 2 * 3600000).toISOString() },
-      { id: "allow-host", keyId: lockIds.key, ownerId: lockIds.host, allMachines: false, machineIds: [lockIds.worker, lockIds.missing] },
+      { id: "allow-selected", keyId: lockIds.accountKey, allMachines: false, machineIds: [lockIds.worker, lockIds.missing] },
     ],
     keys: [{ id: lockIds.key, name: lockKeyName, role: "orchestrator" }, { id: lockIds.accountKey, name: "account", role: "user" }],
-    hosts: [{ id: lockIds.host, name: "", online: true }, { id: "legacy-owner-00001", name: "", online: false }],
     machines: [{ id: lockIds.worker, name: "gpu-worker" }, { id: lockIds.other, name: "mac-worker" }],
     ...overrides,
   };
@@ -627,12 +625,6 @@ async function routeLock(page, server) {
     const injected = server.next;
     server.next = null;
     if (injected && injected !== "abort") return route.fulfill({ status: injected.status, body: injected.body });
-    if (method === "PUT" && url.pathname.includes("/profiles/")) {
-      const profile = target.hosts.find((p) => p.id === decodeURIComponent(url.pathname.split("/").pop()));
-      if (body.previousLabel !== profile.name) return route.fulfill({status: 409, body: "profile label changed; reload before editing"});
-      profile.name = body.label;
-      return route.fulfill({status: 204});
-    }
     if (body?.revision !== target.revision)
       return route.fulfill({ status: 409, body: global ? "gateway lock changed; reload before editing" : "fleet lock changed; reload before editing" });
     server.writes.push({ method, path: url.pathname, body });
@@ -647,7 +639,7 @@ async function routeLock(page, server) {
       }
     } else if (method === "POST") {
       target.allowances.push({
-        id: "allow-" + target.revision, keyId: body.keyId, ownerId: body.ownerId,
+        id: "allow-" + target.revision, keyId: body.keyId,
         allMachines: body.allMachines, machineIds: body.machineIds,
         expiresAt: body.ttlSeconds ? new Date(Date.now() + body.ttlSeconds * 1000).toISOString() : undefined,
       });
@@ -691,16 +683,16 @@ async function assertAccessLockFixtures(browser) {
     let summary = await lockSummary(page);
     assert.match(summary, /Enforced by this fleet's lock\. .*within 2 active allowances/);
     assert.equal(await page.locator("img").count(), 0, "Identity names must not become markup");
-    await page.getByText(lockKeyName + " (orchestrator key)", { exact: true }).first().waitFor();
-    const hostRow = page.locator('tr[data-allowance="allow-host"]');
-    assert.match(await hostRow.innerText(), /Unnamed profile/);
-    assert.match(await hostRow.innerText(), /gpu-worker/);
-    assert.match(await hostRow.innerText(), new RegExp(lockIds.missing + "\\s+Not registered"), "Unknown worker IDs must stay visible");
-    assert.match(await hostRow.innerText(), /No expiration/);
+    await page.getByText(lockKeyName, { exact: true }).first().waitFor();
+    const selectedRow = page.locator('tr[data-allowance="allow-selected"]');
+    assert.match(await selectedRow.innerText(), /Fleet account key/);
+    assert.match(await selectedRow.innerText(), /gpu-worker/);
+    assert.match(await selectedRow.innerText(), new RegExp(lockIds.missing + "\\s+Not registered"), "Unknown worker IDs must stay visible");
+    assert.match(await selectedRow.innerText(), /No expiration/);
     assert.match(await page.locator('tr[data-allowance="allow-key"]').innerText(), /All workers[\s\S]*in 1h 5\dm|All workers[\s\S]*in 2h 0m/);
     assert.equal(await page.locator('[data-id="global"]').count(), 0, "Fleet owners must not get operator controls");
     const notice = await page.locator(".notice").last().textContent();
-    assert.match(notice, /the caller must match both/);
+    assert.match(notice, /share an access key share its allowances/);
 
     // A custom pause beyond the gateway bound is rejected before sending.
     await page.locator('[data-action="lock-pause"][data-id="fleet"]').click();
@@ -745,15 +737,11 @@ async function assertAccessLockFixtures(browser) {
     await page.locator('[data-action="allowance-add"]').click();
     const credentialSelect = page.locator("#modal-form select[name=keyId]");
     assert.match(await credentialSelect.locator(`option[value="${lockIds.accountKey}"]`).textContent(), /Fleet account key/);
-    const profileSelect = page.locator("#modal-form select[name=ownerId]");
-    assert.equal(await profileSelect.locator(`option[value="${lockIds.host}"]`).textContent(), `Unnamed profile · ${lockIds.host.slice(0,16)} · Connected now`);
-    assert.match(await profileSelect.locator('option[value="legacy-owner-00001"]').textContent(), /Last seen unknown/);
+    assert.equal(await page.locator("#modal-form [name=ownerId]").count(), 0);
     await submitModal(page);
-    await modalError(page, "Select an execution credential, a client profile, or both.");
+    await modalError(page, "Choose an access key.");
     assert.equal(await page.locator("#allowance-machines").isHidden(), true);
     await page.locator("#modal-form select[name=keyId]").selectOption(lockIds.key);
-    await page.locator("#modal-form select[name=ownerId]").selectOption(lockIds.host);
-    assert.equal(await page.locator("[data-profile-id]").textContent(), `Owner ID: ${lockIds.host}`);
     await page.locator("#modal-form select[name=scope]").selectOption("selected");
     await page.locator("#allowance-machines").waitFor();
     await submitModal(page);
@@ -767,16 +755,16 @@ async function assertAccessLockFixtures(browser) {
     await page.locator("#dialog").waitFor({ state: "hidden" });
     assert.deepEqual(server.writes.at(-1), {
       method: "POST", path: "/console/api/fleet/vault/allowances",
-      body: { revision: 10, keyId: lockIds.key, ownerId: lockIds.host, allMachines: false, machineIds: [lockIds.worker], ttlSeconds: 172800 },
+      body: { revision: 10, keyId: lockIds.key, allMachines: false, machineIds: [lockIds.worker], ttlSeconds: 172800 },
     });
     await page.locator('tr[data-allowance="allow-11"]').waitFor();
     await page.locator('[data-action="allowance-add"]').click();
-    await page.locator("#modal-form select[name=ownerId]").selectOption(lockIds.host);
+    await credentialSelect.selectOption(lockIds.accountKey);
     await page.locator("#modal-form select[name=expiry]").selectOption("never");
     await page.locator("#allowance-indefinite").waitFor();
     await submitModal(page);
     await page.locator("#dialog").waitFor({ state: "hidden" });
-    assert.deepEqual(server.writes.at(-1).body, { revision: 11, ownerId: lockIds.host, allMachines: true, machineIds: [] },
+    assert.deepEqual(server.writes.at(-1).body, { revision: 11, keyId: lockIds.accountKey, allMachines: true, machineIds: [] },
       "Indefinite allowances must omit ttlSeconds");
 
     await page.locator('tr[data-allowance="allow-12"]').waitFor();
@@ -828,13 +816,6 @@ async function assertAccessLockFixtures(browser) {
     server.failFleet = "";
     await refreshPage(page);
     assert.equal(await page.locator("#stale-banner").isHidden(), true);
-    await page.getByRole("button", {name: "Label a profile"}).click();
-    await page.locator("#modal-form select[name=ownerId]").selectOption(lockIds.host);
-    await page.getByLabel("Profile label", {exact: true}).fill("Build Mac <local>");
-    await submitModal(page);
-    await page.locator("#dialog").waitFor({state: "hidden"});
-    await hostRow.getByText("Build Mac <local>", {exact: true}).waitFor();
-    assert.equal(await hostRow.locator("local").count(), 0);
 
     await page.setViewportSize({ width: 390, height: 844 });
     assert.ok(await page.locator("#app").evaluate((element) => element.scrollWidth <= element.clientWidth), "The lock page must fit narrow screens");
@@ -844,12 +825,12 @@ async function assertAccessLockFixtures(browser) {
     if (process.env.CONTROL_CONSOLE_SCREENSHOTS)
       await page.screenshot({ path: path.join(process.env.CONTROL_CONSOLE_SCREENSHOTS, "access-lock.png"), fullPage: true });
 
-    // Key creation offers an execution-only orchestrator type.
+    // Each optional permission can be unchecked independently.
     const issued = [];
     const keys = [
-      { id: "fixture-common", name: "Common fixture", role: "common", createdAt: new Date().toISOString() },
-      { id: "fixture-orchestrator", name: "Orchestrator fixture", role: "orchestrator", createdAt: new Date().toISOString() },
-      { id: "fixture-account", name: "Account fixture", role: "user", createdAt: new Date().toISOString() },
+      { id: "fixture-common", name: "Common fixture", role: "common", permissions: ["discover","enroll"], createdAt: new Date().toISOString() },
+      { id: "fixture-orchestrator", name: "Orchestrator fixture", role: "orchestrator", permissions: ["discover","run"], createdAt: new Date().toISOString() },
+      { id: "fixture-account", name: "Account fixture", role: "user", permissions: ["discover","enroll","run","manage-fleet"], createdAt: new Date().toISOString() },
     ];
     const keyRoute = (route) => {
       if (route.request().method() === "GET") return route.fulfill({ json: keys });
@@ -857,26 +838,30 @@ async function assertAccessLockFixtures(browser) {
       return route.fulfill({ json: { token: "ctl_fixture_" + issued.length } });
     };
     await page.route("**/console/api/fleet/keys", keyRoute);
+    await page.route("**/console/api/fleet/keys/issue", keyRoute);
     try {
       await pageLink(page, "keys");
       const orchestratorRow = page.locator("tr").filter({ hasText: "Orchestrator fixture" });
-      await orchestratorRow.getByText("Orchestrator", { exact: true }).waitFor();
-      assert.equal(await page.getByText("Account fixture", { exact: true }).count(), 0, "Account keys stay unlisted");
+      await orchestratorRow.getByText("Discover machines, Run work", { exact: true }).waitFor();
+      const account = page.locator("tr").filter({hasText: "Account fixture"});
+      await account.getByText(/Manage fleet/).waitFor();
+      await account.getByRole("button", {name: "Rename"}).waitFor();
       await page.getByRole("button", { name: "Create key", exact: false }).click();
       await page.locator("#modal-form input[name=name]").fill("CI runner");
-      await page.locator("#modal-form select[name=role]").selectOption("orchestrator");
+      await page.getByLabel("Enroll machines", {exact:true}).uncheck();
       await submitModal(page);
-      await page.getByRole("dialog", { name: "Save your new orchestrator key", exact: true }).waitFor();
+      await page.getByRole("dialog", { name: "Save your new key", exact: true }).waitFor();
       await page.getByRole("button", { name: "Done", exact: true }).click();
       await page.getByRole("button", { name: "Create key", exact: false }).click();
-      assert.match(await page.locator("#modal-form").textContent(), /cannot manage the fleet or enroll machines/);
+      await page.getByLabel("Run work", {exact:true}).uncheck();
       await page.locator("#modal-form input[name=name]").fill("Plain common");
       await submitModal(page);
       await page.getByRole("dialog", { name: "Save your new key", exact: true }).waitFor();
       await page.getByRole("button", { name: "Done", exact: true }).click();
-      assert.deepEqual(issued, [{ name: "CI runner", role: "orchestrator" }, { name: "Plain common" }], "Common keys keep the default request");
+      assert.deepEqual(issued, [{ name: "CI runner", permissions: ["discover","run"] }, { name: "Plain common", permissions: ["discover","enroll"] }]);
     } finally {
       await page.unroute("**/console/api/fleet/keys", keyRoute);
+      await page.unroute("**/console/api/fleet/keys/issue", keyRoute);
     }
     assert.deepEqual(errors, []);
   } finally {
@@ -891,12 +876,16 @@ async function assertOperatorLockFixtures(browser) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
   const server = lockServer(
-    lockFixture({ enabled: true, globalEnabled: true, revision: 2, keys: [{ id: "superuser", name: "operator key" }] }),
+    lockFixture({ enabled: true, globalEnabled: true, revision: 2, keys: [{ id: "superuser", name: "Gateway operator key", role: "superuser" }] }),
     { enabled: true, revision: 3 },
   );
   const unroute = await routeLock(page, server);
   try {
     await login(page, "@operator");
+    await pageLink(page, "keys");
+    const operatorKey = page.locator("tr").filter({hasText: "Gateway operator key"});
+    await operatorKey.getByText("superuser", {exact: true}).waitFor();
+    assert.equal(await operatorKey.getByRole("button").count(), 0);
     await pageLink(page, "lock");
     await page.locator("#lock-enforcement").filter({ hasText: "Locked" }).waitFor();
     assert.match(await lockSummary(page), /Enforced by the operator minimum and this fleet's lock/);
@@ -937,13 +926,20 @@ async function assertOperatorLockFixtures(browser) {
 // worker, revoke it, and unlock again so later bearer requests still work.
 async function assertAccessLockGateway(page) {
   await pageLink(page, "keys");
+  const accountRow = page.locator("tr").filter({hasText: "Fleet account key"});
+  const accountId = await accountRow.locator("td.mono").innerText();
+  assert.equal(await page.getByText("Gateway operator key", {exact: true}).count(), 0);
   await page.getByRole("button", { name: "Create key", exact: false }).click();
   await page.locator("#modal-form input[name=name]").fill("Lock orchestrator");
-  await page.locator("#modal-form select[name=role]").selectOption("orchestrator");
+  assert.ok(await page.getByLabel("Enroll machines", {exact:true}).isChecked());
+  assert.ok(await page.getByLabel("Run work", {exact:true}).isChecked());
   await submitModal(page);
   await page.locator("#secret-value").waitFor();
   await page.getByRole("button", { name: "Done", exact: true }).click();
-  await page.locator("tr").filter({ hasText: "Lock orchestrator" }).getByText("Orchestrator", { exact: true }).waitFor();
+  const orchestratorRow = page.locator("tr").filter({ hasText: "Lock orchestrator" });
+  await orchestratorRow.getByText("Discover machines, Enroll machines, Run work", { exact: true }).waitFor();
+  const orchestratorId = await orchestratorRow.locator("td.mono").innerText();
+  const eligibleIds = await page.locator("tbody tr").filter({hasText: "Active"}).filter({hasText: "run work"}).locator("td.mono").allTextContents();
   await pageLink(page, "lock");
   await page.locator("#lock-enforcement").filter({ hasText: "Unlocked" }).waitFor();
   try {
@@ -953,8 +949,11 @@ async function assertAccessLockGateway(page) {
     await page.locator("#lock-enforcement").filter({ hasText: "Locked" }).waitFor();
     assert.match(await lockSummary(page), /No allowance is active, so account execution on this fleet's workers is refused\./);
     await page.locator('[data-action="allowance-add"]').click();
-    const key = page.locator("#modal-form select[name=keyId] option").filter({ hasText: "Lock orchestrator" });
-    await page.locator("#modal-form select[name=keyId]").selectOption(await key.getAttribute("value"));
+    const select = page.locator("#modal-form select[name=keyId]");
+    const options = select.locator('option:not([value=""])');
+    assert.deepEqual((await options.evaluateAll((opts) => opts.map((o) => o.value))).sort(), eligibleIds.sort());
+    assert.match(await select.locator(`option[value="${accountId}"]`).textContent(), /Fleet account key/);
+    await select.selectOption(orchestratorId);
     await page.locator("#modal-form select[name=scope]").selectOption("selected");
     await page.locator("#allowance-machines label").filter({ hasText: "renamed-worker" }).locator("input").check();
     await page.locator("#modal-form select[name=expiry]").selectOption("3600");
@@ -3312,6 +3311,28 @@ try {
   await page.locator("#account-form button[type=submit]").click();
   await page.locator("#login").waitFor({ state: "visible" });
   await login(page, "browser-owner", "new isolated browser password");
+  await pageLink(page, "keys");
+  const originalKey = page.locator("tr").filter({hasText: "Fleet account key"});
+  await originalKey.getByRole("button", {name: "Rename"}).click();
+  await page.locator("#modal-form input[name=name]").fill("Owner laptop");
+  await submitModal(page);
+  const ownerKey = page.locator("tr").filter({hasText: "Owner laptop"});
+  await ownerKey.getByRole("button", {name: "Revoke"}).click();
+  await submitModal(page);
+  await ownerKey.getByRole("button", {name: "Reactivate"}).click();
+  await page.getByText(/Every copy of the original secret/).waitFor();
+  await submitModal(page);
+  await ownerKey.getByText("Active", {exact: true}).waitFor();
+  await ownerKey.getByRole("button", {name: "Revoke"}).click();
+  await submitModal(page);
+  await ownerKey.getByRole("button", {name: "Remove"}).click();
+  await submitModal(page);
+  await ownerKey.waitFor({state: "detached"});
+  await page.getByRole("button", {name: "Issue account key", exact:true}).click();
+  await submitModal(page);
+  await page.getByRole("dialog", {name: "Save your fleet account key"}).waitFor();
+  await page.getByRole("button", {name: "Done", exact:true}).click();
+  await originalKey.getByText("Active", {exact:true}).waitFor();
   await page.locator("#account-button").click();
   await page.locator("#account-menu [data-action=logout]").click();
   await page.locator("#modal-form button[type=submit]").click();

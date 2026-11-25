@@ -438,9 +438,9 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		http.Error(w, "installation credentials cannot open client sessions", http.StatusForbidden)
 		return
 	}
-	// Execution-only keys open account-client sessions; they never enroll machines.
-	if !client && principal.Role == roleOrchestrator {
-		http.Error(w, "orchestrator keys cannot enroll machines", http.StatusForbidden)
+	// Clients can discover peers without permission to register a worker.
+	if !client && !enrollmentRole(principal.Role) {
+		http.Error(w, "this key cannot enroll machines", http.StatusForbidden)
 		return
 	}
 	reservation, ok := g.admission.reserve(principal.UserID, client)
@@ -487,7 +487,7 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 		g.mu.Unlock()
 		return
 	}
-	if p.UserID == "" || p.UserID != reservation.user || (!client && p.Role == roleOrchestrator) || (n.UserID != "" && n.UserID != p.UserID) || (g.owners[n.ID] != "" && g.owners[n.ID] != p.UserID) {
+	if p.UserID == "" || p.UserID != reservation.user || (!client && !enrollmentRole(p.Role)) || (n.UserID != "" && n.UserID != p.UserID) || (g.owners[n.ID] != "" && g.owners[n.ID] != p.UserID) {
 		g.mu.Unlock()
 		return
 	}
@@ -495,9 +495,8 @@ func (g *Gateway) connectPeer(w http.ResponseWriter, r *http.Request, client boo
 	// Pairing is gateway-owned; never accept a machine's asserted companion.
 	n.HybridID, n.HybridRole = "", ""
 	stripOwnerLabels(&n)
-	// A machine or common key cannot claim orchestrator authority in its proof.
-	// Account, superuser, and execution-only orchestrator keys grant it only to
-	// account-client sessions.
+	// Derive execution permission from the credential, never from the proof.
+	// A worker session cannot claim it even when enrolled with an execution key.
 	n.ExecutionAuthority = client && executionRole(p.Role)
 	if g.machineStates[n.ID].Unregistered {
 		g.mu.Unlock()

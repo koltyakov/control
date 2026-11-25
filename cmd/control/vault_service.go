@@ -183,7 +183,7 @@ func provisionVault(ctx context.Context, layout vaultstore.Layout, args []string
 	if err != nil {
 		return err
 	}
-	if role != "user" && role != "orchestrator" {
+	if role == "superuser" || !client.ExecutionRole(role) {
 		return errors.New("provision Vault with a fleet account or orchestrator key, not an operator or worker key")
 	}
 	pass, err := readVaultSecret("New Vault approval passphrase: ")

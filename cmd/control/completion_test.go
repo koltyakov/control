@@ -58,7 +58,7 @@ func TestCompletionParsesHelpCommands(t *testing.T) {
 		"machines":         {"add", "proxies", "invites", "revoke", "enable", "disable", "rename", "label", "unregister"},
 		"machines proxies": {"release", "inspect", "enable", "disable"},
 		"machines invites": {"clear"},
-		"keys":             {"create", "list", "rename", "revoke"},
+		"keys":             {"create", "list", "rename", "revoke", "remove"},
 		"audit":            {"list", "clear"},
 		"users":            {"create", "list", "revoke"},
 		"update":           {"authorize", "push", "status", "check"},

@@ -62,6 +62,10 @@ func (d *doctorRun) loginCheck() DoctorCheck {
 			}
 		case "orchestrator":
 			c.Detail = "orchestrator key from " + source + "; it permits account-client execution, not fleet administration"
+		case "orchestrator-enroll":
+			c.Detail = "orchestrator key from " + source + "; it can enroll machines, discover peers and run work"
+		case "discovery":
+			c.Detail = "key from " + source + "; it can discover machines but cannot enroll them or run work"
 		case "common":
 			c.Detail = "common key from " + source + "; it permits discovery and gateway status, not account-client execution"
 		default:

@@ -99,7 +99,7 @@ func TestOrchestratorKeyExecutesThroughAccountClient(t *testing.T) {
 		t.Fatal("orchestrator task", task, err)
 	}
 	// The host's client owner is stable across execution keys: it is scoped
-	// by gateway and fleet, so host allowances survive key rotation and a
+	// by gateway and fleet, so task ownership survives key rotation and a
 	// Vault migration keeps the same owner under either role. Keys are
 	// distinguished by the gateway-attested credential of each session.
 	orchestratorInfo, err := orchestrated.Session(ctx)

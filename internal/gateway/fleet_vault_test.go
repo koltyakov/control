@@ -124,27 +124,26 @@ func fleetKey(t *testing.T, a testAdmin, role string) (string, string) {
 func TestFleetDecisionSelectorsAndCoverage(t *testing.T) {
 	now := time.Now()
 	p := fleetVaultPolicy{Allowances: []fleetVaultAllowance{
-		{ID: "both", KeyID: "k1", OwnerID: "o1", MachineIDs: []string{"a", "b"}},
+		{ID: "both", KeyID: "k1", MachineIDs: []string{"a", "b"}},
 		{ID: "key", KeyID: "k2", AllMachines: true},
-		{ID: "expired", OwnerID: "o3", AllMachines: true, ExpiresAt: now.Add(-time.Second)},
+		{ID: "expired", KeyID: "k3", AllMachines: true, ExpiresAt: now.Add(-time.Second)},
 		{ID: "unscoped", AllMachines: true},
 	}}
 	for _, c := range []struct {
-		key, owner string
-		machines   []string
-		want       bool
+		key      string
+		machines []string
+		want     bool
 	}{
-		{"k1", "o1", []string{"a", "b"}, true},
-		{"k1", "o2", []string{"a"}, false},      // Both selectors must match.
-		{"", "o1", []string{"a"}, false},        // An unknown key never matches a key selector.
-		{"k1", "o1", []string{"a", "c"}, false}, // One rule must cover every machine.
-		{"k2", "", []string{"x", "y"}, true},
-		{"k9", "o3", []string{"a"}, false}, // Expired.
-		{"k9", "o9", []string{"a"}, false}, // A rule without selectors never matches.
-		{"k2", "o1", nil, false},
+		{"k1", []string{"a", "b"}, true},
+		{"", []string{"a"}, false},
+		{"k1", []string{"a", "c"}, false},
+		{"k2", []string{"x", "y"}, true},
+		{"k3", []string{"a"}, false},
+		{"k9", []string{"a"}, false},
+		{"k2", nil, false},
 	} {
-		if got := fleetDecision(p, c.key, c.owner, c.machines, now); got != c.want {
-			t.Errorf("fleetDecision(%q, %q, %v) = %v, want %v", c.key, c.owner, c.machines, got, c.want)
+		if got := fleetDecision(p, c.key, c.machines, now); got != c.want {
+			t.Errorf("fleetDecision(%q, %v) = %v, want %v", c.key, c.machines, got, c.want)
 		}
 	}
 	if !(fleetVaultPolicy{Enabled: true}).locked(now) || (fleetVaultPolicy{Enabled: true, PausedUntil: now.Add(time.Minute)}).locked(now) || !(fleetVaultPolicy{Enabled: true, PausedUntil: now}).locked(now) {
@@ -166,7 +165,7 @@ func TestFleetVaultConsolePolicy(t *testing.T) {
 	}
 	data, _ := browser.request(t, "GET", "/console/api/fleet/vault", nil, 200)
 	v := vaultView(t, data)
-	if v.Enabled || v.Revision != 0 || len(v.Allowances) != 0 || len(v.Machines) != 1 || v.Machines[0].ID != old.ID || len(v.Keys) != 1 || v.Keys[0].ID != accountKeyID(t, g, alice.ID) || v.Hosts == nil {
+	if v.Enabled || v.Revision != 0 || len(v.Allowances) != 0 || len(v.Machines) != 1 || v.Machines[0].ID != old.ID || len(v.Keys) != 1 || v.Keys[0].ID != accountKeyID(t, g, alice.ID) || strings.Contains(string(data), `"hosts"`) {
 		t.Fatalf("default view: %s", data)
 	}
 	// No bearer route reads or changes the lock.
@@ -253,9 +252,7 @@ func TestFleetVaultAllowanceValidation(t *testing.T) {
 	browser := browserLogin(t, s.URL, "alice", browserPassword)
 	w1, _ := vaultWorker(t, s.URL, a.Key, "w1", true)
 	foreign, _ := vaultWorker(t, s.URL, b.Key, "w1", true)
-	owner, transport := vaultClient(t, s.URL, a.Key)
-	_, bobOwner := vaultClient(t, s.URL, b.Key)
-	_ = bobOwner
+	owner, _ := vaultClient(t, s.URL, a.Key)
 	key := accountKeyID(t, g, alice.ID)
 	common, _ := fleetKey(t, a, "common")
 	orchestrator, _ := fleetKey(t, a, "orchestrator")
@@ -267,18 +264,17 @@ func TestFleetVaultAllowanceValidation(t *testing.T) {
 		{"revision": 0, "keyId": key, "machineIds": []string{foreign.ID}},
 		{"revision": 0, "keyId": common, "allMachines": true},
 		{"revision": 0, "keyId": "superuser", "allMachines": true},
-		{"revision": 0, "ownerId": transport.ID, "allMachines": true},
-		{"revision": 0, "ownerId": bobOwner.ID, "allMachines": true},
-		{"revision": 0, "ownerId": w1.ID, "allMachines": true},
+		{"revision": 0, "ownerId": owner.ID, "allMachines": true},
+		{"revision": 0, "ownerId": owner.ID, "keyId": key, "allMachines": true},
 		{"revision": 0, "keyId": key, "allMachines": true, "ttlSeconds": -1},
 		{"revision": 0, "keyId": key, "allMachines": true, "ttlSeconds": 31536001},
 	} {
 		browser.request(t, "POST", "/console/api/fleet/vault/allowances", bad, 400)
 	}
 	browser.request(t, "POST", "/console/api/fleet/vault/allowances", map[string]any{"revision": 5, "keyId": key, "allMachines": true}, 409)
-	data, _ := browser.request(t, "POST", "/console/api/fleet/vault/allowances", map[string]any{"revision": 0, "keyId": orchestrator, "ownerId": owner.ID, "machineIds": []string{w1.ID}, "ttlSeconds": 60}, 201)
+	data, _ := browser.request(t, "POST", "/console/api/fleet/vault/allowances", map[string]any{"revision": 0, "keyId": orchestrator, "machineIds": []string{w1.ID}, "ttlSeconds": 60}, 201)
 	v := vaultView(t, data)
-	if v.Revision != 1 || len(v.Allowances) != 1 || v.Allowances[0].KeyID != orchestrator || v.Allowances[0].OwnerID != owner.ID || v.Allowances[0].ExpiresAt.IsZero() || len(v.Hosts) != 1 || v.Hosts[0].ID != owner.ID || len(v.Keys) != 2 {
+	if v.Revision != 1 || len(v.Allowances) != 1 || v.Allowances[0].KeyID != orchestrator || v.Allowances[0].ExpiresAt.IsZero() || strings.Contains(string(data), owner.ID) || len(v.Keys) != 2 {
 		t.Fatalf("allowance view: %s", data)
 	}
 	id := v.Allowances[0].ID
@@ -330,7 +326,7 @@ func TestFleetVaultCheckDecisions(t *testing.T) {
 	foreign, _ := vaultWorker(t, s.URL, b.Key, "w1", true)
 	_, worker := fleetKey(t, a, "common")
 	common, commonToken := fleetKey(t, a, "common")
-	orchestrator, orchestratorToken := fleetKey(t, a, "orchestrator")
+	orchestrator, orchestratorToken := fleetKey(t, a, "orchestrator-enroll")
 	key := accountKeyID(t, g, alice.ID)
 	owner, transport := vaultClient(t, s.URL, a.Key)
 	m1, both := []string{w1.ID}, []string{w1.ID, w2.ID}
@@ -356,7 +352,7 @@ func TestFleetVaultCheckDecisions(t *testing.T) {
 	if d = vaultCheck(t, s.URL, worker, model.FleetVaultCheck{Issuer: transport.ID, MachineIDs: m1}); d.Allowed || d.KeyID != key || d.OwnerID != owner.ID {
 		t.Fatalf("no allowance denies but resolves: %+v", d)
 	}
-	browser.request(t, "POST", "/console/api/fleet/vault/allowances", map[string]any{"revision": 1, "keyId": key, "ownerId": owner.ID, "machineIds": m1}, 201)
+	browser.request(t, "POST", "/console/api/fleet/vault/allowances", map[string]any{"revision": 1, "keyId": key, "machineIds": m1}, 201)
 	for _, c := range []struct {
 		q    model.FleetVaultCheck
 		want bool
@@ -382,30 +378,27 @@ func TestFleetVaultCheckDecisions(t *testing.T) {
 		t.Fatalf("foreign issuer must stay unresolved: %+v", d)
 	}
 
-	// A host-only rule still requires a current execution key.
-	browser.request(t, "POST", "/console/api/fleet/vault/allowances", map[string]any{"revision": 2, "ownerId": owner.ID, "allMachines": true}, 201)
-	if d = vaultCheck(t, s.URL, worker, model.FleetVaultCheck{Issuer: transport.ID, MachineIDs: both}); !d.Allowed {
-		t.Fatal("host rule with a live account key")
+	// A second orchestrator using the same key gets the same allowance.
+	otherOwner, otherTransport := vaultClient(t, s.URL, a.Key)
+	if d = vaultCheck(t, s.URL, worker, model.FleetVaultCheck{Issuer: otherTransport.ID, MachineIDs: m1}); !d.Allowed || d.OwnerID != otherOwner.ID {
+		t.Fatal("shared key did not admit the second orchestrator", d)
 	}
 	for _, q := range []model.FleetVaultCheck{
 		{KeyID: orchestrator, OwnerID: owner.ID, MachineIDs: both},
 		{KeyID: common, OwnerID: owner.ID, MachineIDs: both},
 		{OwnerID: owner.ID, MachineIDs: both},
 	} {
-		want := q.KeyID == orchestrator
-		if d = vaultCheck(t, s.URL, worker, q); d.Allowed != want {
-			t.Errorf("host rule provenance %+v = %+v, want %v", q, d, want)
+		if d = vaultCheck(t, s.URL, worker, q); d.Allowed {
+			t.Errorf("unallowed key %+v = %+v", q, d)
 		}
 	}
-	// A discovery-only client session never passes a host rule.
-	commonOwner, commonTransport := vaultClient(t, s.URL, commonToken)
-	browser.request(t, "POST", "/console/api/fleet/vault/allowances", map[string]any{"revision": 3, "ownerId": commonOwner.ID, "allMachines": true}, 201)
+	_, commonTransport := vaultClient(t, s.URL, commonToken)
 	if d = vaultCheck(t, s.URL, worker, model.FleetVaultCheck{Issuer: commonTransport.ID, MachineIDs: m1}); d.Allowed || d.KeyID != "" {
 		t.Fatalf("discovery-only client allowed: %+v", d)
 	}
 	// An orchestrator session passes; after revocation its stored provenance does not.
 	orchOwner, orchTransport := vaultClient(t, s.URL, orchestratorToken)
-	browser.request(t, "POST", "/console/api/fleet/vault/allowances", map[string]any{"revision": 4, "keyId": orchestrator, "ownerId": orchOwner.ID, "allMachines": true}, 201)
+	browser.request(t, "POST", "/console/api/fleet/vault/allowances", map[string]any{"revision": 2, "keyId": orchestrator, "allMachines": true}, 201)
 	if d = vaultCheck(t, s.URL, worker, model.FleetVaultCheck{Issuer: orchTransport.ID, MachineIDs: both}); !d.Allowed || d.KeyID != orchestrator || d.OwnerID != orchOwner.ID {
 		t.Fatalf("orchestrator session: %+v", d)
 	}
@@ -445,7 +438,7 @@ func TestFleetVaultCheckDecisions(t *testing.T) {
 	if v := vaultView(t, data); len(v.Allowances) != 0 {
 		t.Fatalf("expired allowances listed: %s", data)
 	}
-	browser.request(t, "PUT", "/console/api/fleet/vault", map[string]any{"revision": 5, "enabled": true, "pauseSeconds": 600}, 200)
+	browser.request(t, "PUT", "/console/api/fleet/vault", map[string]any{"revision": 3, "enabled": true, "pauseSeconds": 600}, 200)
 	if d = vaultCheck(t, s.URL, worker, model.FleetVaultCheck{MachineIDs: m1}); !d.Allowed {
 		t.Fatal("paused lock denied")
 	}
@@ -458,7 +451,7 @@ func TestFleetVaultCheckDecisions(t *testing.T) {
 		t.Fatal("lapsed pause must resume strict enforcement")
 	}
 	// The operator's active gateway lock enforces an unlocked fleet too.
-	browser.request(t, "PUT", "/console/api/fleet/vault", map[string]any{"revision": 6, "enabled": false}, 200)
+	browser.request(t, "PUT", "/console/api/fleet/vault", map[string]any{"revision": 4, "enabled": false}, 200)
 	g.mu.Lock()
 	g.globalVault = globalVaultState{Enabled: true, Revision: 1}
 	g.mu.Unlock()
@@ -467,52 +460,33 @@ func TestFleetVaultCheckDecisions(t *testing.T) {
 	}
 }
 
-func TestFleetVaultClientProfileLabels(t *testing.T) {
+func TestFleetVaultMigrationDoesNotWidenHostRules(t *testing.T) {
 	dir := t.TempDir()
 	g, s := gatewayAt(t, dir)
-	_, a := createTestUser(t, s, "alice")
-	_, b := createTestUser(t, s, "bob")
-	provisionBrowser(t, a, "")
-	browser := browserLogin(t, s.URL, "alice", browserPassword)
-	const vault = "/console/api/fleet/vault"
-	owner, transport := vaultClient(t, s.URL, a.Key)
-	other, _ := vaultClient(t, s.URL, b.Key)
-	path := vault + "/profiles/"
-	label := map[string]string{"label": "Build Mac", "previousLabel": ""}
-	browser.request(t, "PUT", path+transport.ID, label, 404)
-	browser.request(t, "PUT", path+other.ID, label, 404)
-	forged := browser
-	forged.CSRF = "wrong"
-	forged.request(t, "PUT", path+owner.ID, label, 403)
-
-	browser.request(t, "POST", vault+"/allowances", map[string]any{"revision": 0, "ownerId": owner.ID, "allMachines": true}, 201)
-	browser.request(t, "PUT", path+owner.ID, label, 204)
-	browser.request(t, "PUT", path+owner.ID, label, 409)
-	view := func() fleetVaultView {
-		data, _ := browser.request(t, "GET", vault, nil, 200)
-		return vaultView(t, data)
-	}
-	v := view()
-	if len(v.Hosts) != 1 || v.Hosts[0].ID != owner.ID || v.Hosts[0].Name != "Build Mac" || !v.Hosts[0].Online || v.Hosts[0].LastSeen.IsZero() {
-		t.Fatalf("connected profile: %+v", v.Hosts)
-	}
-	if v.Revision != 1 || len(v.Allowances) != 1 || v.Allowances[0].OwnerID != owner.ID || len(v.Keys) != 1 || v.Keys[0].Role != roleUser {
-		t.Fatalf("label must not change allowance/credential: %+v", v)
-	}
+	user, _ := createTestUser(t, s, "alice")
 	s.Close()
 	if err := g.Close(); err != nil {
 		t.Fatal(err)
 	}
+	db, err := sql.Open("sqlite", filepath.Join(dir, "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`{"userId":"` + user.ID + `","enabled":true,"revision":5,"allowances":[{"id":"one","keyId":"k","allMachines":true,"ownerId":"o"},{"id":"two","keyId":"keep","machineIds":["worker"]},{"id":"three","ownerId":"o","allMachines":true}]}`)
+	if _, err := db.Exec(`INSERT INTO fleet_vault VALUES(?,?);`, user.ID, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version=11`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
 	g, s = gatewayAt(t, dir)
 	defer func() { s.Close(); _ = g.Close() }()
-	browser = browserLogin(t, s.URL, "alice", browserPassword)
-	offline := view()
-	if len(offline.Hosts) != 1 || offline.Hosts[0].Online || offline.Hosts[0].Name != "Build Mac" || offline.Hosts[0].LastSeen.Before(v.Hosts[0].LastSeen) {
-		t.Fatalf("profile after restart: %+v", offline.Hosts)
-	}
-	browser.request(t, "PUT", path+owner.ID, map[string]string{"label": "", "previousLabel": "Build Mac"}, 204)
-	if v := view(); v.Hosts[0].Name != "" || v.Hosts[0].LastSeen != offline.Hosts[0].LastSeen || countAudit(t, g, "vault.profile_label") != 2 {
-		t.Fatal("clearing label must preserve observed identity and be audited", v.Hosts)
+	p := g.vaultPolicies[user.ID]
+	if !p.Enabled || p.Revision != 6 || len(p.Allowances) != 1 || p.Allowances[0].ID != "two" || !fleetDecision(p, "keep", []string{"worker"}, time.Now()) || fleetDecision(p, "k", []string{"worker"}, time.Now()) {
+		t.Fatalf("migration changed key-only access or widened a restricted rule: %+v", p)
 	}
 }
 
@@ -566,13 +540,7 @@ func TestFleetVaultBearerGuards(t *testing.T) {
 		}
 	}
 	browser.request(t, "POST", "/console/api/fleet/nodes/"+w1.ID+"/startup", startup, 200)
-	// A host-qualified rule cannot admit a bearer; a key-only rule can.
-	owner, _ := vaultClient(t, s.URL, a.Key)
-	browser.request(t, "POST", "/console/api/fleet/vault/allowances", map[string]any{"revision": 2, "keyId": key, "ownerId": owner.ID, "allMachines": true}, 201)
-	if status, _ := vaultHTTP(t, s.URL, a.Key, "POST", path+"/startup", startup); status != http.StatusForbidden {
-		t.Fatal("host-qualified rule admitted a bearer", status)
-	}
-	browser.request(t, "POST", "/console/api/fleet/vault/allowances", map[string]any{"revision": 3, "keyId": key, "machineIds": []string{w1.ID}}, 201)
+	browser.request(t, "POST", "/console/api/fleet/vault/allowances", map[string]any{"revision": 2, "keyId": key, "machineIds": []string{w1.ID}}, 201)
 	if status, body := vaultHTTP(t, s.URL, a.Key, "POST", path+"/startup", startup); status != http.StatusOK {
 		t.Fatal("key-only rule did not admit its bearer", status, string(body))
 	}
@@ -598,7 +566,6 @@ func TestFleetVaultPersistsAndMigrates(t *testing.T) {
 	alice, a := createTestUser(t, s, "alice")
 	provisionBrowser(t, a, "")
 	browser := browserLogin(t, s.URL, "alice", browserPassword)
-	owner, _ := vaultClient(t, s.URL, a.Key)
 	w1, _ := vaultWorker(t, s.URL, a.Key, "w1", true)
 	key := accountKeyID(t, g, alice.ID)
 	browser.request(t, "POST", "/console/api/fleet/vault/allowances", map[string]any{"revision": 0, "keyId": key, "machineIds": []string{w1.ID}}, 201)
@@ -643,11 +610,6 @@ func TestFleetVaultPersistsAndMigrates(t *testing.T) {
 	g.mu.Unlock()
 	if !empty || err != nil {
 		t.Fatal("migrated table must start empty and accept policies", empty, err)
-	}
-	browser = browserLogin(t, s.URL, "alice", browserPassword)
-	data, _ := browser.request(t, "GET", "/console/api/fleet/vault", nil, 200)
-	if profiles := vaultView(t, data).Hosts; len(profiles) != 1 || profiles[0].ID != owner.ID || profiles[0].Online || !profiles[0].LastSeen.IsZero() || profiles[0].Name != "" {
-		t.Fatal("migration must preserve existing profiles without inventing labels or dates", profiles)
 	}
 }
 

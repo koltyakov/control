@@ -4,7 +4,7 @@
 
 Vault makes access to Control on an orchestrator opt-in. One approval lets one connected caller issue supported commands across the account's fleet. The default is 24 hours from approval. Workers still enforce their own access rules. A Vault grant cannot authorize another fleet or confer gateway administration.
 
-To lock worker access from the gateway, use the [console's fleet and gateway controls](console.md#lock-worker-access). A console allowance can limit a key or orchestrator host to selected workers even when the local CLI or MCP connection is approved.
+To lock worker access from the gateway, use the [console's fleet and gateway controls](console.md#lock-worker-access). A console allowance can limit an access key to selected workers even when the local CLI or MCP connection is approved.
 
 ## Approve a caller
 

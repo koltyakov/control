@@ -60,7 +60,6 @@ type fleetVaultEntry struct {
 type fleetVaultAllowance struct {
 	ID          string    `json:"id"`
 	KeyID       string    `json:"keyId"`
-	OwnerID     string    `json:"ownerId"`
 	AllMachines bool      `json:"allMachines"`
 	MachineIDs  []string  `json:"machineIds"`
 	ExpiresAt   time.Time `json:"expiresAt"`
@@ -72,7 +71,6 @@ type fleetVaultPolicy struct {
 	Revision    int64                 `json:"revision"`
 	Allowances  []fleetVaultAllowance `json:"allowances"`
 	Keys        []fleetVaultEntry     `json:"keys"`
-	Hosts       []fleetVaultEntry     `json:"hosts"`
 	Machines    []fleetVaultEntry     `json:"machines"`
 }
 
@@ -184,14 +182,15 @@ func (f *fleetLockFixture) login(username, password string) *consoleBrowser {
 	return b
 }
 
-// orchestratorKey creates an execution-only fleet key and returns its ID and secret.
-func (f *fleetLockFixture) orchestratorKey(name string) (string, string) {
+// orchestratorKey exercises the same issuance and role checks as the CLI.
+func (f *fleetLockFixture) orchestratorKey(name, role string) (string, string) {
 	f.t.Helper()
 	var created struct {
 		Key   struct{ ID, Role string }
 		Token string
 	}
-	if err := (client.Admin{URL: f.url, Key: f.account}).JSON(f.ctx, http.MethodPost, "/v1/fleet/keys", map[string]string{"name": name, "role": "orchestrator"}, &created); err != nil || created.Token == "" || created.Key.Role != "orchestrator" {
+	data, err := (client.Admin{URL: f.url, Key: f.account}).CreateExecutionKey(f.ctx, name, role)
+	if err != nil || json.Unmarshal(data, &created) != nil || created.Token == "" || created.Key.Role != role {
 		f.t.Fatal("create orchestrator key", created.Key, err)
 	}
 	return created.Key.ID, created.Token
@@ -246,13 +245,10 @@ func (f *fleetLockFixture) setLock(enabled bool, pauseSeconds int64) fleetVaultP
 	return after
 }
 
-func allowanceRequest(revision int64, keyID, ownerID string, machines []string, ttlSeconds int64) map[string]any {
+func allowanceRequest(revision int64, keyID string, machines []string, ttlSeconds int64) map[string]any {
 	q := map[string]any{"revision": revision, "allMachines": false, "machineIds": machines}
 	if keyID != "" {
 		q["keyId"] = keyID
-	}
-	if ownerID != "" {
-		q["ownerId"] = ownerID
 	}
 	if ttlSeconds != 0 {
 		q["ttlSeconds"] = ttlSeconds
@@ -262,10 +258,10 @@ func allowanceRequest(revision int64, keyID, ownerID string, machines []string, 
 
 // allow adds one allowance through the browser API and returns it as the
 // acknowledging response listed it.
-func (f *fleetLockFixture) allow(keyID, ownerID string, machines []string, ttlSeconds int64) fleetVaultAllowance {
+func (f *fleetLockFixture) allow(keyID string, machines []string, ttlSeconds int64) fleetVaultAllowance {
 	f.t.Helper()
 	before := f.policy()
-	status, body, err := f.browser.do(f.ctx, http.MethodPost, "/console/api/fleet/vault/allowances", allowanceRequest(before.Revision, keyID, ownerID, machines, ttlSeconds), true)
+	status, body, err := f.browser.do(f.ctx, http.MethodPost, "/console/api/fleet/vault/allowances", allowanceRequest(before.Revision, keyID, machines, ttlSeconds), true)
 	var after fleetVaultPolicy
 	if err != nil || status < 200 || status > 299 || json.Unmarshal(body, &after) != nil {
 		f.t.Fatalf("add allowance: %d %s %v", status, body, err)
@@ -275,7 +271,7 @@ func (f *fleetLockFixture) allow(keyID, ownerID string, machines []string, ttlSe
 	}
 	for _, a := range after.Allowances {
 		if !slices.ContainsFunc(before.Allowances, func(b fleetVaultAllowance) bool { return b.ID == a.ID }) {
-			if a.ID == "" || a.KeyID != keyID || a.OwnerID != ownerID || a.AllMachines || !sameSet(a.MachineIDs, machines) || (ttlSeconds == 0) != a.ExpiresAt.IsZero() {
+			if a.ID == "" || a.KeyID != keyID || a.AllMachines || !sameSet(a.MachineIDs, machines) || (ttlSeconds == 0) != a.ExpiresAt.IsZero() {
 				f.t.Fatalf("stored allowance differs from request: %+v", a)
 			}
 			return a
@@ -461,18 +457,17 @@ func containsID(list []fleetVaultEntry, id string) bool {
 	return slices.ContainsFunc(list, func(e fleetVaultEntry) bool { return e.ID == id })
 }
 
-func TestFleetLockScopesExecutionToAllowedKeyHostAndMachines(t *testing.T) {
+func TestFleetLockScopesExecutionToAllowedKeyAndMachines(t *testing.T) {
 	t.Parallel()
 	forTransports(t, func(t *testing.T, relay bool) {
 		f := newFleetLockFixture(t, relay)
 		const A, B, C = 0, 1, 2
-		keyID, key := f.orchestratorKey("scoped")
-		otherKeyID, otherKey := f.orchestratorKey("other")
+		keyID, key := f.orchestratorKey("scoped", "orchestrator-enroll")
+		otherKeyID, otherKey := f.orchestratorKey("other", "orchestrator")
 		hostDir := t.TempDir()
 		c := f.client(key, hostDir)
 		host := f.owner(c)
-		// The same host with another execution key, and the same key on a
-		// second host. Both differ from the allowance in exactly one selector.
+		// Admission follows the key, independent of the saved client state.
 		sameHost := f.client(otherKey, hostDir)
 		if f.owner(sameHost) != host {
 			t.Fatal("another key on the same state directory changed the stable host")
@@ -499,9 +494,6 @@ func TestFleetLockScopesExecutionToAllowedKeyHostAndMachines(t *testing.T) {
 		if !containsID(policy.Keys, keyID) || !containsID(policy.Keys, otherKeyID) {
 			t.Fatalf("policy omits fleet keys: %+v", policy.Keys)
 		}
-		if !containsID(policy.Hosts, host) || !containsID(policy.Hosts, otherHost) {
-			t.Fatalf("policy omits stable hosts %s, %s: %+v", host, otherHost, policy.Hosts)
-		}
 		for i := range f.workers {
 			if !slices.Contains(policy.Machines, fleetVaultEntry{ID: f.machine(i), Name: fleetLockNames[i]}) {
 				t.Fatalf("policy omits machine %s: %+v", fleetLockNames[i], policy.Machines)
@@ -516,9 +508,9 @@ func TestFleetLockScopesExecutionToAllowedKeyHostAndMachines(t *testing.T) {
 		f.denied(account, A, "account key without allowance")
 		f.refused("pre-issued A->B grant without allowance", func() error { return f.delegated(A, B, lockedAB) })
 
-		allowance := f.allow(keyID, host, []string{f.machine(A), f.machine(B)}, 0)
-		f.allowed(c, A, "allowed key and host")
-		f.allowed(c, B, "allowed key and host")
+		allowance := f.allow(keyID, []string{f.machine(A), f.machine(B)}, 0)
+		f.allowed(c, A, "allowed key")
+		f.allowed(c, B, "allowed key")
 		f.denied(c, C, "machine outside the allowance")
 
 		// Instruction-bound delegation stays inside the allowance.
@@ -537,14 +529,14 @@ func TestFleetLockScopesExecutionToAllowedKeyHostAndMachines(t *testing.T) {
 		f.refused("pre-issued C->B grant", func() error { return f.delegated(C, B, preCB) })
 		f.refused("instruction C->B", func() error { return f.peersCall(c, C, B) })
 
-		// A key and host rule needs both selectors.
+		// Sharing the key shares the allowance; sharing client state does not.
 		f.denied(sameHost, A, "another key on the allowed host")
-		f.denied(secondHost, A, "allowed key on a second host")
+		f.allowed(secondHost, A, "allowed key on a second host")
 		f.denied(account, A, "account key while another credential is allowed")
 
 		// Another rule for the same host's other key admits only that key and
 		// its machine, and leaves the scoped allowance in force.
-		extra := f.allow(otherKeyID, host, []string{f.machine(C)}, 0)
+		extra := f.allow(otherKeyID, []string{f.machine(C)}, 0)
 		f.allowed(sameHost, C, "second key with its own rule")
 		f.denied(sameHost, A, "second key outside its own rule")
 		f.denied(c, C, "first key outside its rule")
@@ -580,11 +572,10 @@ func TestFleetLockDisjointAllowancesDoNotCombine(t *testing.T) {
 	forTransports(t, func(t *testing.T, relay bool) {
 		f := newFleetLockFixture(t, relay)
 		const A, B, C = 0, 1, 2
-		keyID, key := f.orchestratorKey("split")
-		_, otherKey := f.orchestratorKey("other")
+		keyID, key := f.orchestratorKey("split", "orchestrator")
+		otherKeyID, otherKey := f.orchestratorKey("other", "orchestrator-enroll")
 		hostDir := t.TempDir()
 		c := f.client(key, hostDir)
-		host := f.owner(c)
 		sameHost := f.client(otherKey, hostDir)
 		secondHost := f.client(key, t.TempDir())
 		f.warm(c, A, B, C)
@@ -596,8 +587,8 @@ func TestFleetLockDisjointAllowancesDoNotCombine(t *testing.T) {
 
 		// Rules split by machine: each hop is covered, the pair is not.
 		f.setLock(true, 0)
-		first := f.allow(keyID, host, []string{f.machine(A)}, 0)
-		second := f.allow(keyID, host, []string{f.machine(B)}, 0)
+		first := f.allow(keyID, []string{f.machine(A)}, 0)
+		second := f.allow(keyID, []string{f.machine(B)}, 0)
 		f.allowed(c, A, "first rule")
 		f.allowed(c, B, "second rule")
 		f.denied(c, C, "machine in neither rule")
@@ -607,16 +598,15 @@ func TestFleetLockDisjointAllowancesDoNotCombine(t *testing.T) {
 		f.removeAllowance(first.ID)
 		f.removeAllowance(second.ID)
 
-		// Rules split by selector: a key-only rule and a host-only rule each
-		// admit their own selector, but never combine into one principal's pair.
-		f.allow(keyID, "", []string{f.machine(A)}, 0)
-		f.allow("", host, []string{f.machine(B)}, 0)
+		// Different keys' allowances cannot combine to authorize a delegation.
+		f.allow(keyID, []string{f.machine(A)}, 0)
+		f.allow(otherKeyID, []string{f.machine(B)}, 0)
 		f.allowed(c, A, "key-only rule")
 		f.allowed(secondHost, A, "key-only rule on a second host")
 		f.denied(sameHost, A, "key-only rule for another key")
-		f.allowed(c, B, "host-only rule")
-		f.allowed(sameHost, B, "host-only rule for another key")
-		f.denied(secondHost, B, "host-only rule on a second host")
+		f.denied(c, B, "first key has no B rule")
+		f.allowed(sameHost, B, "second key has its own B rule")
+		f.denied(secondHost, B, "first key on another host has no B rule")
 		f.refused("instruction A->B across selector rules", func() error { return f.peersCall(c, A, B) })
 		f.refused("pre-issued A->B grant across selector rules", func() error { return f.delegated(A, B, selectorAB) })
 	})
@@ -627,9 +617,8 @@ func TestFleetLockExpiryAndPause(t *testing.T) {
 	forTransports(t, func(t *testing.T, relay bool) {
 		f := newFleetLockFixture(t, relay)
 		const A, C = 0, 2
-		keyID, key := f.orchestratorKey("temporary")
+		keyID, key := f.orchestratorKey("temporary", "orchestrator")
 		c := f.client(key, t.TempDir())
-		host := f.owner(c)
 		f.warm(c, A, C)
 
 		// A pause lifts the lock until its returned deadline, then the lock
@@ -647,7 +636,7 @@ func TestFleetLockExpiryAndPause(t *testing.T) {
 
 		// A time-limited allowance stops authorizing at its returned deadline.
 		const lifetime = 2
-		temporary := f.allow(keyID, host, []string{f.machine(A)}, lifetime)
+		temporary := f.allow(keyID, []string{f.machine(A)}, lifetime)
 		f.allowed(c, A, "temporary allowance")
 		f.waitFor(temporary.ExpiresAt, lifetime*time.Second, "allowance deadline")
 		f.denied(c, A, "temporary allowance expired")
@@ -667,9 +656,8 @@ func TestFleetLockConsoleContract(t *testing.T) {
 	t.Parallel()
 	f := newFleetLockFixture(t, true)
 	const A = 0
-	keyID, key := f.orchestratorKey("contract")
+	keyID, key := f.orchestratorKey("contract", "orchestrator")
 	c := f.client(key, t.TempDir())
-	host := f.owner(c)
 	f.warm(c, A)
 
 	anonymous := &consoleBrowser{origin: f.url, http: &http.Client{Timeout: 10 * time.Second}}
@@ -726,20 +714,17 @@ func TestFleetLockConsoleContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	bobClient := f.client(bob.Token, t.TempDir())
-	bobHost := f.owner(bobClient)
 
 	locked := f.setLock(true, 0)
-	if containsID(locked.Machines, foreign.Identity.ID) || containsID(locked.Hosts, bobHost) {
-		t.Fatalf("policy lists another fleet's machines or hosts: %+v", locked)
+	if containsID(locked.Machines, foreign.Identity.ID) {
+		t.Fatalf("policy lists another fleet's machines: %+v", locked)
 	}
 	for _, bad := range []map[string]any{
-		allowanceRequest(locked.Revision, keyID, host, []string{foreign.Identity.ID}, 0),
-		allowanceRequest(locked.Revision, keyID, bobHost, []string{f.machine(A)}, 0),
-		allowanceRequest(locked.Revision, "missing-key", host, []string{f.machine(A)}, 0),
-		allowanceRequest(locked.Revision, keyID, "missing-host", []string{f.machine(A)}, 0),
-		allowanceRequest(locked.Revision, "", "", []string{f.machine(A)}, 0),
-		allowanceRequest(locked.Revision, keyID, host, []string{}, 0),
-		allowanceRequest(locked.Revision-1, keyID, host, []string{f.machine(A)}, 0),
+		allowanceRequest(locked.Revision, keyID, []string{foreign.Identity.ID}, 0),
+		allowanceRequest(locked.Revision, "missing-key", []string{f.machine(A)}, 0),
+		allowanceRequest(locked.Revision, "", []string{f.machine(A)}, 0),
+		allowanceRequest(locked.Revision, keyID, []string{}, 0),
+		allowanceRequest(locked.Revision-1, keyID, []string{f.machine(A)}, 0),
 	} {
 		status, body, _ := f.browser.do(f.ctx, http.MethodPost, "/console/api/fleet/vault/allowances", bad, true)
 		if status < 400 || status > 499 {
@@ -756,7 +741,7 @@ func TestFleetLockConsoleContract(t *testing.T) {
 	if err := bobClient.Call(f.ctx, "bravo", "test.effect", map[string]any{}, &out); err != nil || bobEffects.Load() != 1 {
 		t.Fatal("another fleet's execution was blocked", bobEffects.Load(), err)
 	}
-	allowance := f.allow(keyID, host, []string{f.machine(A)}, 0)
+	allowance := f.allow(keyID, []string{f.machine(A)}, 0)
 	f.allowed(c, A, "allowance")
 	stale := map[string]any{"revision": locked.Revision}
 	if status, _, _ := f.browser.do(f.ctx, http.MethodDelete, "/console/api/fleet/vault/allowances/"+allowance.ID, stale, true); status != http.StatusConflict {

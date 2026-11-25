@@ -1014,9 +1014,6 @@ td strong {
   display: block;
   font-size: 11px;
 }
-[data-profile-id] {
-  overflow-wrap: anywhere;
-}
 .action-column {
   width: 1%;
   text-align: right;
@@ -1600,16 +1597,21 @@ dialog::backdrop {
   background: var(--overlay);
 }
 .dialog-heading {
-  display: flex;
+  display: grid;
+  grid-template-rows: minmax(32px, auto);
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
   margin-bottom: 12px;
 }
 .dialog-heading h2 {
+  margin-inline-end: 32px;
   font-size: 17px;
   overflow-wrap: anywhere;
   min-width: 0;
+}
+.dialog-heading > .icon-button {
+  position: absolute;
+  inset-block-start: 8px;
+  inset-inline-end: 8px;
 }
 #dialog-body > p,
 #dialog-body form > p {

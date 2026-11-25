@@ -57,6 +57,10 @@ func TestCreateOrchestratorKeyRefusesLegacyGatewayBeforeSending(t *testing.T) {
 	if !errors.Is(err, ErrOrchestratorKeysUnsupported) || stub.posts.Load() != 0 {
 		t.Fatal("legacy gateway received a creation request", stub.posts.Load(), err)
 	}
+	stub.advertise = true
+	if _, err := stub.serve(t).CreateExecutionKey(t.Context(), "mac", "orchestrator-enroll"); err == nil || stub.posts.Load() != 0 {
+		t.Fatal("gateway without combined-key support received a creation request", stub.posts.Load(), err)
+	}
 }
 
 func TestCreateOrchestratorKeyVerifiesOutcome(t *testing.T) {

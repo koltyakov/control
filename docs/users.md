@@ -53,7 +53,9 @@ Users issue, list, rename, and revoke their own keys with `control keys create|l
 
 Only account-authenticated client sessions initiate execution authority. Enrolling a node with an account key does not grant its node identity that authority. Keep account keys off execution workers, since someone who steals one can authenticate a new orchestrator client. Worker installation/common keys do not independently execute peer commands, including through the local API or a new common-key client session.
 
-For a build host that needs to run work, create a key with `control keys create build-host --role orchestrator`. Use that key for `control login` on the host. In the [web console](console.md#lock-worker-access), turn on the fleet lock and give the key an allowance for the intended workers. Without a lock, the key can request work on any worker its other access rules permit.
+The console exposes [key permissions and recovery](console.md#lock-worker-access). Use `control keys remove ID` to permanently remove an already-revoked key. Reactivation and replacement of the account key use the independent browser login.
+
+For a build host that needs to enroll machines as well as run work, use `control keys create build-host --role orchestrator-enroll`. For discovery and execution without enrollment, use `--role orchestrator`. Use the issued key for `control login`. In the [web console](console.md#lock-worker-access), turn on the fleet lock and give the key an allowance for the intended workers. Every orchestrator using the key shares that allowance. Without a lock, the key can request work on any worker its other access rules permit.
 
 Fleet account owners can manage worker secrets through encrypted CLI/console routes, subject to destination `secrets.manage` permission. Common keys cannot list metadata, set or delete through those routes. This is fixed fleet management, not a worker execution grant or value-read permission. See [remote secrets](secrets.md#manage-a-worker-from-the-orchestrator).
 
@@ -103,6 +105,8 @@ Schema version 9 adds `machine_labels`, referencing permanent identities and the
 Schema version 10 adds the operator lock and each fleet's policy and allowances. Upgrading leaves both locks off. Pauses and finite allowances use absolute UTC deadlines, so restarting the gateway does not renew them. An older gateway cannot open the upgraded database.
 
 Schema version 11 stores optional fleet-assigned client profile labels and gateway-observed last-seen times. Existing identities and allowances keep their IDs. The migration does not invent dates for old profiles.
+
+Schema version 12 makes lock allowances key-only. It keeps existing key-only rules, pauses and lock settings. It removes host-restricted rules (including key-plus-host rules) and increments the affected policy revisions; dropping just the host condition would silently widen access.
 
 `CONTROL_TOKEN` on the gateway is an optional bootstrap common key for the legacy fleet only. For a new shared gateway, omit it and configure `CONTROL_SUPERUSER_KEY`, then create separate accounts. Do not give unrelated users the same account key or legacy bootstrap token.
 
