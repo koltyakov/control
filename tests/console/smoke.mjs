@@ -3078,7 +3078,9 @@ try {
 
   await pageLink(page, "invitations");
   await page.getByText("No invitations yet", { exact: true }).waitFor();
-  await page.locator(".heading-actions [data-action=add]").click();
+  assert.ok(await page.locator(".heading-actions [data-action=add]").isHidden(),
+    "Invitations must offer Add machine in its panel heading, not the page heading");
+  await page.locator(".panel-heading [data-action=add]").click();
   await page.locator("#modal-form button[type=submit]").click();
   await page
     .locator("#modal-form .form-error")
@@ -3087,7 +3089,7 @@ try {
   await page.locator("#modal-form [data-action=close]").click();
 
   // Direct is the only available connection, so there is no choice to present.
-  await page.locator(".heading-actions [data-action=add]").click();
+  await page.locator(".panel-heading [data-action=add]").click();
   assert.equal(await page.locator('#modal-form select[name="connection"]').count(), 0);
   assert.equal(await page.locator("#proxy-worker-field").count(), 0);
   await page.locator("#modal-form [data-action=close]").click();
@@ -3127,7 +3129,7 @@ try {
     { id: "plain-system", name: "unrelated-system", redeemedId: "", startup: "" },
     { id: "complete-user", name: "complete", redeemedId: "complete-user-node", startup: "hybrid" },
   ], "Grouping must use pair metadata, prefer User regardless of ordering, and wait for both redemptions");
-  await page.locator(".heading-actions [data-action=add]").click();
+  await page.locator(".panel-heading [data-action=add]").click();
   await page
     .locator("#modal-form input[name=name]")
     .fill("pending-browser-worker");
@@ -3148,7 +3150,7 @@ try {
   );
   await page.getByRole("button", { name: "Done", exact: true }).click();
   await page.getByText("pending-browser-worker", { exact: true }).waitFor();
-  await page.locator(".heading-actions [data-action=add]").click();
+  await page.locator(".panel-heading [data-action=add]").click();
   await page
     .locator("#modal-form input[name=name]")
     .fill("pending-browser-worker");

@@ -1207,26 +1207,28 @@ td strong {
     font-size: 11px;
   }
 }
-/* "Issue account key" appears only while the account key is revoked. The
-   heading keeps one height either way, and "Create key" stays where it was:
-   on the right edge when the toolbar fits beside the title, and first on its
-   own row when the panel is too narrow for both buttons beside the title. */
-.panel:has(> .panel-heading [data-action="create-key"]) {
-  container: keys-panel / inline-size;
+/* Panel creation actions ("Create key", "Add machine") sit at the right edge
+   of the heading. A secondary action ("Issue account key", "Clear history")
+   may appear beside them; the heading keeps one height either way, and the
+   creation action stays where it was: on the right edge when the toolbar fits
+   beside the title, and first on its own row when the panel is too narrow for
+   both buttons beside the title. */
+.panel:has(> .panel-heading :is([data-action="create-key"], [data-action="add"])) {
+  container: action-panel / inline-size;
 }
-.panel-heading:has([data-action="create-key"]) > .row-actions button {
+.panel-heading:has(:is([data-action="create-key"], [data-action="add"])) > .row-actions button {
   white-space: nowrap;
 }
-@container keys-panel (max-width: 440px) {
-  .panel-heading:has([data-action="create-key"]) {
+@container action-panel (max-width: 440px) {
+  .panel-heading:has(:is([data-action="create-key"], [data-action="add"])) {
     flex-wrap: wrap;
     padding-block: 12px;
   }
-  .panel-heading:has([data-action="create-key"]) > .row-actions {
+  .panel-heading:has(:is([data-action="create-key"], [data-action="add"])) > .row-actions {
     flex-basis: 100%;
     justify-content: flex-start;
   }
-  .panel-heading:has([data-action="create-key"]) [data-action="create-key"] {
+  .panel-heading :is([data-action="create-key"], [data-action="add"]) {
     order: -1;
   }
 }

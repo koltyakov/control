@@ -1737,11 +1737,8 @@ function renderInvitations(items) {
       : empty(
           "No invitations yet",
           "Create a one-time command to install a worker.",
-          `<button class="primary" data-action="add">${icon("plus")}Add machine</button>`,
         ),
-    clearable(groups).length
-      ? `<button class="secondary compact" data-action="clear-invites">Clear history</button>`
-      : "",
+    `<div class="row-actions">${clearable(groups).length ? '<button class="secondary compact" data-action="clear-invites">Clear history</button>' : ""}<button class="secondary compact" data-action="add">${icon("plus")}Add machine</button></div>`,
   );
 }
 /** @param {FleetKey[]} keys @returns {string} */
@@ -2500,10 +2497,10 @@ function navigate() {
   $("#page-title").textContent = title;
   // Refresh never re-renders the password form, so it has nothing to update there.
   $(".heading-actions [data-action=refresh]").hidden = page === "account";
+  // Invitations carries its own Add machine button in the panel heading.
   $(".heading-actions [data-action=add]").hidden = ![
     "overview",
     "machines",
-    "invitations",
   ].includes(page);
   document.title = "Control · " + title;
   /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll("[data-page]")).forEach((a) => {
