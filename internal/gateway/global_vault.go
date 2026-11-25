@@ -9,9 +9,8 @@ import (
 )
 
 // No row means the operator has never configured the gateway-wide lock.
-// This table is created by the same migration as the per-fleet policy.
 const globalVaultSchema = `
-CREATE TABLE IF NOT EXISTS global_vault (
+CREATE TABLE global_vault (
  id INTEGER PRIMARY KEY CHECK(id=1),
  enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
  paused_until_ns INTEGER NOT NULL CHECK(paused_until_ns>=0 AND (enabled=1 OR paused_until_ns=0)),

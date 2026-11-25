@@ -19,9 +19,9 @@ import (
 // fleetVaultSchema stores each fleet's opt-in lock policy: whether workers
 // accept execution only from allowed account clients, a temporary pause, and
 // the allowances. One row per fleet; a missing row means the default, an
-// unlocked fleet. The operator's gateway-wide policy shares this migration.
+// unlocked fleet.
 const fleetVaultSchema = `
-CREATE TABLE IF NOT EXISTS fleet_vault (user_id TEXT PRIMARY KEY REFERENCES users(id), data BLOB NOT NULL);
+CREATE TABLE fleet_vault (user_id TEXT PRIMARY KEY REFERENCES users(id), data BLOB NOT NULL);
 `
 
 // Bounds for the fleet lock API. Durations are whole seconds; an absent or
@@ -36,9 +36,10 @@ const (
 
 // fleetVaultPolicy is one fleet's lock. Enabled with a future PausedUntil is
 // a temporary pause that resumes strict enforcement on its own; times are
-// persisted in UTC. Revision orders console edits.
+// persisted in UTC. Revision orders console edits. UserID is the row key and
+// is not stored in the record.
 type fleetVaultPolicy struct {
-	UserID      string                `json:"userId"`
+	UserID      string                `json:"-"`
 	Enabled     bool                  `json:"enabled"`
 	PausedUntil time.Time             `json:"pausedUntil,omitzero"`
 	Revision    int64                 `json:"revision"`
@@ -51,7 +52,6 @@ type fleetVaultAllowance struct {
 	KeyID       string    `json:"keyId"`
 	AllMachines bool      `json:"allMachines"`
 	MachineIDs  []string  `json:"machineIds,omitempty"`
-	CreatedAt   time.Time `json:"createdAt"`
 	ExpiresAt   time.Time `json:"expiresAt,omitzero"`
 }
 
@@ -486,7 +486,7 @@ func (g *Gateway) addFleetVaultAllowance(w http.ResponseWriter, r *http.Request)
 		if len(next.Allowances) >= maxFleetVaultAllowances {
 			return fleetVaultView{}, http.StatusConflict, "allowance limit reached; remove one first"
 		}
-		a := fleetVaultAllowance{ID: identity.NewID(), KeyID: q.KeyID, AllMachines: q.AllMachines, MachineIDs: machines, CreatedAt: now}
+		a := fleetVaultAllowance{ID: identity.NewID(), KeyID: q.KeyID, AllMachines: q.AllMachines, MachineIDs: machines}
 		if q.TTLSeconds != nil && *q.TTLSeconds > 0 {
 			a.ExpiresAt = now.Add(time.Duration(*q.TTLSeconds) * time.Second)
 		}

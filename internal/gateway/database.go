@@ -22,6 +22,54 @@ const legacyUser = "legacy"
 // each mutation commits before its HTTP/registration acknowledgement.
 const databasePragmas = "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)"
 
+// initialSchema creates a new database directly at currentSchemaVersion.
+const initialSchema = `
+CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, data BLOB NOT NULL);
+CREATE TABLE identities (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), UNIQUE(id,user_id));
+CREATE TABLE credentials (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), hash TEXT NOT NULL UNIQUE, data BLOB NOT NULL);
+CREATE TABLE nodes (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), name TEXT NOT NULL, data BLOB NOT NULL, UNIQUE(user_id,name), FOREIGN KEY(id,user_id) REFERENCES identities(id,user_id));
+CREATE TABLE invitations (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL);
+CREATE INDEX credentials_user ON credentials(user_id);
+CREATE INDEX invitations_user ON invitations(user_id);
+` + machineStateSchema + clientIdentitySchema + clientIdentityPrefixSchema + clientTransportSchema + consolePasswordSchema +
+	auditSchema + consoleSessionSchema + proxyDependencySchema + machineLabelSchema + fleetVaultSchema + globalVaultSchema + keyTimeSchema
+
+const (
+	machineStateSchema         = "CREATE TABLE machine_states (id TEXT PRIMARY KEY REFERENCES identities(id), data BLOB NOT NULL);\n"
+	clientIdentitySchema       = "CREATE TABLE client_identities (id TEXT PRIMARY KEY REFERENCES identities(id), data BLOB NOT NULL);\n"
+	clientIdentityPrefixSchema = "CREATE INDEX client_identity_prefix ON client_identities(substr(id,1,16));\n"
+	clientTransportSchema      = "CREATE TABLE client_transports (id TEXT PRIMARY KEY REFERENCES identities(id), owner_id TEXT NOT NULL REFERENCES client_identities(id), data BLOB NOT NULL);\n"
+	consolePasswordSchema      = "CREATE TABLE console_passwords (username TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL);\n"
+)
+
+// schemaUpgrades[v] upgrades a schema v database to v+1, each in its own
+// transaction. Adding a table means appending a step and raising
+// currentSchemaVersion; the array length keeps the two in step.
+var schemaUpgrades = [currentSchemaVersion]string{
+	1: machineStateSchema,
+	2: clientIdentitySchema,
+	3: clientTransportSchema,
+	4: consolePasswordSchema,
+	5: auditSchema,
+	6: consoleSessionSchema,
+	7: proxyDependencySchema,
+	8: machineLabelSchema,
+	// Databases upgraded through schema 3 lack the client identity prefix index.
+	9: fleetVaultSchema + globalVaultSchema + keyTimeSchema + "CREATE INDEX IF NOT EXISTS client_identity_prefix ON client_identities(substr(id,1,16));\n",
+}
+
+func (g *Gateway) upgradeSchema(from int) error {
+	tx, err := g.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.Exec(schemaUpgrades[from] + fmt.Sprintf("PRAGMA user_version=%d;", from+1)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (g *Gateway) openDatabase(dir string) error {
 	path := filepath.Join(dir, "gateway.db")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
@@ -60,21 +108,7 @@ func (g *Gateway) openDatabase(dir string) error {
 			return err
 		}
 		defer func() { _ = tx.Rollback() }()
-		if _, err = tx.Exec(`
-CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, data BLOB NOT NULL);
-CREATE TABLE identities (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), UNIQUE(id,user_id));
-CREATE TABLE credentials (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), hash TEXT NOT NULL UNIQUE, data BLOB NOT NULL);
-CREATE TABLE nodes (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), name TEXT NOT NULL, data BLOB NOT NULL, UNIQUE(user_id,name), FOREIGN KEY(id,user_id) REFERENCES identities(id,user_id));
-CREATE TABLE invitations (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL);
-CREATE INDEX credentials_user ON credentials(user_id);
-CREATE INDEX invitations_user ON invitations(user_id);
-CREATE TABLE machine_states (id TEXT PRIMARY KEY REFERENCES identities(id), data BLOB NOT NULL);
-CREATE TABLE client_identities (id TEXT PRIMARY KEY REFERENCES identities(id), data BLOB NOT NULL);
-CREATE TABLE client_transports (id TEXT PRIMARY KEY REFERENCES identities(id), owner_id TEXT NOT NULL REFERENCES client_identities(id), data BLOB NOT NULL);
-CREATE INDEX client_identity_prefix ON client_identities(substr(id,1,16));
-CREATE TABLE console_passwords (username TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL);
-` + auditSchema + consoleSessionSchema + proxyDependencySchema + machineLabelSchema + fleetVaultSchema + globalVaultSchema + clientProfileSchema + `
-` + keyTimeSchema + `PRAGMA user_version=13;`); err != nil {
+		if _, err = tx.Exec(initialSchema + fmt.Sprintf("PRAGMA user_version=%d;", currentSchemaVersion)); err != nil {
 			return err
 		}
 		if err = g.writeState(tx); err != nil {
@@ -82,180 +116,9 @@ CREATE TABLE console_passwords (username TEXT PRIMARY KEY, user_id TEXT NOT NULL
 		}
 		return tx.Commit()
 	}
-	if version == 1 {
-		tx, err := g.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.Exec(`CREATE TABLE machine_states (id TEXT PRIMARY KEY REFERENCES identities(id), data BLOB NOT NULL); PRAGMA user_version=2;`); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		version = 2
-	}
-	if version == 2 {
-		tx, err := g.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.Exec(`CREATE TABLE client_identities (id TEXT PRIMARY KEY REFERENCES identities(id), data BLOB NOT NULL); PRAGMA user_version=3;`); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		version = 3
-	}
-	if version == 3 {
-		tx, err := g.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.Exec(`CREATE TABLE client_transports (id TEXT PRIMARY KEY REFERENCES identities(id), owner_id TEXT NOT NULL REFERENCES client_identities(id), data BLOB NOT NULL); PRAGMA user_version=4;`); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		version = 4
-	}
-	if version == 4 {
-		tx, err := g.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.Exec(`CREATE TABLE console_passwords (username TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL); PRAGMA user_version=5;`); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		version = 5
-	}
-	if version == 5 {
-		tx, err := g.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.Exec(auditSchema + ` PRAGMA user_version=6;`); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		version = 6
-	}
-	if version == 6 {
-		tx, err := g.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.Exec(consoleSessionSchema + ` PRAGMA user_version=7;`); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		version = 7
-	}
-	if version == 7 {
-		tx, err := g.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.Exec(proxyDependencySchema + ` PRAGMA user_version=8;`); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		version = 8
-	}
-	if version == 8 {
-		tx, err := g.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.Exec(machineLabelSchema + ` PRAGMA user_version=9;`); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		version = 9
-	}
-	if version == 9 {
-		tx, err := g.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.Exec(fleetVaultSchema + globalVaultSchema + ` PRAGMA user_version=10;`); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		version = 10
-	}
-	if version == 10 {
-		tx, err := g.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.Exec(clientProfileSchema + ` PRAGMA user_version=11;`); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		version = 11
-	}
-	if version == 11 {
-		// Removing only the owner selector would broaden access for shared
-		// keys. Remove those rules instead; preserve key-only rules verbatim.
-		tx, err := g.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.Exec(`
-UPDATE fleet_vault SET data = json_set(data, '$.revision', json_extract(data,'$.revision') + 1,
-    '$.allowances', json((SELECT json_group_array(json(value) ORDER BY key)
-        FROM json_each(fleet_vault.data,'$.allowances')
-        WHERE coalesce(value->>'ownerId','') = '' AND coalesce(value->>'keyId','') != '')))
-WHERE EXISTS (SELECT 1 FROM json_each(fleet_vault.data,'$.allowances')
-    WHERE coalesce(value->>'ownerId','') != '' OR coalesce(value->>'keyId','') = '');
-PRAGMA user_version=12;`); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		version = 12
-	}
-	if version == 12 {
-		tx, err := g.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err = tx.Exec(keyTimeSchema + `PRAGMA user_version=13;`); err != nil {
-			return err
-		}
-		if err = tx.Commit(); err != nil {
-			return err
+	for ; version < currentSchemaVersion; version++ {
+		if err = g.upgradeSchema(version); err != nil {
+			return fmt.Errorf("upgrade gateway database to schema %d: %w", version+1, err)
 		}
 	}
 	g.users = map[string]User{}
@@ -269,9 +132,6 @@ PRAGMA user_version=12;`); err != nil {
 	g.proxyDependencies = map[string]proxyDependency{}
 	g.labelOverlays = map[string]labelOverlay{}
 	g.vaultPolicies = map[string]fleetVaultPolicy{}
-	if _, err = g.db.Exec(`CREATE INDEX IF NOT EXISTS client_identity_prefix ON client_identities(substr(id,1,16))`); err != nil {
-		return err
-	}
 	if err = readRecords(g.db, "(SELECT * FROM client_identities ORDER BY id DESC LIMIT 4096)", "id", g.clientOwners); err != nil {
 		return err
 	}
@@ -289,6 +149,10 @@ PRAGMA user_version=12;`); err != nil {
 	}
 	if err = readRecords(g.db, "fleet_vault", "user_id", g.vaultPolicies); err != nil {
 		return err
+	}
+	for user, p := range g.vaultPolicies {
+		p.UserID = user
+		g.vaultPolicies[user] = p
 	}
 	if err = readRecords(g.db, "users", "id", g.users); err != nil {
 		return err
@@ -410,8 +274,8 @@ type change struct {
 	labels []string
 	// vaultPolicies are fleet lock policies, keyed by user.
 	vaultPolicies []string
-	profileSeen   map[string]time.Time
-	keyUses       map[string]int64
+	// keyUses are last-used times in Unix milliseconds, keyed by access key.
+	keyUses map[string]int64
 	// audit events commit in the same transaction as the change they describe.
 	audit []AuditEvent
 }
@@ -451,7 +315,7 @@ func (g *Gateway) writeChange(tx *sql.Tx, c change) error {
 		return err
 	}
 	for id, seen := range c.keyUses {
-		if err := exec(`INSERT INTO access_key_times(target_id,credential,seen) VALUES(?,?,?) ON CONFLICT(target_id) DO UPDATE SET credential=excluded.credential,seen=excluded.seen`, id, g.keyTimes[id].credential, seen); err != nil {
+		if err := exec(`INSERT INTO access_key_times(key_id,credential_hash,last_used_ms) VALUES(?,?,?) ON CONFLICT(key_id) DO UPDATE SET credential_hash=excluded.credential_hash,last_used_ms=excluded.last_used_ms`, id, g.keyTimes[id].credential, seen); err != nil {
 			return err
 		}
 	}
@@ -483,7 +347,7 @@ func (g *Gateway) writeChange(tx *sql.Tx, c change) error {
 	}
 	for _, id := range c.keys {
 		if _, exists := g.keys[id]; !exists {
-			if err := exec(`DELETE FROM access_key_times WHERE target_id=?`, id); err != nil {
+			if err := exec(`DELETE FROM access_key_times WHERE key_id=?`, id); err != nil {
 				return err
 			}
 			if err := exec(`DELETE FROM credentials WHERE id=?`, id); err != nil {
@@ -554,11 +418,6 @@ func (g *Gateway) writeChange(tx *sql.Tx, c change) error {
 			if err := writeTransport(tx, id, owner); err != nil {
 				return err
 			}
-		}
-	}
-	for id, seen := range c.profileSeen {
-		if err := exec(`INSERT INTO client_profiles(owner_id,last_seen_ms) VALUES(?,?) ON CONFLICT(owner_id) DO UPDATE SET last_seen_ms=max(last_seen_ms,excluded.last_seen_ms)`, id, seen.UnixMilli()); err != nil {
-			return err
 		}
 	}
 	for _, id := range c.nodes {

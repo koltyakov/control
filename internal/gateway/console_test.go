@@ -364,7 +364,7 @@ func TestConsolePasswordPersistenceAndRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`DROP TABLE machine_labels; DROP TABLE proxy_dependencies; DROP TABLE console_sessions; DROP TABLE console_passwords; PRAGMA user_version=4;`); err != nil {
+	if _, err := db.Exec(`DROP TABLE machine_labels; DROP TABLE proxy_dependencies; DROP TABLE console_sessions; DROP TABLE console_passwords; DROP TABLE fleet_vault; DROP TABLE global_vault; DROP TABLE access_key_times; PRAGMA user_version=4;`); err != nil {
 		t.Fatal(err)
 	}
 	_ = db.Close()

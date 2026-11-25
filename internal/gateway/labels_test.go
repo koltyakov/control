@@ -472,7 +472,7 @@ func TestOwnerLabelSchemaMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec(`DROP TABLE machine_labels; PRAGMA user_version=8;`); err != nil {
+	if _, err = db.Exec(`DROP TABLE machine_labels; DROP TABLE fleet_vault; DROP TABLE global_vault; DROP TABLE access_key_times; PRAGMA user_version=8;`); err != nil {
 		t.Fatal(err)
 	}
 	_ = db.Close()

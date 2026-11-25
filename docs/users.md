@@ -104,11 +104,7 @@ Schema version 8 adds `proxy_dependencies` for managed gateway proxy listeners. 
 
 Schema version 9 adds `machine_labels`, referencing permanent identities and the owning user, and storing each fleet owner's label overlay without changing the machine's signed registration. Versions 1 through 8 upgrade transactionally. Unregistering a machine deletes its overlay in the same transaction. Older gateways reject schema version 9. See [owner labels](protocol.md#owner-labels).
 
-Schema version 10 adds the operator lock and each fleet's policy and allowances. Upgrading leaves both locks off. Pauses and finite allowances use absolute UTC deadlines, so restarting the gateway does not renew them. An older gateway cannot open the upgraded database.
-
-Schema version 11 stores optional fleet-assigned client profile labels and gateway-observed last-seen times. Existing identities and allowances keep their IDs. The migration does not invent dates for old profiles.
-
-Schema version 12 makes lock allowances key-only. It keeps existing key-only rules, pauses and lock settings. It removes host-restricted rules (including key-plus-host rules) and increments the affected policy revisions; dropping just the host condition would silently widen access.
+Schema version 10 adds the operator lock, each fleet's lock policy and key-only allowances, and each access key's last successful authentication time. Upgrading leaves both locks off and starts every key without a recorded use. Pauses and finite allowances use absolute UTC deadlines, so restarting the gateway does not renew them. An older gateway cannot open the upgraded database.
 
 `CONTROL_TOKEN` on the gateway is an optional bootstrap common key for the legacy fleet only. For a new shared gateway, omit it and configure `CONTROL_SUPERUSER_KEY`, then create separate accounts. Do not give unrelated users the same account key or legacy bootstrap token.
 

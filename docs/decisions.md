@@ -1720,13 +1720,13 @@ The standalone client owner identity stays scoped by gateway URL and fleet, not 
 
 ## D197: Label saved client profiles independently of execution authority
 
-Superseded by [D198](#d198-select-access-by-key).
+Superseded by [D198](#d198-select-access-by-key). The gateway no longer stores profile labels or connection times.
 
 Access lock refers to stable owner identities as client profiles: multiple profiles may run on one computer. The fleet owner can label a profile after matching `control session`'s `ownerId`. The gateway records connection and disconnection times; legacy records have no historical timestamp. Labels and presence help people choose an identity. They neither replace the signed owner nor change an allowance. See [Lock worker access](console.md#lock-worker-access).
 
 ## D198: Select access by key
 
-This replaces D195's owner selector and D197's profile picker. Each allowance names one key, its workers and an optional expiry. Orchestrators sharing a key share its access; separate keys can have different allowances. Internal owner identities still bind tasks and instruction grants. Upgrades remove host-restricted allowances instead of broadening them.
+This replaces D195's owner selector and D197's profile picker. Each allowance names one key, its workers and an optional expiry. Orchestrators sharing a key share its access; separate keys can have different allowances. Internal owner identities still bind tasks and instruction grants.
 
 Owners can issue `orchestrator-enroll` for enrollment, discovery and account-client execution without fleet administration. Existing `common` and `orchestrator` keys keep their original permissions. The console defaults to the combined choice; the default for existing CLI and API calls stays `common`. See [fleet key roles](protocol.md#fleet-key-roles).
 

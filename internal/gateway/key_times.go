@@ -2,25 +2,30 @@ package gateway
 
 import "time"
 
-// Key IDs outlive their first access. Use the credential's digest as a
-// generation marker so rotating a gateway-supplied key starts a new interval.
-const keyTimeSchema = `CREATE TABLE IF NOT EXISTS access_key_times (target_id TEXT PRIMARY KEY, credential TEXT NOT NULL, seen INTEGER NOT NULL);`
+// keyTimeSchema records each access key's last successful authentication.
+// key_id also covers the built-in superuser and bootstrap keys, so it has no
+// foreign key to credentials. Key IDs outlive a rotation of a gateway-supplied
+// key; credential_hash marks the generation so a new secret starts a new
+// interval.
+const keyTimeSchema = `
+CREATE TABLE access_key_times (key_id TEXT PRIMARY KEY, credential_hash TEXT NOT NULL, last_used_ms INTEGER NOT NULL);
+`
 
 func (g *Gateway) loadKeyTimes() error {
 	g.keyTimes = make(map[string]*keyTime)
-	rows, err := g.db.Query(`SELECT target_id, credential, seen FROM access_key_times`)
+	rows, err := g.db.Query(`SELECT key_id, credential_hash, last_used_ms FROM access_key_times`)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
-		var id, target string
-		var seen int64
-		if err := rows.Scan(&id, &target, &seen); err != nil {
+		var id, credential string
+		var lastUsed int64
+		if err := rows.Scan(&id, &credential, &lastUsed); err != nil {
 			return err
 		}
-		k := &keyTime{credential: target, persisted: seen}
-		k.last.Store(seen)
+		k := &keyTime{credential: credential, persisted: lastUsed}
+		k.last.Store(lastUsed)
 		g.keyTimes[id] = k
 	}
 	return rows.Err()

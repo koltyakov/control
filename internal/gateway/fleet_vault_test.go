@@ -516,36 +516,6 @@ func TestFleetVaultCheckDecisions(t *testing.T) {
 	}
 }
 
-func TestFleetVaultMigrationDoesNotWidenHostRules(t *testing.T) {
-	dir := t.TempDir()
-	g, s := gatewayAt(t, dir)
-	user, _ := createTestUser(t, s, "alice")
-	s.Close()
-	if err := g.Close(); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", filepath.Join(dir, "gateway.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacy := []byte(`{"userId":"` + user.ID + `","enabled":true,"revision":5,"allowances":[{"id":"one","keyId":"k","allMachines":true,"ownerId":"o"},{"id":"two","keyId":"keep","machineIds":["worker"]},{"id":"three","ownerId":"o","allMachines":true}]}`)
-	if _, err := db.Exec(`INSERT INTO fleet_vault VALUES(?,?);`, user.ID, legacy); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`PRAGMA user_version=11`); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	g, s = gatewayAt(t, dir)
-	defer func() { s.Close(); _ = g.Close() }()
-	p := g.vaultPolicies[user.ID]
-	if !p.Enabled || p.Revision != 6 || len(p.Allowances) != 1 || p.Allowances[0].ID != "two" || !fleetDecision(p, "keep", []string{"worker"}, time.Now()) || fleetDecision(p, "k", []string{"worker"}, time.Now()) {
-		t.Fatalf("migration changed key-only access or widened a restricted rule: %+v", p)
-	}
-}
-
 // Bearer credentials cannot take over the console of a configured lock or
 // operate machines around an enforced one; console sessions still can.
 func TestFleetVaultBearerGuards(t *testing.T) {
@@ -649,7 +619,7 @@ func TestFleetVaultPersistsAndMigrates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec(`DROP TABLE client_profiles; DROP TABLE fleet_vault; DROP TABLE global_vault; PRAGMA user_version=9;`); err != nil {
+	if _, err = db.Exec(`DROP TABLE fleet_vault; DROP TABLE global_vault; DROP TABLE access_key_times; PRAGMA user_version=9;`); err != nil {
 		t.Fatal(err)
 	}
 	_ = db.Close()
