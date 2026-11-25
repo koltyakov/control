@@ -36,6 +36,12 @@ For authorized PowerShell execution, choose descriptive helper names such as `Ge
 
 Prefer an installed CSV reader over a hand-written parser or line/comma splitting. Python's `csv.DictReader` with `open(path, encoding="utf-8", newline="")`, PowerShell `Import-Csv -LiteralPath PATH -Encoding UTF8`, or .NET `Microsoft.VisualBasic.FileIO.TextFieldParser` with an explicit encoding can handle quoted multiline fields. Choose the encoding from the input contract, including BOM handling when applicable. Preserve file order for tie-breaking and validate headers, numeric types and ranges before publication. Do not install a parser or silently change malformed input. These examples do not authorize execution when only direct reads are allowed.
 
+## Check a task before submitting it
+
+When a submission could be rejected for a reason you can learn first, such as an unknown capability, arguments outside the advertised schema, a reused or case-conflicting ID, missing permission, a lease, or a disabled or updating node, check it: `control task start NODE --check 'JSON'`, or MCP `control_call` with method `tasks.check` and the task as `params`. It submits nothing. Read each entry of `checks` (`pass`, `fail`, `warn`, `skip`, `unchecked`); `ok` is false only when one fails. An `id` that passes as already existing means submission would return that task, not run new work. `pools` gives advisory `limit`, `inUse` and `queued` counts.
+
+The answer is advisory: state can change before you submit, nothing is reserved, and it is never evidence that a later failed or uncertain submission was not sent. Reconcile that submission by its ID as usual, and do not resubmit because a check passed. Workflow checks validate only the plan graph on the coordinator; children are not contacted. Input grants are reported as present or absent, not verified. An error naming `task_check_unsupported` means an older node: submit as before or upgrade it.
+
 ## Run independent work in parallel
 
 `exec.run`, `agent.run` and configured subprocess providers are one-shot invocations. Current nodes terminate ordinary child processes before completion, so do not use shell backgrounding or `nohup` to retain a service. Use an authorized OS service-manager operation or an explicit persistent adapter. Browser/desktop adapters and configured MCP sessions retain their documented lifecycles. This is cleanup, not a sandbox; Unix processes can escape their process group.

@@ -70,6 +70,9 @@ func (c Client) Call(ctx context.Context, target, method string, params any, res
 	if method == "nodes.select" {
 		return c.selectNode(ctx, target, params, result)
 	}
+	if method == model.TaskCheckMethod {
+		return taskCheckError(c.call(ctx, target, method, params, result))
+	}
 	if method != "node.describe" || result == nil {
 		return c.call(ctx, target, method, params, result)
 	}

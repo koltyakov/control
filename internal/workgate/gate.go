@@ -95,3 +95,11 @@ func (g *Gate) State() (active int, paused bool) {
 	defer g.mu.Unlock()
 	return g.active, g.paused
 }
+
+// Admission reports, without entering, whether Enter would wait for a
+// maintenance reservation or fail because admission is disabled.
+func (g *Gate) Admission() (paused, disabled bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.paused, g.disabled
+}

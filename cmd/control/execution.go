@@ -16,13 +16,14 @@ import (
 )
 
 func taskStartCLI(ctx context.Context, c client.Client, args []string) error {
-	const usage = "usage: control task start NODE JSON|@file [--wait] [--spec]"
+	const usage = "usage: control task start NODE JSON|@file [--wait] [--spec] [--check]"
 	if len(args) < 2 {
 		return errors.New(usage)
 	}
 	f := flag.NewFlagSet("task start", flag.ContinueOnError)
 	wait := f.Bool("wait", false, "wait for the task result after durable acceptance")
 	includeSpec := f.Bool("spec", false, "include the submitted specification in the printed task")
+	check := f.Bool("check", false, "report whether the node would accept the specification, without submitting it")
 	if err := f.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -45,7 +46,27 @@ func taskStartCLI(ctx context.Context, c client.Client, args []string) error {
 	if err = json.Unmarshal(b, &spec); err != nil {
 		return err
 	}
+	if *check {
+		if *wait || *includeSpec {
+			return errors.New("--check submits nothing and cannot be combined with --wait or --spec")
+		}
+		return checkTaskCLI(ctx, c, args[0], spec)
+	}
 	return submit(ctx, c, args[0], spec, *wait, *includeSpec)
+}
+
+// checkTaskCLI prints the advisory preflight report. A failing check exits
+// nonzero; nothing is submitted either way.
+func checkTaskCLI(ctx context.Context, c client.Client, target string, spec model.TaskSpec) error {
+	report, err := c.CheckTask(ctx, target, spec)
+	if err != nil {
+		return err
+	}
+	printJSON(report)
+	if !report.OK {
+		return errors.New("task check failed; nothing was submitted, and the report is advisory")
+	}
+	return nil
 }
 
 func execCLI(ctx context.Context, c client.Client, args []string) error {

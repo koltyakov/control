@@ -690,7 +690,9 @@ Environment: CONTROL_API, CONTROL_TOKEN
   browser view NODE [--port 4848] [--listen 127.0.0.1:0]
                                        Forward a worker browser dashboard to a local URL
   exec NODE [--detach] [--id ID] [--timeout DURATION] [--] COMMAND [ARG...]
-  task start NODE JSON|@file [--wait] [--spec]  Submit a durable task; optionally wait for its result
+  task start NODE JSON|@file [--wait] [--spec] [--check]
+                                       Submit a durable task and optionally wait; --check only reports
+                                       whether it would be accepted (advisory, submits nothing)
   task get|wait|cancel NODE ID [--spec] Inspect or manage a task; --spec adds its specification
   task cancel NODE --tag TAG           Cancel your unfinished tasks carrying TAG; lists each outcome
   task logs NODE ID [--follow | --tail] [--offset BYTES]

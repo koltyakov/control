@@ -71,7 +71,7 @@ func TestCompletionParsesHelpCommands(t *testing.T) {
 	}
 	flags := map[string][]string{
 		"":             {"--config", "--api", "--token", "--debug"},
-		"task start":   {"--wait", "--spec"},
+		"task start":   {"--wait", "--spec", "--check"},
 		"task logs":    {"--follow", "--offset"},
 		"task list":    {"--limit", "--cursor", "--tag"},
 		"task cancel":  {"--spec", "--tag"},
@@ -467,7 +467,7 @@ var completionCases = []completionCase{
 	{[]string{"control", "task", ""}, "start get wait cancel logs list reconcile", "start get wait cancel logs list reconcile"},
 	{[]string{"control", "--config", "/x", "task", "st"}, "start", "start get wait cancel logs list reconcile"},
 	{[]string{"control", "--debug", "tunnel", ""}, "start list dispose", "start list dispose"},
-	{[]string{"control", "task", "start", "--w"}, "--wait", "--wait --spec"},
+	{[]string{"control", "task", "start", "--w"}, "--wait", "--wait --spec --check"},
 	{[]string{"control", "--tok"}, "--token", "--config --api --token --debug"},
 	{[]string{"control", "tunnel", "start", "--l"}, "--listen", "--listen --reverse --id --ttl"},
 	{[]string{"control", "completion", ""}, "bash zsh fish powershell", "bash zsh fish powershell"},

@@ -395,13 +395,17 @@ func (n *Node) authorize(ctx context.Context, caller, method string) error {
 			return nil
 		}
 		var spec model.TaskSpec
-		if a.grant.grant.Method == "tasks.start" && json.Unmarshal(a.grant.grant.Params, &spec) == nil && method == spec.Capability {
+		if (a.grant.grant.Method == "tasks.start" || a.grant.grant.Method == model.TaskCheckMethod) && json.Unmarshal(a.grant.grant.Params, &spec) == nil && method == spec.Capability {
 			return nil
 		}
 		return errors.New("method is outside delegated instruction")
 	}
 	if caller == n.Identity.ID {
 		return nil
+	}
+	if method == model.TaskCheckMethod {
+		// A preflight requires exactly the authority of the submission it checks.
+		method = "tasks.start"
 	}
 	peer, err := n.Peer.Lookup(ctx, caller)
 	if err != nil {
@@ -700,6 +704,8 @@ func (n *Node) dispatch(ctx context.Context, caller, method string, args json.Ra
 			return nil, err
 		}
 		return n.startTaskContext(ctx, owner, spec)
+	case model.TaskCheckMethod:
+		return n.checkTask(ctx, caller, owner, args)
 	case "tasks.get", "tasks.cancel", "tasks.logs", "tasks.list", "tasks.page":
 		return n.taskMethod(ctx, owner, method, args)
 	case model.CancelTaggedTasks:

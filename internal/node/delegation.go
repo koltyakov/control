@@ -251,6 +251,10 @@ func (n *Node) delegationMethod(ctx context.Context, caller, method string, para
 			}
 		} else if len(q.InputsFrom) != 0 || len(q.DeliverTo) != 0 {
 			return nil, errors.New("input/output delegation is only supported for tasks")
+		} else if q.Method == model.TaskCheckMethod {
+			if err := n.authorizeTaskCheckGrant(ctx, caller, q.Params); err != nil {
+				return nil, err
+			}
 		}
 		if !json.Valid(q.Params) || len(q.InputsFrom) > 100 || len(q.DeliverTo) > 100 {
 			return nil, errors.New("invalid delegation parameters or limits")
