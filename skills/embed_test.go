@@ -97,7 +97,7 @@ func TestControlSkillReferences(t *testing.T) {
 		"browser":        {"browser.run", "skills get core", "control_browser_view", "2FA", "not redacted", "Pause AI mutations", "dashboard stop"},
 		"desktop":        {"control_desktop", "skills get desktop", "skills get platform", "ABI major 6 or 7", "leaseId", "desktop.cli", "cursor-overlay enable", "Never put credentials in CLI args"},
 		"transfers":      {"control_upload", "control_upload_resume", "no-overwrite", "artifacts.grant", "Only transfer a clipboard when the user requests it"},
-		"networking":     {"control_wake", "control_speedtest", "control_forward_start", "control_tunnel_start", "loopback", "never invent a replacement ID"},
+		"networking":     {"control_wake", "control_speedtest", "control_forward_start", "control_tunnel_start", "loopback", "never invent a replacement ID", "control doctor NAME --json"},
 		"administration": {"machines add", "--service hybrid", "--force", "Rename only when requested", "short-lived bearer secret", "service firewall", "GetNativeSystemInfo", "IsWow64Process2", "hw.optional.arm64", "uname -m", "PE, Mach-O or ELF", "Universal binaries", "high memory use alone does not establish emulation"},
 	} {
 		t.Run(name, func(t *testing.T) {

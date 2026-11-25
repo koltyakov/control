@@ -193,7 +193,7 @@ func run(ctx context.Context, args []string) error {
 			}
 		}
 		switch args[0] {
-		case "mcp", "system", "call", "exec", "task", "artifact", "upload", "tunnel", "session", "clipboard", "dashboard", "speedtest", "diagnostics", "wake", "runbooks", "browser":
+		case "mcp", "system", "call", "exec", "task", "artifact", "upload", "tunnel", "session", "clipboard", "dashboard", "speedtest", "diagnostics", "wake", "runbooks", "browser", "doctor":
 			if !explicitAPI && os.Getenv("CONTROL_API") == "" {
 				var override *string
 				if explicitToken {
@@ -342,6 +342,8 @@ func run(ctx context.Context, args []string) error {
 		return nil
 	case "speedtest":
 		return speedtestCLI(ctx, c, args[1:])
+	case "doctor":
+		return doctorCLI(ctx, c, flags, *profile, args[1:])
 	case "wake":
 		return wakeCLI(ctx, c, args[1:])
 	case "clipboard":
@@ -709,6 +711,8 @@ Environment: CONTROL_API, CONTROL_TOKEN
   tunnel dispose ID
   clipboard paste NODE [--reverse] [--dir PATH] [--timeout DURATION]
   session                              Inspect this process's client identity and connections
+  doctor [NODE] [--json] [--timeout DURATION] [--check-timeout DURATION]
+                                       Read-only connection checks with hints; starts no work, grants or leases
 
 Global flags precede the command. Remote CLI/MCP calls use an account client
 session with your saved gateway login, even when a local node is running.

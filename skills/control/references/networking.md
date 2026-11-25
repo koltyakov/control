@@ -8,6 +8,10 @@ When the user asks to wake a machine, use `control wake NAME` or MCP `control_wa
 
 Wake requires account-client routing and `network.wake` permission on a worker sender. It sends UDP magic packets only, does not configure firmware or NIC wake settings, and does not confirm power-on. Check the directory later for online status. Do not automatically wake machines as a side effect of execution failure, retry uncertain wake requests, or switch senders after failure.
 
+## Diagnose before testing
+
+When a machine is unreachable or slow, run `control doctor NAME --json` first, or `control doctor` for this client, the gateway and a one-line fleet summary. It is read-only: no task, grant, lease, wake packet or connection test. Read each check's `status` and `hint`; exit status 1 means a check failed. A `skipped` diagnostics check on an instruction-only destination or with a common key is expected, not a fault. Do not follow a hint that changes state unless the user asked for that change.
+
 ## Test peer connections on demand
 
 Use `control speedtest NAME` to measure this orchestrator's connection to a worker, or `control speedtest DESTINATION --from SOURCE` for direct worker-to-worker traffic. MCP exposes `control_speedtest` with `node`, optional `from`, `bytes`, and `samples`. Results include warmed RTT, jitter, sequential throughput in both directions, and the measured WebRTC/relay mode. Upload means source to destination; download is the reverse. Worker payloads do not pass through the orchestrator.
