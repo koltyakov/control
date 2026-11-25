@@ -164,6 +164,43 @@ func TestManagedListenerRefusesUnlistedSources(t *testing.T) {
 	if dials.Load() != 0 || m.busy() {
 		t.Fatal("unlisted source was admitted")
 	}
+	if stats, _ := m.capacity(); stats.Rejections != 0 {
+		t.Fatal("unlisted source counted as capacity refusal", stats)
+	}
+}
+
+func TestManagedProxyCapacityReportsSaturationAndRecovery(t *testing.T) {
+	m, dials, addr := managedFixture(t, "127.0.0.0/8")
+	// Reserve the other slots without opening hundreds of sockets in CI.
+	m.mu.Lock()
+	m.active = maxManagedTunnels - 1
+	m.mu.Unlock()
+	request := "CONNECT gateway.test:443 HTTP/1.1\r\nHost: gateway.test:443\r\n\r\n"
+	conn, _, line := connectThrough(t, addr(), request)
+	if !strings.Contains(line, "200") {
+		t.Fatal("the last slot was not usable", line)
+	}
+	if _, _, line := connectThrough(t, addr(), request); line != "" {
+		t.Fatal("over-capacity connection was not closed", line)
+	}
+	stats, ok := m.capacity()
+	if !ok || stats != (managedProxyCapacity{Active: maxManagedTunnels, Peak: maxManagedTunnels, Limit: maxManagedTunnels, Rejections: 1}) || dials.Load() != 1 {
+		t.Fatal("incorrect saturation diagnostics", stats, dials.Load())
+	}
+	_ = conn.Close()
+	eventuallyTrue(t, func() bool {
+		stats, _ := m.capacity()
+		return stats.Active == maxManagedTunnels-1
+	})
+	replacement, _, line := connectThrough(t, addr(), request)
+	if !strings.Contains(line, "200") {
+		t.Fatal("released slot was not reusable", line)
+	}
+	_ = replacement.Close()
+	eventuallyTrue(t, func() bool {
+		stats, _ := m.capacity()
+		return stats.Active == maxManagedTunnels-1 && stats.Peak == maxManagedTunnels && stats.Rejections == 1
+	})
 }
 
 func TestManagedListenerUpdateFenceAndDeactivation(t *testing.T) {

@@ -60,7 +60,9 @@ The listener:
 - binds only the endpoint's own address, which must be an IP literal in a private or VPN range (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, or `fc00::/7`). Hostnames, wildcard, loopback, link-local and public addresses are refused, as is the local API's address. It is a separate socket from the privileged local API.
 - accepts only TCP sources inside `sources`, which takes 1–16 CIDRs or addresses inside those ranges. The worker's own readiness check from the listener address is also allowed. Unlisted sources are closed without a response. `sources` is local configuration and is not advertised.
 - answers only `CONNECT` to the canonical gateway host and port from the worker's `gateway` setting. Other hosts, ports, IP spellings, absolute URIs and plain HTTP requests are refused before any upstream connection. It pipes bytes after `200`, so the child still verifies gateway TLS end to end. It has no credentials, cache, logging of payloads, or idle-byte timeout.
-- bounds the CONNECT request to 8 KiB and ten seconds, upstream dials to ten seconds, and admitted connections to 256.
+- bounds the CONNECT request to 8 KiB and ten seconds, upstream dials to ten seconds, and admitted connections to 256 across managed listeners on the worker. Pending CONNECT handshakes count. At capacity it closes new allowed sockets without interrupting existing ones.
+
+To check for saturation on an upgraded proxy worker, read `control diagnostics NAME` or MCP `control_diagnostics`. `gatewayProxyCapacity` reports `activeConnections`, `peakConnections`, `connectionLimit`, and `capacityRejections`. The peak and rejection count cover the current worker process lifetime. Source-policy and maintenance refusals do not inflate the capacity count. Older workers omit this information; absence does not mean zero rejections.
 
 Enabling starts the listener even with zero invitations or children. It remains enabled until explicit disable. The first managed profile endpoint is adopted as the editable setting; its disable override and subsequent settings persist in the worker's `proxy-settings.json`. Other profile endpoints, including external proxies, are preserved. A node restart restores enabled listeners before reaching the gateway.
 
@@ -209,6 +211,8 @@ A proxied invitation requires its exact endpoint. `--gateway-proxy direct` remov
 ## Runtime behavior
 
 With `gatewayProxy` configured, every gateway request uses it: authentication, the WebSocket connection and relay, directory and peer lookups, placement reads, signed policy and retirement reads, update selection, and managed binary downloads. Gateway traffic:
+
+- reuses an HTTP pool capped at eight connections per gateway authority and proxy in each client process, with up to two idle HTTP/1 connections. Peer registration uses a separate slot for authentication and the long-lived gateway WebSocket, so active downloads cannot block registration. Peer relay traffic shares that WebSocket rather than opening a new CONNECT for each peer stream;
 
 - uses the proxy regardless of inherited `HTTP_PROXY`, `HTTPS_PROXY`, or `NO_PROXY`;
 - never falls back to a direct connection;

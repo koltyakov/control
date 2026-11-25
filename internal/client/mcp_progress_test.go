@@ -28,8 +28,9 @@ type fakeWaitWorker struct {
 	observations []model.Task
 	ignoreWait   bool
 
-	mu    sync.Mutex
-	waits []int
+	mu           sync.Mutex
+	waits        []int
+	terminalGate <-chan struct{}
 }
 
 func (f *fakeWaitWorker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -49,10 +50,17 @@ func (f *fakeWaitWorker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	index := min(len(f.waits), len(f.observations)-1)
 	f.waits = append(f.waits, q.WaitSeconds)
+	terminalGate := f.terminalGate
 	f.mu.Unlock()
 	task := f.observations[index]
 	task.ID = "job"
-	if !f.ignoreWait && !task.Terminal() && q.WaitSeconds > 0 {
+	if task.Terminal() && terminalGate != nil {
+		select {
+		case <-terminalGate:
+		case <-r.Context().Done():
+			return
+		}
+	} else if !f.ignoreWait && !task.Terminal() && q.WaitSeconds > 0 {
 		select {
 		case <-time.After(time.Duration(q.WaitSeconds) * progressUnit):
 		case <-r.Context().Done():
@@ -71,12 +79,16 @@ func (f *fakeWaitWorker) requests() []int {
 type progressRecorder struct {
 	mu      sync.Mutex
 	records []mcp.ProgressNotificationParams
+	first   chan struct{}
 }
 
 func (p *progressRecorder) handle(_ context.Context, r *mcp.ProgressNotificationClientRequest) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.records = append(p.records, *r.Params)
+	if len(p.records) == 1 {
+		close(p.first)
+	}
 }
 
 func (p *progressRecorder) messages() []string {
@@ -120,7 +132,7 @@ func connectProgress(t *testing.T, ctx context.Context, worker http.Handler, mid
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = serverSession.Close() })
-	recorder := &progressRecorder{}
+	recorder := &progressRecorder{first: make(chan struct{})}
 	session, err := mcp.NewClient(&mcp.Implementation{Name: "progress-test", Version: "1"}, &mcp.ClientOptions{ProgressNotificationHandler: recorder.handle}).Connect(ctx, clientTransport, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -242,13 +254,22 @@ func TestMCPTaskWaitOlderWorkerAnswersOnce(t *testing.T) {
 	if messages := recorder.messages(); len(messages) != 0 {
 		t.Fatal("unexpected notifications", messages)
 	}
-	// A holding worker without phase reports the state alone.
-	worker = &fakeWaitWorker{t: t, observations: []model.Task{{State: "running"}, {State: "succeeded"}}}
-	session, recorder = connectProgress(t, ctx, worker, nil)
-	if task = toolTask(t, ctx, session, taskGetParams(30, "no-phase")); task.State != "succeeded" {
+}
+
+func TestMCPTaskWaitReportsStateWithoutPhase(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	worker := &fakeWaitWorker{t: t, observations: []model.Task{{State: "running"}, {State: "succeeded"}}}
+	session, recorder := connectProgress(t, ctx, worker, nil)
+	// Keep the call open until the client receives progress. Otherwise the
+	// terminal reply can cancel the pending notification before it is sent.
+	worker.mu.Lock()
+	worker.terminalGate = recorder.first
+	worker.mu.Unlock()
+	if task := toolTask(t, ctx, session, taskGetParams(30, "no-phase")); task.State != "succeeded" {
 		t.Fatal("unexpected task", task)
 	}
-	if messages := recorder.settled(t, 1); fmt.Sprint(messages) != "[running]" {
+	if messages := recorder.messages(); len(messages) != 1 || messages[0] != "running" {
 		t.Fatal("unexpected notifications", messages)
 	}
 }

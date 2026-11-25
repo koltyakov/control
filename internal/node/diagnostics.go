@@ -22,11 +22,15 @@ func (n *Node) diagnostics(ctx context.Context) map[string]any {
 	n.mcpMu.Lock()
 	sessions, starting := len(n.mcpSessions), len(n.mcpPending)
 	n.mcpMu.Unlock()
-	return map[string]any{
+	result := map[string]any{
 		"tasks":     map[string]any{"retained": tasks, "active": active, "tombstones": tombstones, "cleanupPending": pending},
 		"artifacts": map[string]any{"usedBytes": used, "maxBytes": n.Config.MaxArtifactBytes, "reserveBytes": n.Config.ArtifactReserveBytes, "retentionHours": n.Config.ArtifactRetentionHours, "imports": staging},
 		"mcp":       map[string]int{"sessions": sessions, "starting": starting},
 		"taskDisk":  taskDisk,
 		"transport": n.Peer.Stats(), "sessions": n.Peer.SessionStats(), "system": n.healthSnapshot().System,
 	}
+	if proxy, ok := n.managedProxy.capacity(); ok {
+		result["gatewayProxyCapacity"] = proxy
+	}
+	return result
 }

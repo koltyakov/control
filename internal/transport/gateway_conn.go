@@ -43,7 +43,8 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+p.cfg.Token)
-	resp, err := p.cfg.Route.Do(req)
+	connectClient := p.cfg.Route.ConnectClient()
+	resp, err := connectClient.Do(req)
 	if err != nil {
 		return nil, gatewayNetworkError(err)
 	}
@@ -141,7 +142,7 @@ func (p *Peer) connect(ctx context.Context) (*websocket.Conn, error) {
 		u = gateway.URL(p.cfg.Gateway, "/v1/client/connect")
 	}
 	u = strings.Replace(strings.Replace(u, "https://", "wss://", 1), "http://", "ws://", 1)
-	ws, response, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPClient: p.cfg.Route.Client(0, true), HTTPHeader: http.Header{"Authorization": {"Bearer " + p.cfg.Token}}})
+	ws, response, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPClient: connectClient, HTTPHeader: http.Header{"Authorization": {"Bearer " + p.cfg.Token}}})
 	if err != nil {
 		if response != nil && response.StatusCode != http.StatusSwitchingProtocols {
 			return nil, gatewayResponseError(response.StatusCode, "connect gateway")

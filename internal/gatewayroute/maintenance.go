@@ -76,7 +76,7 @@ func (r Route) ParkIfIdle(until time.Time) bool {
 		return false
 	}
 	s.until = until
-	r.baseTransport().(interface{ CloseIdleConnections() }).CloseIdleConnections()
+	r.CloseIdleConnections()
 	return true
 }
 

@@ -60,18 +60,20 @@ type managedProxy struct {
 	strictInterface  bool
 	storageUncertain bool
 
-	mu        sync.Mutex
-	ctx       context.Context
-	listeners map[string]net.Listener
-	failures  map[string]string
-	desired   []string
-	supported bool   // The gateway confirmed managed proxy state support.
-	gen       uint64 // Changes whenever listener state changes.
-	active    int    // Admitted connections, from accept through tunnel close.
-	fenced    bool   // Maintenance reservation: refuse new connections.
-	closed    bool
-	conns     map[net.Conn]struct{}
-	wg        sync.WaitGroup
+	mu                 sync.Mutex
+	ctx                context.Context
+	listeners          map[string]net.Listener
+	failures           map[string]string
+	desired            []string
+	supported          bool   // The gateway confirmed managed proxy state support.
+	gen                uint64 // Changes whenever listener state changes.
+	active             int    // Admitted connections, from accept through tunnel close.
+	peak               int
+	capacityRejections uint64
+	fenced             bool // Maintenance reservation: refuse new connections.
+	closed             bool
+	conns              map[net.Conn]struct{}
+	wg                 sync.WaitGroup
 }
 
 func newManagedProxy(cfg Config) (*managedProxy, error) {
@@ -339,14 +341,35 @@ func (m *managedProxy) admit(conn net.Conn, endpoint managedEndpoint) bool {
 	if !allowed {
 		return false
 	}
-	if m.closed || m.fenced || m.active >= maxManagedTunnels {
+	if m.closed || m.fenced {
+		return false
+	}
+	if m.active >= maxManagedTunnels {
+		m.capacityRejections++
 		return false
 	}
 	m.active++
+	m.peak = max(m.peak, m.active)
 	m.conns[conn] = struct{}{}
 	m.wg.Add(1)
 	go m.serve(conn)
 	return true
+}
+
+type managedProxyCapacity struct {
+	Active     int    `json:"activeConnections"`
+	Peak       int    `json:"peakConnections"`
+	Limit      int    `json:"connectionLimit"`
+	Rejections uint64 `json:"capacityRejections"`
+}
+
+func (m *managedProxy) capacity() (managedProxyCapacity, bool) {
+	if m == nil {
+		return managedProxyCapacity{}, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return managedProxyCapacity{Active: m.active, Peak: m.peak, Limit: maxManagedTunnels, Rejections: m.capacityRejections}, len(m.endpoints) != 0
 }
 
 func (m *managedProxy) track(conn net.Conn) bool {

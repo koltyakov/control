@@ -120,11 +120,35 @@ func (r Route) MonitorHost(gateway string) (host, port string) {
 // Transport returns the shared round tripper for this route. Direct routes keep
 // the process default, including its environment proxy settings.
 func (r Route) Transport() http.RoundTripper {
-	base := r.baseTransport()
+	return r.withMaintenance(r.baseTransport())
+}
+
+func (r Route) withMaintenance(base http.RoundTripper) http.RoundTripper {
 	if r.maintenance != nil {
 		return maintenanceTransport{base: base, state: r.maintenance}
 	}
 	return base
+}
+
+// ConnectClient keeps peer registration (authentication and WebSocket upgrade)
+// out of the ordinary HTTP pool, so downloads cannot hold its dial slot.
+func (r Route) ConnectClient() *http.Client {
+	if !r.Proxied() {
+		return r.Client(0, true)
+	}
+	return &http.Client{Transport: r.withMaintenance(r.connectTransport())}
+}
+
+func (r Route) connectTransport() *http.Transport {
+	mu.Lock()
+	defer mu.Unlock()
+	if t := connectTransports[r.proxy]; t != nil {
+		return t
+	}
+	t := newTransport(r.proxy, false)
+	t.MaxConnsPerHost = 1
+	connectTransports[r.proxy] = t
+	return t
 }
 
 func (r Route) baseTransport() http.RoundTripper {
@@ -147,6 +171,12 @@ func (r Route) baseTransport() http.RoundTripper {
 // next request until its timeout instead of dialing over the current path.
 func (r Route) CloseIdleConnections() {
 	if t, ok := r.baseTransport().(interface{ CloseIdleConnections() }); ok {
+		t.CloseIdleConnections()
+	}
+	mu.Lock()
+	t := connectTransports[r.proxy]
+	mu.Unlock()
+	if t != nil {
 		t.CloseIdleConnections()
 	}
 }
@@ -278,15 +308,20 @@ func sanitize(err error) error {
 }
 
 var (
-	mu               sync.Mutex
-	transports       = map[string]*http.Transport{}
-	roots            *x509.CertPool
-	errHTTPSRequired = errors.New("a gateway proxy requires an https:// gateway URL; TLS verification is mandatory")
+	mu                sync.Mutex
+	transports        = map[string]*http.Transport{}
+	connectTransports = map[string]*http.Transport{}
+	roots             *x509.CertPool
+	errHTTPSRequired  = errors.New("a gateway proxy requires an https:// gateway URL; TLS verification is mandatory")
 )
+
+const maxProxiedGatewayHTTPConnections = 8
 
 func newTransport(proxy string, keepAlive bool) *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	if proxy != "" {
+		t.MaxConnsPerHost = maxProxiedGatewayHTTPConnections
+		t.MaxIdleConnsPerHost = 2
 		u, _ := url.Parse(proxy)
 		// Check every request, including redirects and callers supplying their
 		// own redirect policy. No plaintext request may expose credentials or
@@ -327,4 +362,8 @@ func reset() {
 		t.CloseIdleConnections()
 	}
 	transports = map[string]*http.Transport{}
+	for _, t := range connectTransports {
+		t.CloseIdleConnections()
+	}
+	connectTransports = map[string]*http.Transport{}
 }

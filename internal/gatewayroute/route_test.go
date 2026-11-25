@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/koltyakov/control/internal/testutil"
 )
 
@@ -83,6 +84,107 @@ func TestProbeChecksConnectTLSAndHealth(t *testing.T) {
 	_ = listener.Close()
 	if err := Probe(context.Background(), unused, gateway); err == nil || err.Error() != "proxy connection failed" {
 		t.Fatalf("unreachable proxy: %v", err)
+	}
+}
+
+func TestProxiedGatewayHTTPPoolLeavesWebSocketRoom(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	entered := make(chan struct{}, maxProxiedGatewayHTTPConnections+1)
+	release := make(chan struct{}, maxProxiedGatewayHTTPConnections+1)
+	server, pool := testutil.TLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth" {
+			_, _ = io.WriteString(w, "ok")
+			return
+		}
+		if r.URL.Path == "/ws" {
+			conn, err := websocket.Accept(w, r, nil)
+			if err == nil {
+				defer func() { _ = conn.CloseNow() }()
+				_ = conn.Write(r.Context(), websocket.MessageText, []byte("gateway"))
+			}
+			return
+		}
+		entered <- struct{}{}
+		select {
+		case <-release:
+			_, _ = io.WriteString(w, "ok")
+		case <-r.Context().Done():
+		case <-ctx.Done():
+		}
+	}))
+	t.Cleanup(SetRootCAsForTesting(pool))
+	proxy := testutil.NewConnectProxy(t, map[string]string{server.Listener.Addr().String(): server.Listener.Addr().String()})
+	route, err := New(proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func() error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/hold", nil)
+		if err != nil {
+			return err
+		}
+		resp, err := route.Do(req)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		_, err = io.Copy(io.Discard, resp.Body)
+		return err
+	}
+	done := make(chan error, maxProxiedGatewayHTTPConnections+1)
+	for range maxProxiedGatewayHTTPConnections + 1 {
+		go func() { done <- run() }()
+	}
+	for range maxProxiedGatewayHTTPConnections {
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal("could not fill HTTP pool", ctx.Err())
+		}
+	}
+	connectClient := route.ConnectClient()
+	authReq, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/auth", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := connectClient.Do(authReq)
+	if err != nil {
+		t.Fatal("saturated HTTP pool blocked gateway authentication", err)
+	}
+	_, err = io.Copy(io.Discard, auth.Body)
+	_ = auth.Body.Close()
+	if err != nil || auth.StatusCode != http.StatusOK {
+		t.Fatalf("gateway authentication: %s %v", auth.Status, err)
+	}
+	conn, _, err := websocket.Dial(ctx, "wss"+strings.TrimPrefix(server.URL, "https")+"/ws", &websocket.DialOptions{HTTPClient: connectClient})
+	if err != nil {
+		t.Fatal("saturated HTTP pool blocked the WebSocket", err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+	if _, msg, err := conn.Read(ctx); err != nil || string(msg) != "gateway" {
+		t.Fatalf("gateway WebSocket read: %q %v", msg, err)
+	}
+	if got := len(proxy.Targets()); got != maxProxiedGatewayHTTPConnections+2 {
+		t.Fatalf("got %d CONNECTs, want the capped HTTP pool plus authentication and one WebSocket", got)
+	}
+	select {
+	case <-entered:
+		t.Fatal("extra HTTP request reached gateway while pool was full")
+	default:
+	}
+	for range maxProxiedGatewayHTTPConnections + 1 {
+		release <- struct{}{}
+	}
+	for range maxProxiedGatewayHTTPConnections + 1 {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal("HTTP waiters did not resume", ctx.Err())
+		}
 	}
 }
 
