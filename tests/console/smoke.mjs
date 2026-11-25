@@ -456,7 +456,7 @@ async function assertAsyncConsoleOwnership(browser) {
     await page.getByText("Async fixture key", { exact: true }).waitFor();
     for (const status of [204, 409]) {
       const held = await holdRequest(page, "**/console/api/fleet/keys/async-key", "PATCH");
-      await page.getByRole("button", { name: "Rename", exact: true }).click();
+      await keyAction(page, page.locator("tr").filter({hasText: "Async fixture key"}), "Rename");
       const submitted = await page.locator("#modal-form button[type=submit]").elementHandle();
       await submitted.click();
       const request = await held.pending;
@@ -663,7 +663,7 @@ async function modalError(page, text) {
   await page.locator("#modal-form .form-error").filter({ hasText: text }).waitFor();
 }
 async function lockSummary(page) {
-  return (await page.locator(".lock-summary").innerText()).replace(/\s+/g, " ");
+  return (await page.locator(".lock-status").innerText()).replace(/\s+/g, " ");
 }
 
 // Owner view: enforcement scope, escaped identities, every lock transition,
@@ -679,9 +679,9 @@ async function assertAccessLockFixtures(browser) {
   try {
     await login(page, "browser-owner");
     await pageLink(page, "lock");
-    await page.locator("#lock-enforcement").filter({ hasText: "Locked" }).waitFor();
+    await page.locator("#lock-enforcement").filter({ hasText: /^Locked$/ }).waitFor();
     let summary = await lockSummary(page);
-    assert.match(summary, /Enforced by this fleet's lock\. .*within 2 active allowances/);
+    assert.equal(summary, "Locked New work on this fleet's workers needs a matching allowance. 2 allowances are active. Enforced by this fleet's lock.");
     assert.equal(await page.locator("img").count(), 0, "Identity names must not become markup");
     await page.getByText(lockKeyName, { exact: true }).first().waitFor();
     const selectedRow = page.locator('tr[data-allowance="allow-selected"]');
@@ -691,8 +691,10 @@ async function assertAccessLockFixtures(browser) {
     assert.match(await selectedRow.innerText(), /No expiration/);
     assert.match(await page.locator('tr[data-allowance="allow-key"]').innerText(), /All workers[\s\S]*in 1h 5\dm|All workers[\s\S]*in 2h 0m/);
     assert.equal(await page.locator('[data-id="global"]').count(), 0, "Fleet owners must not get operator controls");
-    const notice = await page.locator(".notice").last().textContent();
-    assert.match(notice, /share an access key share its allowances/);
+    assert.equal(await page.locator(".lock-scopes").count(), 0, "A single switch needs no scope rows");
+    assert.deepEqual(await page.locator(".lock-summary .lock-actions button").allTextContents(), ["Pause", "Disable"]);
+    assert.equal(await page.locator('.lock-status button, [role="status"] button').count(), 0, "Controls stay outside the live status");
+    assert.equal(await page.getByText(/Orchestrators that share an access key/).count(), 0);
 
     // A custom pause beyond the gateway bound is rejected before sending.
     await page.locator('[data-action="lock-pause"][data-id="fleet"]').click();
@@ -707,31 +709,38 @@ async function assertAccessLockFixtures(browser) {
     await submitModal(page);
     await page.locator("#dialog").waitFor({ state: "hidden" });
     assert.deepEqual(server.writes.at(-1).body, { revision: 7, enabled: true, pauseSeconds: 5400 });
-    await page.locator("#lock-enforcement").filter({ hasText: "Unlocked" }).waitFor();
-    assert.match(await lockSummary(page), /Enforcement resumes automatically .*\(in 1h 2\dm\)/);
+    await page.locator("#lock-enforcement").filter({ hasText: /^Unlocked$/ }).waitFor();
+    assert.match(await lockSummary(page), /^Unlocked Keys that can run work .* Allowances apply only while locked\. This fleet's lock is paused\. Enforcement resumes automatically .*\(in 1h 2\dm\)/);
 
     // An active operator minimum keeps the paused fleet locked.
     server.fleet.globalEnabled = true;
     await refreshPage(page);
     summary = await lockSummary(page);
-    assert.match(summary, /^Locked Enforced by the operator minimum\./);
-    assert.match(summary, /Pausing this fleet does not lift the operator minimum\./);
+    assert.match(summary, /^Locked New work .* Enforced by the operator minimum, which only the gateway operator can change\. This fleet's own lock is paused until .*\(in 1h 2\dm\)\.$/);
     await page.locator('[data-action="lock-enable"][data-id="fleet"]').filter({ hasText: "Lock now" }).click();
     await submitModal(page);
     await page.locator("#dialog").waitFor({ state: "hidden" });
     assert.deepEqual(server.writes.at(-1).body, { revision: 8, enabled: true }, "Lock now must clear the pause without a duration");
-    await page.locator("#lock-enforcement").filter({ hasText: "Locked" }).waitFor();
+    await page.locator("#lock-enforcement").filter({ hasText: /^Locked$/ }).waitFor();
     await until(async () => /Enforced by the operator minimum and this fleet's lock/.test(await lockSummary(page)), "Both enforcement sources were not shown");
     await page.locator('[data-action="lock-disable"][data-id="fleet"]').click();
     await page.getByText("The operator minimum is active and still locks this fleet.", { exact: false }).waitFor();
     await submitModal(page);
     await page.locator("#dialog").waitFor({ state: "hidden" });
     assert.deepEqual(server.writes.at(-1).body, { revision: 9, enabled: false });
+    await until(async () => /This fleet's own lock is off\.$/.test(await lockSummary(page)), "The inherited lock did not show the fleet switch as off");
+    await page.locator('[data-action="lock-enable"][data-id="fleet"]').filter({ hasText: "Lock this fleet" }).waitFor();
+
+    // An unreported operator minimum is never presented as unlocked.
+    server.fleet.globalEnabled = undefined;
+    await refreshPage(page);
+    await page.locator("#lock-enforcement").filter({ hasText: /^Not confirmed$/ }).waitFor();
+    assert.match(await lockSummary(page), /may still need an allowance\. The gateway did not report the operator minimum\.$/);
 
     // An elapsed pause is enforced even before the gateway reports it.
     Object.assign(server.fleet, { enabled: true, globalEnabled: false, pausedUntil: new Date(Date.now() - 1000).toISOString() });
     await refreshPage(page);
-    await page.locator("#lock-enforcement").filter({ hasText: "Locked" }).waitFor();
+    await page.locator("#lock-enforcement").filter({ hasText: /^Locked$/ }).waitFor();
 
     // Allowances need a server-reported caller and at least one worker.
     await page.locator('[data-action="allowance-add"]').click();
@@ -831,6 +840,7 @@ async function assertAccessLockFixtures(browser) {
       { id: "fixture-common", name: "Common fixture", role: "common", permissions: ["discover","enroll"], createdAt: new Date().toISOString() },
       { id: "fixture-orchestrator", name: "Orchestrator fixture", role: "orchestrator", permissions: ["discover","run"], createdAt: new Date().toISOString() },
       { id: "fixture-account", name: "Account fixture", role: "user", permissions: ["discover","enroll","run","manage-fleet"], createdAt: new Date().toISOString() },
+      { id: "d".repeat(32), name: "K".repeat(128), role: "discovery", permissions: ["discover"], revoked: true, createdAt: new Date().toISOString() },
     ];
     const keyRoute = (route) => {
       if (route.request().method() === "GET") return route.fulfill({ json: keys });
@@ -842,11 +852,44 @@ async function assertAccessLockFixtures(browser) {
     try {
       await pageLink(page, "keys");
       const orchestratorRow = page.locator("tr").filter({ hasText: "Orchestrator fixture" });
-      await orchestratorRow.getByText("Discover machines, Run work", { exact: true }).waitFor();
+      await orchestratorRow.getByText("Run work", { exact: true }).waitFor();
       const account = page.locator("tr").filter({hasText: "Account fixture"});
       await account.getByText(/Manage fleet/).waitFor();
-      await account.getByRole("button", {name: "Rename"}).waitFor();
+      const table = page.locator(".keys-table");
+      assert.doesNotMatch(await table.innerText(), /Discover machines/);
+      const longKey = table.locator("tr").filter({hasText: "K".repeat(128)});
+      await longKey.getByText("No additional permissions").waitFor();
+      for (const width of [1440, 768, 390, 320]) {
+        await page.setViewportSize({width, height: 844});
+        assert.ok(await table.evaluate((el) => el.parentElement.scrollWidth <= el.parentElement.clientWidth + 1 &&
+          document.documentElement.scrollWidth <= innerWidth + 1), `Access keys overflow at ${width}px`);
+        const trigger = longKey.getByRole("button", {name: /^Actions for /});
+        // Opening is a separate interaction after resize and focus scroll.
+        // Both events intentionally dismiss an already-open row menu.
+        await trigger.scrollIntoViewIfNeeded();
+        await trigger.focus();
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await trigger.press("ArrowDown");
+        const menu = page.getByRole("menu", {name: /^Actions for K/});
+        await menu.waitFor();
+        assert.deepEqual(await menu.getByRole("menuitem").allTextContents(), ["Rename", "Reactivate", "Remove"]);
+        const rect = await menu.boundingBox();
+        assert.ok(rect && rect.x >= 0 && rect.x + rect.width <= width, `Key menu outside ${width}px viewport`);
+        await page.keyboard.press("Escape");
+        assert.ok(await trigger.evaluate((el) => el === document.activeElement));
+      }
+      await page.setViewportSize({width: 1440, height: 1000});
+      await orchestratorRow.getByRole("button", {name: "Actions for Orchestrator fixture"}).click();
+      const keyMenu = page.getByRole("menu", {name: "Actions for Orchestrator fixture"});
+      await keyMenu.getByRole("menuitem", {name: "Revoke"}).focus();
+      keys[1].revoked = true;
+      await refreshPage(page);
+      assert.deepEqual(await keyMenu.getByRole("menuitem").allTextContents(), ["Rename", "Reactivate", "Remove"]);
+      await page.keyboard.press("Escape");
       await page.getByRole("button", { name: "Create key", exact: false }).click();
+      const fleetManager = page.getByLabel("Manage fleet", {exact:true});
+      assert.equal(await page.getByRole("dialog").getByRole("checkbox").count(), 3);
+      assert.equal(await fleetManager.isChecked(), false);
       await page.locator("#modal-form input[name=name]").fill("CI runner");
       await page.getByLabel("Enroll machines", {exact:true}).uncheck();
       await submitModal(page);
@@ -854,11 +897,13 @@ async function assertAccessLockFixtures(browser) {
       await page.getByRole("button", { name: "Done", exact: true }).click();
       await page.getByRole("button", { name: "Create key", exact: false }).click();
       await page.getByLabel("Run work", {exact:true}).uncheck();
-      await page.locator("#modal-form input[name=name]").fill("Plain common");
+      await page.getByLabel("Enroll machines", {exact:true}).uncheck();
+      await fleetManager.check();
+      await page.locator("#modal-form input[name=name]").fill("Fleet manager");
       await submitModal(page);
       await page.getByRole("dialog", { name: "Save your new key", exact: true }).waitFor();
       await page.getByRole("button", { name: "Done", exact: true }).click();
-      assert.deepEqual(issued, [{ name: "CI runner", permissions: ["discover","run"] }, { name: "Plain common", permissions: ["discover","enroll"] }]);
+      assert.deepEqual(issued, [{ name: "CI runner", permissions: ["discover","run"] }, { name: "Fleet manager", permissions: ["discover","manage-fleet"] }]);
     } finally {
       await page.unroute("**/console/api/fleet/keys", keyRoute);
       await page.unroute("**/console/api/fleet/keys/issue", keyRoute);
@@ -887,17 +932,25 @@ async function assertOperatorLockFixtures(browser) {
     await operatorKey.getByText("superuser", {exact: true}).waitFor();
     assert.equal(await operatorKey.getByRole("button").count(), 0);
     await pageLink(page, "lock");
-    await page.locator("#lock-enforcement").filter({ hasText: "Locked" }).waitFor();
+    await page.locator("#lock-enforcement").filter({ hasText: /^Locked$/ }).waitFor();
     assert.match(await lockSummary(page), /Enforced by the operator minimum and this fleet's lock/);
+    assert.equal(await page.locator(".lock-summary .lock-actions").count(), 0, "Two switches keep their actions in labelled rows");
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      assert.ok(await page.locator("#app").evaluate((element) => element.scrollWidth <= element.clientWidth), `Lock switches overflow at ${width}px`);
+      if (process.env.CONTROL_CONSOLE_SCREENSHOTS)
+        await page.screenshot({ path: path.join(process.env.CONTROL_CONSOLE_SCREENSHOTS, `access-lock-operator-${width}.png`), fullPage: true });
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
     await page.locator('[data-action="lock-pause"][data-id="global"]').click();
     await page.getByText("Fleets that enabled their own lock stay locked.", { exact: false }).waitFor();
     await page.locator("#modal-form select[name=pause]").selectOption("900");
     await submitModal(page);
     await page.locator("#dialog").waitFor({ state: "hidden" });
     assert.deepEqual(server.writes.at(-1), { method: "PUT", path: "/console/api/admin/vault", body: { revision: 3, enabled: true, pauseSeconds: 900 } });
-    await until(async () => /operator minimum is paused, but this fleet's own lock still applies/.test(await lockSummary(page)), "Operator pause bypassed the fleet lock");
-    assert.match(await lockSummary(page), /^Locked Enforced by this fleet's lock\./);
-    const globalRow = page.locator(".lock-settings tbody tr").first();
+    await until(async () => /Enforced by this fleet's lock\. The operator minimum is paused until .*\(in 1\dm\)\.$/.test(await lockSummary(page)), "Operator pause bypassed the fleet lock");
+    assert.match(await lockSummary(page), /^Locked New work /);
+    const globalRow = page.locator('[data-lock-scope="global"]');
     await globalRow.getByText("Paused", { exact: true }).waitFor();
     await globalRow.locator('[data-action="lock-enable"]').filter({ hasText: "Lock now" }).waitFor();
     await globalRow.locator('[data-action="lock-disable"]').click();
@@ -905,7 +958,8 @@ async function assertOperatorLockFixtures(browser) {
     await page.locator("#dialog").waitFor({ state: "hidden" });
     assert.deepEqual(server.writes.at(-1).body, { revision: 4, enabled: false });
     await globalRow.getByText("Off", { exact: true }).waitFor();
-    await globalRow.locator('[data-action="lock-enable"]').filter({ hasText: "Enable lock" }).click();
+    assert.equal(await globalRow.locator('[data-action="lock-enable"]').getAttribute("aria-describedby"), "lock-scope-global");
+    await globalRow.locator('[data-action="lock-enable"]').filter({ hasText: "Enable" }).click();
     await submitModal(page);
     await page.locator("#dialog").waitFor({ state: "hidden" });
     assert.deepEqual(server.writes.at(-1).body, { revision: 5, enabled: true });
@@ -915,10 +969,123 @@ async function assertOperatorLockFixtures(browser) {
     await refreshPage(page);
     await until(async () => /Operator settings could not be read: Operator lock unavailable\. Showing the operator minimum as reported for this fleet\./.test(await lockSummary(page)), "Operator read failure was not shown");
     assert.equal(await page.locator('[data-id="global"]').count(), 0);
+    assert.equal(await page.locator(".lock-scopes").count(), 0, "A failed operator read leaves no read-only operator row");
+    await page.locator('.lock-summary [data-action="lock-pause"][data-id="fleet"]').waitFor();
     assert.equal(await page.locator("#stale-banner").isHidden(), true, "An operator read failure must not mark the fleet view stale");
   } finally {
     await unroute();
     await context.close();
+  }
+}
+
+// Page chrome and the Access keys inventory keep their geometry. The header,
+// navigation, page heading, and content edges match across Overview, Access
+// keys, and Accounts whatever each page's height. A key's first use replaces
+// "No record" in Last used, and revoking it, without moving any cell.
+// Scrollbars stay visible so a gutter change would show as a width change.
+async function assertPageBoundsAndLastUsed() {
+  const scrolling = await chromium.launch({
+    headless: true,
+    ignoreDefaultArgs: ["--hide-scrollbars"],
+    ...(process.env.CONTROL_CONSOLE_TEST_CHROME
+      ? { executablePath: process.env.CONTROL_CONSOLE_TEST_CHROME }
+      : {}),
+  });
+  const context = await scrolling.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark", reducedMotion: "reduce" });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const createdAt = "2026-01-02T03:04:05Z";
+  // Every key starts active and unused, so the first use and the first
+  // revocation each introduce the widest value their column has shown.
+  const keys = [
+    { id: "superuser", name: "Gateway operator key", role: "superuser", permissions: ["discover", "enroll", "run", "manage-fleet", "manage-gateway"], createdAt, gatewayConfigured: true },
+    { id: "f".repeat(32), name: "First use fixture", role: "orchestrator", permissions: ["discover", "run"], createdAt },
+    { id: "e".repeat(48), name: "L".repeat(96), role: "discovery", permissions: ["discover"], createdAt },
+  ];
+  const keyRoute = (route) => route.request().method() === "GET" ? route.fulfill({ json: keys }) : route.fallback();
+  await page.route("**/console/api/fleet/keys", keyRoute);
+  /** Visit a page by address so narrow layouts need no navigation overflow menu. */
+  const visit = async (hash, title) => {
+    await page.evaluate((target) => { location.hash = target; }, hash);
+    await page.waitForFunction((expected) => document.querySelector("#page-title").textContent === expected && document.querySelector("#page-content").getAttribute("aria-busy") === "false", title);
+  };
+  const chrome = () => page.evaluate(() => {
+    const box = (selector) => {
+      const element = document.querySelector(selector);
+      if (!element || !element.getClientRects().length) return null;
+      const r = element.getBoundingClientRect();
+      return [r.x, r.y, r.width, r.height].map(Math.round);
+    };
+    // Titles differ in length and pages in height, so those extents are not compared.
+    const title = box("#page-title"), content = box("#page-content");
+    const scroller = document.querySelector(".content-scroll");
+    return {
+      header: box(".console-header"), topbar: box(".topbar"), brand: box(".console-header .brand"), nav: box("nav"),
+      account: box("#account-button"), heading: box(".page-heading"), title: title && [title[0], title[1], title[3]],
+      content: content && [content[0], content[1], content[2]], scrollerWidth: scroller.clientWidth,
+      overflow: document.documentElement.scrollWidth - innerWidth,
+    };
+  });
+  const keyGeometry = () => page.evaluate(() => {
+    const box = (element) => { const r = element.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round); };
+    const table = document.querySelector(".keys-table");
+    return {
+      panelHeading: box(table.closest(".panel").querySelector(".panel-heading")),
+      headers: [...table.querySelectorAll("th")].map(box),
+      cells: [...table.querySelectorAll("tbody tr")].map((row) => [box(row), ...[...row.cells].map(box)]),
+      overflow: [table.parentElement.scrollWidth - table.parentElement.clientWidth, document.documentElement.scrollWidth - innerWidth],
+    };
+  });
+  try {
+    await login(page, "@operator");
+    const pages = [["overview", "Overview"], ["keys", "Access keys"], ["users", "Accounts"]];
+    for (const width of [1440, 1024, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      let reference;
+      for (const [hash, title] of pages) {
+        await visit(hash, title);
+        const bounds = await chrome();
+        assert.equal(bounds.overflow, 0, `${title} scrolls sideways at ${width}px`);
+        reference ??= { page: title, bounds };
+        assert.deepEqual(bounds, reference.bounds, `${title} chrome moved from ${reference.page} at ${width}px`);
+      }
+    }
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await visit("keys", "Access keys");
+    const table = page.locator(".keys-table");
+    await table.locator("tbody tr").first().waitFor();
+    assert.deepEqual((await table.locator("th").allInnerTexts()).slice(0, 6), ["Name", "Permissions", "Status", "Created", "Last used", "Key ID"]);
+    const firstUse = table.locator("tr").filter({ hasText: "First use fixture" });
+    const lastUsed = firstUse.locator('td[data-label="Last used"]');
+    assert.equal(await lastUsed.innerText(), "No record");
+    const operator = table.locator("tr").filter({ hasText: "Gateway operator key" });
+    assert.equal(await operator.locator('td[data-label="Last used"]').innerText(), "No record");
+    assert.equal(await operator.getByRole("button").count(), 0, "Gateway-configured keys have no menu");
+    for (const width of [1440, 1024, 768, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      delete keys[1].lastUsed;
+      delete keys[1].revoked;
+      await refreshPage(page);
+      await until(async () => (await lastUsed.innerText()) === "No record", "Last used fixture did not reset");
+      const before = await keyGeometry();
+      assert.deepEqual(before.overflow, [0, 0], `Access keys overflow at ${width}px`);
+      assert.equal(await firstUse.locator('td[data-label="Key ID"]').innerText(), keys[1].id, "Key IDs stay complete");
+      keys[1].lastUsed = new Date().toISOString();
+      await refreshPage(page);
+      await until(async () => (await lastUsed.innerText()) !== "No record", "First use was not shown");
+      assert.deepEqual(await keyGeometry(), before, `First use moved the Access keys layout at ${width}px`);
+      keys[1].revoked = true;
+      await refreshPage(page);
+      await firstUse.getByText("Revoked", { exact: true }).waitFor();
+      assert.deepEqual(await keyGeometry(), before, `Revoking moved the Access keys layout at ${width}px`);
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await page.unroute("**/console/api/fleet/keys", keyRoute);
+    await context.close();
+    await scrolling.close();
   }
 }
 
@@ -937,17 +1104,17 @@ async function assertAccessLockGateway(page) {
   await page.locator("#secret-value").waitFor();
   await page.getByRole("button", { name: "Done", exact: true }).click();
   const orchestratorRow = page.locator("tr").filter({ hasText: "Lock orchestrator" });
-  await orchestratorRow.getByText("Discover machines, Enroll machines, Run work", { exact: true }).waitFor();
+  await orchestratorRow.getByText("Enroll machines, Run work", { exact: true }).waitFor();
   const orchestratorId = await orchestratorRow.locator("td.mono").innerText();
   const eligibleIds = await page.locator("tbody tr").filter({hasText: "Active"}).filter({hasText: "run work"}).locator("td.mono").allTextContents();
   await pageLink(page, "lock");
-  await page.locator("#lock-enforcement").filter({ hasText: "Unlocked" }).waitFor();
+  await page.locator("#lock-enforcement").filter({ hasText: /^Unlocked$/ }).waitFor();
   try {
     await page.locator('[data-action="lock-enable"][data-id="fleet"]').click();
     await submitModal(page);
     await page.locator("#dialog").waitFor({ state: "hidden" });
-    await page.locator("#lock-enforcement").filter({ hasText: "Locked" }).waitFor();
-    assert.match(await lockSummary(page), /No allowance is active, so account execution on this fleet's workers is refused\./);
+    await page.locator("#lock-enforcement").filter({ hasText: /^Locked$/ }).waitFor();
+    assert.equal(await lockSummary(page), "Locked New work on this fleet's workers is refused: no allowance is active. Enforced by this fleet's lock.");
     await page.locator('[data-action="allowance-add"]').click();
     const select = page.locator("#modal-form select[name=keyId]");
     const options = select.locator('option:not([value=""])');
@@ -973,7 +1140,7 @@ async function assertAccessLockGateway(page) {
       await page.locator("#dialog").waitFor({ state: "hidden" });
     }
   }
-  await page.locator("#lock-enforcement").filter({ hasText: "Unlocked" }).waitFor();
+  await page.locator("#lock-enforcement").filter({ hasText: /^Unlocked$/ }).waitFor();
   await pageLink(page, "activity");
   await page.locator("#audit-category").selectOption("vault");
   // Enabling may be audited as vault.enable or vault.lock; both are labelled.
@@ -982,6 +1149,13 @@ async function assertAccessLockGateway(page) {
   assert.equal(await page.locator("tbody tr").filter({ hasText: /vault\./ }).count(), 0, "Vault audit actions must be labelled");
   await page.locator("#audit-category").selectOption("");
 }
+async function keyAction(page, row, action) {
+  const trigger = row.getByRole("button", {name: /^Actions for /});
+  const name = await trigger.getAttribute("aria-label");
+  await trigger.click();
+  await page.getByRole("menu", {name, exact:true}).getByRole("menuitem", {name: action, exact:true}).click();
+}
+
 async function pageLink(page, hash) {
   await page.locator(`nav a[href="#${hash}"]`).click();
   await page.waitForFunction(
@@ -2688,6 +2862,7 @@ try {
   await assertAuditRequestOwnership(browser);
   await assertAccessLockFixtures(browser);
   await assertOperatorLockFixtures(browser);
+  await assertPageBoundsAndLastUsed();
   await assertBrandAssets(page);
   await page
     .getByRole("button", { name: "browser-worker", exact: true })
@@ -2884,10 +3059,10 @@ try {
     "Untrusted key name was interpreted as markup",
   );
   const keyRow = page.locator("tr").filter({ hasText: "Browser-created key" });
-  await keyRow.getByRole("button", { name: "Revoke", exact: true }).click();
+  await keyAction(page, keyRow, "Revoke");
   await page.locator("#modal-form button[type=submit]").click();
   await keyRow.getByText("Revoked", { exact: true }).waitFor();
-  await keyRow.getByRole("button", { name: "Rename", exact: true }).click();
+  await keyAction(page, keyRow, "Rename");
   await page
     .locator("#modal-form input[name=name]")
     .fill("Renamed browser key");
@@ -3313,19 +3488,19 @@ try {
   await login(page, "browser-owner", "new isolated browser password");
   await pageLink(page, "keys");
   const originalKey = page.locator("tr").filter({hasText: "Fleet account key"});
-  await originalKey.getByRole("button", {name: "Rename"}).click();
+  await keyAction(page, originalKey, "Rename");
   await page.locator("#modal-form input[name=name]").fill("Owner laptop");
   await submitModal(page);
   const ownerKey = page.locator("tr").filter({hasText: "Owner laptop"});
-  await ownerKey.getByRole("button", {name: "Revoke"}).click();
+  await keyAction(page, ownerKey, "Revoke");
   await submitModal(page);
-  await ownerKey.getByRole("button", {name: "Reactivate"}).click();
+  await keyAction(page, ownerKey, "Reactivate");
   await page.getByText(/Every copy of the original secret/).waitFor();
   await submitModal(page);
   await ownerKey.getByText("Active", {exact: true}).waitFor();
-  await ownerKey.getByRole("button", {name: "Revoke"}).click();
+  await keyAction(page, ownerKey, "Revoke");
   await submitModal(page);
-  await ownerKey.getByRole("button", {name: "Remove"}).click();
+  await keyAction(page, ownerKey, "Remove");
   await submitModal(page);
   await ownerKey.waitFor({state: "detached"});
   await page.getByRole("button", {name: "Issue account key", exact:true}).click();

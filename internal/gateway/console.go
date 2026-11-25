@@ -467,6 +467,11 @@ func (g *Gateway) consoleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) consolePasswordHTTP(w http.ResponseWriter, r *http.Request) {
+	p := g.requestPrincipal(r)
+	if p.Role != roleUser && p.Role != roleSuperuser {
+		http.Error(w, "browser passwords require the account or operator credential", http.StatusForbidden)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	var q struct{ Username, Password, CurrentPassword string }
 	if json.NewDecoder(r.Body).Decode(&q) != nil || len(q.Password) < 12 || len(q.Password) > 1024 || len(q.CurrentPassword) > 1024 {
@@ -477,7 +482,6 @@ func (g *Gateway) consolePasswordHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { <-g.console.verify }()
-	p := g.requestPrincipal(r)
 	g.mu.Lock()
 	username := g.users[p.UserID].Name
 	if p.Role == "superuser" {

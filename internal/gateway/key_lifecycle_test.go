@@ -69,13 +69,13 @@ func TestAccountKeyRecoveryAndRemoval(t *testing.T) {
 
 func TestNamedKeyPermissionLists(t *testing.T) {
 	g, s := installationFixture(t)
-	_, a := createTestUser(t, s, "builder")
+	owner, a := createTestUser(t, s, "builder")
 	const path = "/v1/fleet/keys/issue"
 	type listedKey struct {
 		ID          string
 		Permissions []string
 	}
-	for _, invalid := range [][]string{nil, {}, {"run"}, {"discover", "discover"}, {"discover", "manage-fleet"}, {"discover", "unknown"}} {
+	for _, invalid := range [][]string{nil, {}, {"run"}, {"discover", "discover"}, {"discover", "manage-gateway"}, {"discover", "unknown"}} {
 		if code, _ := vaultHTTP(t, s.URL, a.Key, "POST", path, map[string]any{"name": "invalid", "permissions": invalid}); code != 400 {
 			t.Fatalf("permissions %v: %d", invalid, code)
 		}
@@ -88,6 +88,10 @@ func TestNamedKeyPermissionLists(t *testing.T) {
 		{[]string{"discover", "run"}, roleOrchestrator},
 		{[]string{"discover", "enroll"}, roleCommon},
 		{[]string{"discover", "enroll", "run"}, roleOrchestratorEnroll},
+		{[]string{"discover", "manage-fleet"}, "fleet-manager"},
+		{[]string{"discover", "enroll", "manage-fleet"}, "fleet-manager-enroll"},
+		{[]string{"discover", "run", "manage-fleet"}, "fleet-manager-run"},
+		{[]string{"discover", "enroll", "run", "manage-fleet"}, "fleet-manager-enroll-run"},
 	} {
 		var issued issuedKey
 		if err := a.JSON(t.Context(), "POST", path, map[string]any{"name": "test", "permissions": tc.permissions}, &issued); err != nil || issued.Key.Role != tc.role {
@@ -99,30 +103,134 @@ func TestNamedKeyPermissionLists(t *testing.T) {
 		}) {
 			t.Fatal("listed permissions differ for", tc.permissions, err)
 		}
-		if tc.role == roleDiscovery {
-			for _, check := range []struct {
-				method, path string
-				status       int
-			}{
-				{"GET", "/v1/nodes", 200}, {"GET", "/v1/connect", 403}, {"GET", "/v1/fleet/keys", 403},
-			} {
-				if code, _ := vaultHTTP(t, s.URL, issued.Token, check.method, check.path, nil); code != check.status {
-					t.Fatalf("%s: got %d, want %d", check.path, code, check.status)
-				}
+		target := func(path string, want int, permissions ...string) {
+			t.Helper()
+			code, _ := vaultHTTP(t, s.URL, issued.Token, "GET", path, nil)
+			if len(permissions) > 0 && !slices.Contains(tc.permissions, permissions[0]) {
+				want = 403
 			}
-			id, err := identity.Generate()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if rawClientSession(t, s.URL, issued.Token, id, model.Node{Name: "cli-" + id.ID[:16]}, true) == nil {
-				t.Fatal("discovery client failed")
-			}
-			g.mu.Lock()
-			exec := g.clients[id.ID].ExecutionAuthority
-			g.mu.Unlock()
-			if exec {
-				t.Fatal("discovery client has execution permission")
+			if code != want {
+				t.Fatalf("%s for %s: got %d, want %d", path, tc.role, code, want)
 			}
 		}
+		target("/v1/nodes", 200)
+		target("/v1/fleet/keys", 200, "manage-fleet")
+		target("/v1/admin/users", 403)
+		id, err := identity.Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rawClientSession(t, s.URL, issued.Token, id, model.Node{Name: "cli-" + id.ID[:16]}, true) == nil {
+			t.Fatal("client session failed")
+		}
+		g.mu.Lock()
+		exec := g.clients[id.ID].ExecutionAuthority
+		g.mu.Unlock()
+		if exec != slices.Contains(tc.permissions, "run") {
+			t.Fatal("wrong execution permission", tc.role)
+		}
+		worker, err := identity.Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(tc.permissions, "enroll") {
+			if rawPeer(t, s.URL, issued.Token, "worker-"+worker.ID[:12], owner.ID, worker) == nil {
+				t.Fatal("registration failed", tc.role)
+			}
+		} else {
+			target("/v1/connect", 403)
+		}
+	}
+}
+
+func TestManagerCannotExposeOtherPermissionsOrManageAccounts(t *testing.T) {
+	g, s := installationFixture(t)
+	alice, a := createTestUser(t, s, "avery")
+	bob, _ := createTestUser(t, s, "ben")
+	var manager issuedKey
+	if err := a.JSON(t.Context(), "POST", "/v1/fleet/keys/issue", map[string]any{"name": "Mari", "permissions": []string{"discover", "manage-fleet"}}, &manager); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		method, target string
+		body           any
+		want           int
+	}{
+		{"GET", "/v1/audit", nil, 200},
+		{"GET", "/v1/fleet/installations", nil, 200},
+		{"POST", "/v1/fleet/installations", nil, 403},
+		{"POST", "/v1/fleet/keys", map[string]string{"name": "extra", "role": "orchestrator"}, 403},
+		{"POST", "/v1/fleet/keys", map[string]string{"name": "extra"}, 403},
+		{"POST", "/v1/fleet/keys/issue", map[string]any{"name": "extra", "permissions": []string{"discover", "run", "manage-fleet"}}, 403},
+		{"PATCH", "/v1/fleet/keys/" + accountKeyID(t, g, alice.ID), map[string]string{"name": "overwritten"}, 403},
+		{"DELETE", "/v1/fleet/keys/" + accountKeyID(t, g, bob.ID), nil, 404},
+		{"PUT", "/v1/console/password", map[string]string{"password": "would otherwise be valid"}, 403},
+		{"POST", "/console/api/fleet/account-key", nil, 401},
+		{"POST", "/v1/fleet/keys/issue", map[string]any{"name": "sibling", "permissions": []string{"discover", "manage-fleet"}}, 200},
+	} {
+		code, _ := vaultHTTP(t, s.URL, manager.Token, test.method, test.target, test.body)
+		if code != test.want {
+			t.Fatalf("%s %s = %d; want %d", test.method, test.target, code, test.want)
+		}
+	}
+}
+
+func TestKeyLastUsedSurvivesRevocationAndRestart(t *testing.T) {
+	dir := t.TempDir()
+	g, s := gatewayAt(t, dir)
+	_, fleet := createTestUser(t, s, "owner")
+	key := issueFleetKey(t, fleet, "access test", "orchestrator")
+	idURL := "/v1/fleet/keys/" + key.Key.ID
+	lastUsed := func(keyID string) int64 {
+		t.Helper()
+		var rows []APIKey
+		if err := fleet.JSON(t.Context(), "GET", "/v1/fleet/keys", nil, &rows); err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rows {
+			if r.ID == keyID {
+				if r.LastUsed.IsZero() {
+					return 0
+				}
+				return r.LastUsed.UnixMilli()
+			}
+		}
+		t.Fatal("key missing", keyID)
+		return 0
+	}
+	if lastUsed(key.Key.ID) != 0 {
+		t.Fatal("unused key has a last-used timestamp")
+	}
+	if status, _ := vaultHTTP(t, s.URL, "wrong-secret", "GET", "/v1/status", nil); status != 401 {
+		t.Fatal(status)
+	}
+	if lastUsed(key.Key.ID) != 0 {
+		t.Fatal("invalid credential updated the timestamp")
+	}
+	if status, _ := vaultHTTP(t, s.URL, key.Token, "GET", "/v1/status", nil); status != 200 {
+		t.Fatal(status)
+	}
+	first := lastUsed(key.Key.ID)
+	if first == 0 {
+		t.Fatal("key timestamp missing")
+	}
+	if err := fleet.JSON(t.Context(), "DELETE", idURL, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := vaultHTTP(t, s.URL, key.Token, "GET", "/v1/status", nil); status != 401 {
+		t.Fatal("revocation failed")
+	}
+	if lastUsed(key.Key.ID) != first {
+		t.Fatal("authentication with a revoked key updated its timestamp")
+	}
+	s.Close()
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+	g2, s2 := gatewayAt(t, dir)
+	defer func() { s2.Close(); _ = g2.Close() }()
+	fleet.URL = s2.URL
+	if lastUsed(key.Key.ID) != first {
+		t.Fatal("last-used timestamp changed across restart")
 	}
 }

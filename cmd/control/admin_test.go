@@ -61,7 +61,7 @@ func TestMachineCommandReportsAuthenticationFailures(t *testing.T) {
 	for _, tc := range []struct{ key, want string }{
 		{"", "gateway credential is not configured"},
 		{"wrong-key", "401 Unauthorized"},
-		{"common-key", "requires a user account key"},
+		{"common-key", "key with fleet management access"},
 	} {
 		err := machineCLI(context.Background(), client.Admin{URL: server.URL, Key: tc.key}, args)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

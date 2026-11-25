@@ -126,7 +126,9 @@ The configured token can be a user's issued common key or redeemed installation 
 
 For execution keys, `control keys create` checks `GET /v1/auth` before issuing: `orchestratorKeys` for `orchestrator`, or `orchestratorEnrollKeys` for `orchestrator-enroll`. It verifies the issued role before printing the secret and never retries an uncertain issuance. Inspect `control keys list` if the reply is lost.
 
-The console issues keys by permission list. `POST /v1/fleet/keys/issue` (or `/v1/admin/keys/issue` in the operator fleet) accepts `{"name":"build","permissions":["discover","enroll","run"]}`. Include `discover`; `enroll` and `run` are independent and optional. Unknown, duplicate, or administrative permissions return 400. A separate route prevents older gateways from ignoring the list and issuing a key with different permissions. Key inventory includes the effective `permissions` list, including `manage-fleet` and `manage-gateway` where applicable.
+The console issues keys by permission list. `POST /v1/fleet/keys/issue` (or `/v1/admin/keys/issue` in the operator fleet) accepts `{"name":"build","permissions":["discover","enroll","run"]}`. Include `discover`; `enroll`, `run`, and `manage-fleet` are independent and optional. Unknown, duplicate, or `manage-gateway` permissions return 400. A manager can issue and manage named keys with a subset of its own permissions. It cannot change the fleet account key, set a browser password, or administer the gateway. Creating installation invitations requires both management and enrollment. Use the account or operator credential for browser password provisioning. Access lock rules still apply to machine mutations.
+
+Key inventory includes `permissions` and an optional `lastUsed` timestamp (UTC) for the last successful bearer authentication. Opening the console with a browser session doesn't count. Usage is checkpointed every 30 seconds and on clean shutdown. After a crash, the last few seconds of observations may be lost. There is no historical backfill. Schema 13 stores key usage independently of audit retention.
 
 `DELETE /v1/fleet/keys/{id}/record` permanently removes a revoked key and records `key.remove`. An active key returns 409, an unknown or foreign ID 404. The same route exists under `/v1/admin/keys`. Revoking remains a separate operation. `POST /console/api/fleet/keys/{id}/reactivate` restores a revoked key's original secret and ID and records `key.reactivate`. `POST /console/api/fleet/account-key` issues a fresh account key only when the signed-in fleet owner has none active. It returns the usual one-time issuance response. Both POSTs require a live browser session, same origin and CSRF token. Issuance and reactivation enforce the single active account key in the same transaction as the audit write. Removing a key leaves earlier audit events and allowance IDs intact.
 
@@ -137,6 +139,7 @@ The console issues keys by permission list. `POST /v1/fleet/keys/issue` (or `/v1
 | `orchestrator-enroll` | `orchestrator-enroll` | yes | yes, without execution authority on worker sessions | no |
 | `common`, installation | `common` | no | yes | no |
 | Discovery alone | `discovery` | no | refused with 403 | no |
+| Named key with `manage-fleet` | `fleet-manager`, optionally followed by `-enroll`, `-run` or `-enroll-run` | only with `run` | only with `enroll` | yes, in the issuing fleet |
 
 Both orchestrator roles authenticate discovery and account-client sessions in their issuing fleet. Owner-only status fields stay hidden. The gateway derives the role and fleet from the stored credential. Task ownership follows the proven client identity across key changes; allowances follow the key. Rotating to a newly issued key requires its own allowance when a lock is enforced.
 

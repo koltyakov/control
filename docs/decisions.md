@@ -1735,3 +1735,7 @@ Owners can issue `orchestrator-enroll` for enrollment, discovery and account-cli
 The console shows granted permissions instead of role presets. Discovery is inherent to fleet membership; enrollment and execution are independent. The [permission-list endpoint](protocol.md#fleet-key-roles) rejects unsupported permissions and preserves existing role-based clients.
 
 Revocation stops key authentication. A fleet owner can restore the original credential through the password-authenticated console or permanently remove its revoked record. Only the console can reactivate keys because restoring the same ID also restores any still-valid key allowances. For compromise, the owner can leave the old key revoked and obtain a fresh account key even after removing the old record. Only one account key can be active per fleet. A replacement never inherits allowances by name. Renaming changes only the label.
+
+## D200: Separate fleet management from account recovery
+
+Named keys may grant fleet management independently of enrollment and execution. This extends D199's permission list. A manager can grant at most its own permissions. The account key and password-authenticated recovery remain distinct from named keys, even when the permissions displayed for two keys match. See [fleet key roles](protocol.md#fleet-key-roles).

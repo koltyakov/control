@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/koltyakov/control/internal/fleetkey"
 	"github.com/koltyakov/control/internal/identity"
 )
 
@@ -20,15 +22,32 @@ type APIKey struct {
 	Role      string    `json:"role"`
 	CreatedAt time.Time `json:"createdAt,omitzero"`
 	Revoked   bool      `json:"revoked"`
+	LastUsed  time.Time `json:"lastUsed,omitzero"`
 }
 type keyRecord struct {
 	APIKey
 	Hash string `json:"hash"`
 }
 
-// Credential roles. Owner roles administer a fleet. An orchestrator key is an
-// execution key: its account-client sessions may run work. Only the combined
-// orchestrator-enroll role can also enroll workers. Neither administers the fleet.
+type keyTime struct {
+	credential string
+	last       atomic.Int64 // Milliseconds since epoch; the timestamp of the latest valid bearer lookup.
+	persisted  int64        // Accessed under g.mu.
+}
+
+func (p principal) trackUse() principal {
+	if p.target != nil {
+		now := time.Now().UnixMilli()
+		for old := p.target.last.Load(); old < now; old = p.target.last.Load() {
+			if p.target.last.CompareAndSwap(old, now) {
+				break
+			}
+		}
+	}
+	return p
+}
+
+// Legacy role identifiers used by account recovery and role-based issuance.
 const (
 	roleSuperuser          = "superuser"
 	roleUser               = "user"
@@ -38,57 +57,30 @@ const (
 	roleDiscovery          = "discovery"
 )
 
-// ownerRole reports credentials that administer their fleet.
-func ownerRole(role string) bool { return role == roleUser || role == roleSuperuser }
+func managesFleet(role string) bool { return fleetkey.ForRole(role).Has(fleetkey.ManageFleet) }
 
 // executionRole reports credentials whose client sessions may execute work.
 func executionRole(role string) bool {
-	return ownerRole(role) || role == roleOrchestrator || role == roleOrchestratorEnroll
+	return fleetkey.ForRole(role).Has(fleetkey.Run)
 }
 
 func enrollmentRole(role string) bool {
-	return ownerRole(role) || role == roleCommon || role == roleOrchestratorEnroll
+	return fleetkey.ForRole(role).Has(fleetkey.Enroll)
 }
 
 // The public permission list describes what the gateway actually admits.
 // Keep the stored roles for existing credentials and protocol clients.
 func keyPermissions(role string) []string {
-	permissions := []string{"discover"}
-	if enrollmentRole(role) {
-		permissions = append(permissions, "enroll")
-	}
-	if executionRole(role) {
-		permissions = append(permissions, "run")
-	}
-	if ownerRole(role) {
-		permissions = append(permissions, "manage-fleet")
-	}
-	if role == roleSuperuser {
-		permissions = append(permissions, "manage-gateway")
-	}
-	return permissions
+	return fleetkey.ForRole(role).Names()
 }
 
-func namedKeyPermissions(permissions []string) (string, bool) {
-	seen := make(map[string]bool, 3)
-	for _, p := range permissions {
-		if (p != "discover" && p != "enroll" && p != "run") || seen[p] {
-			return "", false
-		}
-		seen[p] = true
+// Named managers cannot issue a stronger credential or alter the recovery key.
+func canManageKey(caller, target string) bool {
+	if target == roleUser {
+		return caller == roleUser || caller == roleSuperuser
 	}
-	switch {
-	case !seen["discover"]:
-		return "", false
-	case seen["enroll"] && seen["run"]:
-		return roleOrchestratorEnroll, true
-	case seen["enroll"]:
-		return roleCommon, true
-	case seen["run"]:
-		return roleOrchestrator, true
-	default:
-		return roleDiscovery, true
-	}
+	required := fleetkey.ForRole(target)
+	return required != 0 && fleetkey.ForRole(caller).Has(fleetkey.ManageFleet|required)
 }
 
 // issuableKeyRole maps a requested fleet key role to the stored role. Owners
@@ -121,16 +113,15 @@ func (g *Gateway) authenticate(token string) principal {
 		return principal{}
 	}
 	if g.superuser != "" && subtle.ConstantTimeCompare([]byte(token), []byte(g.superuser)) == 1 {
-		return principal{Role: "superuser", KeyID: "superuser", UserID: legacyUser}
-	}
-	if g.token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(g.token)) == 1 {
-		return principal{Role: "common", KeyID: "bootstrap", UserID: legacyUser}
+		return principal{Role: roleSuperuser, KeyID: "superuser", UserID: legacyUser, target: g.operatorUse.Load()}.trackUse()
+	} else if g.token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(g.token)) == 1 {
+		return principal{Role: roleCommon, KeyID: "bootstrap", UserID: legacyUser, target: g.bootstrapUse.Load()}.trackUse()
 	}
 	// Credentials are 256-bit random secrets, so a lookup by their SHA-256
 	// digest reveals nothing useful through timing.
 	if index := g.credentials.Load(); index != nil {
 		if p, ok := (*index)[tokenHash(token)]; ok {
-			return p
+			return p.trackUse()
 		}
 	}
 	return principal{}
@@ -142,7 +133,21 @@ func (g *Gateway) authenticateLocked(token string) principal { return g.authenti
 // reindexCredentialsLocked publishes the usable credentials after a committed
 // change to users, keys, or invitations. Caller holds g.mu or is initializing.
 func (g *Gateway) reindexCredentialsLocked() {
-	index := make(map[string]principal, len(g.keys)+len(g.installations))
+	index := make(map[string]principal, len(g.keys)+len(g.installations)+2)
+	active := make(map[string]*keyTime, len(g.keys)+2)
+	target := func(id, role, owner, credential string, grant bool) {
+		if credential == "" {
+			return
+		}
+		entry := g.keyTimes[id]
+		if entry == nil || entry.credential != credential {
+			entry = &keyTime{credential: credential}
+		}
+		active[id] = entry
+		if grant {
+			index[credential] = principal{Role: role, KeyID: id, UserID: owner, Username: g.users[owner].Name, target: entry}
+		}
+	}
 	for hash, i := range g.installations {
 		if u, ok := g.users[i.UserID]; ok && !u.Disabled && !i.Revoked && i.RedeemedID != "" && i.CredentialHash != "" {
 			index[i.CredentialHash] = principal{Role: "common", KeyID: "install:" + i.ID, UserID: i.UserID, Installation: hash}
@@ -150,10 +155,18 @@ func (g *Gateway) reindexCredentialsLocked() {
 	}
 	// Account and common keys take precedence, as they did in the linear scan.
 	for id, key := range g.keys {
-		if u, ok := g.users[key.UserID]; ok && !u.Disabled && !key.Revoked && key.Hash != "" {
-			index[key.Hash] = principal{Role: key.Role, KeyID: id, UserID: key.UserID, Username: u.Name}
-		}
+		u, ok := g.users[key.UserID]
+		target(id, key.Role, key.UserID, key.Hash, ok && !u.Disabled && !key.Revoked)
 	}
+	if g.token != "" {
+		target("bootstrap", roleCommon, legacyUser, tokenHash(g.token), false)
+		g.bootstrapUse.Store(active["bootstrap"])
+	}
+	if g.superuser != "" {
+		target("superuser", roleSuperuser, legacyUser, tokenHash(g.superuser), false)
+		g.operatorUse.Store(active["superuser"])
+	}
+	g.keyTimes = active
 	g.credentials.Store(&index)
 }
 
@@ -184,7 +197,7 @@ func (g *Gateway) admin(next http.HandlerFunc) http.HandlerFunc {
 func (g *Gateway) keyManagerLocked(r *http.Request) (principal, bool) {
 	p := g.requestPrincipal(r)
 	_, browser := r.Context().Value(consoleContextKey{}).(consoleContext)
-	return p, ownerRole(p.Role) && (!browser || g.consolePolicySessionLiveLocked(r))
+	return p, managesFleet(p.Role) && (!browser || g.consolePolicySessionLiveLocked(r))
 }
 
 func (g *Gateway) hasActiveAccountKeyLocked(user string) bool {
@@ -205,7 +218,7 @@ func (g *Gateway) issueFleetKey(w http.ResponseWriter, r *http.Request, name, ro
 	g.mu.Lock()
 	p, ok := g.keyManagerLocked(r)
 	_, browser := r.Context().Value(consoleContextKey{}).(consoleContext)
-	if !ok || (role == roleUser && (p.Role != roleUser || !browser)) {
+	if !ok || !canManageKey(p.Role, role) || (role == roleUser && (p.Role != roleUser || !browser)) {
 		g.mu.Unlock()
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -245,6 +258,10 @@ func (g *Gateway) removeRevokedKey(w http.ResponseWriter, r *http.Request) {
 	key, ok := g.keys[r.PathValue("id")]
 	if !ok || key.UserID != p.UserID {
 		http.NotFound(w, r)
+		return
+	}
+	if !canManageKey(p.Role, key.Role) {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	if !key.Revoked {
@@ -296,10 +313,10 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		p := g.requestPrincipal(r)
 		w.Header().Set("Content-Type", "application/json")
 		capabilities := []string{}
-		switch p.Role {
-		case "superuser":
+		switch {
+		case p.Role == roleSuperuser:
 			capabilities = []string{"updates.manage", "users.manage", "keys.manage", "installations.manage", "machines.manage"}
-		case "user":
+		case managesFleet(p.Role):
 			capabilities = []string{"keys.manage", "installations.manage", "machines.manage"}
 		}
 		// Management keys learn the browser username their console password applies to.
@@ -350,6 +367,9 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 				keys = append(keys, listedKey{APIKey: key.APIKey, Permissions: keyPermissions(key.Role)})
 			}
 		}
+		for i := range keys {
+			keys[i].LastUsed = g.keyLastUsed(keys[i].ID)
+		}
 		g.mu.Unlock()
 		sort.SliceStable(keys, func(i, j int) bool { return keys[i].CreatedAt.Before(keys[j].CreatedAt) })
 		w.Header().Set("Content-Type", "application/json")
@@ -367,6 +387,11 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 		if !ok || key.UserID != p.UserID {
 			g.mu.Unlock()
 			http.NotFound(w, r)
+			return
+		}
+		if !canManageKey(p.Role, key.Role) {
+			g.mu.Unlock()
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		old := key
@@ -416,6 +441,11 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 			http.NotFound(w, r)
 			return
 		}
+		if !canManageKey(p.Role, key.Role) {
+			g.mu.Unlock()
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		old := key
 		key.Name = q.Name
 		g.keys[key.ID] = key
@@ -448,9 +478,9 @@ func (g *Gateway) authRoutes(mux *http.ServeMux) {
 				http.Error(w, "supply a name of 1 to 128 bytes and a permissions list", http.StatusBadRequest)
 				return
 			}
-			role, ok := namedKeyPermissions(q.Permissions)
+			role, ok := fleetkey.NamedRole(q.Permissions)
 			if !ok {
-				http.Error(w, "include discover and optionally enroll or run, once each", http.StatusBadRequest)
+				http.Error(w, "include discover and optionally enroll, run, or manage-fleet, once each", http.StatusBadRequest)
 				return
 			}
 			g.issueFleetKey(w, r, q.Name, role)

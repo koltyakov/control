@@ -24,7 +24,7 @@ import (
 // openDatabase migrates older versions up to it. auditSchemaVersion added the
 // audit_events table (D082), which an online backup writes to.
 const (
-	currentSchemaVersion = 12
+	currentSchemaVersion = 13
 	auditSchemaVersion   = 6
 )
 

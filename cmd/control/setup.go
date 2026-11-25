@@ -114,7 +114,7 @@ func setupCLI(ctx context.Context, args []string, config string) error {
 	if err = admin.JSON(ctx, "GET", "/v1/auth", nil, &auth); err != nil {
 		return err
 	}
-	if !client.OwnerRole(auth.Role) && auth.Role != "orchestrator-enroll" && auth.Role != "common" {
+	if !client.EnrollmentRole(auth.Role) {
 		return errors.New("this key cannot enroll machines; use a key with enrollment permission or a machine invitation")
 	}
 	credential, createdKey := key, ""

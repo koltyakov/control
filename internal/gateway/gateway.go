@@ -189,7 +189,12 @@ type Gateway struct {
 	observed          map[string]*observedFleet
 	proxyObservation  managedProxyObservation
 	// credentials indexes usable bearer credentials by digest; see authenticate.
-	credentials atomic.Pointer[map[string]principal]
+	credentials  atomic.Pointer[map[string]principal]
+	bootstrapUse atomic.Pointer[keyTime]
+	operatorUse  atomic.Pointer[keyTime]
+	// Key timestamps are separate from the list of gateway grants. A new
+	// secret in the same configured slot starts with a new timestamp.
+	keyTimes map[string]*keyTime // target ID to its current tracker; protected by mu
 	// routes mirrors peers for relay forwarding under its own lock, so packet
 	// routing does not wait for commits or administration holding g.mu.
 	routeMu   sync.RWMutex
@@ -1002,20 +1007,19 @@ func (g *Gateway) runPresenceFlush(ctx context.Context) {
 // flushPresenceLocked persists batched last-seen changes in one transaction.
 // A failed write keeps them for the next attempt. Caller holds g.mu.
 func (g *Gateway) flushPresenceLocked() {
-	if len(g.presenceDirty)+len(g.profileSeenDirty) == 0 {
-		return
-	}
 	ids := make([]string, 0, len(g.presenceDirty))
 	for id := range g.presenceDirty {
 		if _, exists := g.nodes[id]; exists {
 			ids = append(ids, id)
 		}
 	}
-	if len(ids)+len(g.profileSeenDirty) != 0 {
-		if err := g.commit(change{nodes: ids, profileSeen: g.profileSeenDirty}); err != nil {
-			slog.Warn("persist last-seen times", "nodes", len(ids), "profiles", len(g.profileSeenDirty), "error", err)
-			return
-		}
+	keyUses := g.pendingKeyUses()
+	if len(ids)+len(g.profileSeenDirty)+len(keyUses) == 0 {
+		return
+	}
+	if err := g.commit(change{nodes: ids, profileSeen: g.profileSeenDirty, keyUses: keyUses}); err != nil {
+		slog.Warn("persist last-seen times", "nodes", len(ids), "profiles", len(g.profileSeenDirty), "error", err)
+		return
 	}
 	clear(g.presenceDirty)
 	clear(g.profileSeenDirty)

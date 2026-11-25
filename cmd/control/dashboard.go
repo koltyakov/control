@@ -76,7 +76,7 @@ func dashboardCLI(ctx context.Context, c client.Client, remote client.Admin, arg
 		return c.DashboardFresh(ctx, remote, query)
 	}
 	// One authentication request answers both the role and proxy support.
-	if auth, _ := remote.DisplayAuth(ctx); auth.Role == "user" || auth.Role == "superuser" {
+	if auth, _ := remote.DisplayAuth(ctx); client.OwnerRole(auth.Role) && client.EnrollmentRole(auth.Role) {
 		options.Invite = func(ctx context.Context, name, platform, mode string, proxy model.GatewayProxy) (enrollment.Link, error) {
 			return remote.Invite(ctx, enrollment.Request{Name: name, OS: platform, ServiceMode: mode, ProxyWorker: proxy.Worker, ProxyURL: proxy.URL})
 		}

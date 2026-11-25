@@ -59,7 +59,7 @@ func TestMachineLabelCLI(t *testing.T) {
 	role = "common"
 	got := slices.Clone(patches)
 	mu.Unlock()
-	if err := machineCLI(ctx, c, []string{"label", "render", "pool=b"}); err == nil || !strings.Contains(err.Error(), "account key") {
+	if err := machineCLI(ctx, c, []string{"label", "render", "pool=b"}); err == nil || !strings.Contains(err.Error(), "fleet management") {
 		t.Fatal("common key labeled a machine", err)
 	}
 	if len(got) != 1 || !maps.Equal(got[0].Set, map[string]string{"pool": "a"}) || !slices.Equal(got[0].Remove, []string{"zone"}) || !slices.Equal(got[0].Reset, []string{"gpu", "os"}) {

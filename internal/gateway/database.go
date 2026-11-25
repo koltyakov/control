@@ -74,7 +74,7 @@ CREATE TABLE client_transports (id TEXT PRIMARY KEY REFERENCES identities(id), o
 CREATE INDEX client_identity_prefix ON client_identities(substr(id,1,16));
 CREATE TABLE console_passwords (username TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL);
 ` + auditSchema + consoleSessionSchema + proxyDependencySchema + machineLabelSchema + fleetVaultSchema + globalVaultSchema + clientProfileSchema + `
-PRAGMA user_version=12;`); err != nil {
+` + keyTimeSchema + `PRAGMA user_version=13;`); err != nil {
 			return err
 		}
 		if err = g.writeState(tx); err != nil {
@@ -243,6 +243,20 @@ PRAGMA user_version=12;`); err != nil {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		version = 12
+	}
+	if version == 12 {
+		tx, err := g.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err = tx.Exec(keyTimeSchema + `PRAGMA user_version=13;`); err != nil {
+			return err
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
 	}
 	g.users = map[string]User{}
 	g.owners = map[string]string{}
@@ -280,6 +294,9 @@ PRAGMA user_version=12;`); err != nil {
 		return err
 	}
 	if err = readRecords(g.db, "credentials", "id", g.keys); err != nil {
+		return err
+	}
+	if err = g.loadKeyTimes(); err != nil {
 		return err
 	}
 	if err = readRecords(g.db, "nodes", "id", g.nodes); err != nil {
@@ -394,6 +411,7 @@ type change struct {
 	// vaultPolicies are fleet lock policies, keyed by user.
 	vaultPolicies []string
 	profileSeen   map[string]time.Time
+	keyUses       map[string]int64
 	// audit events commit in the same transaction as the change they describe.
 	audit []AuditEvent
 }
@@ -413,6 +431,9 @@ func (g *Gateway) commit(c change) error {
 	if err = tx.Commit(); err != nil {
 		return err
 	}
+	for id, seen := range c.keyUses {
+		g.keyTimes[id].persisted = seen
+	}
 	if len(c.users)+len(c.keys)+len(c.invitations) != 0 {
 		g.reindexCredentialsLocked()
 	}
@@ -428,6 +449,11 @@ func (g *Gateway) writeChange(tx *sql.Tx, c change) error {
 	}
 	if err := g.writeAudit(tx, c.audit); err != nil {
 		return err
+	}
+	for id, seen := range c.keyUses {
+		if err := exec(`INSERT INTO access_key_times(target_id,credential,seen) VALUES(?,?,?) ON CONFLICT(target_id) DO UPDATE SET credential=excluded.credential,seen=excluded.seen`, id, g.keyTimes[id].credential, seen); err != nil {
+			return err
+		}
 	}
 	for _, username := range c.passwords {
 		p := g.console.passwords[username]
@@ -456,7 +482,10 @@ func (g *Gateway) writeChange(tx *sql.Tx, c change) error {
 		}
 	}
 	for _, id := range c.keys {
-		if _, ok := g.keys[id]; !ok {
+		if _, exists := g.keys[id]; !exists {
+			if err := exec(`DELETE FROM access_key_times WHERE target_id=?`, id); err != nil {
+				return err
+			}
 			if err := exec(`DELETE FROM credentials WHERE id=?`, id); err != nil {
 				return err
 			}

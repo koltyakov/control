@@ -138,6 +138,10 @@ func (g *Gateway) installationAsset(r *http.Request, osName, arch string) (updat
 
 func (g *Gateway) createInstallation(w http.ResponseWriter, r *http.Request) {
 	p := g.requestPrincipal(r)
+	if !enrollmentRole(p.Role) {
+		http.Error(w, "this key cannot enroll machines", http.StatusForbidden)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 8192)
 	var q enrollment.Request
 	if json.NewDecoder(r.Body).Decode(&q) != nil || (q.AutoName && q.Name != "") || (!q.AutoName && !validName.MatchString(q.Name)) || (q.OS != "linux" && q.OS != "darwin" && q.OS != "windows") || (q.Arch != "" && q.Arch != "amd64" && q.Arch != "arm64") {

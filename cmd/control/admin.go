@@ -87,10 +87,11 @@ func updateAdminClient(profile string, tokenOverride *string) (client.Admin, err
 }
 
 func commandHelp(ctx context.Context, c client.Admin) string {
-	switch c.Role(ctx) {
-	case "superuser":
+	role := c.Role(ctx)
+	switch {
+	case role == "superuser":
 		return usage + fleetUsage + adminUsage
-	case "user":
+	case client.OwnerRole(role):
 		return usage + fleetUsage
 	}
 	return usage
@@ -112,7 +113,7 @@ Environment: CONTROL_GATEWAY, CONTROL_SUPERUSER_KEY
 
 const fleetUsage = `
 Your fleet:
-  console password [USER] [--password-stdin] Set a browser password; operators may select a user
+  console password [USER] [--password-stdin] Account key required; operators may select a user
   machines add [NAME|auto] --platform macos|windows|linux  Create install command; default uses target hostname
     --service user|system|hybrid         Choose User, System, or paired contexts
     --linger                             Linux Hybrid: keep User running without a login
@@ -129,7 +130,7 @@ Your fleet:
   machines rename NAME NEW_NAME [--force] Change alias; force retracts a pending invitation
   machines label NAME [KEY=VALUE|KEY-]... [--reset KEY]  Set or remove owner labels; no change shows origins
   machines unregister NAME              Unregister a machine and request node uninstall
-  keys create NAME                     Issue a key, shown once; the default common role is discovery-only
+  keys create NAME                     Issue a key, shown once; the default grants enrollment and discovery
     --role common|orchestrator|orchestrator-enroll    Use orchestrator-enroll to enroll, discover and run work with one key
   keys list                            List fleet keys and their roles
   keys rename ID NAME                  Rename a key
@@ -187,7 +188,7 @@ func adminCLI(ctx context.Context, c client.Admin, args []string) error {
 		return authErr
 	}
 	fleet := args[0] == "keys" || args[0] == "audit"
-	if role != "superuser" && (role != "user" || !fleet) {
+	if role != "superuser" && (!client.OwnerRole(role) || !fleet) {
 		if !help && args[0] == "update" {
 			return errUpdatePermission
 		}
@@ -296,8 +297,8 @@ func machineCLI(ctx context.Context, c client.Admin, args []string) error {
 	if err != nil {
 		return err
 	}
-	if role != "user" && role != "superuser" {
-		return errors.New("machine management requires a user account key; run control login with your account key")
+	if !client.OwnerRole(role) {
+		return errors.New("machine management requires a fleet management credential; run control login and use a key with fleet management access")
 	}
 	if args[0] == "invites" && len(args) == 2 && args[1] == "clear" {
 		var result any

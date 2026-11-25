@@ -332,7 +332,8 @@ main {
 .machine-menu-button {
   margin-left: auto;
 }
-.machine-menu-button[aria-expanded="true"] {
+.machine-menu-button[aria-expanded="true"],
+.row-menu-button[aria-expanded="true"] {
   background: var(--soft);
   color: var(--text);
 }
@@ -412,7 +413,6 @@ nav a:hover,
 nav a.active,
 .nav-more.active {
   color: var(--text);
-  font-weight: 500;
   background: var(--soft);
 }
 .nav-hidden {
@@ -470,13 +470,6 @@ main:focus-visible {
   gap: 24px;
   min-height: 38px;
   margin-bottom: 20px;
-}
-.page-heading .muted {
-  margin-top: 4px;
-  font-size: 13px;
-}
-.page-heading .muted:empty {
-  display: none;
 }
 .heading-actions {
   display: flex;
@@ -729,33 +722,92 @@ meter:-moz-meter-sub-sub-optimum::-moz-meter-bar {
   display: flex;
   align-items: flex-start;
   gap: 14px;
-  border-bottom: 1px solid var(--border);
 }
-.lock-summary strong {
+.lock-summary-body {
+  min-width: 0;
+  max-width: 72ch;
+}
+.lock-status strong {
   display: block;
-  font-size: 15px;
+  font-size: 18px;
   font-weight: 600;
+  line-height: 1.3;
 }
-.lock-summary p {
+.lock-status p {
   margin-top: 4px;
   font-size: 13px;
   color: var(--muted);
 }
+.lock-status .lock-effect {
+  font-size: 14px;
+  color: var(--text);
+}
+.lock-summary .lock-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
 .lock-icon {
+  flex: none;
   display: inline-flex;
-  padding: 8px;
+  padding: 10px;
   border-radius: 8px;
   background: var(--soft);
   color: var(--muted);
 }
 .lock-icon.locked {
+  background: var(--accent-soft);
   color: var(--accent);
 }
-.lock-icon .icon {
-  width: 20px;
-  height: 20px;
+.lock-icon.unknown {
+  background: var(--yellow-soft);
+  color: var(--yellow);
 }
-.lock-settings td,
+.lock-icon .icon {
+  width: 22px;
+  height: 22px;
+}
+/* Operator view: one row per switch. Columns stack once the panel is narrow. */
+.lock-scopes {
+  container: lock-scopes / inline-size;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--border);
+}
+.lock-scope {
+  display: grid;
+  grid-template-columns: minmax(0, 16rem) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 20px;
+  padding: 14px 20px;
+}
+.lock-scope + .lock-scope {
+  border-top: 1px solid var(--border);
+}
+.lock-scope-name strong,
+.lock-scope-name small,
+.lock-scope-state small {
+  display: block;
+}
+.lock-scope-name strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.lock-scope small {
+  margin-top: 2px;
+  font-size: 12px;
+}
+@container lock-scopes (max-width: 560px) {
+  .lock-scope {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .lock-scope .lock-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}
 .lock-allowances td {
   vertical-align: top;
   white-space: normal;
@@ -1022,6 +1074,161 @@ td strong {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+/* Access keys wrap inside the panel instead of scrolling sideways, then stack
+   into labelled cards once the panel itself is too narrow for every column.
+   Column widths are fixed by the header, not the rows, so revoking,
+   reactivating, or a first use never moves the other columns. */
+.table-wrap:has(> .keys-table) {
+  container: keys / inline-size;
+}
+.keys-table {
+  table-layout: fixed;
+  white-space: normal;
+}
+/* Columns: Name, Permissions, Status, Created, Last used, Key ID, actions.
+   Name and Permissions share the remaining width. Status fits "Revoked";
+   Created and Last used fit a date and time on one line, or two on medium
+   panels; Key ID fits a 32-character ID on one line, and longer IDs wrap. */
+.keys-table th:nth-child(3) {
+  width: 116px;
+}
+.keys-table th:nth-child(4),
+.keys-table th:nth-last-child(3) {
+  width: 188px;
+}
+.keys-table th:nth-last-child(2) {
+  width: 268px;
+}
+.keys-table th:last-child {
+  width: 58px;
+}
+@container keys (max-width: 1180px) {
+  .keys-table th:nth-child(4),
+  .keys-table th:nth-last-child(3) {
+    width: 120px;
+  }
+}
+.keys-table th,
+.keys-table td {
+  padding-inline: 14px;
+}
+.keys-table th:first-child,
+.keys-table td:first-child {
+  padding-left: 20px;
+}
+.keys-table th:last-child,
+.keys-table td:last-child {
+  padding-right: 12px;
+}
+.keys-table td:first-child,
+.keys-table td:nth-child(2) {
+  overflow-wrap: anywhere;
+}
+.keys-table td:nth-last-child(2) {
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.keys-table .action-column {
+  padding-block: 6px;
+}
+@container keys (max-width: 960px) {
+  .keys-table,
+  .keys-table tbody {
+    display: block;
+  }
+  .keys-table thead {
+    display: none;
+  }
+  .keys-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px 12px;
+    padding: 14px 8px 14px 16px;
+    border-top: 1px solid var(--border);
+  }
+  .keys-table tr:first-child {
+    border-top: 0;
+  }
+  .keys-table td {
+    display: block;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+  }
+  .keys-table td:first-child {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+    padding: 0 0 4px;
+    align-self: center;
+  }
+  .keys-table td.action-column {
+    grid-column: 2;
+    grid-row: 1;
+    width: auto;
+    padding: 0;
+    align-self: start;
+  }
+  /* Label and value share a row; the value wraps under itself, not the label. */
+  .keys-table td[data-label] {
+    grid-column: 1 / -1;
+    position: relative;
+    padding: 0 8px 0 108px;
+  }
+  .keys-table td[data-label]::before {
+    content: attr(data-label);
+    position: absolute;
+    left: 0;
+    width: 96px;
+    color: var(--muted);
+    /* The Key ID cell is monospace; its label keeps the interface font. */
+    font:
+      12px/1.5 -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      sans-serif;
+    font-weight: 400;
+    user-select: none;
+  }
+}
+@container keys (max-width: 400px) {
+  .keys-table td[data-label] {
+    padding-left: 0;
+  }
+  .keys-table td[data-label] + td[data-label] {
+    margin-top: 4px;
+  }
+  .keys-table td[data-label]::before {
+    position: static;
+    display: block;
+    width: auto;
+    margin-bottom: 1px;
+    font-size: 11px;
+  }
+}
+/* "Issue account key" appears only while the account key is revoked. The
+   heading keeps one height either way, and "Create key" stays where it was:
+   on the right edge when the toolbar fits beside the title, and first on its
+   own row when the panel is too narrow for both buttons beside the title. */
+.panel:has(> .panel-heading [data-action="create-key"]) {
+  container: keys-panel / inline-size;
+}
+.panel-heading:has([data-action="create-key"]) > .row-actions button {
+  white-space: nowrap;
+}
+@container keys-panel (max-width: 440px) {
+  .panel-heading:has([data-action="create-key"]) {
+    flex-wrap: wrap;
+    padding-block: 12px;
+  }
+  .panel-heading:has([data-action="create-key"]) > .row-actions {
+    flex-basis: 100%;
+    justify-content: flex-start;
+  }
+  .panel-heading:has([data-action="create-key"]) [data-action="create-key"] {
+    order: -1;
+  }
 }
 .sort-button {
   display: inline-flex;

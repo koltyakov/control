@@ -51,7 +51,8 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 		slices.SortFunc(fleet, func(a, b model.Node) int { return strings.Compare(a.Name, b.Name) })
 	}
 	var proxyDependents map[string]map[string]*model.ProxyDependents
-	if p.Role == "user" || p.Role == "superuser" {
+	manager := managesFleet(p.Role)
+	if manager {
 		proxyDependents = g.proxyDependentsFor(p.UserID, entries, result.ObservedAt)
 	}
 	for _, entry := range entries {
@@ -73,7 +74,7 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 		}
 		// Aggregate health is owner-only. Common peer keys still need the node's
 		// activities.list/system.info permissions for live observation.
-		if n.Online && entry.health != nil && (p.Role == "user" || p.Role == "superuser") && time.Since(entry.healthAt) < model.NodeHealthTTL {
+		if n.Online && entry.health != nil && manager && time.Since(entry.healthAt) < model.NodeHealthTTL {
 			snapshot.Status, snapshot.ObservedAt = "summary", entry.healthAt
 			snapshot.ActiveCount, snapshot.Leased = entry.health.ActiveCount, entry.health.Leased
 			snapshot.System = &entry.health.System
@@ -87,13 +88,13 @@ func (g *Gateway) status(w http.ResponseWriter, r *http.Request) {
 		}
 		// Advertised proxies and their readiness are fleet-owner observations.
 		// Readiness has its own freshness, independent of the health summary.
-		if p.Role == "user" || p.Role == "superuser" {
+		if manager {
 			snapshot.ProxyEndpoints = proxyStatuses(entry, result.ObservedAt, proxyDependents[n.ID])
 			snapshot.GatewayProxy = n.GatewayProxy
 		}
 		if nodeUpdating(n, entry.status, result.ObservedAt, deployment) {
 			snapshot.Status = "update"
-			if p.Role == "user" || p.Role == "superuser" {
+			if manager {
 				snapshot.UpdateState = g.nodeUpdateProgress(deployment, entry.status, result.ObservedAt)
 			}
 		}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/control/internal/enrollment"
+	"github.com/koltyakov/control/internal/fleetkey"
 	"github.com/koltyakov/control/internal/gatewayroute"
 	"github.com/koltyakov/control/internal/update"
 )
@@ -52,15 +53,18 @@ func (c Admin) request(ctx context.Context, method, path string, body io.Reader,
 	return nil
 }
 
-// OwnerRole reports credentials that administer a fleet: account (user) and
-// superuser keys.
-func OwnerRole(role string) bool { return role == "user" || role == "superuser" }
+// OwnerRole reports credentials that can list and manage fleet installations
+// and keys. A fleet-wide management grant does not grant access to the owner's
+// browser login or to gateway administration.
+func OwnerRole(role string) bool { return fleetkey.ForRole(role).Has(fleetkey.ManageFleet) }
+
+func EnrollmentRole(role string) bool { return fleetkey.ForRole(role).Has(fleetkey.Enroll) }
 
 // ExecutionRole reports credentials whose account-client sessions receive
 // execution authority. Both orchestrator roles qualify without fleet
 // administration; common and installation keys cannot run work.
 func ExecutionRole(role string) bool {
-	return OwnerRole(role) || role == "orchestrator" || role == "orchestrator-enroll"
+	return fleetkey.ForRole(role).Has(fleetkey.Run)
 }
 
 func (c Admin) IsSuperuser(ctx context.Context) bool {

@@ -26,6 +26,7 @@ type principal struct {
 	// Installation is the g.installations key of an installation credential,
 	// so registration finds its invitation without scanning them all.
 	Installation string
+	target       *keyTime // Set only for a recognized gateway access key.
 }
 
 func newCredential() (string, error) {
@@ -39,7 +40,7 @@ func newCredential() (string, error) {
 func (g *Gateway) fleetAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p := g.requestPrincipal(r)
-		if p.Role != "user" && p.Role != "superuser" {
+		if !managesFleet(p.Role) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}

@@ -84,7 +84,7 @@
  * @typedef {Invitation & {command: string, proxyActivation?: string}} InstallationLink
  * @typedef {'discover' | 'enroll' | 'run'} WorkerPermission
  * @typedef {WorkerPermission | 'manage-fleet' | 'manage-gateway'} KeyPermission
- * @typedef {{id: string, name: string, role: string, permissions: KeyPermission[], createdAt?: string, revoked?: boolean, gatewayConfigured?: boolean}} FleetKey
+ * @typedef {{id: string, name: string, role: string, permissions: KeyPermission[], createdAt?: string, lastUsed?: string, revoked?: boolean, gatewayConfigured?: boolean}} FleetKey
  * @typedef {{id: string, name: string, createdAt: string, disabled?: boolean}} FleetUser
  * @typedef {{id: number, at: string, userId: string, fleet?: string, actor: string, via: string, keyId?: string, action: string, target?: string, targetId?: string, detail?: string, sourceIp?: string}} AuditEvent
  * @typedef {{events: AuditEvent[], next?: number}} AuditPage
@@ -95,7 +95,7 @@
  * @typedef {{id: string, expiresAt: number, key: string, nonce: string, ciphertext: string}} SecretEnvelope
  * @typedef {{removed: number, hidden?: number}} ClearResult
  * @typedef {{token: string}} IssuedKey
- * @typedef {{name: string, permissions: WorkerPermission[]}} KeyRequest
+ * @typedef {{name: string, permissions: Exclude<KeyPermission, 'manage-gateway'>[]}} KeyRequest
  * @typedef {{id: string, name: string}} LockIdentity Gateway-reported identity; IDs are immutable.
  * @typedef {LockIdentity & {role?: string}} LockCredential
  * @typedef {object} LockAllowance
@@ -118,7 +118,7 @@
  * @typedef {{revision: number, keyId: string, allMachines: boolean, machineIds: string[], ttlSeconds?: number}} AllowanceRequest
  * @typedef {{fleet: FleetLock, global: GlobalLock | null, globalError: string}} LockView
  * @typedef {{enabled?: boolean, pausedUntil?: string}} LockSetting
- * @typedef {{known: boolean, active: boolean, paused: boolean, label: string, tone: string, detail: string}} LockStatus
+ * @typedef {{known: boolean, active: boolean, paused: boolean, label: string, tone: string, detail?: string}} LockStatus
  * @typedef {{check: () => void, run: <T>(request: () => Promise<T>) => Promise<T>}} MutationGuard
  * @typedef {{name: string, autoName?: boolean, os: string, serviceMode: string, ttlSeconds: number, gateway: string, force: boolean, proxyWorker?: string, proxyUrl?: string}} InstallationRequest
  * @typedef {{login: {username: string, password: string}, logout: never, 'fleet/installations': InstallationRequest, 'fleet/keys/issue': KeyRequest, 'fleet/account-key': never, 'admin/users': {name: string}, 'admin/updates/check': never, 'fleet/vault/allowances': AllowanceRequest} & Record<`fleet/nodes/${string}/startup`, {mode: string}> & Record<`fleet/nodes/${string}/wake` | `fleet/keys/${string}/reactivate`, never>} PostBody
@@ -249,6 +249,7 @@ const icons = {
   tunnel: '<path d="M4 20V11a8 8 0 0 1 16 0v9M9 20v-5a3 3 0 0 1 6 0v5"/>',
   activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
   lock: '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 4v3"/>',
+  unlock: '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 7.75-1.4M12 14v3"/>',
   logout:
     '<path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l5-5-5-5m5 5H3"/>',
 };
@@ -282,20 +283,17 @@ const state = {
 /** @type {MachineDrag | null} */
 let machineDrag = null;
 let suppressMachineClick = false;
-/** @type {Record<string, [string, string]>} */
+/** @type {Record<string, string>} */
 const pages = {
-  overview: ["Overview", ""],
-  machines: ["Machines", "Resources and access for your registered machines."],
-  invitations: [
-    "Invitations",
-    "One-time installation links and enrollment status.",
-  ],
-  keys: ["Access keys", "Credentials for machine enrollment, discovery and orchestration."],
-  lock: ["Access lock", "Which callers can start work on this fleet's workers."],
-  account: ["Account", "Manage your browser login."],
-  activity: ["Activity", "Sign-ins and management changes, newest first."],
-  users: ["Accounts", "Private fleets and browser access on this gateway."],
-  updates: ["Updates", "Software releases and gateway-wide rollout status."],
+  overview: "Overview",
+  machines: "Machines",
+  invitations: "Invitations",
+  keys: "Access keys",
+  lock: "Access lock",
+  account: "Account",
+  activity: "Activity",
+  users: "Accounts",
+  updates: "Updates",
 };
 const lightScheme = matchMedia("(prefers-color-scheme: light)");
 let themeChoice = "system";
@@ -494,7 +492,7 @@ function showLogin() {
   clearTimeout(toastTimer);
   $("#toast").hidden = true;
   $("#toast").textContent = "";
-  closeMachineMenu();
+  closeRowMenu();
   state.session = null;
   state.snapshot = null;
   state.auxiliary = null;
@@ -505,6 +503,7 @@ function showLogin() {
   state.descending = false;
   state.search = "";
   state.filter = "all";
+  state.auditCategory = "";
   state.stale = false;
   state.updatedAt = null;
   banner("");
@@ -1136,9 +1135,9 @@ function empty(title, description, action = "") {
 function panel(title, body, side = "") {
   return `<section class="panel"><div class="panel-heading"><h2>${title}</h2>${side}</div>${body}</section>`;
 }
-/** @param {string[]} headers @param {string[]} rows @returns {string} */
-function table(headers, rows) {
-  return `<div class="table-wrap" role="region" aria-label="Records" tabindex="0"><table><thead><tr>${headers
+/** @param {string[]} headers @param {string[]} rows @param {string} [className] @returns {string} */
+function table(headers, rows, className = "") {
+  return `<div class="table-wrap" role="region" aria-label="Records" tabindex="0"><table class="${esc(className)}"><thead><tr>${headers
     .map((h) => `<th scope="col">${esc(h)}</th>`)
     .join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
 }
@@ -1406,7 +1405,7 @@ document.addEventListener("pointerdown", (event) => {
   const handle = event.target.closest(".machine-drag-handle");
   if (!(handle instanceof HTMLButtonElement)) return;
   event.preventDefault();
-  closeMachineMenu();
+  closeRowMenu();
   handle.focus({ preventScroll: true });
   handle.setPointerCapture(event.pointerId);
   const scrollTop = $(".content-scroll").scrollTop,
@@ -1749,35 +1748,26 @@ function renderInvitations(items) {
 function renderKeys(keys) {
   const hasAccountKey = keys.some((k) => k.role === "user" && !k.revoked);
   const needsAccountKey = state.session?.role === "user" && !hasAccountKey;
-  return (
-    panel(
-      "Fleet keys",
-      keys.length
-        ? table(
-            ["Name", "Permissions", "Status", "Created", "Key ID", ""],
-            keys.map((k) => {
-              const permissions = k.permissions.map((p) => permissionLabel[p] || p).join(", ");
-              const target = `data-id="${esc(k.id)}" data-name="${esc(accessKeyName(k))}"`;
-              const rename = `<button class="secondary compact" data-action="rename-key" ${target}>Rename</button>`;
-              const revoke = `<button class="secondary compact" data-action="revoke-key" ${target} data-role="${esc(k.role)}">Revoke</button>`;
-              const reactivate = `<button class="secondary compact" data-action="reactivate-key" ${target}${k.role === "user" && hasAccountKey ? ' disabled title="Revoke the active account key first"' : ""}>Reactivate</button>`;
-              const remove = `<button class="secondary compact" data-action="remove-key" ${target}>Remove</button>`;
-              const actions = k.gatewayConfigured ? "Gateway configuration" : `<div class="row-actions">${rename}${k.revoked ? reactivate + remove : revoke}</div>`;
-              return `<tr><td><strong>${esc(accessKeyName(k))}</strong></td><td>${esc(permissions)}</td><td>${badge(k.revoked ? "Revoked" : "Active")}</td><td class="muted">${esc(date(k.createdAt))}</td><td class="mono muted">${esc(k.id)}</td><td class="action-column">${actions}</td></tr>`;
-            }),
-          )
-        : empty(
-            "No fleet keys",
-            "Installed machines normally use invitation-bound keys.",
-          ),
-      `<div class="row-actions">${needsAccountKey ? '<button class="secondary compact" data-action="replace-account-key">Issue account key</button>' : ""}<button class="secondary compact" data-action="create-key">${icon("plus")}Create key</button></div>`,
-    ) +
-    '<p class="notice"><a class="inline-link" href="#lock">Access lock</a> lists active keys with permission to run work.</p>'
+  return panel(
+    "Fleet keys",
+    keys.length
+      ? table(
+          ["Name", "Permissions", "Status", "Created", "Last used", "Key ID", ""],
+          keys.map((k) => {
+            const name = esc(accessKeyName(k));
+            const permissions = k.permissions.filter((p) => p !== "discover").map((p) => permissionLabel[p] || p).join(", ");
+            const actions = k.gatewayConfigured ? "" : `<button type="button" class="icon-button row-menu-button" data-action="key-menu" data-id="${esc(k.id)}" aria-label="Actions for ${name}" aria-haspopup="menu" aria-controls="machine-menu" aria-expanded="false">${icon("more")}</button>`;
+            return `<tr><td><strong>${name}</strong>${k.gatewayConfigured ? '<small class="muted cell-detail">Gateway configuration</small>' : ""}</td><td data-label="Permissions">${esc(permissions || "No additional permissions")}</td><td data-label="Status">${badge(k.revoked ? "Revoked" : "Active")}</td><td class="muted" data-label="Created">${esc(date(k.createdAt))}</td><td class="muted" data-label="Last used">${k.lastUsed ? esc(date(k.lastUsed)) : "No record"}</td><td class="mono muted" data-label="Key ID">${esc(k.id)}</td><td class="action-column">${actions}</td></tr>`;
+          }),
+          "keys-table",
+        )
+      : empty("No fleet keys", "Installed machines normally use invitation-bound keys."),
+    `<div class="row-actions">${needsAccountKey ? '<button class="secondary compact" data-action="replace-account-key">Issue account key</button>' : ""}<button class="secondary compact" data-action="create-key">${icon("plus")}Create key</button></div>`,
   );
 }
-/** @type {Record<KeyPermission, string>} */
+/** @type {Record<Exclude<KeyPermission, 'discover'>, string>} */
 const permissionLabel = {
-  discover: "Discover machines", enroll: "Enroll machines", run: "Run work",
+  enroll: "Enroll machines", run: "Run work",
   "manage-fleet": "Manage fleet", "manage-gateway": "Manage gateway",
 };
 /** @param {LockCredential} key @returns {string} */
@@ -1870,12 +1860,12 @@ function timeLeft(value) {
 /** @param {LockSetting | null} setting @returns {LockStatus} */
 function lockStatus(setting) {
   if (!setting || typeof setting.enabled !== "boolean")
-    return { known: false, active: false, paused: false, label: "Not reported", tone: "", detail: "The gateway did not report this setting." };
+    return { known: false, active: false, paused: false, label: "Not reported", tone: "" };
   if (!setting.enabled)
-    return { known: true, active: false, paused: false, label: "Off", tone: "", detail: "Off until someone enables it." };
+    return { known: true, active: false, paused: false, label: "Off", tone: "" };
   if (setting.pausedUntil && inFuture(setting.pausedUntil))
     return { known: true, active: false, paused: true, label: "Paused", tone: "warn", detail: `Resumes automatically ${date(setting.pausedUntil)} (${timeLeft(setting.pausedUntil)}).` };
-  return { known: true, active: true, paused: false, label: "Locked", tone: "good", detail: "Enforced until someone pauses or disables it." };
+  return { known: true, active: true, paused: false, label: "Locked", tone: "good" };
 }
 /** @param {LockView} view @returns {LockSetting | null} */
 function globalSetting(view) {
@@ -1916,62 +1906,92 @@ function allowanceExpiry(a) {
   if (allowanceExpired(a)) return `${toneBadge("Expired", "bad")}<small class="muted cell-detail">${esc(date(a.expiresAt))}</small>`;
   return `<span>${esc(date(a.expiresAt))}</span><small class="muted cell-detail">${esc(timeLeft(a.expiresAt))}</small>`;
 }
-/** @param {'fleet' | 'global'} scope @param {LockStatus} status @returns {string} */
-function lockActions(scope, status) {
+/** @param {string} value @returns {string} */
+function pausedUntil(value) {
+  return `paused until ${date(value)} (${timeLeft(value)})`;
+}
+/**
+ * Buttons for one lock switch. `enableLabel` names the scope when the actions
+ * stand alone; `describedBy` names it for each button of a labelled switch row.
+ * @param {'fleet' | 'global'} scope @param {LockStatus} status
+ * @param {string} enableLabel @param {string} [describedBy]
+ * @returns {string}
+ */
+function lockActions(scope, status, enableLabel, describedBy = "") {
+  const described = describedBy ? ` aria-describedby="${esc(describedBy)}"` : "";
   /** @param {string} action @param {string} label @param {string} [kind] @returns {string} */
   const button = (action, label, kind = "secondary") =>
-    `<button class="${kind} compact" data-action="${action}" data-id="${scope}">${esc(label)}</button>`;
+    `<button class="${kind} compact" data-action="${action}" data-id="${scope}"${described}>${esc(label)}</button>`;
   const actions = [];
-  if (!status.active) actions.push(button("lock-enable", status.paused ? "Lock now" : "Enable lock", "primary"));
+  if (!status.active) actions.push(button("lock-enable", status.paused ? "Lock now" : enableLabel, "primary"));
   if (status.active) actions.push(button("lock-pause", "Pause"));
   if (status.known && (status.active || status.paused)) actions.push(button("lock-disable", "Disable", "danger"));
-  return `<div class="row-actions">${actions.join("")}</div>`;
+  return `<div class="row-actions lock-actions">${actions.join("")}</div>`;
 }
+// The headline states the effective result for this fleet's workers, then
+// which switch causes it. A switch the gateway did not report is never
+// presented as off.
 /** @param {LockView} view @returns {string} */
 function renderLock(view) {
   const fleet = view.fleet,
     operator = state.session?.role === "superuser",
+    global = globalSetting(view),
     fleetStatus = lockStatus(fleet),
-    globalStatus = lockStatus(globalSetting(view)),
+    globalStatus = lockStatus(global),
     enforced = fleetStatus.active || globalStatus.active,
-    current = fleet.allowances.filter((a) => !allowanceExpired(a)),
-    sources = [globalStatus.active && "the operator minimum", fleetStatus.active && "this fleet's lock"].filter(Boolean);
+    unknown = !enforced && (!fleetStatus.known || !globalStatus.known),
+    current = fleet.allowances.filter((a) => !allowanceExpired(a));
+  const headline = enforced ? "Locked" : unknown ? "Not confirmed" : "Unlocked";
+  let effect = "";
+  if (enforced)
+    effect = current.length
+      ? `New work on this fleet's workers needs a matching allowance. ${plural(current.length, "allowance")} ${current.length === 1 ? "is" : "are"} active.`
+      : "New work on this fleet's workers is refused: no allowance is active.";
+  else if (unknown) effect = "A lock setting was not reported, so new work may still need an allowance.";
+  else
+    effect = `Keys that can run work may start it on this fleet's workers, within each worker's allow rules.${fleet.allowances.length ? " Allowances apply only while locked." : ""}`;
   /** @type {string[]} */
   const notes = [];
-  if (enforced)
-    notes.push(current.length
-      ? `Enforced by ${sources.join(" and ")}. Account clients can start work on this fleet's workers only within ${plural(current.length, "active allowance")}.`
-      : `Enforced by ${sources.join(" and ")}. No allowance is active, so account execution on this fleet's workers is refused.`);
-  else
-    notes.push("Not enforced. Account clients can start work, subject to each worker's allow rules and instruction grants. Allowances take effect only while a lock is enforced.");
-  if (fleetStatus.paused && globalStatus.active)
-    notes.push("Pausing this fleet does not lift the operator minimum.");
-  if (globalStatus.paused && fleetStatus.active)
-    notes.push("The operator minimum is paused, but this fleet's own lock still applies.");
-  if (!enforced) {
-    const resumes = [fleetStatus.paused && fleet.pausedUntil, globalStatus.paused && globalSetting(view)?.pausedUntil]
+  if (fleetStatus.active && globalStatus.active) notes.push("Enforced by the operator minimum and this fleet's lock.");
+  else if (fleetStatus.active)
+    notes.push(`Enforced by this fleet's lock.${globalStatus.paused && global?.pausedUntil ? ` The operator minimum is ${pausedUntil(global.pausedUntil)}.` : ""}`);
+  else if (globalStatus.active) {
+    const own = fleetStatus.paused && fleet.pausedUntil ? pausedUntil(fleet.pausedUntil) : fleetStatus.known ? "off" : "";
+    notes.push(`Enforced by the operator minimum${operator ? "" : ", which only the gateway operator can change"}.${own ? ` This fleet's own lock is ${own}.` : ""}`);
+  } else {
+    const resumes = [fleetStatus.paused && fleet.pausedUntil, globalStatus.paused && global?.pausedUntil]
       .filter((value) => typeof value === "string")
       .sort((a, b) => Date.parse(a) - Date.parse(b))[0];
-    if (resumes) notes.push(`Enforcement resumes automatically ${date(resumes)} (${timeLeft(resumes)}).`);
+    const which = fleetStatus.paused && globalStatus.paused ? "Both locks are" : fleetStatus.paused ? "This fleet's lock is" : "The operator minimum is";
+    if (resumes) notes.push(`${which} paused. Enforcement resumes automatically ${date(resumes)} (${timeLeft(resumes)}).`);
   }
+  if (!fleetStatus.known) notes.push("The gateway did not report this fleet's lock.");
   if (view.globalError)
     notes.push(`Operator settings could not be read: ${view.globalError.replace(/\.?$/, ".")}${globalStatus.known ? " Showing the operator minimum as reported for this fleet." : ""}`);
   else if (!globalStatus.known) notes.push("The gateway did not report the operator minimum.");
-  const globalRow = `<tr><td><strong>Operator minimum</strong><small class="muted cell-detail">Every fleet on this gateway${operator ? "" : " · Set by the gateway operator"}</small></td><td>${toneBadge(globalStatus.label, globalStatus.tone)}<small class="muted cell-detail">${esc(globalStatus.detail)}</small></td><td class="action-column">${operator && view.global ? lockActions("global", globalStatus) : ""}</td></tr>`,
-    fleetRow = `<tr><td><strong>This fleet</strong><small class="muted cell-detail">Revision ${esc(fleet.revision)}</small></td><td>${toneBadge(fleetStatus.label, fleetStatus.tone)}<small class="muted cell-detail">${esc(fleetStatus.detail)}</small></td><td class="action-column">${lockActions("fleet", fleetStatus)}</td></tr>`;
-  const summary = `<div class="lock-summary padded" role="status"><span class="lock-icon ${enforced ? "locked" : ""}">${icon("lock")}</span><div><strong id="lock-enforcement">${enforced ? "Locked" : "Unlocked"}</strong>${notes.map((note) => `<p>${esc(note)}</p>`).join("")}</div></div>`;
-  const rows = fleet.allowances.map((a) =>
+  // Two switches get labelled rows; a single switch keeps its actions beside
+  // the status they change. Controls stay outside the live status region.
+  const rows = operator && view.global;
+  const status = `<div class="lock-status" role="status"><strong id="lock-enforcement">${headline}</strong><p class="lock-effect">${esc(effect)}</p>${notes.map((note) => `<p>${esc(note)}</p>`).join("")}</div>`;
+  const tone = enforced ? "locked" : unknown ? "unknown" : "";
+  const summary = `<div class="lock-summary padded"><span class="lock-icon ${tone}">${icon(enforced ? "lock" : "unlock")}</span><div class="lock-summary-body">${status}${rows ? "" : lockActions("fleet", fleetStatus, "Lock this fleet")}</div></div>`;
+  /** @param {'fleet' | 'global'} scope @param {string} name @param {string} reach @param {LockStatus} status @returns {string} */
+  const scopeRow = (scope, name, reach, status) =>
+    `<li class="lock-scope" data-lock-scope="${scope}"><div class="lock-scope-name"><strong id="lock-scope-${scope}">${name}</strong><small class="muted">${reach}</small></div><div class="lock-scope-state">${toneBadge(status.label, status.tone)}${status.detail ? `<small class="muted">${esc(status.detail)}</small>` : ""}</div>${lockActions(scope, status, "Enable", "lock-scope-" + scope)}</li>`;
+  const switches = rows
+    ? `<ul class="lock-scopes" aria-label="Lock switches">${scopeRow("global", "Operator minimum", "Every fleet on this gateway", globalStatus)}${scopeRow("fleet", "Fleet lock", "This fleet only", fleetStatus)}</ul>`
+    : "";
+  const allowanceRows = fleet.allowances.map((a) =>
     `<tr${allowanceExpired(a) ? ' class="expired"' : ""} data-allowance="${esc(a.id)}"><td>${allowanceCaller(a, fleet)}</td><td>${allowanceWorkers(a, fleet)}</td><td>${allowanceExpiry(a)}</td><td class="action-column"><button class="secondary compact" data-action="allowance-revoke" data-id="${esc(a.id)}">Revoke</button></td></tr>`);
   return (
-    panel("Enforcement", summary + `<div class="table-wrap lock-settings" role="region" aria-label="Lock settings" tabindex="0"><table><thead><tr><th scope="col">Scope</th><th scope="col">State</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${globalRow}${fleetRow}</tbody></table></div>`) +
+    panel("Enforcement", summary + switches) +
     panel(
       "Allowances",
-      rows.length
-        ? `<div class="table-wrap lock-allowances" role="region" aria-label="Allowances" tabindex="0"><table><thead><tr><th scope="col">Access key</th><th scope="col">Workers</th><th scope="col">Expires</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`
+      allowanceRows.length
+        ? `<div class="table-wrap lock-allowances" role="region" aria-label="Allowances" tabindex="0"><table><thead><tr><th scope="col">Access key</th><th scope="col">Workers</th><th scope="col">Expires</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${allowanceRows.join("")}</tbody></table></div>`
         : empty("No allowances", "Add an allowance to let an access key run work while the lock is on."),
       `<button class="secondary compact" data-action="allowance-add">${icon("plus")}Add allowance</button>`,
-    ) +
-    '<p class="notice">Orchestrators that share an access key share its allowances. To give them different access, create separate keys in <a class="inline-link" href="#keys">Access keys</a>.</p>'
+    )
   );
 }
 // The gateway accepts pauses and allowance lifetimes of up to 365 days.
@@ -2375,7 +2395,7 @@ function render() {
     replacement.focus({ preventScroll: true });
     if (selection && replacement instanceof HTMLInputElement) replacement.setSelectionRange(...selection);
   }
-  syncMachineMenu();
+  syncRowMenu();
 }
 /** @param {string} value @returns {string} */
 function clock(value) {
@@ -2464,7 +2484,7 @@ async function refresh(manual = false) {
 function navigate() {
   if (!state.session) return;
   cancelMachineDrag();
-  closeMachineMenu();
+  closeRowMenu();
   let page = location.hash.slice(1) || "overview";
   if (
     !pages[page] ||
@@ -2476,9 +2496,8 @@ function navigate() {
   state.auxiliary = null;
   state.updatedAt = null;
   banner("");
-  const info = pages[page];
-  $("#page-title").textContent = info[0];
-  $("#page-description").textContent = info[1];
+  const title = pages[page];
+  $("#page-title").textContent = title;
   // Refresh never re-renders the password form, so it has nothing to update there.
   $(".heading-actions [data-action=refresh]").hidden = page === "account";
   $(".heading-actions [data-action=add]").hidden = ![
@@ -2486,7 +2505,7 @@ function navigate() {
     "machines",
     "invitations",
   ].includes(page);
-  document.title = "Control · " + info[0];
+  document.title = "Control · " + title;
   /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll("[data-page]")).forEach((a) => {
     a.classList.toggle("active", a.dataset.page === page);
     if (a.dataset.page === page) a.setAttribute("aria-current", "page");
@@ -2502,38 +2521,28 @@ function navigate() {
 let pendingRefresh = false;
 window.addEventListener("hashchange", navigate);
 
-// One popover keeps focus through table polling and moves into a modal drawer
-// when opened there, so the modal does not make its actions inert.
+// Machine and key rows share a popover outside the table so it stays visible
+// through table refreshes. For a modal drawer, move it inside the dialog.
 /** @type {{id: string, action: string, drawer: boolean} | null} */
-let machineMenuTarget = null;
-let machineMenuOpenedAt = 0;
+let rowMenuTarget = null;
+let rowMenuOpenedAt = 0;
 /** @returns {HTMLElement | null} */
-function machineMenuSource() {
-  return (
-    machineMenuTarget &&
-    find(
-      `${machineMenuTarget.drawer ? ".drawer-actions" : ".machine-table"} [data-action="${machineMenuTarget.action}"][data-id="${CSS.escape(machineMenuTarget.id)}"]`,
-    )
-  );
+function rowMenuSource() {
+  if (!rowMenuTarget) return null;
+  const {action, drawer, id} = rowMenuTarget;
+  const scope = action === "key-menu" ? ".keys-table" : drawer ? ".drawer-actions" : ".machine-table";
+  return find(`${scope} [data-action="${action}"][data-id="${CSS.escape(id)}"]`);
 }
 /** @param {boolean} [restoreFocus] @returns {void} */
-function closeMachineMenu(restoreFocus = false) {
+function closeRowMenu(restoreFocus = false) {
   const menu = $("#machine-menu");
   if (!menu.matches(":popover-open")) return;
-  const source = machineMenuSource();
+  const source = rowMenuSource();
   menu.hidePopover();
   if (restoreFocus) source?.focus({ preventScroll: true });
 }
-/** @returns {void} */
-function syncMachineMenu() {
-  const menu = $("#machine-menu");
-  if (!menu.matches(":popover-open")) return;
-  const target = machineMenuTarget;
-  const node = state.snapshot?.nodes.find((n) => n.id === target?.id);
-  if (!node || !target || !machineMenuSource()) {
-    closeMachineMenu();
-    return;
-  }
+/** @param {Machine} node @param {boolean} drawer @returns {string} */
+function machineMenuItems(node, drawer) {
   /** @param {string} action @param {string} label @param {boolean} [danger] @returns {string} */
   const item = (action, label, danger = false) =>
     `<button role="menuitem" tabindex="-1" class="menu-item${danger ? " destructive" : ""}" data-action="${action}" data-id="${esc(node.id)}">${label}</button>`;
@@ -2541,7 +2550,7 @@ function syncMachineMenu() {
     secrets = node.online && !node.disabled ? item("worker-secrets", "Secrets") : "",
     proxy = item("worker-proxy", "Gateway proxy"),
     separator = '<div role="separator" class="menu-separator"></div>';
-  const html = target.drawer
+  return drawer
     ? secrets + startup + proxy + separator + item("unregister", "Unregister", true)
     : item("details", "View details") +
       item("rename", "Rename") +
@@ -2552,43 +2561,72 @@ function syncMachineMenu() {
       item("toggle", node.disabled ? "Enable" : "Disable") +
       separator +
       item("unregister", "Unregister", true);
+}
+/** @param {FleetKey} key @param {FleetKey[]} keys @returns {string} */
+function keyMenuItems(key, keys) {
+  const target = `data-id="${esc(key.id)}" data-name="${esc(accessKeyName(key))}" data-role="${esc(key.role)}"`;
+  /** @param {string} action @param {string} label @param {boolean} [danger] @param {string} [disabledReason] @returns {string} */
+  const item = (action, label, danger = false, disabledReason = "") =>
+    `<button role="menuitem" tabindex="-1" class="menu-item${danger ? " destructive" : ""}" data-action="${action}" ${target}${disabledReason ? ` disabled title="${esc(disabledReason)}"` : ""}>${label}</button>`;
+  const reason = key.role === "user" && keys.some((k) => k.role === "user" && !k.revoked) ? "Revoke the active account key first" : "";
+  return item("rename-key", "Rename") + (key.revoked
+    ? item("reactivate-key", "Reactivate", false, reason) + '<div role="separator" class="menu-separator"></div>' + item("remove-key", "Remove", true)
+    : item("revoke-key", "Revoke", true));
+}
+/** @returns {void} */
+function syncRowMenu() {
+  const menu = $("#machine-menu");
+  if (!menu.matches(":popover-open")) return;
+  const target = rowMenuTarget, source = rowMenuSource();
+  if (!target || !source) return closeRowMenu();
+  let html, name;
+  if (target.action === "key-menu") {
+    const keys = state.auxiliary?.page === "keys" ? state.auxiliary.data : [];
+    const key = keys.find((k) => k.id === target.id);
+    if (!key || key.gatewayConfigured) return closeRowMenu();
+    html = keyMenuItems(key, keys);
+    name = accessKeyName(key);
+  } else {
+    const node = state.snapshot?.nodes.find((n) => n.id === target.id);
+    if (!node) return closeRowMenu();
+    html = machineMenuItems(node, target.drawer);
+    name = node.name;
+  }
   if (menu.innerHTML !== html) {
     const focused = menu.contains(document.activeElement),
       action = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.action : "";
     menu.innerHTML = html;
     if (focused)
       (
-        find(`[data-action="${action}"]`, menu) || $("[role=menuitem]", menu)
+        find(`[data-action="${action}"]:not(:disabled)`, menu) || $("[role=menuitem]", menu)
       ).focus();
   }
-  menu.setAttribute("aria-label", "Actions for " + node.name);
-  const trigger = find(
-    `${target.drawer ? ".drawer-actions" : ".machine-table"} .machine-menu-button[data-id="${CSS.escape(node.id)}"]`,
-  );
+  menu.setAttribute("aria-label", "Actions for " + name);
+  const trigger = target.action === "details" ? find(".machine-menu-button", source.closest("tr") || source) : source;
   trigger?.setAttribute("aria-expanded", "true");
 }
 /** @param {HTMLElement} source @param {{x: number, y: number}} [point] @returns {void} */
-function openMachineMenu(source, point) {
-  closeMachineMenu();
+function openRowMenu(source, point) {
+  closeRowMenu();
   document
     .querySelectorAll("[popover]:popover-open")
     .forEach((popover) => { if (popover instanceof HTMLElement) popover.hidePopover(); });
-  machineMenuTarget = {
+  rowMenuTarget = {
     id: source.dataset.id || "",
     action: source.dataset.action || "",
     drawer: !!source.closest(".drawer-actions"),
   };
   const menu = $("#machine-menu"),
     box = source.getBoundingClientRect();
-  (machineMenuTarget.drawer ? $("#dialog") : document.body).append(menu);
+  (rowMenuTarget.drawer ? $("#dialog") : document.body).append(menu);
   menu.showPopover();
-  machineMenuOpenedAt = performance.now();
-  syncMachineMenu();
+  rowMenuOpenedAt = performance.now();
+  syncRowMenu();
   if (!menu.matches(":popover-open")) return;
   menu.style.left =
     Math.max(
       8,
-      Math.min(point?.x ?? box.left, innerWidth - menu.offsetWidth - 8),
+      Math.min(point?.x ?? (source.dataset.action === "key-menu" ? box.right - menu.offsetWidth : box.left), innerWidth - menu.offsetWidth - 8),
     ) + "px";
   menu.style.top =
     Math.max(
@@ -2600,7 +2638,7 @@ function openMachineMenu(source, point) {
 $("#machine-menu").addEventListener("beforetoggle", (event) => {
   if (event.newState !== "closed") return;
   document
-    .querySelectorAll('.machine-menu-button[aria-expanded="true"]')
+    .querySelectorAll('[aria-controls="machine-menu"][aria-expanded="true"]')
     .forEach((button) => button.setAttribute("aria-expanded", "false"));
 });
 // Native light-dismiss can close a context menu on its opening right-button
@@ -2611,10 +2649,10 @@ document.addEventListener(
     if (
       event.button !== 0 ||
       event.ctrlKey ||
-      (event.target instanceof Element && event.target.closest("#machine-menu, .machine-menu-button"))
+      (event.target instanceof Element && event.target.closest('#machine-menu, [aria-controls="machine-menu"]'))
     )
       return;
-    closeMachineMenu();
+    closeRowMenu();
   },
   true,
 );
@@ -2622,7 +2660,7 @@ $("#machine-menu").addEventListener("pointermove", () => {
   delete document.documentElement.dataset.keyboard;
 });
 $("#machine-menu").addEventListener("keydown", (event) => {
-  const items = [.../** @type {NodeListOf<HTMLElement>} */ ($("#machine-menu").querySelectorAll("[role=menuitem]"))],
+  const items = [.../** @type {NodeListOf<HTMLElement>} */ ($("#machine-menu").querySelectorAll("[role=menuitem]:not(:disabled)"))],
     index = document.activeElement instanceof HTMLElement ? items.indexOf(document.activeElement) : -1,
     moves = /** @type {Record<string, number>} */ ({
       ArrowDown: (index + 1) % items.length,
@@ -2635,7 +2673,7 @@ $("#machine-menu").addEventListener("keydown", (event) => {
     items[moves[event.key]].focus();
   } else if (event.key === "Escape" || event.key === "Tab") {
     if (event.key === "Escape") event.preventDefault();
-    closeMachineMenu(true);
+    closeRowMenu(true);
   }
 });
 document.addEventListener("contextmenu", (event) => {
@@ -2643,23 +2681,23 @@ document.addEventListener("contextmenu", (event) => {
   const row = event.target.closest(".machine-table tbody tr");
   if (!row || event.shiftKey) return;
   event.preventDefault();
-  openMachineMenu($(".machine-name", row), {
+  openRowMenu($(".machine-name", row), {
     x: event.clientX,
     y: event.clientY,
   });
 });
 document.addEventListener("keydown", (event) => {
   if (!(event.target instanceof Element)) return;
-  const source = event.target.closest(".machine-name, .machine-menu-button");
+  const source = event.target.closest('.machine-name, [aria-controls="machine-menu"]');
   if (!(source instanceof HTMLElement)) return;
   if (
     event.key === "ContextMenu" ||
     (event.shiftKey && event.key === "F10") ||
-    (source.dataset.action === "machine-menu" &&
+    (source.getAttribute("aria-haspopup") === "menu" &&
       ["ArrowDown", "ArrowUp"].includes(event.key))
   ) {
     event.preventDefault();
-    openMachineMenu(source);
+    openRowMenu(source);
     if (event.key === "ArrowUp")
       $("#machine-menu [role=menuitem]:last-child").focus();
   }
@@ -2669,13 +2707,13 @@ document.addEventListener(
   (event) => {
     // Scrolling a drawer action into view can queue a scroll event before its
     // click opens the menu. Only a new scroll should dismiss that menu.
-    if (event.timeStamp < machineMenuOpenedAt) return;
-    if (!(event.target instanceof Node) || !$("#machine-menu").contains(event.target)) closeMachineMenu();
+    if (event.timeStamp < rowMenuOpenedAt) return;
+    if (!(event.target instanceof Node) || !$("#machine-menu").contains(event.target)) closeRowMenu();
   },
   true,
 );
 window.addEventListener("resize", () => {
-  closeMachineMenu();
+  closeRowMenu();
   if (machineDrag) {
     cancelMachineDrag();
     render();
@@ -2767,13 +2805,13 @@ function enhanceSelects(root) {
     };
     /** @param {number} index @returns {void} */
     const choose = (index) => {
+      list.hidePopover();
+      trigger.focus();
       if (select.selectedIndex !== index) {
         select.selectedIndex = index;
         select.dispatchEvent(new Event("change", { bubbles: true }));
       }
       select.syncListbox?.();
-      list.hidePopover();
-      trigger.focus();
     };
     trigger.addEventListener("click", () => {
       // A click on the trigger first light-dismisses an open list; don't reopen it.
@@ -2867,7 +2905,7 @@ let pendingIssuance = null;
 function closeDialog(force = false) {
   if (!force && pendingIssuance?.isConnected) return;
   pendingIssuance = null;
-  closeMachineMenu();
+  closeRowMenu();
   state.invitation = null;
   state.startupChange = null;
   state.details = null;
@@ -2880,7 +2918,7 @@ $("#dialog").addEventListener("cancel", (event) => {
 });
 /** @param {string} title @param {string} html @param {string} [className] @returns {void} */
 function dialog(title, html, className = "") {
-  closeMachineMenu();
+  closeRowMenu();
   // Any other dialog replaces the drawer; machineDetails sets this again.
   state.details = null;
   $("#dialog").className = className;
@@ -3718,16 +3756,16 @@ document.addEventListener("click", async (event) => {
   const session = state.session;
   const generation = auditGeneration;
   try {
-    if (action === "machine-menu") {
+    if (action === "machine-menu" || action === "key-menu") {
       if (
-        machineMenuTarget?.id === id &&
+        rowMenuTarget?.id === id &&
         $("#machine-menu").matches(":popover-open")
       )
-        closeMachineMenu(true);
-      else openMachineMenu(button);
+        closeRowMenu(true);
+      else openRowMenu(button);
       return;
     }
-    if (button.closest("#machine-menu")) closeMachineMenu(true);
+    if (button.closest("#machine-menu")) closeRowMenu(true);
     if (action === "theme") {
       // The sign-in page has a single toggle instead of the menu's choices.
       themeChoice =
@@ -3962,15 +4000,16 @@ document.addEventListener("click", async (event) => {
       formDialog(
         "Create fleet key",
         `<label>Name<input name="name" required maxlength="128"></label><fieldset class="choice-list"><legend>Permissions</legend>
-        <label class="choice"><input type="checkbox" checked disabled><span>${permissionLabel.discover} (always included)</span></label>
         <label class="choice"><input type="checkbox" name="enroll" checked><span>${permissionLabel.enroll}</span></label>
-        <label class="choice"><input type="checkbox" name="run" checked><span>${permissionLabel.run}</span></label></fieldset>
+        <label class="choice"><input type="checkbox" name="run" checked><span>${permissionLabel.run}</span></label>
+        <label class="choice"><input type="checkbox" name="fleetManager"><span>${permissionLabel["manage-fleet"]}</span></label></fieldset>
         <p class="field-help">The secret is shown once.</p>`,
         async (fields, current) => {
           /** @type {KeyRequest} */
           const request = { name: fields.name, permissions: ["discover"] };
           if (fields.enroll === "on") request.permissions.push("enroll");
-          if (fields.run === "on") request.permissions.push("run");
+           if (fields.run === "on") request.permissions.push("run");
+          if (fields.fleetManager === "on") request.permissions.push("manage-fleet");
           const issued = await api("fleet/keys/issue", "POST", request);
           if (!current()) return false;
           showSecret(
