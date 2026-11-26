@@ -16,14 +16,6 @@ import (
 	"github.com/koltyakov/control/internal/model"
 )
 
-// fleetVaultSchema stores each fleet's opt-in lock policy: whether workers
-// accept execution only from allowed account clients, a temporary pause, and
-// the allowances. One row per fleet; a missing row means the default, an
-// unlocked fleet.
-const fleetVaultSchema = `
-CREATE TABLE fleet_vault (user_id TEXT PRIMARY KEY REFERENCES users(id), data BLOB NOT NULL);
-`
-
 // Bounds for the fleet lock API. Durations are whole seconds; an absent or
 // zero value means no pause or no expiry.
 const (

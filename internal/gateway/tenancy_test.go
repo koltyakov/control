@@ -3,11 +3,8 @@ package gateway
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +14,6 @@ import (
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/protocol"
-	"github.com/koltyakov/control/internal/store"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -245,51 +241,5 @@ func TestGatewayBlocksForgedCrossFleetRoutingAndIdentityTransfer(t *testing.T) {
 	}
 	if ws := rawPeer(t, s.URL, a.Key, "spoofed", bob.ID, ids[0]); ws != nil {
 		t.Fatal("client-supplied userId escaped credential scope")
-	}
-}
-
-func TestSQLiteLegacyMigrationAndRestart(t *testing.T) {
-	dir := t.TempDir()
-	n := model.Node{ID: "existing-identity", Name: "worker"}
-	k := keyRecord{APIKey: APIKey{ID: "old-key", Name: "old", Role: "common"}, Hash: tokenHash("old-machine-secret")}
-	if err := store.Write(filepath.Join(dir, "nodes.json"), map[string]model.Node{n.ID: n}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Write(filepath.Join(dir, "keys.json"), map[string]keyRecord{k.ID: k}); err != nil {
-		t.Fatal(err)
-	}
-	g, err := New(dir, commonKey, Options{SuperuserKey: superKey})
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := httptest.NewServer(g.Handler())
-	u, a := createTestUser(t, s, "alice")
-	if g.nodes[n.ID].UserID != legacyUser || g.authenticate("old-machine-secret").UserID != legacyUser {
-		t.Fatal("legacy state not scoped during migration")
-	}
-	s.Close()
-	_ = g.Close()
-	// Once committed, SQLite wins over stale legacy files on every restart.
-	if err = os.WriteFile(filepath.Join(dir, "nodes.json"), []byte("invalid stale JSON"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	g, err = New(dir, commonKey, Options{SuperuserKey: superKey})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = g.Close() }()
-	if g.authenticate(a.Key).UserID != u.ID || g.owners[n.ID] != legacyUser {
-		t.Fatal("SQLite lost account or permanent identity ownership")
-	}
-	var count int
-	if err = g.db.QueryRow(`SELECT count(*) FROM users`).Scan(&count); err != nil || count != 2 {
-		t.Fatalf("user database: %d %v", count, err)
-	}
-	var serialized []byte
-	if err = g.db.QueryRow(`SELECT data FROM credentials WHERE user_id=?`, u.ID).Scan(&serialized); err != nil {
-		t.Fatal(err)
-	}
-	if !json.Valid(serialized) || strings.Contains(string(serialized), a.Key) {
-		t.Fatal("credential stored as plaintext")
 	}
 }

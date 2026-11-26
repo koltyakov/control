@@ -3,9 +3,7 @@ package gateway
 import (
 	"context"
 	"crypto/ed25519"
-	"database/sql"
 	"encoding/json"
-	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -446,63 +444,6 @@ func TestOwnerLabelsRemovedWithRegistration(t *testing.T) {
 	}
 	if err := su.JSON(ctx, "PATCH", "/v1/fleet/nodes/"+id.ID, labelPatch(map[string]string{"pool": "a"}, nil, nil), nil); err == nil || !strings.Contains(err.Error(), "404") {
 		t.Fatal("labels set on an unregistered machine", err)
-	}
-}
-
-// Schema version 8 databases gain machine_labels transactionally, keeping
-// existing registrations; executables older than version 9 refuse it.
-func TestOwnerLabelSchemaMigration(t *testing.T) {
-	dir := t.TempDir()
-	g, err := New(dir, commonKey, Options{SuperuserKey: superKey})
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, err := identity.Generate()
-	if err != nil {
-		t.Fatal(err)
-	}
-	g.mu.Lock()
-	g.owners[id.ID], g.nodes[id.ID] = legacyUser, model.Node{ID: id.ID, PublicKey: id.Public, UserID: legacyUser, Name: "existing", Labels: map[string]string{"zone": "lab"}}
-	if err := g.persist(); err != nil {
-		t.Error(err)
-	}
-	g.mu.Unlock()
-	_ = g.Close()
-	db, err := sql.Open("sqlite", filepath.Join(dir, "gateway.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.Exec(`DROP TABLE machine_labels; DROP TABLE fleet_vault; DROP TABLE global_vault; DROP TABLE access_key_times; PRAGMA user_version=8;`); err != nil {
-		t.Fatal(err)
-	}
-	_ = db.Close()
-	g, err = New(dir, commonKey, Options{SuperuserKey: superKey})
-	if err != nil {
-		t.Fatal("migrate version 8", err)
-	}
-	var version int
-	if err := g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != currentSchemaVersion {
-		t.Fatal("schema version", version, err)
-	}
-	s := httptest.NewServer(g.Handler())
-	su := testAdmin{URL: s.URL, Key: superKey}
-	var view model.MachineLabels
-	if err := su.JSON(context.Background(), "PATCH", "/v1/fleet/nodes/"+id.ID, labelPatch(map[string]string{"pool": "a"}, nil, nil), &view); err != nil || view.Labels["zone"] != "lab" || view.Labels["pool"] != "a" {
-		t.Fatal("labels after migration", view, err)
-	}
-	s.Close()
-	_ = g.Close()
-	db, err = sql.Open("sqlite", filepath.Join(dir, "gateway.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.Exec(fmt.Sprintf(`PRAGMA user_version=%d;`, currentSchemaVersion+1)); err != nil {
-		t.Fatal(err)
-	}
-	_ = db.Close()
-	if g, err = New(dir, commonKey, Options{SuperuserKey: superKey}); err == nil {
-		_ = g.Close()
-		t.Fatal("newer schema accepted")
 	}
 }
 

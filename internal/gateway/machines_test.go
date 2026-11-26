@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"crypto/ed25519"
-	"database/sql"
 	"errors"
 	"fmt"
 	"net/http/httptest"
@@ -215,34 +214,5 @@ func TestMachinePolicyOwnershipAndRestart(t *testing.T) {
 	}
 	if rawPeer(t, s.URL, a.Key, "worker", alice.ID, id) != nil {
 		t.Fatal("removed identity registered again")
-	}
-}
-
-func TestMachinePolicySchemaMigrationPreservesAccounts(t *testing.T) {
-	g, s := installationFixture(t)
-	alice, a := createTestUser(t, s, "alice")
-	dir := filepath.Dir(g.path)
-	_ = g.Close()
-	s.Close()
-	db, err := sql.Open("sqlite", filepath.Join(dir, "gateway.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.Exec(`DROP TABLE machine_labels; DROP TABLE proxy_dependencies; DROP TABLE console_sessions; DROP TABLE console_passwords; DROP TABLE machine_states; DROP TABLE client_transports; DROP TABLE client_identities; DROP TABLE fleet_vault; DROP TABLE global_vault; DROP TABLE access_key_times; PRAGMA user_version=1;`)
-	_ = db.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	g, err = New(dir, commonKey, Options{SuperuserKey: superKey})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = g.Close() }()
-	if got := g.authenticate(a.Key); got.UserID != alice.ID || got.Role != "user" {
-		t.Fatal("migration lost account")
-	}
-	var version int
-	if err := g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != currentSchemaVersion {
-		t.Fatal("schema not migrated", err)
 	}
 }

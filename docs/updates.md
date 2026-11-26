@@ -55,7 +55,7 @@ The builder also injects a UTC `buildTime`. All binaries in a bundle share the m
 
 Configure nodes with a common key for their owning user or a redeemed installation credential. Host setup retains the user's fleet-management credential separately. The node command removes `CONTROL_USER_KEY`, `CONTROL_SUPERUSER_KEY`, and `CONTROL_RELEASE_TOKEN` from its environment before launching its service and providers.
 
-Managed updates require compatible Control versions on both the gateway and nodes. When upgrading from the pre-isolation release, pause automatic polling and upgrade the gateway first so its SQLite migration and fleet-aware authentication are available before new nodes connect. An older running gateway still uses its previous rollout order until that coordinator is upgraded. The first upgrade to independent coordination therefore follows the old contract. Without `CONTROL_SUPERUSER_KEY`, user provisioning and executable update administration are disabled; existing user-account fleet management remains available.
+Managed updates require compatible Control versions on both the gateway and nodes. When upgrading from the pre-isolation release, pause automatic polling and upgrade the gateway first, to v0.14.0, so its SQLite migration and fleet-aware authentication are available before new nodes connect. Later releases cannot import that state. An older running gateway still uses its previous rollout order until that coordinator is upgraded. The first upgrade to independent coordination therefore follows the old contract. Without `CONTROL_SUPERUSER_KEY`, user provisioning and executable update administration are disabled; existing user-account fleet management remains available.
 
 ## Push from a development machine
 

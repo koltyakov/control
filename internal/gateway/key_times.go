@@ -2,15 +2,6 @@ package gateway
 
 import "time"
 
-// keyTimeSchema records each access key's last successful authentication.
-// key_id also covers the built-in superuser and bootstrap keys, so it has no
-// foreign key to credentials. Key IDs outlive a rotation of a gateway-supplied
-// key; credential_hash marks the generation so a new secret starts a new
-// interval.
-const keyTimeSchema = `
-CREATE TABLE access_key_times (key_id TEXT PRIMARY KEY, credential_hash TEXT NOT NULL, last_used_ms INTEGER NOT NULL);
-`
-
 func (g *Gateway) loadKeyTimes() error {
 	g.keyTimes = make(map[string]*keyTime)
 	rows, err := g.db.Query(`SELECT key_id, credential_hash, last_used_ms FROM access_key_times`)

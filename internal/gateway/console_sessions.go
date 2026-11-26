@@ -10,10 +10,6 @@ const (
 	consoleSessionTTL     = 7 * 24 * time.Hour
 )
 
-const consoleSessionSchema = `
-CREATE TABLE console_sessions (hash TEXT PRIMARY KEY, data BLOB NOT NULL);
-`
-
 // Caller holds g.mu, except during startup before requests are served.
 func (g *Gateway) validConsoleSession(s consoleSession, now time.Time) bool {
 	p, exists := g.console.passwords[s.Username]

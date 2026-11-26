@@ -200,7 +200,7 @@ Safety rules:
 - Interrupting the command or any failure removes the temporary file. Only a crash or power loss can leave a `.control-backup-*` file; delete it.
 - One backup runs at a time per state directory. The command holds `gateway-backup.lock` there, separate from the `gateway.lock` the serving gateway holds.
 - On Unix, the command refuses to run unless its effective user owns `gateway.db`. A SQLite connection from another account, such as root, could create `-wal`/`-shm` files the gateway account cannot open.
-- It refuses a database whose schema is newer than its executable. The installed CLI can be older than the gateway's managed runtime; after a schema-changing update, update the CLI with `control update`, which does not touch the gateway runtime. Executables without this command do not recognize it.
+- It refuses a database whose schema is newer than its executable, or older than schema version 10 from Control v0.14.0. The installed CLI can be older than the gateway's managed runtime; after a schema-changing update, update the CLI with `control update`, which does not touch the gateway runtime. Executables without this command do not recognize it.
 
 Authority comes from filesystem access to the state directory, the same access an offline copy needs. There is no network route, the superuser key is not involved, and credential hashes never leave the host through Control. `control gateway backup` appears only in superuser help.
 
@@ -227,7 +227,7 @@ To preserve rollout state and the release floor exactly, use the offline method 
 
 There is no online restore. Restore while the gateway is stopped:
 
-1. Check the backup with the executable that will serve it: `control gateway backup verify FILE`. It opens the file read-only without creating SQLite sidecar files and prints the same summary. It refuses a corrupt file or a schema newer than that executable.
+1. Check the backup with the executable that will serve it: `control gateway backup verify FILE`. It opens the file read-only without creating SQLite sidecar files and prints the same summary. It refuses a corrupt file, a schema newer than that executable, or a schema older than version 10.
 2. Stop the gateway: `sudo systemctl stop control-gateway`.
 3. Move the current `gateway.db`, `gateway.db-wal`, and `gateway.db-shm` out of the state directory. Do not leave an old `-wal` or `-shm` next to the restored file: SQLite would apply it to the wrong database. Keep the moved files until the restored gateway is checked.
 4. Copy the backup to `gateway.db` in the state directory, owned by the service account with mode `0600`.
@@ -237,7 +237,7 @@ On the same host, keep the existing `updates/` directory and runtime files; they
 
 After a restore:
 
-- An older schema migrates forward on startup as usual. A newer one is refused with "gateway database is newer than this executable", as for any database.
+- A schema from Control v0.14.0 or later migrates forward on startup as usual. Restore an older backup with v0.14.0 and start that gateway once before upgrading; see [database schema](users.md#database-schema). A newer schema is refused with "gateway database is newer than this executable", as for any database.
 - Everything committed after the backup is lost. Accounts and keys created later no longer authenticate. Keys, accounts, and invitations revoked later are valid again: revoke them again. Renames, enable/disable policy, and unregistrations made later revert.
 - Machines enrolled after the backup are unknown and cannot authenticate; enroll them again. Machines that existed at backup time reconnect with their existing identity and credential. CLI and MCP client sessions register again on their next connection.
 - Browser passwords and sessions are as of the backup. Sessions created later require signing in again. Sessions signed out later are valid again until their original idle or absolute expiry, and passwords changed later revert. Reset affected passwords, which also ends their sessions.

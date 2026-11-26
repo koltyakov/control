@@ -12,12 +12,6 @@ import (
 	"github.com/koltyakov/control/internal/update"
 )
 
-// machineLabelSchema stores fleet owners' label overlays by machine identity.
-// The node's own registration, including its signed labels, stays in nodes.
-const machineLabelSchema = `
-CREATE TABLE machine_labels (id TEXT PRIMARY KEY REFERENCES identities(id), user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL);
-`
-
 // labelOverlay is one machine's owner overlay and the fleet that set it.
 type labelOverlay struct {
 	UserID string `json:"userId"`

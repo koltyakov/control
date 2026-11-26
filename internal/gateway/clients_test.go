@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"crypto/ed25519"
-	"database/sql"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -328,16 +327,6 @@ func TestLegacyCLIRegistrationMigratesWithoutLosingOwnership(t *testing.T) {
 	}
 	s.Close()
 	_ = g.Close()
-	// Exercise the deployed v2 database upgrade as well as registration cleanup.
-	db, err := sql.Open("sqlite", dir+"/gateway.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.Exec(`DROP TABLE machine_labels; DROP TABLE proxy_dependencies; DROP TABLE console_sessions; DROP TABLE console_passwords; DROP TABLE client_transports; DROP TABLE client_identities; DROP TABLE fleet_vault; DROP TABLE global_vault; DROP TABLE access_key_times; PRAGMA user_version=2;`)
-	_ = db.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
 	g, err = New(dir, commonKey, Options{SuperuserKey: superKey})
 	if err != nil {
 		t.Fatal(err)

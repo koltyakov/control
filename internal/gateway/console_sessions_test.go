@@ -2,11 +2,8 @@ package gateway
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -191,43 +188,4 @@ func TestConsoleSessionPersistenceFailure(t *testing.T) {
 	if err := g.db.QueryRow(`SELECT count(*) FROM console_sessions`).Scan(&count); err != nil || count != 0 {
 		t.Fatal("failed login leaked a session or logout was not persisted", count, err)
 	}
-}
-
-func TestConsoleSessionSchemaMigration(t *testing.T) {
-	dir := t.TempDir()
-	g, err := New(dir, commonKey, Options{SuperuserKey: superKey})
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(g.Handler())
-	_, admin := createTestUser(t, server, "alice")
-	provisionBrowser(t, admin, "")
-	server.Close()
-	if err := g.Close(); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", filepath.Join(dir, "gateway.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`DROP TABLE machine_labels; DROP TABLE proxy_dependencies; DROP TABLE console_sessions; DROP TABLE fleet_vault; DROP TABLE global_vault; DROP TABLE access_key_times; PRAGMA user_version=6;`); err != nil {
-		t.Fatal(err)
-	}
-	_ = db.Close()
-	g, err = New(dir, commonKey, Options{SuperuserKey: superKey})
-	if err != nil {
-		t.Fatal(err)
-	}
-	server = httptest.NewServer(g.Handler())
-	t.Cleanup(func() { server.Close(); _ = g.Close() })
-	browser := browserLogin(t, server.URL, "alice", browserPassword)
-	var data []byte
-	if err := g.db.QueryRow(`SELECT data FROM console_sessions WHERE hash=?`, tokenHash(browser.Cookie.Value)).Scan(&data); err != nil {
-		t.Fatal(err)
-	}
-	var session consoleSession
-	if err := json.Unmarshal(data, &session); err != nil || session.Username != "alice" {
-		t.Fatal("migration did not preserve browser access", err)
-	}
-	browser.request(t, http.MethodGet, "/console/api/status", nil, http.StatusOK)
 }

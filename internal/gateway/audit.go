@@ -35,12 +35,6 @@ type AuditEvent struct {
 	SourceIP string `json:"sourceIp,omitempty"`
 }
 
-// IF NOT EXISTS keeps the migration idempotent for state rewound by tests or
-// restored from an older backup that already carried the table.
-const auditSchema = `CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, action TEXT NOT NULL, data BLOB NOT NULL);
-CREATE INDEX IF NOT EXISTS audit_user ON audit_events(user_id, id);
-CREATE INDEX IF NOT EXISTS audit_action ON audit_events(action, id);`
-
 // Retention keeps the newest events. Each fleet has its own budget so one
 // tenant's activity cannot push out another fleet's history; the gateway-wide
 // ceiling bounds the database. Failed sign-ins have their own smaller budget

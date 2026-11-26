@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -359,31 +357,14 @@ func TestConsolePasswordPersistenceAndRollback(t *testing.T) {
 	b.request(t, "GET", "/console/api/session", nil, 200)
 	s.Close()
 	_ = g.Close()
-	// Simulate an actual deployed version 4, with no console table.
-	db, err := sql.Open("sqlite", filepath.Join(dir, "gateway.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`DROP TABLE machine_labels; DROP TABLE proxy_dependencies; DROP TABLE console_sessions; DROP TABLE console_passwords; DROP TABLE fleet_vault; DROP TABLE global_vault; DROP TABLE access_key_times; PRAGMA user_version=4;`); err != nil {
-		t.Fatal(err)
-	}
-	_ = db.Close()
-	g, err = New(dir, commonKey, Options{SuperuserKey: superKey})
-	if err != nil {
-		t.Fatal(err)
-	}
-	s = httptest.NewServer(g.Handler())
-	a.URL = s.URL
-	provisionBrowser(t, a, "")
-	s.Close()
-	_ = g.Close()
+	// The password and the signed-in session survive a restart.
 	g, err = New(dir, commonKey, Options{SuperuserKey: superKey})
 	if err != nil {
 		t.Fatal(err)
 	}
 	s = httptest.NewServer(g.Handler())
 	b.URL = s.URL
-	b.request(t, "GET", "/console/api/session", nil, 401)
+	b.request(t, "GET", "/console/api/session", nil, 200)
 	browserLogin(t, s.URL, "alice", browserPassword)
 }
 

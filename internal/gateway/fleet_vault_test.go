@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -586,7 +584,7 @@ func TestFleetVaultBearerGuards(t *testing.T) {
 	}
 }
 
-func TestFleetVaultPersistsAndMigrates(t *testing.T) {
+func TestFleetVaultPersists(t *testing.T) {
 	dir := t.TempDir()
 	g, s := gatewayAt(t, dir)
 	alice, a := createTestUser(t, s, "alice")
@@ -613,29 +611,6 @@ func TestFleetVaultPersistsAndMigrates(t *testing.T) {
 	}
 	if got != want || !strings.Contains(got, `"enabled":true`) || !strings.Contains(got, "pausedUntil") {
 		t.Fatalf("policy after restart: %s, want %s", got, want)
-	}
-	// Rewind to schema 9; reopening must add the tables and keep data.
-	db, err := sql.Open("sqlite", filepath.Join(dir, "gateway.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.Exec(`DROP TABLE fleet_vault; DROP TABLE global_vault; DROP TABLE access_key_times; PRAGMA user_version=9;`); err != nil {
-		t.Fatal(err)
-	}
-	_ = db.Close()
-	g, s = gatewayAt(t, dir)
-	defer func() { s.Close(); _ = g.Close() }()
-	var version int
-	if err := g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != currentSchemaVersion {
-		t.Fatal("migrated schema version", version, err)
-	}
-	g.mu.Lock()
-	empty := len(g.vaultPolicies) == 0
-	g.vaultPolicies[alice.ID] = fleetVaultPolicy{UserID: alice.ID, Enabled: true, Revision: 1}
-	err = g.commit(change{vaultPolicies: []string{alice.ID}})
-	g.mu.Unlock()
-	if !empty || err != nil {
-		t.Fatal("migrated table must start empty and accept policies", empty, err)
 	}
 }
 

@@ -9,10 +9,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/koltyakov/control/internal/model"
-	"github.com/koltyakov/control/internal/store"
 	_ "modernc.org/sqlite"
 )
 
@@ -22,67 +20,19 @@ const legacyUser = "legacy"
 // each mutation commits before its HTTP/registration acknowledgement.
 const databasePragmas = "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)"
 
-// initialSchema creates a new database directly at currentSchemaVersion.
-const initialSchema = `
-CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, data BLOB NOT NULL);
-CREATE TABLE identities (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), UNIQUE(id,user_id));
-CREATE TABLE credentials (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), hash TEXT NOT NULL UNIQUE, data BLOB NOT NULL);
-CREATE TABLE nodes (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), name TEXT NOT NULL, data BLOB NOT NULL, UNIQUE(user_id,name), FOREIGN KEY(id,user_id) REFERENCES identities(id,user_id));
-CREATE TABLE invitations (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL);
-CREATE INDEX credentials_user ON credentials(user_id);
-CREATE INDEX invitations_user ON invitations(user_id);
-` + machineStateSchema + clientIdentitySchema + clientIdentityPrefixSchema + clientTransportSchema + consolePasswordSchema +
-	auditSchema + consoleSessionSchema + proxyDependencySchema + machineLabelSchema + fleetVaultSchema + globalVaultSchema + keyTimeSchema
-
-const (
-	machineStateSchema         = "CREATE TABLE machine_states (id TEXT PRIMARY KEY REFERENCES identities(id), data BLOB NOT NULL);\n"
-	clientIdentitySchema       = "CREATE TABLE client_identities (id TEXT PRIMARY KEY REFERENCES identities(id), data BLOB NOT NULL);\n"
-	clientIdentityPrefixSchema = "CREATE INDEX client_identity_prefix ON client_identities(substr(id,1,16));\n"
-	clientTransportSchema      = "CREATE TABLE client_transports (id TEXT PRIMARY KEY REFERENCES identities(id), owner_id TEXT NOT NULL REFERENCES client_identities(id), data BLOB NOT NULL);\n"
-	consolePasswordSchema      = "CREATE TABLE console_passwords (username TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL);\n"
-)
-
-// schemaUpgrades[v] upgrades a schema v database to v+1, each in its own
-// transaction. Adding a table means appending a step and raising
-// currentSchemaVersion; the array length keeps the two in step.
-var schemaUpgrades = [currentSchemaVersion]string{
-	1: machineStateSchema,
-	2: clientIdentitySchema,
-	3: clientTransportSchema,
-	4: consolePasswordSchema,
-	5: auditSchema,
-	6: consoleSessionSchema,
-	7: proxyDependencySchema,
-	8: machineLabelSchema,
-	// Databases upgraded through schema 3 lack the client identity prefix index.
-	9: fleetVaultSchema + globalVaultSchema + keyTimeSchema + "CREATE INDEX IF NOT EXISTS client_identity_prefix ON client_identities(substr(id,1,16));\n",
-}
-
-func (g *Gateway) upgradeSchema(from int) error {
-	tx, err := g.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err = tx.Exec(schemaUpgrades[from] + fmt.Sprintf("PRAGMA user_version=%d;", from+1)); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 func (g *Gateway) openDatabase(dir string) error {
 	path := filepath.Join(dir, "gateway.db")
+	// The driver applies DSN pragmas to every connection, so a replaced pooled
+	// connection keeps foreign keys, durability and busy handling.
+	if strings.Contains(path, "?") {
+		return errors.New("gateway state directory must not contain '?'")
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return err
 	}
 	if err = f.Close(); err != nil {
 		return err
-	}
-	// The driver applies DSN pragmas to every connection, so a replaced pooled
-	// connection keeps foreign keys, durability and busy handling.
-	if strings.Contains(path, "?") {
-		return errors.New("gateway state directory must not contain '?'")
 	}
 	g.db, err = sql.Open("sqlite", path+"?"+databasePragmas)
 	if err != nil {
@@ -96,25 +46,16 @@ func (g *Gateway) openDatabase(dir string) error {
 	if err = g.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
-	if version > currentSchemaVersion {
+	switch {
+	case version > currentSchemaVersion:
 		return errors.New("gateway database is newer than this executable")
-	}
-	if version == 0 {
-		if err = g.importLegacy(dir); err != nil {
+	case version == 0:
+		if err = g.createSchema(dir); err != nil {
 			return err
 		}
-		tx, err := g.db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err = tx.Exec(initialSchema + fmt.Sprintf("PRAGMA user_version=%d;", currentSchemaVersion)); err != nil {
-			return err
-		}
-		if err = g.writeState(tx); err != nil {
-			return err
-		}
-		return tx.Commit()
+		version = baseSchemaVersion
+	case version < baseSchemaVersion:
+		return errPreBaseState(fmt.Sprintf("gateway database schema %d", version))
 	}
 	for ; version < currentSchemaVersion; version++ {
 		if err = g.upgradeSchema(version); err != nil {
@@ -205,44 +146,8 @@ func readRecords[T any](db *sql.DB, table, key string, dst map[string]T) error {
 	return rows.Err()
 }
 
-func (g *Gateway) importLegacy(dir string) error {
-	g.clientOwners = map[string]bool{}
-	g.clientTransports = map[string]string{}
-	g.machineStates = map[string]model.MachineState{}
-	g.proxyDependencies = map[string]proxyDependency{}
-	g.labelOverlays = map[string]labelOverlay{}
-	g.vaultPolicies = map[string]fleetVaultPolicy{}
-	g.users = map[string]User{legacyUser: {ID: legacyUser, Name: "legacy", CreatedAt: time.Now().UTC()}}
-	g.owners = map[string]string{}
-	g.keys = map[string]keyRecord{}
-	g.nodes = map[string]model.Node{}
-	g.installations = map[string]installation{}
-	for name, dst := range map[string]any{"nodes.json": &g.nodes, "keys.json": &g.keys, "installations.json": &g.installations} {
-		if err := store.Read(filepath.Join(dir, name), dst); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("migrate %s: %w", name, err)
-		}
-	}
-	for id, n := range g.nodes {
-		n.UserID = legacyUser
-		g.nodes[id] = n
-		g.owners[id] = legacyUser
-	}
-	for id, k := range g.keys {
-		k.UserID = legacyUser
-		g.keys[id] = k
-	}
-	for hash, i := range g.installations {
-		i.UserID = legacyUser
-		g.installations[hash] = i
-		if i.RedeemedID != "" {
-			g.owners[i.RedeemedID] = legacyUser
-		}
-	}
-	return nil
-}
-
-// persist rewrites every record. It runs only during startup migration; request
-// paths commit the records they change with commit.
+// persist rewrites every record. It runs only for the startup client cleanup;
+// request paths commit the records they change with commit.
 // Caller holds g.mu, except during initialization before serving requests.
 func (g *Gateway) persist() error {
 	tx, err := g.db.Begin()
@@ -472,14 +377,6 @@ func (g *Gateway) writeChange(tx *sql.Tx, c change) error {
 	}
 	return nil
 }
-
-// proxyDependencySchema stores managed proxy listener dependencies of enrolled
-// and retiring children. Identity ownership stays immutable through the
-// foreign key; the owning fleet is recorded for scoping.
-const proxyDependencySchema = `
-CREATE TABLE proxy_dependencies (id TEXT PRIMARY KEY REFERENCES identities(id), user_id TEXT NOT NULL REFERENCES users(id), data BLOB NOT NULL);
-CREATE INDEX proxy_dependencies_user ON proxy_dependencies(user_id);
-`
 
 func writeIdentity(tx *sql.Tx, id, user string) error {
 	if _, err := tx.Exec(`INSERT INTO identities(id,user_id) VALUES(?,?) ON CONFLICT(id) DO NOTHING`, id, user); err != nil {

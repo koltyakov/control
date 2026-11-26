@@ -20,14 +20,6 @@ import (
 	"github.com/koltyakov/control/internal/store"
 )
 
-// currentSchemaVersion is the newest database schema this executable opens;
-// openDatabase migrates older versions up to it. auditSchemaVersion added the
-// audit_events table (D082), which an online backup writes to.
-const (
-	currentSchemaVersion = 10
-	auditSchemaVersion   = 6
-)
-
 // backupAuditAction records an online backup in the operator's audit history.
 const backupAuditAction = "gateway.backup"
 
@@ -124,8 +116,8 @@ func Backup(ctx context.Context, dataDir, output string) (BackupInfo, error) {
 	if version > currentSchemaVersion {
 		return BackupInfo{}, fmt.Errorf("gateway database schema %d is newer than this executable (%d); run the backup with the gateway's current Control version", version, currentSchemaVersion)
 	}
-	if version < auditSchemaVersion {
-		return BackupInfo{}, fmt.Errorf("gateway database schema %d predates online backups; start the gateway once with this version to migrate it, or stop it and copy the state directory", version)
+	if version < baseSchemaVersion {
+		return BackupInfo{}, errPreBaseState(fmt.Sprintf("gateway database schema %d", version))
 	}
 	f, err := os.CreateTemp(dir, ".control-backup-*")
 	if err != nil {
@@ -207,6 +199,9 @@ func VerifyBackup(ctx context.Context, path string) (BackupInfo, error) {
 	}
 	if info.SchemaVersion == 0 {
 		return info, errors.New("not a gateway database (schema version 0)")
+	}
+	if info.SchemaVersion < baseSchemaVersion {
+		return info, fmt.Errorf("backup schema %d predates Control v0.14.0; restore it with v0.14.0 and start that gateway once to upgrade it", info.SchemaVersion)
 	}
 	if info.SchemaVersion > currentSchemaVersion {
 		return info, fmt.Errorf("backup schema %d is newer than this executable (%d); use that Control version or newer", info.SchemaVersion, currentSchemaVersion)
