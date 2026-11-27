@@ -72,6 +72,12 @@ func WorkflowAlwaysSupported(capabilities []Capability) bool {
 type WorkflowPlan struct {
 	Steps       []WorkflowStep `json:"steps"`
 	MaxParallel int            `json:"maxParallel,omitempty"`
+	// RequestDigest is set by the submitting client on a plan it resolved
+	// from select/each targets. It identifies the original, unresolved
+	// request so that a retry under the same task ID can be compared with it.
+	// Coordinators ignore it. It is the coordinator's report when read back,
+	// so it never authorizes anything; see client.ResolveTask.
+	RequestDigest string `json:"requestDigest,omitempty"`
 }
 
 func (s WorkflowStep) Ready(completed map[string]bool) bool {

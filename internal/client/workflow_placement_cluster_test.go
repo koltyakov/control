@@ -23,10 +23,11 @@ func TestWorkflowFanOutAcrossFleet(t *testing.T) {
 		{"name":"pick","target":{"select":{"capability":"test.owner"}},"needs":["probe"],"task":{"capability":"test.owner","args":{}}},
 		{"name":"cleanup","target":"first","when":"always","needs":["probe"],"task":{"capability":"test.owner","args":{}}}]}`
 	spec := workflowSpec("fanout-parent", plan)
-	resolved, steps, err := c.ResolveTask(ctx, "first", spec)
+	resolution, err := c.ResolveTask(ctx, "first", spec)
 	if err != nil {
 		t.Fatal(err)
 	}
+	resolved, steps := resolution.Spec, resolution.Steps
 	var names []string
 	for _, step := range steps {
 		names = append(names, step.Name)
@@ -70,22 +71,16 @@ func TestWorkflowFanOutAcrossFleet(t *testing.T) {
 			t.Fatal("retained plan differs from the printed plan", retained[i], step)
 		}
 	}
-	// Resubmitting the same ID reuses the retained plan and is idempotent.
-	again, againSteps, err := c.ResolveTask(ctx, "first", spec)
-	if err != nil || !sameWorkflowPlan(t, again.Args, finished.Spec.Args) {
-		t.Fatal("resubmission re-resolved", err)
+	// Resubmitting the same ID returns the retained task without resolving,
+	// granting or submitting again.
+	again, err := c.ResolveTask(ctx, "first", spec)
+	if err != nil || again.Existing == nil || !sameWorkflowPlan(t, again.Spec.Args, finished.Spec.Args) {
+		t.Fatal("resubmission re-resolved", again.Existing, err)
 	}
 	for i := range steps {
-		if againSteps[i].Name != steps[i].Name || againSteps[i].TaskID != steps[i].TaskID || (i < 3 && againSteps[i].Target != steps[i].Target) {
-			t.Fatal("resubmission plan", againSteps[i], steps[i])
+		if again.Steps[i].Name != steps[i].Name || again.Steps[i].TaskID != steps[i].TaskID || (i < 3 && again.Steps[i].Target != steps[i].Target) {
+			t.Fatal("resubmission plan", again.Steps[i], steps[i])
 		}
-	}
-	if _, err = c.StartTask(ctx, "first", spec, &task); err != nil || task.Updated != finished.Updated {
-		t.Fatal("resubmission was not idempotent", task.State, err)
-	}
-	report, err := c.ReconcileWorkflow(ctx, "first", "fanout-parent")
-	if err != nil || !report.Complete || len(report.Steps) != 4 || report.Steps[1].Name != "probe@third" || report.Steps[1].ID != steps[1].TaskID {
-		t.Fatal("reconcile resolved plan", report, err)
 	}
 	grants := func() int {
 		total := 0
@@ -99,6 +94,31 @@ func TestWorkflowFanOutAcrossFleet(t *testing.T) {
 		return total
 	}
 	before := grants()
+	if _, err = c.StartTask(ctx, "first", spec, &task); err != nil || task.Updated != finished.Updated || task.State != "succeeded" {
+		t.Fatal("resubmission was not idempotent", task.State, err)
+	}
+	// The same through a generic call, as control_call and the vault broker send it.
+	task = model.Task{}
+	if err = c.Call(ctx, "first", "tasks.start", spec, &task); err != nil || task.Updated != finished.Updated {
+		t.Fatal("generic resubmission", task.State, err)
+	}
+	// Grants of the finished workflow may lapse meanwhile; none may be added.
+	if after := grants(); after > before {
+		t.Fatalf("resubmission prepared grants: %d before, %d after", before, after)
+	}
+	// A changed request under the same ID is refused before any grant.
+	changed := workflowSpec("fanout-parent", strings.Replace(plan, `"maxParallel":4`, `"maxParallel":2`, 1))
+	if _, err = c.StartTask(ctx, "first", changed, nil); err == nil || !strings.Contains(err.Error(), "different workflow request") || !strings.Contains(err.Error(), "nothing was submitted") {
+		t.Fatal("changed request under an accepted ID", err)
+	}
+	if after := grants(); after > before {
+		t.Fatalf("changed request prepared grants: %d before, %d after", before, after)
+	}
+	report, err := c.ReconcileWorkflow(ctx, "first", "fanout-parent")
+	if err != nil || !report.Complete || len(report.Steps) != 4 || report.Steps[1].Name != "probe@third" || report.Steps[1].ID != steps[1].TaskID {
+		t.Fatal("reconcile resolved plan", report, err)
+	}
+	before = grants()
 	for _, failing := range []string{
 		`{"steps":[{"name":"a","target":"first","task":{"capability":"test.owner"}},{"name":"b","target":{"each":{"labels":{"role":"missing"}}},"needs":["a"],"task":{"capability":"test.owner"}}]}`,
 		`{"steps":[{"name":"a","target":{"each":{"capability":"test.owner"}},"task":{"capability":"test.owner"}},{"name":"b","target":"first","inputs":[{"step":"a","artifact":0,"path":"in"}],"task":{"capability":"test.owner"}}]}`,

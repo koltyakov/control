@@ -15,7 +15,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/gofrs/flock"
 	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/store"
@@ -84,8 +83,12 @@ type DirUploadResult struct {
 	States      map[string]int `json:"states"`
 	// FilesAttempted counts files for which this call opened an upload;
 	// files this client already saw published are not contacted again.
-	FilesAttempted int             `json:"filesAttempted,omitempty"`
-	BytesSent      int64           `json:"bytesSent,omitempty"`
+	FilesAttempted int   `json:"filesAttempted,omitempty"`
+	BytesSent      int64 `json:"bytesSent,omitempty"`
+	// AbortRequested reports a recorded abort. The transfer can no longer
+	// be resumed; state becomes aborted once no file can still hold or
+	// publish staged bytes.
+	AbortRequested bool            `json:"abortRequested,omitempty"`
 	Skipped        int             `json:"skipped,omitempty"`
 	SkippedPaths   []string        `json:"skippedPaths,omitempty"`
 	Failures       []DirUploadFile `json:"failures,omitempty"`
@@ -114,7 +117,25 @@ type dirManifest struct {
 	Files           []dirFile `json:"files"`
 	Bytes           int64     `json:"bytes"`
 	Created         time.Time `json:"created"`
-	Completed       time.Time `json:"completed,omitzero"`
+	// DirsCreated is when an attempt first confirmed every directory. Files
+	// start only afterwards, so a published file is the same evidence in
+	// records that predate this field; only an empty tree depends on it.
+	DirsCreated time.Time `json:"dirsCreated,omitzero"`
+	// Completed is when an attempt saw every file published.
+	Completed time.Time `json:"completed,omitzero"`
+	// Aborted is when an abort was recorded, before any file was aborted.
+	// It refuses later resumes.
+	Aborted time.Time `json:"aborted,omitzero"`
+	// ChildRecords marks a transfer whose file records are kept until it
+	// completes. Earlier releases pruned a published file's record after
+	// the retention period even while the transfer was incomplete.
+	ChildRecords bool `json:"childRecords,omitempty"`
+}
+
+// childRecordsKept reports whether a missing file record proves the file
+// never started: its records are kept, or none can have expired yet.
+func (m dirManifest) childRecordsKept(now time.Time) bool {
+	return m.ChildRecords || now.Sub(m.Created) < uploadRecordRetention
 }
 
 // localTree is a scanned directory: slash-separated relative paths, sorted.
@@ -137,8 +158,18 @@ func dirFileID(dirID, rel string) string {
 }
 
 func (c Client) dirUploadPath(id string) string {
-	scope := filepath.Dir(filepath.Dir(c.uploadRecordPath(id)))
-	return filepath.Join(scope, "upload-dirs", identity.ID([]byte(id))+".json")
+	return filepath.Join(c.uploadScopeDir(), "upload-dirs", identity.ID([]byte(id))+".json")
+}
+
+func readDirManifest(file, id string) (dirManifest, error) {
+	var m dirManifest
+	if err := store.Read(file, &m); err != nil {
+		return m, err
+	}
+	if m.Format != dirManifestFormat || m.ID != id || m.NodeID == "" {
+		return m, errors.New("invalid local directory upload recovery record")
+	}
+	return m, nil
 }
 
 // refuseDirectoryUploadID keeps single-file and directory IDs apart locally.
@@ -385,46 +416,42 @@ func (c Client) UploadDirectory(ctx context.Context, s DirUploadSpec) (DirUpload
 	if err != nil {
 		return result, err
 	}
-	if _, err = os.Lstat(c.uploadRecordPath(s.ID)); err == nil {
-		return result, errors.New("upload ID belongs to a single-file upload; choose another ID for the directory")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return result, err
-	}
 	manifestPath := c.dirUploadPath(s.ID)
 	if err = os.MkdirAll(filepath.Dir(manifestPath), 0700); err != nil {
 		return result, err
 	}
-	records := filepath.Dir(c.uploadRecordPath(s.ID))
-	if err = os.MkdirAll(records, 0700); err != nil {
+	if err = os.MkdirAll(filepath.Dir(c.uploadRecordPath(s.ID)), 0700); err != nil {
 		return result, err
 	}
 	now := time.Now()
-	pruneUploadRecords(ctx, records, now)
-	pruneDirManifests(ctx, filepath.Dir(manifestPath), now)
-	// One process at a time owns a directory transfer.
-	lock := flock.New(manifestPath + ".lock")
-	defer func() { _ = lock.Close() }()
-	locked, err := lock.TryLock()
+	scope := c.uploadScopeDir()
+	pruneUploadRecords(ctx, scope, now)
+	pruneDirManifests(ctx, scope, now)
+	pruneDirAttempts(ctx, scope)
+	// One process at a time owns a directory transfer, and abort refuses
+	// while an attempt holds it. The lock also reserves the ID against a
+	// single-file upload before the remote root is created.
+	attempt, err := c.lockDirUpload(ctx, s.ID)
+	if errors.Is(err, errDirUploadBusy) {
+		return result, upload.Error("upload_busy", "directory upload is active in another process; inspect status after it ends")
+	}
 	if err != nil {
 		return result, err
 	}
-	if !locked {
-		return result, errors.New("directory upload is active in another process; inspect status after it ends")
-	}
-	var m dirManifest
-	err = store.Read(manifestPath, &m)
+	defer attempt.release(ctx)
+	m, err := readDirManifest(manifestPath, s.ID)
 	exists := err == nil
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return result, err
-	}
-	if exists && (m.Format != dirManifestFormat || m.ID != s.ID || m.NodeID == "") {
-		return result, errors.New("invalid local directory upload recovery record")
 	}
 	if s.Resume && !exists {
 		return result, errors.New("local directory upload recovery record is missing; inspect remote files rather than starting a replacement")
 	}
 	if !s.Resume && exists {
 		return result, upload.Error("upload_exists", "directory upload ID already exists; inspect status and resume it explicitly")
+	}
+	if exists && !m.Aborted.IsZero() {
+		return result, upload.Error("upload_aborted", "directory upload was aborted and cannot be resumed; start a new transfer with a new ID and a new remote directory")
 	}
 	var target string
 	if exists {
@@ -464,7 +491,7 @@ func (c Client) UploadDirectory(ctx context.Context, s DirUploadSpec) (DirUpload
 		if err != nil {
 			return result, err
 		}
-		m = dirManifest{Format: dirManifestFormat, ID: s.ID, NodeID: target, Node: s.Node, LocalPath: local, Path: remote, SkipUnsupported: skip, Skipped: len(tree.Skipped), SkippedPaths: tree.Skipped[:min(len(tree.Skipped), dirReportLimit)], Dirs: tree.Dirs, Files: tree.Files, Bytes: tree.Bytes, Created: now.UTC()}
+		m = dirManifest{Format: dirManifestFormat, ID: s.ID, NodeID: target, Node: s.Node, LocalPath: local, Path: remote, SkipUnsupported: skip, Skipped: len(tree.Skipped), SkippedPaths: tree.Skipped[:min(len(tree.Skipped), dirReportLimit)], Dirs: tree.Dirs, Files: tree.Files, Bytes: tree.Bytes, Created: now.UTC(), ChildRecords: true}
 		if m.Dirs == nil {
 			m.Dirs = []string{}
 		}
@@ -486,6 +513,8 @@ func (c Client) UploadDirectory(ctx context.Context, s DirUploadSpec) (DirUpload
 			return result, fmt.Errorf("create remote directory %s; nothing was uploaded, but the response was lost, so the directory may now exist: inspect it before choosing another destination: %w", remote, err)
 		}
 		result.State = "incomplete"
+		// The attempt lock has reserved the ID against single-file uploads
+		// since before the root was created, so no claim can intervene.
 		if err = store.Write(manifestPath, m); err != nil {
 			return result, fmt.Errorf("remote directory %s was created but the local recovery record could not be saved: %w", remote, err)
 		}
@@ -497,12 +526,25 @@ func (c Client) UploadDirectory(ctx context.Context, s DirUploadSpec) (DirUpload
 			return result, fmt.Errorf("create remote directory %s; no file of this attempt was sent, resume explicitly: %w", path.Join(remote, dir), err)
 		}
 	}
+	if m.DirsCreated.IsZero() {
+		m.DirsCreated = time.Now().UTC()
+		if err = store.Write(manifestPath, m); err != nil {
+			// Not fatal: a published file is the same evidence, and the
+			// completion record below or a later resume records it again.
+			m.DirsCreated = time.Time{}
+		}
+	}
 	firstErr := c.uploadDirFiles(ctx, peer, target, s, m, &result)
 	if firstErr == nil && result.States["published"] == len(m.Files) {
 		result.State = "published"
 		if m.Completed.IsZero() {
 			m.Completed = time.Now().UTC()
-			_ = store.Write(manifestPath, m)
+			if m.DirsCreated.IsZero() {
+				m.DirsCreated = m.Completed
+			}
+			if err = store.Write(manifestPath, m); err != nil {
+				return result, fmt.Errorf("directory upload %s published every file and directory, but its local completion record could not be saved, so status may report it incomplete; resume with the same ID to record completion without sending published files again: %w", s.ID, err)
+			}
 		}
 		return result, nil
 	}
@@ -602,16 +644,20 @@ func (c Client) uploadDirFile(ctx context.Context, peer *transport.Peer, target,
 		return outcome, false, err
 	}
 	resume := err == nil
-	if resume && (prior.NodeID != target || prior.Path != remote) {
-		err = errors.New("file upload record binds a different worker or destination")
-		outcome.Error = err.Error()
-		return outcome, false, err
+	if resume {
+		if err = childRecordConflict(prior, m, f, target); err != nil {
+			outcome.State = "conflict"
+			outcome.Code, outcome.Error = "upload_spec_conflict", err.Error()
+			return outcome, false, err
+		}
+		if !prior.Published.IsZero() {
+			outcome.State = "published"
+			return outcome, false, nil
+		}
 	}
-	if resume && !prior.Published.IsZero() && prior.Size == f.Size {
-		outcome.State = "published"
-		return outcome, false, nil
-	}
-	spec := UploadSpec{Node: m.Node, ID: outcome.ID, LocalPath: filepath.Join(localRoot, filepath.FromSlash(f.Path)), Path: remote, Resume: resume}
+	// The manifest's size binds the file before its first attempt; its
+	// content is bound by the upload record that attempt writes.
+	spec := UploadSpec{Node: m.Node, ID: outcome.ID, LocalPath: filepath.Join(localRoot, filepath.FromSlash(f.Path)), Path: remote, Resume: resume, inTree: true, treeSize: f.Size, tree: m.ID}
 	r, err := c.uploadFile(ctx, peer, target, spec)
 	var refused *model.RPCError
 	if resume && errors.As(err, &refused) && refused.Code == "upload_not_found" {
@@ -636,6 +682,35 @@ func (c Client) uploadDirFile(ctx context.Context, peer *transport.Peer, target,
 	return outcome, true, nil
 }
 
+// childRecordConflict refuses a file record that does not bind this file of
+// this transfer: its ID, worker, destination and scanned size, and its
+// transfer when recorded. An earlier release could publish a file that grew
+// after the scan and record the larger size; such a file is not this
+// transfer's verified file, and its destination is left alone.
+func childRecordConflict(prior localUpload, m dirManifest, f dirFile, target string) error {
+	switch {
+	case prior.ID != dirFileID(m.ID, f.Path) || (prior.Tree != "" && prior.Tree != m.ID):
+		return errors.New("file upload record belongs to another upload")
+	case prior.NodeID != target || prior.Path != path.Join(m.Path, f.Path):
+		return errors.New("file upload record binds a different worker or destination")
+	case prior.Size != f.Size:
+		return fmt.Errorf("file upload record binds %d bytes but this directory upload scanned %d; its destination was left unchanged", prior.Size, f.Size)
+	}
+	return nil
+}
+
+// receiptConflict checks a worker's status or abort result for one file
+// against its local record.
+func receiptConflict(r upload.Result, prior localUpload, target string) error {
+	if r.ID != prior.ID || r.NodeID != target {
+		return errors.New("upload status identity mismatch")
+	}
+	if r.Spec != prior.Spec {
+		return errors.New("worker upload record binds a different destination or content than this file's local record")
+	}
+	return nil
+}
+
 // foldRune maps r to the smallest rune of its simple case-folding orbit.
 func foldRune(r rune) rune {
 	smallest := r
@@ -646,8 +721,12 @@ func foldRune(r rune) rune {
 }
 
 // UploadDirectoryStatus reports, or with abort abandons, every unpublished
-// file of a directory transfer. Abort never removes published files or
-// created directories.
+// file of a directory transfer. Status only reads. Abort refuses while an
+// attempt holds the transfer, then records itself before aborting any file,
+// so the transfer can no longer be resumed. It never removes published files
+// or created directories. Once the transfer is identified, its summary is
+// returned with any error, including an abort that could not settle every
+// file.
 func (c Client) UploadDirectoryStatus(ctx context.Context, node, id string, abort bool) (DirUploadResult, error) {
 	result := DirUploadResult{Kind: "directory", ID: id, State: "incomplete", States: map[string]int{}}
 	if node == "" || !upload.ValidID(id) {
@@ -657,26 +736,51 @@ func (c Client) UploadDirectoryStatus(ctx context.Context, node, id string, abor
 	if err != nil {
 		return result, err
 	}
-	var m dirManifest
-	if err = store.Read(c.dirUploadPath(id), &m); err != nil {
+	manifestPath := c.dirUploadPath(id)
+	m, err := readDirManifest(manifestPath, id)
+	if err != nil {
 		return result, err
-	}
-	if m.Format != dirManifestFormat || m.ID != id || m.NodeID == "" {
-		return result, errors.New("invalid local directory upload recovery record")
 	}
 	target, err := c.checkDirTarget(ctx, peer, node, m)
 	if err != nil {
 		return result, err
 	}
+	if abort {
+		var attempt *dirUploadLock
+		attempt, err = c.lockDirUpload(ctx, id)
+		if errors.Is(err, errDirUploadBusy) {
+			return result, upload.Error("upload_busy", "directory upload is active in another process; cancel it and wait for it to end before aborting; nothing was aborted")
+		}
+		if err != nil {
+			return result, err
+		}
+		defer attempt.release(ctx)
+		// An attempt that ended meanwhile may have changed the record.
+		if m, err = readDirManifest(manifestPath, id); err != nil {
+			return result, err
+		}
+		if m.NodeID != target {
+			return result, errors.New("directory upload belongs to a different worker identity")
+		}
+		if m.Completed.IsZero() && m.Aborted.IsZero() {
+			m.Aborted = time.Now().UTC()
+			if err = store.Write(manifestPath, m); err != nil {
+				return result, fmt.Errorf("record the directory upload abort; nothing was aborted: %w", err)
+			}
+		}
+	}
 	result.NodeID, result.Path = target, m.Path
 	result.Directories, result.Files, result.Bytes = len(m.Dirs), len(m.Files), m.Bytes
 	result.Skipped, result.SkippedPaths = m.Skipped, m.SkippedPaths
-	method := upload.StatusMethod
+	result.AbortRequested = !m.Aborted.IsZero()
+	now := time.Now()
+	method, workers := upload.StatusMethod, dirStatusWorkers
 	if abort {
-		method = upload.AbortMethod
+		// Each worker abort claims one of the owner's two active uploads.
+		method, workers = upload.AbortMethod, dirUploadWorkers
 	}
 	var mu sync.Mutex
-	next := 0
+	next, live := 0, 0
 	work := func() {
 		for {
 			mu.Lock()
@@ -687,9 +791,12 @@ func (c Client) UploadDirectoryStatus(ctx context.Context, node, id string, abor
 			f := m.Files[next]
 			next++
 			mu.Unlock()
-			outcome := c.dirFileState(ctx, peer, target, method, m, f)
+			outcome, settled := c.dirFileState(ctx, peer, target, method, m, f, now)
 			mu.Lock()
 			result.States[outcome.State]++
+			if !settled {
+				live++
+			}
 			if outcome.Error != "" && len(result.Failures) < dirReportLimit {
 				result.Failures = append(result.Failures, outcome)
 			}
@@ -697,56 +804,115 @@ func (c Client) UploadDirectoryStatus(ctx context.Context, node, id string, abor
 		}
 	}
 	var wg sync.WaitGroup
-	for range min(dirStatusWorkers, len(m.Files)) {
+	for range min(workers, len(m.Files)) {
 		wg.Go(work)
 	}
 	wg.Wait()
+	// Files left unqueried by cancellation are unknown, so the counts
+	// still account for every file.
+	if left := len(m.Files) - next; left > 0 {
+		result.States["unknown"] += left
+		live += left
+	}
+	result.State = dirSummaryState(m, result.States, live)
 	if err = ctx.Err(); err != nil {
 		return result, err
 	}
-	switch {
-	case result.States["published"] == len(m.Files):
-		result.State = "published"
-	case abort:
-		result.State = "aborted"
+	if abort && result.State != "aborted" && result.State != "published" {
+		return result, upload.Error("upload_abort_incomplete", fmt.Sprintf("directory upload %s abort incomplete: %d files may still hold staging or have an unknown outcome; published files were kept; inspect status, then abort again once they are inactive", id, live))
 	}
 	return result, nil
 }
 
-func (c Client) dirFileState(ctx context.Context, peer *transport.Peer, target, method string, m dirManifest, f dirFile) DirUploadFile {
+// dirSummaryState derives a transfer's state from its recovery record and
+// file states. live counts files that may still hold or publish staged
+// bytes, and every file whose state is unknown or in conflict: none of
+// those lets a transfer be called aborted.
+func dirSummaryState(m dirManifest, states map[string]int, live int) string {
+	files, published, unknown := len(m.Files), states["published"], states["unknown"]
+	// Files start only after every directory exists, so one published file
+	// is evidence of the directories too; an empty tree needs the mark.
+	dirs := !m.DirsCreated.IsZero() || !m.Completed.IsZero() || published > 0
+	switch {
+	case published == files && dirs:
+		return "published"
+	case !m.Aborted.IsZero() && live == 0 && unknown == 0 && states["conflict"] == 0:
+		return "aborted"
+	case unknown > 0 && published+unknown == files:
+		// Every other file is published; these may be too.
+		return "unknown"
+	}
+	return "incomplete"
+}
+
+// dirFileState reads or aborts one file. settled reports that the file is
+// known to be published, or known to hold nothing staged on the worker and
+// to be unable to publish: aborted, expired, or never started. Any doubt,
+// including a worker that no longer has the record, leaves it unsettled.
+func (c Client) dirFileState(ctx context.Context, peer *transport.Peer, target, method string, m dirManifest, f dirFile, now time.Time) (DirUploadFile, bool) {
 	outcome := DirUploadFile{Path: f.Path, ID: dirFileID(m.ID, f.Path)}
 	var prior localUpload
 	err := store.Read(c.uploadRecordPath(outcome.ID), &prior)
 	switch {
-	case err == nil && !prior.Published.IsZero():
-		outcome.State = "published"
-		return outcome
 	case errors.Is(err, os.ErrNotExist) && !m.Completed.IsZero():
 		// Records of a completed transfer may already be pruned.
 		outcome.State = "published"
-		return outcome
-	case errors.Is(err, os.ErrNotExist):
+		return outcome, true
+	case errors.Is(err, os.ErrNotExist) && m.childRecordsKept(now):
+		// A file's record is written before its upload is requested and
+		// kept until the transfer completes, so the worker was never
+		// asked for this file.
 		outcome.State = "pending"
-		return outcome
+		return outcome, true
+	case errors.Is(err, os.ErrNotExist):
+		outcome.State, outcome.Code = "unknown", "upload_record_missing"
+		outcome.Error = "no local file record; an earlier client release may have pruned it after the file was published"
+		return outcome, false
 	case err != nil:
 		outcome.State, outcome.Error = "unknown", err.Error()
-		return outcome
+		return outcome, false
 	}
-	var r upload.Result
-	err = peerCall(ctx, peer, target, method, map[string]string{"id": outcome.ID}, &r)
-	if err == nil && (r.ID != outcome.ID || r.NodeID != target) {
-		err = errors.New("upload status identity mismatch")
+	if err = childRecordConflict(prior, m, f, target); err != nil {
+		outcome.State, outcome.Code, outcome.Error = "conflict", "upload_spec_conflict", err.Error()
+		return outcome, false
+	}
+	if !prior.Published.IsZero() {
+		outcome.State = "published"
+		return outcome, true
+	}
+	r, err := c.dirFileCall(ctx, peer, target, upload.StatusMethod, prior)
+	// Abort only an upload whose worker record matches this file's record,
+	// so a different upload under a matching ID is never abandoned.
+	if err == nil && method == upload.AbortMethod && !r.Active && (r.State == "staging" || r.State == "publishing") {
+		r, err = c.dirFileCall(ctx, peer, target, upload.AbortMethod, prior)
 	}
 	if err != nil {
 		e := model.OperationError(err, "unknown")
 		outcome.State, outcome.Code, outcome.Error = "unknown", e.Code, e.Message
-		return outcome
+		if e.Code == "upload_spec_conflict" {
+			outcome.State = "conflict"
+		}
+		return outcome, false
 	}
 	outcome.State = r.State
 	if r.Active {
 		outcome.State = "active"
+		return outcome, false
 	}
-	return outcome
+	return outcome, r.State == "published" || r.State == "aborted" || r.State == "expired"
+}
+
+// dirFileCall queries or aborts one file's worker record and checks the
+// reply against the file's local record.
+func (c Client) dirFileCall(ctx context.Context, peer *transport.Peer, target, method string, prior localUpload) (upload.Result, error) {
+	var r upload.Result
+	if err := peerCall(ctx, peer, target, method, map[string]string{"id": prior.ID}, &r); err != nil {
+		return r, err
+	}
+	if err := receiptConflict(r, prior, target); err != nil {
+		return r, upload.Error("upload_spec_conflict", err.Error())
+	}
+	return r, nil
 }
 
 // UploadState reports or aborts a single-file or directory upload by ID.
@@ -761,9 +927,24 @@ func (c Client) UploadState(ctx context.Context, node, id string, abort bool) (a
 	return c.UploadStatus(ctx, node, id, abort)
 }
 
+// DirUploadError carries a directory summary with a failed status or abort,
+// so MCP results keep the partial state the CLI prints.
+type DirUploadError struct {
+	Result DirUploadResult
+	Err    error
+}
+
+func (e *DirUploadError) Error() string { return e.Err.Error() }
+func (e *DirUploadError) Unwrap() error { return e.Err }
+
 // pruneDirManifests removes records of directory transfers completed before
-// the retention period. Incomplete transfers are kept for explicit resume.
-func pruneDirManifests(ctx context.Context, dir string, now time.Time) {
+// the retention period. Incomplete and aborted transfers are kept for
+// explicit resume or inspection. A record is decided and removed under its
+// stripe while holding its attempt lock, so an active attempt keeps it and
+// stale evidence never removes it. Lock files of older releases are never
+// removed.
+func pruneDirManifests(ctx context.Context, scope string, now time.Time) {
+	dir := filepath.Join(scope, "upload-dirs")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
@@ -772,21 +953,38 @@ func pruneDirManifests(ctx context.Context, dir string, now time.Time) {
 		if ctx.Err() != nil {
 			return
 		}
-		name := entry.Name()
-		if !entry.Type().IsRegular() || !strings.HasSuffix(name, ".json") {
-			continue
+		if hashed, ok := strings.CutSuffix(entry.Name(), ".json"); ok && entry.Type().IsRegular() {
+			pruneDirManifest(scope, hashed, now)
 		}
-		file := filepath.Join(dir, name)
-		var m dirManifest
-		if store.Read(file, &m) != nil || m.Completed.IsZero() || now.Sub(m.Completed) < uploadRecordRetention {
-			continue
-		}
-		lock := flock.New(file + ".lock")
-		if locked, err := lock.TryLock(); err == nil && locked {
-			_ = os.Remove(file)
-			_ = lock.Unlock()
-		}
-		_ = lock.Close()
-		_ = os.Remove(file + ".lock")
+	}
+}
+
+func prunableDirManifest(file, hashed string, now time.Time) bool {
+	var m dirManifest
+	return store.Read(file, &m) == nil && identity.ID([]byte(m.ID)) == hashed && !m.Completed.IsZero() && now.Sub(m.Completed) >= uploadRecordRetention
+}
+
+func pruneDirManifest(scope, hashed string, now time.Time) {
+	file := filepath.Join(scope, "upload-dirs", hashed+".json")
+	// A cheap first read avoids locking records that are kept anyway.
+	if !prunableDirManifest(file, hashed, now) {
+		return
+	}
+	stripePath, ok := uploadStripePath(filepath.Join(scope, "upload-locks"), hashed)
+	if !ok {
+		return
+	}
+	stripe, ok := tryLockStripe(stripePath)
+	if !ok {
+		return
+	}
+	defer func() { _ = stripe.Close() }()
+	attempt, err := acquireDirAttempt(stripePath, dirAttemptPath(scope, hashed), file+".lock")
+	if err != nil {
+		return
+	}
+	defer attempt.removeHeld()
+	if prunableDirManifest(file, hashed, now) {
+		_ = os.Remove(file)
 	}
 }

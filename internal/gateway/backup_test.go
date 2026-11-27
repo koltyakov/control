@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -300,6 +302,88 @@ func TestBackupCancellationLeavesNothing(t *testing.T) {
 	}
 	if events := backupAuditEvents(t, g); len(events) != 0 {
 		t.Fatalf("cancelled backups were audited: %v", events)
+	}
+}
+
+// Verification requires every table and column of the backup's schema
+// version, as schema.sql defines it, and accepts the database v0.14.0 wrote.
+func TestVerifyBackupRequiresSchemaTablesAndColumns(t *testing.T) {
+	ctx := context.Background()
+	fixture := func(t *testing.T, change string) string {
+		t.Helper()
+		dir := t.TempDir()
+		db := rawDatabase(t, dir)
+		if _, err := db.Exec(schema10Fixture + change); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return filepath.Join(dir, "gateway.db")
+	}
+	healthy := fixture(t, "")
+	before, err := os.ReadFile(healthy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := VerifyBackup(ctx, healthy)
+	if err != nil || info.SchemaVersion != baseSchemaVersion || info.Accounts != 2 || info.Machines != 2 || info.Credentials != 1 || info.Invitations != 1 || info.Identities != 4 {
+		t.Fatalf("verify v0.14.0 database: %+v %v", info, err)
+	}
+	if after, err := os.ReadFile(healthy); err != nil || !slices.Equal(after, before) {
+		t.Fatal("verify modified the database", err)
+	}
+	if names := dirEntries(t, filepath.Dir(healthy)); !slices.Equal(names, []string{"gateway.db"}) {
+		t.Fatalf("verify created files: %v", names)
+	}
+	// The gateway ignores additional tables and columns.
+	if _, err := VerifyBackup(ctx, fixture(t, "CREATE TABLE extra (id TEXT); ALTER TABLE nodes ADD COLUMN note TEXT;")); err != nil {
+		t.Fatal("verify refused additional schema:", err)
+	}
+	for _, tc := range []struct {
+		name, change, message string
+	}{
+		{"missing table", "DROP TABLE machine_labels;", "missing table machine_labels"},
+		{"missing column", "ALTER TABLE machine_states DROP COLUMN data;", "missing column machine_states.data"},
+		{"renamed column", "ALTER TABLE console_sessions RENAME COLUMN data TO payload;", "missing column console_sessions.data"},
+		{"changed column", "DROP TABLE access_key_times; CREATE TABLE access_key_times (key_id TEXT PRIMARY KEY, credential_hash TEXT, last_used_ms INTEGER NOT NULL);", "column access_key_times.credential_hash differs"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := fixture(t, tc.change)
+			if _, err := VerifyBackup(ctx, path); err == nil || !strings.Contains(err.Error(), tc.message) || !strings.Contains(err.Error(), fmt.Sprintf("schema %d", baseSchemaVersion)) {
+				t.Fatalf("verify error %v, want %q", err, tc.message)
+			}
+			if names := dirEntries(t, filepath.Dir(path)); !slices.Equal(names, []string{"gateway.db"}) {
+				t.Fatalf("verify created files: %v", names)
+			}
+		})
+	}
+}
+
+// The expected schema at every supported version follows the same steps a
+// new database takes, so it matches what the gateway creates.
+func TestExpectedSchemaMatchesNewDatabase(t *testing.T) {
+	ctx := context.Background()
+	g, err := New(t.TempDir(), commonKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = g.Close() }()
+	created, err := readSchema(ctx, g.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := expectedSchema(ctx, currentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !maps.EqualFunc(created, want, maps.Equal) || len(want["machine_labels"]) == 0 {
+		t.Fatalf("expected schema differs from a new database:\n%v\nwant\n%v", want, created)
+	}
+	for _, version := range []int{baseSchemaVersion - 1, currentSchemaVersion + 1} {
+		if _, err := expectedSchema(ctx, version); err == nil {
+			t.Fatalf("expected schema %d built", version)
+		}
 	}
 }
 

@@ -12,6 +12,8 @@ Run `go test -race ./cmd/control -run '^TestFleetLock'` to exercise console-mana
 
 Run `sh tests/compose/vault-smoke.sh` for the [separate-account Linux test](../tests/compose/vault-smoke.md). It drives the actual CLI and MCP server in a disposable container, including terminal passphrase entry and OS permission denials.
 
+`TestCLIWorkflowIntentAcrossProcesses` submits a selector-based workflow with the installed CLI. A second CLI process must recover the same terminal task. Changing only the selector must then fail both `--check` and submission under the original task ID. The case runs on both Compose transports.
+
 Review regressions cover failed tombstone appends and durable recovery before further appends, atomic task-output reader pins through terminal publication, nonblocking input-destination validation, workflow observation failures without mutation replay, retryable client initialization and completed-forward capacity reclamation. Fault fixtures use temporary state and controlled failures; they never corrupt a real node journal. Console smoke fixtures delay mutation and audit responses to exercise stale dialogs, session changes, category changes, pagination and event bursts.
 
 Native Windows tombstone-restart cases also require the journal reader to close before compaction replaces that path. Keeping the reader open makes both torn-tail recovery and expired-tombstone cleanup fail with access denied despite passing on Unix.

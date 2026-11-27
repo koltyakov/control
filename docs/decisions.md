@@ -1558,6 +1558,8 @@ Expansion is deterministic from the plan, the parent task ID and the matched mac
 
 A retry must not pick different machines. For a task submission the client first reads the coordinator's `tasks.get` for the task ID. If the task exists, its retained `workflow.run` arguments are the resolved plan and are resubmitted unchanged, which the coordinator acknowledges as `existing` ([D140](#d140-lifetime-aware-grant-cleanup-and-submission-receipts)). Only the coordinator's own not-found reply permits fresh resolution; any other read failure stops submission, and a pruned ID must be replaced. If an earlier uncertain attempt is accepted after the retry checked, a differently resolved retry is refused as a different specification and its fresh grants are released. `control task start` prints every resolved step with its machine and child ID before sending, as it already prints the task ID, and MCP `control_task_start` returns the resolved specification instead of omitting it. Reconciliation reads the retained resolved plan unchanged.
 
+The retry behavior in this paragraph is superseded by [D203](#d203-bind-selector-workflow-retries-to-the-original-request).
+
 Resolution only reads: the plan is checked first, then the existing task and the directory. Any failure, including an empty match set or an oversized expansion, is reported with outcome `not_sent` before any grant or task exists. Direct synchronous `workflow.run` calls are resolved too, with fresh child IDs, but are not reconcilable; fan-out should be submitted as a task with an explicit ID. This extends the small workflow executor of [D010](#d010-destination-owned-leases-and-a-small-workflow-executor) without adding MCP tools, parameters or instructions. See [target selection and fan-out](protocol.md#target-selection-and-fan-out).
 
 ## D181: Advisory task submission checks
@@ -1751,3 +1753,15 @@ The gateway cannot close direct WebRTC sessions established before the lock was 
 The gateway carried nine schema migrations and a pre-SQLite JSON import. Each upgrade was tested only by rewinding a current database, which could not reproduce what old releases had actually written. Upgrades now pass through v0.14.0, schema version 10. Later releases create that schema directly from one [`schema.sql`](../internal/gateway/schema.sql) and keep its version number, so v0.14.0 databases open unchanged. Later changes append transactional steps that new databases also apply.
 
 Older databases and directories holding only pre-SQLite JSON state are refused with an error naming v0.14.0, which still upgrades them. Starting empty would silently drop that state. Online backups and backup verification enforce the same boundary. A fixture written by v0.14.0 pins its schema and records: the upgrade tests check that it loads, and that it ends up with the same schema as a new database. See [database schema](users.md#database-schema).
+
+## D203: Bind selector workflow retries to the original request
+
+[D180](#d180-plan-time-workflow-target-selection-and-fan-out) preserved the chosen machines across retries by substituting the coordinator's recorded plan. That also discarded changes to the caller's request. Two different selectors can choose the same machines today and different machines tomorrow; comparing resolved steps cannot distinguish them.
+
+The client hashes the original task specification before placement and records that digest in the resolved workflow plan. A matching retry returns the existing task without preparing grants or submitting it again. A different request fails before grant preparation, even if both selectors would pick the same machine. This keeps recovery available across client processes without a second plan database. An older task with no digest remains available through `tasks.get`; it cannot establish that a selector request matches. See [target selection and fan-out](protocol.md#target-selection-and-fan-out).
+
+## D204: Record recursive upload completion and abort intent
+
+A manifest from [D187](#d187-directory-transfers-over-existing-upload-and-artifact-mechanisms) proves that the client created the remote root. It cannot prove that all requested leaf directories exist. The client records when directory creation finishes. A completed transfer or a published child also proves the directory phase finished, because uploads start only after the last directory has been created. A fileless tree with none of that evidence stays incomplete.
+
+Abort and resume take the same attempt lock. Abort records its intent before contacting any child, so a restart cannot resume files the caller asked to abandon. `abortRequested` records that decision even if a child is unreachable. An unresolved abort returns the partial summary and an error; published paths remain untouched. See [directory upload status and recovery](uploads.md#status-abort-and-recovery-records).

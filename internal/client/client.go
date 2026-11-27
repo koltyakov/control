@@ -86,9 +86,18 @@ func (c Client) call(ctx context.Context, target, method string, params any, res
 	// Resolve workflow select/each targets before any grant or submission, on
 	// every route, so no coordinator or worker ever chooses machines.
 	if method == "workflow.run" || method == "tasks.start" || method == model.TaskCheckMethod {
-		resolved, err := c.resolveWorkflowCall(ctx, target, method, model.JSON(params))
+		resolved, existing, err := c.resolveWorkflowCall(ctx, target, method, model.JSON(params))
 		if err != nil {
 			return err
+		}
+		if existing != nil {
+			// The ID is already held for this request: answer read-only. Its
+			// plan is the coordinator's report, so nothing is sent with it
+			// and no grant, not even a check grant, is prepared from it.
+			if method == model.TaskCheckMethod {
+				return existingTaskResult(existingTaskCheck(*existing), result)
+			}
+			return existingTaskResult(*existing, result)
 		}
 		params = resolved
 	}

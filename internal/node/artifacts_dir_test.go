@@ -2,6 +2,8 @@ package node
 
 import (
 	"archive/tar"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -133,6 +135,111 @@ func TestDirectoryExportSkipsEmptyStaging(t *testing.T) {
 	}
 }
 
+// A skipped empty staging directory must not shorten the scan: a directory
+// read in batches through EOF sees every entry, so a tree exactly at the limit
+// archives completely and one more entry is refused rather than omitted.
+func TestDirectoryExportStagingDoesNotHideEntries(t *testing.T) {
+	t.Parallel()
+	n := localNode(t, nil)
+	tree := filepath.Join(n.Config.WorkDir, "full")
+	if err := os.MkdirAll(filepath.Join(tree, ".control-uploads"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for i := range dirArchiveMaxEntries {
+		if err := os.WriteFile(filepath.Join(tree, fmt.Sprintf("f%05d", i)), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, err := exportTree(t, n, "full")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(n.artifactPath(a.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	r := tar.NewReader(f)
+	count := 0
+	for {
+		h, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := fmt.Sprintf("f%05d", count); h.Name != want {
+			t.Fatalf("entry %d is %q, want %q", count, h.Name, want)
+		}
+		count++
+	}
+	if count != dirArchiveMaxEntries {
+		t.Fatalf("archived %d entries, want %d", count, dirArchiveMaxEntries)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "over"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exportTree(t, n, "full"); err == nil || !strings.Contains(err.Error(), "entries") {
+		t.Fatal("over-limit tree with empty staging exported", err)
+	}
+	if err := os.Remove(filepath.Join(tree, ".control-uploads")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exportTree(t, n, "full"); err == nil || !strings.Contains(err.Error(), "entries") {
+		t.Fatal("over-limit tree exported", err)
+	}
+}
+
+// A directory scan observes cancellation between batches.
+func TestDirectoryScanCancellation(t *testing.T) {
+	t.Parallel()
+	n := localNode(t, nil)
+	writeTestFile(t, filepath.Join(n.Config.WorkDir, "tree", "file.txt"), "x")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := n.scanArchiveTree(ctx, "tree"); !errors.Is(err, context.Canceled) {
+		t.Fatal("canceled scan", err)
+	}
+}
+
+// The tiny files in the fixture have one byte of payload. Ignore the tar
+// headers and padding so their allocation strategy does not affect the test.
+type archivePayloadWriter struct {
+	buffers map[*byte]bool
+	writes  int
+}
+
+func (w *archivePayloadWriter) Write(p []byte) (int, error) {
+	if len(p) == 1 && p[0] == 'x' {
+		w.buffers[&p[0]] = true
+		w.writes++
+	}
+	return len(p), nil
+}
+
+// Archiving many tiny files reuses one copy buffer instead of allocating a
+// chunk per file.
+func TestDirectoryArchiveReusesCopyBuffer(t *testing.T) {
+	t.Parallel()
+	n := localNode(t, nil)
+	const files = 64
+	for i := range files {
+		writeTestFile(t, filepath.Join(n.Config.WorkDir, "tiny", fmt.Sprintf("f%02d", i)), "x")
+	}
+	entries, err := n.scanArchiveTree(t.Context(), "tiny")
+	if err != nil || len(entries) != files {
+		t.Fatal("scan", len(entries), err)
+	}
+	w := archivePayloadWriter{buffers: make(map[*byte]bool)}
+	if err := n.writeArchive(t.Context(), "tiny", entries, &w); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.buffers) != 1 || w.writes != files {
+		t.Fatalf("archive used %d payload buffers for %d writes; want one buffer for %d files", len(w.buffers), w.writes, files)
+	}
+}
+
 func TestDirectoryExportRefusals(t *testing.T) {
 	t.Parallel()
 	n := localNode(t, nil)
@@ -150,18 +257,6 @@ func TestDirectoryExportRefusals(t *testing.T) {
 		t.Logf("symbolic links unavailable: %v", err)
 	} else if _, err = exportTree(t, n, "linked"); err == nil || !strings.Contains(err.Error(), "symbolic link or special file") {
 		t.Fatal("symbolic link archived", err)
-	}
-	many := filepath.Join(work, "many")
-	if err := os.MkdirAll(many, 0700); err != nil {
-		t.Fatal(err)
-	}
-	for i := range dirArchiveMaxEntries + 1 {
-		if err := os.WriteFile(filepath.Join(many, fmt.Sprintf("f%05d", i)), nil, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := exportTree(t, n, "many"); err == nil || !strings.Contains(err.Error(), "entries") {
-		t.Fatal("entry limit", err)
 	}
 	if a, err := exportTree(t, n, "ok/file.txt"); err != nil || a.Name != "file.txt" {
 		t.Fatal("regular file export changed", a, err)

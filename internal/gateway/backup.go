@@ -173,8 +173,9 @@ func Backup(ctx context.Context, dataDir, output string) (BackupInfo, error) {
 }
 
 // VerifyBackup checks a backup file without modifying it or creating SQLite
-// sidecar files: integrity, foreign keys, a schema this executable can open,
-// and the core tables. It is not for a database a gateway is serving.
+// sidecar files: integrity, foreign keys, a schema version this executable
+// can open, and every table and column that version defines in schema.sql
+// and schemaUpgrades. It is not for a database a gateway is serving.
 func VerifyBackup(ctx context.Context, path string) (BackupInfo, error) {
 	path, err := filepath.Abs(path)
 	if err != nil {
@@ -224,6 +225,11 @@ func VerifyBackup(ctx context.Context, path string) (BackupInfo, error) {
 	}
 	if violation {
 		return info, errors.New("foreign key check failed")
+	}
+	// Restoring opens this version and applies the later steps, so the
+	// backup must hold every table and column the gateway reads at it.
+	if err = checkSchema(ctx, db, info.SchemaVersion); err != nil {
+		return info, err
 	}
 	for table, count := range map[string]*int{"users": &info.Accounts, "nodes": &info.Machines, "credentials": &info.Credentials, "invitations": &info.Invitations, "identities": &info.Identities} {
 		if err = db.QueryRowContext(ctx, `SELECT count(*) FROM `+table).Scan(count); err != nil {

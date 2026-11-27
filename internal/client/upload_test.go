@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofrs/flock"
+	"github.com/koltyakov/control/internal/identity"
 	"github.com/koltyakov/control/internal/model"
 	"github.com/koltyakov/control/internal/node"
 	"github.com/koltyakov/control/internal/store"
@@ -306,31 +308,137 @@ func TestUploadRecoveryFilenamesArePortable(t *testing.T) {
 	}
 }
 
+// uploadRecordFixture writes a single-file recovery record under its hashed
+// name, as uploadRecordPath does, in a records directory beside its stripes.
+// uploadRecordFixture writes a single-file recovery record under its hashed
+// name, as uploadRecordPath does, in scope's records directory.
+func uploadRecordFixture(t *testing.T, scope string, record localUpload) string {
+	t.Helper()
+	path := filepath.Join(scope, "uploads", identity.ID([]byte(record.ID))+".json")
+	if err := store.Write(path, record); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func publishedRecord(id string, published time.Time) localUpload {
+	return localUpload{Spec: upload.Spec{ID: id}, Published: published}
+}
+
+func staleFile(t *testing.T, path string, at time.Time) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func holdLock(t *testing.T, path string) *flock.Flock {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	lock := flock.New(path)
+	if locked, err := lock.TryLock(); err != nil || !locked {
+		t.Fatal("cannot hold lock", path, err)
+	}
+	t.Cleanup(func() { _ = lock.Close() })
+	return lock
+}
+
+func exists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
 func TestUploadRecordsArePrunedOnlyAfterPublishedRetention(t *testing.T) {
-	dir := t.TempDir()
+	scope := t.TempDir()
 	now := time.Now()
-	write := func(name string, published time.Time) string {
-		path := filepath.Join(dir, name)
-		if err := store.Write(path, localUpload{Spec: upload.Spec{ID: name}, Published: published}); err != nil {
+	expired := now.Add(-8 * 24 * time.Hour)
+	old := uploadRecordFixture(t, scope, publishedRecord("old", expired))
+	recent := uploadRecordFixture(t, scope, publishedRecord("recent", now.Add(-time.Hour)))
+	pending := uploadRecordFixture(t, scope, publishedRecord("pending", time.Time{}))
+	// An older release's lock files are never removed, with or without a
+	// record: that release may still hold or wait on them.
+	staleFile(t, old+".lock", expired)
+	orphan := filepath.Join(scope, "uploads", identity.ID([]byte("gone"))+".json.lock")
+	staleFile(t, orphan, expired)
+	// A published file of an incomplete directory transfer keeps its
+	// record, so a missing record keeps meaning the file never started.
+	writeManifest := func(id string, completed time.Time) {
+		if err := store.Write(filepath.Join(scope, "upload-dirs", identity.ID([]byte(id))+".json"), dirManifest{Format: dirManifestFormat, ID: id, NodeID: "n", Completed: completed}); err != nil {
 			t.Fatal(err)
 		}
-		return path
 	}
-	old := write("old.json", now.Add(-8*24*time.Hour))
-	recent := write("recent.json", now.Add(-time.Hour))
-	pending := write("pending.json", time.Time{})
-	orphan := filepath.Join(dir, "gone.json.lock")
-	if err := os.WriteFile(orphan, nil, 0600); err != nil {
-		t.Fatal(err)
+	writeManifest("incomplete", time.Time{})
+	writeManifest("complete", now)
+	child := func(tree string) string {
+		record := publishedRecord(dirFileID(tree, "f"), expired)
+		record.Tree = tree
+		return uploadRecordFixture(t, scope, record)
 	}
-	stale := now.Add(-2 * time.Hour)
-	if err := os.Chtimes(orphan, stale, stale); err != nil {
-		t.Fatal(err)
-	}
-	pruneUploadRecords(t.Context(), dir, now)
-	for path, kept := range map[string]bool{old: false, old + ".lock": false, recent: true, pending: true, orphan: false} {
-		if _, err := os.Stat(path); (err == nil) != kept {
-			t.Fatal("unexpected record retention", filepath.Base(path), err)
+	keptChild, completeChild, prunedTreeChild := child("incomplete"), child("complete"), child("gone-tree")
+	pruneUploadRecords(t.Context(), scope, now)
+	for path, kept := range map[string]bool{old: false, old + ".lock": true, recent: true, pending: true, orphan: true, keptChild: true, completeChild: false, prunedTreeChild: false} {
+		if exists(path) != kept {
+			t.Fatal("unexpected record retention", filepath.Base(path), kept)
 		}
+	}
+	locks := filepath.Join(scope, "upload-locks")
+	stripes, err := os.ReadDir(locks)
+	if err != nil || len(stripes) == 0 || len(stripes) > uploadLockStripes {
+		t.Fatal("pruning did not use the bounded stripe locks", len(stripes), err)
+	}
+	pruneUploadRecords(t.Context(), scope, now)
+	if again, err := os.ReadDir(locks); err != nil || len(again) != len(stripes) {
+		t.Fatal("stripe lock files were removed or multiplied", again, err)
+	}
+}
+
+// A lock that another process holds is never unlinked, and the record it
+// guards is kept: the old pruner removed the lock path even after failing to
+// acquire it, so a third process could lock a new file at the same path.
+func TestUploadRecordPruningKeepsHeldLocks(t *testing.T) {
+	scope := t.TempDir()
+	now := time.Now()
+	expired := now.Add(-8 * 24 * time.Hour)
+
+	// An attempt holds the record's stripe, for example while rewriting it.
+	striped := uploadRecordFixture(t, scope, publishedRecord("striped", expired))
+	stripe, _ := uploadStripePath(filepath.Join(scope, "upload-locks"), identity.ID([]byte("striped")))
+	held := holdLock(t, stripe)
+	before, err := os.Stat(stripe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An older release holds its own per-record lock.
+	legacy := uploadRecordFixture(t, scope, publishedRecord("legacy", expired))
+	staleFile(t, legacy+".lock", expired)
+	legacyLock := holdLock(t, legacy+".lock")
+
+	pruneUploadRecords(t.Context(), scope, now)
+	for _, path := range []string{striped, stripe, legacy, legacy + ".lock"} {
+		if !exists(path) {
+			t.Fatal("held lock or its record removed", filepath.Base(path))
+		}
+	}
+	if after, err := os.Stat(stripe); err != nil || !os.SameFile(before, after) {
+		t.Fatal("held stripe replaced", err)
+	}
+	// The record is read under the stripe: one rewritten as unpublished
+	// before the stripe is free is kept.
+	if err = store.Write(striped, localUpload{Spec: upload.Spec{ID: "striped"}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = held.Unlock()
+	_ = legacyLock.Unlock()
+	pruneUploadRecords(t.Context(), scope, now)
+	if !exists(striped) || !exists(stripe) || exists(legacy) || !exists(legacy+".lock") {
+		t.Fatal("after release: unpublished record or a lock removed, or the free expired record kept")
 	}
 }

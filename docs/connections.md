@@ -70,7 +70,7 @@ Each check reports `ok`, `warning`, `failed` or `skipped` with a reason, plus a 
 | `local-node` | Whether this host's node API answers `node.describe`. No local node is normal: the client works standalone |
 | `environment` | `HTTPS_PROXY`/`HTTP_PROXY` and `NO_PROXY` as they apply to the gateway URL, an explicit profile gateway proxy, and a plain-HTTP gateway URL on a non-loopback host. Proxy credentials are never printed |
 | `fleet`, `machine:NAME` | Without NODE: one line per machine from owner-visible `/v1/status` only (online, disabled, policy pending, update state, version against the gateway). No peer session is opened |
-| `machine` | With NODE: registration, online state and last-seen time, disabled, `controlPending`, managed update state, an active lease, and a wake sender for account keys |
+| `machine` | With NODE: registration, online state and last-seen time, disabled, `controlPending`, managed update state, an active lease, and a wake sender for keys that can run work. Re-enable hints name `control machines enable` only for keys that manage the fleet |
 | `machine-version` | Worker version against the gateway, the fleet release and this client; OS/architecture; gateway protocol support; instruction-bound delegation support |
 | `peer-session` | Opens this client's peer session with `node.describe` and reports each lane's route (`direct`, `turn` or `gateway relay`) from `control session` data. Relay is a warning unless the profile is relay-only |
 | `concurrency` | `limit`/`inUse`/`queued` for each pool from `node.describe`. Saturation is a warning, not a fault |

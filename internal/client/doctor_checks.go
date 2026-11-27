@@ -22,9 +22,31 @@ func (d *doctorRun) role() string {
 	return d.auth.Role
 }
 
-// owner reports an account or superuser key. Hints naming fleet-management
-// commands are shown only to these roles, matching role-scoped help.
-func (d *doctorRun) owner() bool { return d.role() == "user" || d.role() == "superuser" }
+// manages reports a key with fleet management: account, superuser and named
+// fleet-manager keys. Hints naming fleet-management commands such as
+// control machines enable are shown only to these roles, matching role-scoped
+// help and the gateway's own check.
+func (d *doctorRun) manages() bool { return OwnerRole(d.role()) }
+
+// runs reports a key whose account-client session has execution authority,
+// with or without fleet management. control wake requires it.
+func (d *doctorRun) runs() bool { return ExecutionRole(d.role()) }
+
+// fleetManagerDetail describes a named fleet-manager key from its permissions.
+func fleetManagerDetail(role, source string) string {
+	can := []string{"manage fleet machines and keys", "discover peers"}
+	if EnrollmentRole(role) {
+		can = append(can, "enroll machines")
+	}
+	if ExecutionRole(role) {
+		can = append(can, "run work")
+	}
+	detail := "fleet-manager key from " + source + "; it can " + strings.Join(can[:len(can)-1], ", ") + " and " + can[len(can)-1]
+	if !ExecutionRole(role) {
+		detail += ", but not run work"
+	}
+	return detail + "; it does not administer the gateway"
+}
 
 func (d *doctorRun) gatewayDisplay() string {
 	u, err := url.Parse(d.opts.Gateway.URL)
@@ -68,6 +90,8 @@ func (d *doctorRun) loginCheck() DoctorCheck {
 			c.Detail = "key from " + source + "; it can discover machines but cannot enroll them or run work"
 		case "common":
 			c.Detail = "common key from " + source + "; it permits discovery and gateway status, not account-client execution"
+		case "fleet-manager", "fleet-manager-enroll", "fleet-manager-run", "fleet-manager-enroll-run":
+			c.Detail = fleetManagerDetail(d.auth.Role, source)
 		default:
 			c.Detail = "credential from " + source + " authenticates as " + d.auth.Role
 		}
@@ -125,10 +149,11 @@ func (d *doctorRun) gatewayUpgradeHint() string {
 }
 
 func (d *doctorRun) workerUpgradeHint() string {
-	switch d.role() {
-	case "superuser":
+	switch {
+	case d.role() == "superuser":
 		return "control update status shows rollout progress; managed nodes follow the gateway's selected release (docs/updates.md)"
-	case "user":
+	case d.manages():
+		// Release publication is superuser-only, including for fleet managers.
 		return "managed nodes follow the gateway's selected release; ask the gateway operator to publish a newer one (docs/updates.md)"
 	}
 	return "ask the fleet owner to update this machine (docs/updates.md)"
@@ -587,7 +612,7 @@ func (d *doctorRun) machineCheck() DoctorCheck {
 	default:
 		c.Status = DoctorFailed
 		facts = append(facts, "offline, last seen "+doctorWhen(m.LastSeen))
-		if entry != nil && entry.WakeVia != "" && d.owner() {
+		if entry != nil && entry.WakeVia != "" && d.runs() {
 			hints = append(hints, "if it is asleep, control wake "+m.Name+" can send a Wake-on-LAN packet via "+entry.WakeVia)
 		} else {
 			hints = append(hints, "check the Control service on that machine (control service status there)")
@@ -596,10 +621,10 @@ func (d *doctorRun) machineCheck() DoctorCheck {
 	if m.Disabled {
 		c.Status = doctorWorse(c.Status, DoctorWarning)
 		facts = append(facts, "disabled: excluded from scheduling and new execution")
-		if d.owner() {
+		if d.manages() {
 			hints = append(hints, "control machines enable "+m.Name)
 		} else {
-			hints = append(hints, "a fleet owner can re-enable it")
+			hints = append(hints, "the fleet owner or a fleet-manager key can re-enable it")
 		}
 	}
 	if m.ControlPending {
@@ -823,8 +848,8 @@ func (d *doctorRun) diagnosticsCheck() DoctorCheck {
 		return c
 	case doctorNotPermitted(d.diagErr):
 		c.Status, c.Detail = DoctorSkipped, "not permitted: "+doctorErr(d.diagErr)
-		if !ExecutionRole(d.role()) {
-			c.Detail += "; diagnostics.get requires execution authority from an account or orchestrator key"
+		if !d.runs() {
+			c.Detail += "; diagnostics.get requires execution authority from an account, orchestrator or fleet-manager key with run permission"
 		}
 		return c
 	case d.diagErr != nil:

@@ -32,6 +32,11 @@ type UploadSpec struct {
 	TimeoutSeconds int                 `json:"timeoutSeconds,omitempty"`
 	Resume         bool                `json:"-"`
 	Progress       func(upload.Result) `json:"-"`
+	// treeSize binds a directory transfer's file to the size its manifest
+	// recorded; inTree marks such a file, whose ID is derived, not chosen.
+	inTree   bool
+	treeSize int64
+	tree     string
 }
 
 type localUpload struct {
@@ -39,6 +44,10 @@ type localUpload struct {
 	NodeID    string `json:"nodeId"`
 	Node      string `json:"node"`
 	LocalPath string `json:"localPath"`
+	// Tree is the directory transfer a file belongs to. Its record is kept
+	// while that transfer is incomplete, so a missing record means the file
+	// never started.
+	Tree string `json:"tree,omitempty"`
 	// Published is when this client saw the upload complete; see
 	// pruneUploadRecords.
 	Published time.Time `json:"published,omitzero"`
@@ -51,10 +60,15 @@ func (c Client) uploadPeer(ctx context.Context) (*transport.Peer, error) {
 	return c.backend(ctx)
 }
 
-func (c Client) uploadRecordPath(id string) string {
+// uploadScopeDir holds this owner's local upload recovery state.
+func (c Client) uploadScopeDir() string {
 	scope := identity.ID([]byte(strings.TrimRight(c.routing.cfg.Gateway.URL, "/") + "\x00" + c.routing.ownerID))
+	return filepath.Join(c.routing.cfg.StateDir, scope)
+}
+
+func (c Client) uploadRecordPath(id string) string {
 	// Hash IDs for case-insensitive filesystems and Windows device names.
-	return filepath.Join(c.routing.cfg.StateDir, scope, "uploads", identity.ID([]byte(id))+".json")
+	return filepath.Join(c.uploadScopeDir(), "uploads", identity.ID([]byte(id))+".json")
 }
 
 func (c Client) uploadTarget(ctx context.Context, peer *transport.Peer, node, id string) (string, error) {
@@ -117,8 +131,17 @@ func (c Client) Upload(ctx context.Context, s UploadSpec) (upload.Result, error)
 	if err = os.MkdirAll(records, 0700); err != nil {
 		return result, err
 	}
-	pruneUploadRecords(ctx, records, time.Now())
+	pruneUploadRecords(ctx, c.uploadScopeDir(), time.Now())
 	return c.uploadFile(ctx, peer, target, s)
+}
+
+// treeSizeChanged refuses a directory transfer's file whose size differs from
+// the scanned manifest, before anything is hashed, recorded or sent.
+func treeSizeChanged(s UploadSpec, size int64) error {
+	if !s.inTree || size == s.treeSize {
+		return nil
+	}
+	return upload.Error("source_changed", fmt.Sprintf("local file is %d bytes but was %d bytes when this directory upload scanned it; nothing was sent", size, s.treeSize))
 }
 
 // uploadFile performs one attempt for one file after the caller has checked
@@ -132,6 +155,9 @@ func (c Client) uploadFile(ctx context.Context, peer *transport.Peer, target str
 	if !info.Mode().IsRegular() || info.Size() > upload.MaxSize {
 		return result, errors.New("upload source must be a regular file, not a symlink, and at most 1 TiB")
 	}
+	if err = treeSizeChanged(s, info.Size()); err != nil {
+		return result, err
+	}
 	f, err := os.Open(s.LocalPath)
 	if err != nil {
 		return result, err
@@ -141,6 +167,10 @@ func (c Client) uploadFile(ctx context.Context, peer *transport.Peer, target str
 	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
 		return result, errors.New("upload source changed while opening")
 	}
+	// The open file, not only the earlier Lstat, must match the manifest.
+	if err = treeSizeChanged(s, opened.Size()); err != nil {
+		return result, err
+	}
 	sum, err := upload.Hash(ctx, f, info.Size())
 	if err != nil {
 		return result, err
@@ -148,40 +178,10 @@ func (c Client) uploadFile(ctx context.Context, peer *transport.Peer, target str
 	if err = sourceUnchanged(f, info); err != nil {
 		return result, err
 	}
-	rec := localUpload{Spec: upload.Spec{ID: s.ID, Path: s.Path, Size: info.Size(), SHA256: sum}, NodeID: target, Node: s.Node, LocalPath: s.LocalPath}
-	var prior localUpload
+	rec := localUpload{Spec: upload.Spec{ID: s.ID, Path: s.Path, Size: info.Size(), SHA256: sum}, NodeID: target, Node: s.Node, LocalPath: s.LocalPath, Tree: s.tree}
 	localPath := c.uploadRecordPath(s.ID)
-	if err = os.MkdirAll(filepath.Dir(localPath), 0700); err != nil {
-		return result, err
-	}
-	lock := flock.New(localPath + ".lock")
-	defer func() { _ = lock.Close() }()
-	locked, err := lock.TryLockContext(ctx, 50*time.Millisecond)
-	if err != nil {
-		return result, err
-	}
-	if !locked {
-		return result, errors.New("cannot lock upload recovery record")
-	}
-	if err = store.Read(localPath, &prior); err == nil {
-		if s.Resume {
-			rec.Path = prior.Path
-		}
-		if prior.Spec != rec.Spec || prior.NodeID != rec.NodeID {
-			return result, upload.Error("upload_spec_conflict", "local upload ID binds a different destination or content")
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return result, err
-	} else if s.Resume {
-		return result, errors.New("local upload recovery record is missing; inspect remote status rather than starting a replacement")
-	}
-	if err = rec.Validate(); err != nil {
-		return result, err
-	}
-	if err = store.Write(localPath, rec); err != nil {
-		return result, err
-	}
-	if err = lock.Unlock(); err != nil {
+	stripePath := c.uploadStripePath(s.ID)
+	if err = c.bindUploadRecord(ctx, s, localPath, stripePath, &rec); err != nil {
 		return result, err
 	}
 	conn, data, err := openPeerRPC(ctx, peer, target, upload.OpenMethod, upload.Request{Spec: rec.Spec, Protocol: upload.Protocol, Resume: s.Resume})
@@ -202,7 +202,7 @@ func (c Client) uploadFile(ctx context.Context, peer *transport.Peer, target str
 		if ready.Offset != ready.Size || ready.PrefixSHA256 != ready.SHA256 {
 			return result, errors.New("invalid upload completion receipt")
 		}
-		markUploadPublished(ctx, localPath, rec)
+		markUploadPublished(ctx, localPath, stripePath, rec)
 		return ready.Result, nil
 	}
 	if ready.State != "staging" || ready.Generation == "" {
@@ -213,9 +213,71 @@ func (c Client) uploadFile(ctx context.Context, peer *transport.Peer, target str
 		return result, fmt.Errorf("upload %s; query status before explicitly resuming: %w", s.ID, err)
 	}
 	if result.State == "published" {
-		markUploadPublished(ctx, localPath, rec)
+		markUploadPublished(ctx, localPath, stripePath, rec)
 	}
 	return result, nil
+}
+
+// bindUploadRecord writes rec as the recovery record under the ID's stripe,
+// refusing content or a destination that differs from an existing record.
+// Under the same stripe, a single-file upload refuses an ID that a directory
+// transfer records or is reserving, so the two kinds cannot claim one ID.
+func (c Client) bindUploadRecord(ctx context.Context, s UploadSpec, localPath, stripePath string, rec *localUpload) error {
+	if err := os.MkdirAll(filepath.Dir(localPath), 0700); err != nil {
+		return err
+	}
+	stripe, err := lockStripe(ctx, stripePath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stripe.Close() }()
+	if !s.inTree {
+		if err = c.refuseDirectoryUploadID(s.ID); err != nil {
+			return err
+		}
+		if active, err := c.dirAttemptActive(s.ID); err != nil || active {
+			if active {
+				err = errors.New("upload ID belongs to a directory upload that is starting or active; choose another ID")
+			}
+			return err
+		}
+	}
+	legacy, err := lockLegacyRecord(ctx, localPath)
+	if err != nil {
+		return err
+	}
+	defer closeLock(legacy)
+	var prior localUpload
+	if err = store.Read(localPath, &prior); err == nil {
+		if s.Resume {
+			rec.Path = prior.Path
+		}
+		if prior.Spec != rec.Spec || prior.NodeID != rec.NodeID {
+			return upload.Error("upload_spec_conflict", "local upload ID binds a different destination or content")
+		}
+		// Keep the publication mark: a repeated request for a published
+		// upload must not make its record look unpublished again.
+		rec.Published = prior.Published
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	} else if s.Resume {
+		return errors.New("local upload recovery record is missing; inspect remote status rather than starting a replacement")
+	}
+	if err = rec.Validate(); err != nil {
+		return err
+	}
+	return store.Write(localPath, *rec)
+}
+
+// lockLegacyRecord also takes the per-record lock of an older release when
+// that file exists, waiting as that release briefly holds it. The file is
+// never created or removed.
+func lockLegacyRecord(ctx context.Context, record string) (*flock.Flock, error) {
+	lock, busy, err := lockExisting(ctx, record+".lock", true)
+	if busy && err == nil {
+		err = errors.New("cannot lock upload recovery record")
+	}
+	return lock, err
 }
 
 func sourceUnchanged(f *os.File, before os.FileInfo) error {
@@ -368,12 +430,17 @@ const uploadRecordRetention = 7 * 24 * time.Hour
 // markUploadPublished records completion so pruneUploadRecords can later
 // remove the record. A record replaced meanwhile by another attempt for
 // different content is left unchanged.
-func markUploadPublished(ctx context.Context, path string, published localUpload) {
-	lock := flock.New(path + ".lock")
-	defer func() { _ = lock.Close() }()
-	if locked, err := lock.TryLockContext(ctx, 50*time.Millisecond); err != nil || !locked {
+func markUploadPublished(ctx context.Context, path, stripePath string, published localUpload) {
+	stripe, err := lockStripe(ctx, stripePath)
+	if err != nil {
 		return
 	}
+	defer func() { _ = stripe.Close() }()
+	legacy, err := lockLegacyRecord(ctx, path)
+	if err != nil {
+		return
+	}
+	defer closeLock(legacy)
 	var current localUpload
 	if store.Read(path, &current) == nil && current.Spec == published.Spec && current.NodeID == published.NodeID && current.Published.IsZero() {
 		current.Published = time.Now().UTC()
@@ -382,9 +449,14 @@ func markUploadPublished(ctx context.Context, path string, published localUpload
 }
 
 // pruneUploadRecords removes recovery records of uploads published before the
-// retention period, and lock files left without a record. Unpublished records
-// are kept: they are the only evidence for a safe explicit resume.
-func pruneUploadRecords(ctx context.Context, dir string, now time.Time) {
+// retention period. Unpublished records are kept: they are the only evidence
+// for a safe explicit resume. So are records of files of a directory transfer
+// that is not complete, whose status relies on them. Each record is read and
+// removed only under its stripe, and a busy stripe or older client's lock is
+// skipped, so a record that an attempt rewrote after the listing is never
+// removed on stale evidence. Lock files are never removed here.
+func pruneUploadRecords(ctx context.Context, scope string, now time.Time) {
+	dir := filepath.Join(scope, "uploads")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
@@ -393,35 +465,42 @@ func pruneUploadRecords(ctx context.Context, dir string, now time.Time) {
 		if ctx.Err() != nil {
 			return
 		}
-		name := entry.Name()
-		if !entry.Type().IsRegular() {
-			continue
+		if hashed, ok := strings.CutSuffix(entry.Name(), ".json"); ok && entry.Type().IsRegular() {
+			pruneUploadRecord(scope, hashed, now)
 		}
-		if record, ok := strings.CutSuffix(name, ".lock"); ok {
-			// A fresh lock may belong to an attempt about to write its record.
-			info, err := entry.Info()
-			if err != nil || now.Sub(info.ModTime()) < time.Hour {
-				continue
-			}
-			if _, err := os.Lstat(filepath.Join(dir, record)); errors.Is(err, os.ErrNotExist) {
-				_ = os.Remove(filepath.Join(dir, name))
-			}
-			continue
-		}
-		if !strings.HasSuffix(name, ".json") {
-			continue
-		}
-		path := filepath.Join(dir, name)
-		var record localUpload
-		if store.Read(path, &record) != nil || record.Published.IsZero() || now.Sub(record.Published) < uploadRecordRetention {
-			continue
-		}
-		lock := flock.New(path + ".lock")
-		if locked, err := lock.TryLock(); err == nil && locked {
-			_ = os.Remove(path)
-			_ = lock.Unlock()
-		}
-		_ = lock.Close()
-		_ = os.Remove(path + ".lock")
 	}
+}
+
+func pruneUploadRecord(scope, hashed string, now time.Time) {
+	stripePath, ok := uploadStripePath(filepath.Join(scope, "upload-locks"), hashed)
+	if !ok {
+		return
+	}
+	stripe, ok := tryLockStripe(stripePath)
+	if !ok {
+		return
+	}
+	defer func() { _ = stripe.Close() }()
+	path := filepath.Join(scope, "uploads", hashed+".json")
+	legacy, busy, err := lockExisting(context.Background(), path+".lock", false)
+	if err != nil || busy {
+		return
+	}
+	defer closeLock(legacy)
+	var record localUpload
+	if store.Read(path, &record) != nil || identity.ID([]byte(record.ID)) != hashed || record.Published.IsZero() || now.Sub(record.Published) < uploadRecordRetention {
+		return
+	}
+	if record.Tree != "" && !treeComplete(scope, record.Tree) {
+		return
+	}
+	_ = os.Remove(path)
+}
+
+// treeComplete reports whether a file's directory transfer no longer needs
+// its record: it completed, or its own record is gone.
+func treeComplete(scope, tree string) bool {
+	var m dirManifest
+	err := store.Read(filepath.Join(scope, "upload-dirs", identity.ID([]byte(tree))+".json"), &m)
+	return errors.Is(err, os.ErrNotExist) || (err == nil && !m.Completed.IsZero())
 }

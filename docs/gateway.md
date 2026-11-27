@@ -196,7 +196,7 @@ The command opens the database through its own SQLite connection and runs `VACUU
 Safety rules:
 
 - The output is never overwritten. An existing file fails the command and is left unchanged.
-- The snapshot is written to a hidden `.control-backup-*` file in the destination directory with mode `0600`, synced, and checked with `PRAGMA integrity_check`, `PRAGMA foreign_key_check`, and the schema version. It is then published without replacement: by hard link on Unix, so the destination file system must support hard links, and by a non-replacing write-through move on Windows.
+- The snapshot is written to a hidden `.control-backup-*` file in the destination directory with mode `0600` and synced. Before publication, the verifier checks SQLite integrity, foreign keys, and the tables and columns required by the snapshot's declared schema version. Publication never replaces a file: it uses a hard link on Unix, so the destination file system must support hard links, and a non-replacing write-through move on Windows.
 - Interrupting the command or any failure removes the temporary file. Only a crash or power loss can leave a `.control-backup-*` file; delete it.
 - One backup runs at a time per state directory. The command holds `gateway-backup.lock` there, separate from the `gateway.lock` the serving gateway holds.
 - On Unix, the command refuses to run unless its effective user owns `gateway.db`. A SQLite connection from another account, such as root, could create `-wal`/`-shm` files the gateway account cannot open.
@@ -227,7 +227,7 @@ To preserve rollout state and the release floor exactly, use the offline method 
 
 There is no online restore. Restore while the gateway is stopped:
 
-1. Check the backup with the executable that will serve it: `control gateway backup verify FILE`. It opens the file read-only without creating SQLite sidecar files and prints the same summary. It refuses a corrupt file, a schema newer than that executable, or a schema older than version 10.
+1. Run `control gateway backup verify FILE` with the executable that will serve it. The verifier opens the file read-only, creates no SQLite sidecars, and prints the same summary. Compare its `sha256` with the one recorded at backup time. Verification checks SQLite integrity and foreign keys, rejects unsupported schema versions, and checks that every required table and column exists with its expected type, nullability and primary-key position. The expected layout comes from this executable's schema and upgrade steps for the backup's version. Extra tables and columns are allowed. Verification does not start the gateway or decode every stored record.
 2. Stop the gateway: `sudo systemctl stop control-gateway`.
 3. Move the current `gateway.db`, `gateway.db-wal`, and `gateway.db-shm` out of the state directory. Do not leave an old `-wal` or `-shm` next to the restored file: SQLite would apply it to the wrong database. Keep the moved files until the restored gateway is checked.
 4. Copy the backup to `gateway.db` in the state directory, owned by the service account with mode `0600`.

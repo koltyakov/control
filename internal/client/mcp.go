@@ -104,11 +104,7 @@ func (c Client) MCPServer() *mcp.Server {
 				}
 				// The caller does not hold a plan whose select/each targets
 				// the client resolved, so return its specification.
-				spec, resolved, err := c.ResolveTask(ctx, target, spec)
-				if err != nil {
-					return toolError(err), nil
-				}
-				omitSpec = omitSpec && resolved == nil
+				omitSpec = omitSpec && !hasWorkflowPlacement(spec)
 				if _, err = c.StartTask(ctx, target, spec, &result); err != nil {
 					return toolError(err), nil
 				}
@@ -289,7 +285,11 @@ func (c Client) MCPServer() *mcp.Server {
 			if err := json.Unmarshal(args, &q); err != nil {
 				return nil, err
 			}
-			return c.UploadState(ctx, q.Node, q.ID, abort)
+			result, err := c.UploadState(ctx, q.Node, q.ID, abort)
+			if summary, ok := result.(DirUploadResult); ok && err != nil && summary.NodeID != "" {
+				err = &DirUploadError{Result: summary, Err: err}
+			}
+			return result, err
 		})
 	}
 	local("control_runbooks", "Discover shared or machine-specific operational instructions. requires is agent-friendly guidance: plain text, a list, or optional structured details, preserved even when full content is omitted. Use the user's task and worker evidence to choose a suitable machine; do not invent fixed OS, GPU, or capability constraints. Optional node filters machine bindings and adds worker stores; local: true avoids worker contact. source and file read a complete exact-origin document, with node required for worker origins. Reports source errors and conflicts. Discovery does not execute instructions or retrieve secret values.", map[string]any{"node": text, "file": text, "source": text, "local": map[string]any{"type": "boolean"}}, nil, func(ctx context.Context, args json.RawMessage) (any, error) {
@@ -443,6 +443,15 @@ func toolError(err error) *mcp.CallToolResult {
 	var submit *TaskSubmitError
 	if errors.As(err, &submit) {
 		e.Message = submit.Error() // Keep the ID to reconcile.
+	}
+	var directory *DirUploadError
+	if errors.As(err, &directory) {
+		// Keep the partial directory summary beside the error.
+		payload := struct {
+			*model.RPCError
+			Result DirUploadResult `json:"result"`
+		}{&e, directory.Result}
+		return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: toolText(model.JSON(payload))}}}
 	}
 	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: toolText(model.JSON(&e))}}}
 }

@@ -54,14 +54,19 @@ func call(t *testing.T, ctx context.Context, c client.Client, target, method str
 	}
 }
 
-func cli(t *testing.T, ctx context.Context, args ...string) []byte {
-	t.Helper()
+func cliCommand(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "control", args...)
 	for _, entry := range os.Environ() {
 		if !strings.HasPrefix(entry, "CONTROL_API=") {
 			cmd.Env = append(cmd.Env, entry)
 		}
 	}
+	return cmd
+}
+
+func cli(t *testing.T, ctx context.Context, args ...string) []byte {
+	t.Helper()
+	cmd := cliCommand(ctx, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	b, err := cmd.Output()
@@ -122,6 +127,37 @@ func TestPoolAndAuthentication(t *testing.T) {
 	bad := client.Client{URL: c.URL, Token: "wrong-token"}
 	if err := bad.Call(ctx, "", "nodes.list", map[string]any{}, nil); err == nil {
 		t.Fatal("local API accepted an invalid token")
+	}
+}
+
+func TestCLIWorkflowIntentAcrossProcesses(t *testing.T) {
+	ctx, _ := environment(t)
+	id := "compose-intent-" + identity.NewID()
+	specFor := func(role string) string {
+		plan := fmt.Sprintf(`{"steps":[{"name":"inspect","target":{"select":{"labels":{"role":%q}}},"task":{"capability":"files.stat","args":{"path":"."}}}]}`, role)
+		return string(model.JSON(model.TaskSpec{ID: id, Capability: "workflow.run", Args: json.RawMessage(plan)}))
+	}
+	original := specFor("worker")
+	var first, again model.Task
+	for _, task := range []*model.Task{&first, &again} {
+		out := cli(t, ctx, "task", "start", "source", original, "--wait")
+		if err := json.Unmarshal(out, task); err != nil || task.ID != id || task.State != "succeeded" {
+			t.Fatalf("expected completed workflow %s, got %s: %v", id, out, err)
+		}
+	}
+	if !again.Updated.Equal(first.Updated) {
+		t.Fatal("fresh CLI did not recover the existing workflow")
+	}
+	// Only the selector changes. A persisted list of resolved steps alone
+	// cannot distinguish this request from an exact retry.
+	changed := specFor("consumer")
+	for _, flag := range []string{"--check", "--wait"} {
+		cmd := cliCommand(ctx, "task", "start", "source", changed, flag)
+		out, err := cmd.CombinedOutput()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || !bytes.Contains(out, []byte(id+" already holds a different workflow request")) {
+			t.Fatalf("changed selector %s: expected a refusal for %s, got %s: %v", flag, id, out, err)
+		}
 	}
 }
 

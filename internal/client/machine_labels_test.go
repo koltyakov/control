@@ -93,10 +93,11 @@ func TestOwnerLabelsDriveSelectionAndFanOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	const plan = `{"steps":[{"name":"probe","target":{"each":{"labels":{"pool":"render"},"capability":"test.owner"}},"task":{"capability":"test.owner","args":{}}}]}`
-	_, steps, err := c.ResolveTask(ctx, "first", workflowSpec("label-fanout", plan))
+	r, err := c.ResolveTask(ctx, "first", workflowSpec("label-fanout", plan))
 	if err != nil {
 		t.Fatal(err)
 	}
+	steps := r.Steps
 	if len(steps) != 2 || steps[0].Name != "probe@second" || steps[1].Name != "probe@third" || steps[1].Target != workers[2].Identity.ID {
 		t.Fatal("fan-out by owner label", steps)
 	}
@@ -104,8 +105,8 @@ func TestOwnerLabelsDriveSelectionAndFanOut(t *testing.T) {
 	if _, err := admin.LabelMachine(ctx, workers[1].Identity.ID, model.LabelPatch{Remove: []string{"pool"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, steps, err = c.ResolveTask(ctx, "first", workflowSpec("label-fanout-2", plan)); err != nil || len(steps) != 1 || steps[0].Target != workers[2].Identity.ID {
-		t.Fatal("fan-out after removal", steps, err)
+	if r, err = c.ResolveTask(ctx, "first", workflowSpec("label-fanout-2", plan)); err != nil || len(r.Steps) != 1 || r.Steps[0].Target != workers[2].Identity.ID {
+		t.Fatal("fan-out after removal", r.Steps, err)
 	}
 	// The local-node route reads the same gateway directory.
 	api := httptest.NewServer(workers[0].Handler())

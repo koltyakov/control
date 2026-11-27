@@ -165,10 +165,11 @@ const fanOutPlan = `{"maxParallel":4,"steps":[
 func TestWorkflowEachExpansion(t *testing.T) {
 	api := &placementAPI{machines: machines("beta", "alpha"), one: machines("beta")[0]}
 	c := api.client(t)
-	spec, plan, err := c.ResolveTask(t.Context(), "coordinator", workflowSpec("parent", fanOutPlan))
+	r, err := c.ResolveTask(t.Context(), "coordinator", workflowSpec("parent", fanOutPlan))
 	if err != nil {
 		t.Fatal(err)
 	}
+	spec, plan := r.Spec, r.Steps
 	steps := decodePlan(t, spec.Args)
 	var names []string
 	byName := map[string]model.WorkflowStep{}
@@ -205,8 +206,8 @@ func TestWorkflowEachExpansion(t *testing.T) {
 		t.Fatal("identical each selectors were discovered separately", api.selectAll)
 	}
 	// Names and IDs depend only on the plan, parent ID and matched machines.
-	again, _, err := c.ResolveTask(t.Context(), "coordinator", workflowSpec("parent", fanOutPlan))
-	if err != nil || string(again.Args) != string(spec.Args) {
+	again, err := c.ResolveTask(t.Context(), "coordinator", workflowSpec("parent", fanOutPlan))
+	if err != nil || string(again.Spec.Args) != string(spec.Args) {
 		t.Fatal("resolution is not deterministic", err)
 	}
 	// The cleanup steps compose with the coordinator capability check and the
@@ -246,7 +247,9 @@ func TestWorkflowPlacementFailuresSubmitNothing(t *testing.T) {
 		{"unknown dependency", &placementAPI{machines: machines("a")}, plan(`{"name":"a","target":{"each":{}},"needs":["missing"],"task":{}}`), "unknown dependency missing", true},
 		{"name collision", &placementAPI{machines: machines("x")}, plan(each("a", "x"), `{"name":"a@x","target":"c","task":{}}`), "unique", true},
 		{"unconfirmed existing task", &placementAPI{broken: true, machines: machines("a")}, plan(each("a", "x")), "already exists", false},
-		{"pruned task ID", &placementAPI{existing: &model.Task{ID: "parent", Pruned: true}, machines: machines("a")}, plan(each("a", "x")), "not retained", false},
+		{"pruned task ID", &placementAPI{existing: &model.Task{ID: "parent", Spec: model.TaskSpec{ID: "parent", Capability: "workflow.run"}, Pruned: true}, machines: machines("a")}, plan(each("a", "x")), "not retained", false},
+		{"reply for another task", &placementAPI{existing: &model.Task{ID: "other", Spec: model.TaskSpec{ID: "other", Capability: "workflow.run", Args: json.RawMessage(`{"steps":[]}`)}}, machines: machines("a")}, plan(each("a", "x")), `answered with task "other"`, false},
+		{"reply with another specification ID", &placementAPI{existing: &model.Task{ID: "parent", Spec: model.TaskSpec{ID: "other", Capability: "workflow.run", Args: json.RawMessage(`{"steps":[]}`)}}, machines: machines("a")}, plan(each("a", "x")), `specification "other"`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			api := tc.api
@@ -275,38 +278,190 @@ func TestWorkflowPlacementFailuresSubmitNothing(t *testing.T) {
 	}
 }
 
-// A resubmitted task ID reuses the coordinator's retained resolved plan, even
-// when discovery would now choose other machines.
-func TestWorkflowPlacementResubmissionReusesRetainedPlan(t *testing.T) {
+// A resubmitted task ID returns the coordinator's retained task read-only,
+// even when discovery would now choose other machines: nothing is resolved,
+// checked for grants or submitted again, on every client route.
+func TestWorkflowPlacementResubmissionReturnsRetainedTask(t *testing.T) {
 	first := &placementAPI{machines: machines("alpha", "beta"), one: machines("beta")[0]}
-	resolved, plan, err := first.client(t).ResolveTask(t.Context(), "coordinator", workflowSpec("parent", fanOutPlan))
+	resolution, err := first.client(t).ResolveTask(t.Context(), "coordinator", workflowSpec("parent", fanOutPlan))
 	if err != nil {
 		t.Fatal(err)
 	}
+	resolved, plan := resolution.Spec, resolution.Steps
 	retained := model.Task{ID: "parent", State: "running", Spec: resolved}
 	api := &placementAPI{machines: machines("gamma"), one: machines("gamma")[0], existing: &retained}
 	c := api.client(t)
-	spec, again, err := c.ResolveTask(t.Context(), "coordinator", workflowSpec("parent", fanOutPlan))
-	if err != nil || string(spec.Args) != string(resolved.Args) {
+	again, err := c.ResolveTask(t.Context(), "coordinator", workflowSpec("parent", fanOutPlan))
+	if err != nil || again.Existing == nil || again.Existing.State != "running" || string(again.Spec.Args) != string(resolved.Args) {
 		t.Fatal("resubmission resolved again", err)
 	}
-	for i := range again {
+	for i := range again.Steps {
 		// The retained plan names targets by ID; names are not re-read.
-		if again[i].Name != plan[i].Name || again[i].Target != plan[i].Target || again[i].TaskID != plan[i].TaskID {
-			t.Fatal("reported plan differs", again[i], plan[i])
+		if again.Steps[i].Name != plan[i].Name || again.Steps[i].Target != plan[i].Target || again.Steps[i].TaskID != plan[i].TaskID {
+			t.Fatal("reported plan differs", again.Steps[i], plan[i])
 		}
 	}
-	if _, err = c.StartTask(t.Context(), "coordinator", workflowSpec("parent", fanOutPlan), nil); err != nil {
+	// A differently encoded but identical request matches too.
+	var reordered map[string]any
+	if err = json.Unmarshal([]byte(fanOutPlan), &reordered); err != nil {
 		t.Fatal(err)
 	}
-	methods, _ := api.calls()
-	if slices.Contains(methods, "nodes.select") {
-		t.Fatal("resubmission discovered machines", methods)
+	for name, start := range map[string]func(any) error{
+		"StartTask": func(result any) error {
+			_, err := c.StartTask(t.Context(), "coordinator", workflowSpec("parent", fanOutPlan), result)
+			return err
+		},
+		"StartResolvedTask": func(result any) error {
+			_, err := c.StartResolvedTask(t.Context(), "coordinator", again, result)
+			return err
+		},
+		"Call": func(result any) error {
+			return c.Call(t.Context(), "coordinator", "tasks.start", workflowSpec("parent", string(model.JSON(reordered))), result)
+		},
+	} {
+		var task model.Task
+		if err = start(&task); err != nil || task.ID != "parent" || task.State != "running" {
+			t.Fatal(name, task, err)
+		}
 	}
-	var sent model.TaskSpec
-	_ = json.Unmarshal(api.submitted[0], &sent)
-	if string(sent.Args) != string(resolved.Args) {
-		t.Fatal("resubmission sent another plan")
+	// A preflight of the same request reports the existing task without
+	// sending the retained plan anywhere.
+	var report model.TaskCheck
+	if err = c.Call(t.Context(), "coordinator", model.TaskCheckMethod, workflowSpec("parent", fanOutPlan), &report); err != nil || !report.OK || !report.Advisory || report.TaskID != "parent" || len(report.Checks) != 1 || !strings.Contains(report.Checks[0].Message, "already exists") {
+		t.Fatal("preflight of an existing task", report, err)
+	}
+	methods, submitted := api.calls()
+	for _, method := range methods {
+		if method != "tasks.get" {
+			t.Fatal("resubmission sent more than reads", methods)
+		}
+	}
+	if submitted != 0 || len(api.checked) != 0 {
+		t.Fatal("resubmission submitted or checked", submitted, len(api.checked))
+	}
+}
+
+// A request that differs from, or cannot be verified against, the task that
+// already holds its ID is refused before discovery, grants or submission, for
+// starts and preflights alike. The retained plan is never sent back.
+func TestWorkflowPlacementRetainedRequestMismatch(t *testing.T) {
+	first := &placementAPI{machines: machines("alpha", "beta"), one: machines("beta")[0]}
+	resolution, err := first.client(t).ResolveTask(t.Context(), "coordinator", workflowSpec("parent", fanOutPlan))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var withDigest model.WorkflowPlan
+	if err = json.Unmarshal(resolution.Spec.Args, &withDigest); err != nil || !strings.HasPrefix(withDigest.RequestDigest, "sha256:") {
+		t.Fatal("resolved plan records no request digest", withDigest.RequestDigest, err)
+	}
+	legacy := withDigest
+	legacy.RequestDigest = ""
+	concrete := `{"steps":[{"name":"s","target":"id-alpha","task":{"id":"s","capability":"exec.run"}}]}`
+	changed := workflowSpec("parent", strings.Replace(fanOutPlan, `"maxParallel":4`, `"maxParallel":2`, 1))
+	retimed := workflowSpec("parent", fanOutPlan)
+	retimed.TimeoutSeconds = 60
+	for _, tc := range []struct {
+		name     string
+		retained model.TaskSpec
+		request  model.TaskSpec
+		want     string
+	}{
+		{"changed plan", resolution.Spec, changed, "different workflow request"},
+		{"changed timeout", resolution.Spec, retimed, "different workflow request"},
+		{"digestless resolved plan", model.TaskSpec{ID: "parent", Capability: "workflow.run", Args: model.JSON(legacy)}, workflowSpec("parent", fanOutPlan), "cannot verify original workflow request"},
+		{"earlier concrete workflow", model.TaskSpec{ID: "parent", Capability: "workflow.run", Args: json.RawMessage(concrete)}, workflowSpec("parent", fanOutPlan), "cannot verify original workflow request"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api := &placementAPI{machines: machines("gamma"), one: machines("gamma")[0], existing: &model.Task{ID: "parent", State: "succeeded", Spec: tc.retained}}
+			c := api.client(t)
+			attempts := map[string]func() error{
+				"StartTask": func() error {
+					_, err := c.StartTask(t.Context(), "coordinator", tc.request, nil)
+					return err
+				},
+				"Call": func() error { return c.Call(t.Context(), "coordinator", "tasks.start", tc.request, &model.Task{}) },
+				"check": func() error {
+					return c.Call(t.Context(), "coordinator", model.TaskCheckMethod, tc.request, &model.TaskCheck{})
+				},
+				"ResolveTask": func() error {
+					r, err := c.ResolveTask(t.Context(), "coordinator", tc.request)
+					if r.Existing != nil {
+						t.Error("refused resolution returned the retained task")
+					}
+					return err
+				},
+			}
+			for name, attempt := range attempts {
+				err := attempt()
+				var rpc *model.RPCError
+				if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), `control task get "coordinator" parent`) || !errors.As(err, &rpc) || rpc.Outcome != "not_sent" {
+					t.Fatalf("%s: error %v, want not_sent %q", name, err, tc.want)
+				}
+			}
+			methods, submitted := api.calls()
+			for _, method := range methods {
+				if method != "tasks.get" {
+					t.Fatal("refused request sent", methods)
+				}
+			}
+			if submitted != 0 || len(api.checked) != 0 {
+				t.Fatal("refused request submitted or checked", submitted, len(api.checked))
+			}
+		})
+	}
+}
+
+// The request digest covers the whole original specification and ignores
+// only its encoding, tag order and any caller-supplied digest.
+func TestWorkflowRequestDigest(t *testing.T) {
+	digest := func(spec model.TaskSpec) string {
+		t.Helper()
+		var plan model.WorkflowPlan
+		if err := json.Unmarshal(spec.Args, &plan); err != nil {
+			t.Fatal(err)
+		}
+		d, err := workflowRequestDigest(spec, plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	const plan = `{"steps":[{"name":"s","target":{"each":{"labels":{"env":"prod"}}},"task":{"capability":"exec.run","args":{"command":"a","n":1.50}}}]}`
+	base := workflowSpec("parent", plan)
+	base.Tags = []string{"b", "a"}
+	// This digest outlives the client that submitted the task. A later
+	// release must still recognize the same request.
+	const recorded = "sha256:27c6f958576026bf23ae17ad3be73d71f3f1718eabd43f4010cf921b36cc478c"
+	if got := digest(base); got != recorded {
+		t.Fatalf("digest of an existing workflow request changed: %s", got)
+	}
+	same := workflowSpec("parent", `{ "requestDigest":"sha256:forged", "steps":[{"task":{"args":{"n":1.50,"command":"a"},"capability":"exec.run"},"target":{"each":{"labels":{"env":"prod"}}},"name":"s"}]}`)
+	same.Tags = []string{"a", "b"}
+	if digest(base) != digest(same) {
+		t.Fatal("equivalent encodings differ")
+	}
+	childTags := func(tags string) string {
+		tagged := base
+		tagged.Args = json.RawMessage(strings.Replace(plan, `"task":{`, `"task":{"tags":`+tags+`,`, 1))
+		return digest(tagged)
+	}
+	if childTags(`["b","a","b"]`) != childTags(`["a","b"]`) || childTags(`["a"]`) == childTags(`["b"]`) {
+		t.Fatal("request digest must distinguish child tag sets, not tag order")
+	}
+	for name, mutate := range map[string]func(*model.TaskSpec){
+		"ID":       func(s *model.TaskSpec) { s.ID = "other" },
+		"child":    func(s *model.TaskSpec) { s.Args = json.RawMessage(strings.Replace(plan, `"a"`, `"b"`, 1)) },
+		"number":   func(s *model.TaskSpec) { s.Args = json.RawMessage(strings.Replace(plan, "1.50", "1.5", 1)) },
+		"selector": func(s *model.TaskSpec) { s.Args = json.RawMessage(strings.Replace(plan, "prod", "dev", 1)) },
+		"lease":    func(s *model.TaskSpec) { s.LeaseID = "lease" },
+		"tags":     func(s *model.TaskSpec) { s.Tags = []string{"a"} },
+		"outputs":  func(s *model.TaskSpec) { s.Outputs = []string{"out"} },
+	} {
+		changed := base
+		mutate(&changed)
+		if digest(changed) == digest(base) {
+			t.Fatal("digest ignores a change to", name)
+		}
 	}
 }
 
@@ -337,8 +492,8 @@ func TestWorkflowFanOutExample(t *testing.T) {
 		t.Fatal(err)
 	}
 	api := &placementAPI{machines: machines("db", "web"), one: machines("web")[0]}
-	_, steps, err := api.client(t).ResolveTask(t.Context(), "coordinator", spec)
-	if err != nil || len(steps) != 5 || steps[0].Name != "rotate@db" || steps[2].Name != "summarize" || steps[4].When != model.WorkflowWhenAlways {
+	r, err := api.client(t).ResolveTask(t.Context(), "coordinator", spec)
+	if steps := r.Steps; err != nil || len(steps) != 5 || steps[0].Name != "rotate@db" || steps[2].Name != "summarize" || steps[4].When != model.WorkflowWhenAlways {
 		t.Fatal(steps, err)
 	}
 }

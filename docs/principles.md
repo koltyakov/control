@@ -32,6 +32,8 @@ Persist a task before acknowledging acceptance. Keep its ID, owner, specificatio
 
 Idempotent submission prevents duplicate task creation. It does not guarantee exactly-once effects in arbitrary programs or external APIs. Interrupted work needs an explicit recovery decision. Durable tasks and synchronous calls have different cancellation lifetimes; preserve that distinction.
 
+For workflows with placement selectors, a retry must match the request the orchestrator made before placement. Keep the original machine choices on a matching retry. Reading an existing task must not grant a worker fresh authority to run its recorded steps.
+
 ## Move data between its producers and consumers
 
 Use structured control messages for arguments, status, and artifact references. Stream large files directly between participating peers, with relay fallback when needed.

@@ -65,7 +65,12 @@ func partialFileEffect(message string, err error) error {
 // copyBounded copies at most limit bytes and checks cancellation between
 // chunks. It returns limit+1 copied bytes when the source is larger.
 func copyBounded(ctx context.Context, dst io.Writer, src io.Reader, limit int64) (int64, error) {
-	buf := make([]byte, fileChunkSize)
+	return copyBoundedBuffer(ctx, dst, src, limit, make([]byte, fileChunkSize))
+}
+
+// copyBoundedBuffer is copyBounded with a caller-owned, non-empty buffer, so
+// a sequence of copies such as a directory archive reuses one allocation.
+func copyBoundedBuffer(ctx context.Context, dst io.Writer, src io.Reader, limit int64, buf []byte) (int64, error) {
 	var copied int64
 	src = io.LimitReader(src, limit+1)
 	for {

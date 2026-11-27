@@ -23,11 +23,12 @@ func uploadCLI(ctx context.Context, c client.Client, args []string) error {
 			return errors.New(usage)
 		}
 		result, err := c.UploadState(ctx, args[1], args[2], args[0] == "abort")
-		if err != nil {
-			return err
+		// A directory summary stays visible with an error, for example an
+		// abort that could not settle every file.
+		if summary, ok := result.(client.DirUploadResult); err == nil || (ok && summary.NodeID != "") {
+			printJSON(result)
 		}
-		printJSON(result)
-		return nil
+		return err
 	}
 	if len(args) < 4 || (args[0] != "start" && args[0] != "resume") {
 		return errors.New(usage)

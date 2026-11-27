@@ -496,7 +496,7 @@ func submit(ctx context.Context, c client.Client, target string, spec model.Task
 	}
 	// Print before sending so an interrupted submission can be reconciled.
 	fmt.Fprintln(os.Stderr, "task", spec.ID)
-	spec, err := resolveTaskPlan(ctx, c, target, spec)
+	resolution, err := resolveTaskPlan(ctx, c, target, spec)
 	if err != nil {
 		return err
 	}
@@ -508,7 +508,7 @@ func submit(ctx context.Context, c client.Client, target string, spec model.Task
 		defer stopPrepare()
 		go c.PrepareTaskWait(prepare, target)
 	}
-	if _, err := c.StartTask(ctx, target, spec, &task); err != nil {
+	if _, err := c.StartResolvedTask(ctx, target, resolution, &task); err != nil {
 		return err
 	}
 	if wait && !task.Terminal() {

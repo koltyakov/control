@@ -382,19 +382,27 @@ func TestDoctorTimeoutsNeverHang(t *testing.T) {
 	}
 }
 
-// Lower roles never see fleet-management or administrative command names.
+// Hints follow the permission each command needs: fleet management for
+// control machines enable, execution for control wake, superuser for rollout.
 func TestDoctorHintsFollowRoleScopedHelp(t *testing.T) {
+	fleetCommands := `machines (enable|disable|add|proxies|invites|revoke|rename|unregister)|\bkeys\b|\baudit\b|\bconsole\b`
+	admin := `\busers\b|update (status|push|check|authorize)`
 	hidden := map[string]*regexp.Regexp{
-		"common": regexp.MustCompile(`machines (enable|disable|add|proxies|invites|revoke|rename|unregister)|\bkeys\b|\baudit\b|\bconsole\b|\busers\b|update (status|push|check|authorize)|control wake`),
-		"user":   regexp.MustCompile(`\busers\b|update (status|push|check|authorize)`),
+		"common":            regexp.MustCompile(fleetCommands + `|` + admin + `|control wake`),
+		"orchestrator":      regexp.MustCompile(fleetCommands + `|` + admin),
+		"fleet-manager":     regexp.MustCompile(admin + `|control wake`),
+		"fleet-manager-run": regexp.MustCompile(admin),
+		"user":              regexp.MustCompile(admin),
 	}
+	runs := map[string]bool{"orchestrator": true, "fleet-manager-run": true, "user": true, "superuser": true}
+	manages := map[string]bool{"fleet-manager": true, "fleet-manager-run": true, "user": true, "superuser": true}
 	offline, offlineStatus := doctorMachine("sleeper")
 	offline.Online, offlineStatus.Online, offlineStatus.Status, offlineStatus.WakeVia = false, false, "offline", "worker"
 	offline.Disabled, offlineStatus.Disabled = true, true
 	old, oldStatus := doctorMachine("old")
 	old.Software.Version, oldStatus.Software.Version = "v1.2.0", "v1.2.0"
 	old.Disabled, oldStatus.Disabled = true, true
-	for _, role := range []string{"common", "user", "superuser"} {
+	for _, role := range []string{"common", "orchestrator", "fleet-manager", "fleet-manager-run", "user", "superuser"} {
 		var text []string
 		for _, target := range []string{"sleeper", "old"} {
 			g := newDoctorGateway(t)
@@ -404,7 +412,7 @@ func TestDoctorHintsFollowRoleScopedHelp(t *testing.T) {
 				g.status.Nodes = []model.NodeActivitySnapshot{offlineStatus, oldStatus}
 			})
 			p := healthyDoctorPeer(old.ID)
-			if role == "common" {
+			if !runs[role] {
 				p.diagErr = errors.New("worker credentials permit discovery only; execution requires orchestrator delegation")
 			}
 			r := runDoctor(t.Context(), doctorOptions(g, target), p)
@@ -417,10 +425,10 @@ func TestDoctorHintsFollowRoleScopedHelp(t *testing.T) {
 					t.Errorf("%s machine-version %+v", role, c)
 				}
 				want := DoctorOK
-				if role == "common" {
+				if !runs[role] {
 					want = DoctorSkipped
-					if c := doctorFind(t, r, "diagnostics"); !strings.HasPrefix(c.Detail, "not permitted") {
-						t.Errorf("common diagnostics %+v", c)
+					if c := doctorFind(t, r, "diagnostics"); !strings.HasPrefix(c.Detail, "not permitted") || !strings.Contains(c.Detail, "with run permission") {
+						t.Errorf("%s diagnostics %+v", role, c)
 					}
 				}
 				doctorExpect(t, r, map[string]string{"diagnostics": want})
@@ -432,15 +440,43 @@ func TestDoctorHintsFollowRoleScopedHelp(t *testing.T) {
 				t.Errorf("%s report reveals %q", role, m)
 			}
 		}
+		if got := strings.Contains(joined, "control machines enable sleeper"); got != manages[role] {
+			t.Errorf("%s enable hint shown = %v, want %v:\n%s", role, got, manages[role], joined)
+		}
+		if !manages[role] && !strings.Contains(joined, "a fleet-manager key can re-enable it") {
+			t.Errorf("%s lacks the re-enable referral:\n%s", role, joined)
+		}
+		if got := strings.Contains(joined, "control wake sleeper"); got != runs[role] {
+			t.Errorf("%s wake hint shown = %v, want %v:\n%s", role, got, runs[role], joined)
+		}
+		if !runs[role] && !strings.Contains(joined, "check the Control service on that machine") {
+			t.Errorf("%s lacks the offline service hint:\n%s", role, joined)
+		}
+		if manages[role] && role != "superuser" && !strings.Contains(joined, "ask the gateway operator to publish") {
+			t.Errorf("%s lacks the release publication hint:\n%s", role, joined)
+		}
 		switch role {
-		case "user":
-			if !strings.Contains(joined, "control machines enable sleeper") || !strings.Contains(joined, "control wake sleeper") {
-				t.Errorf("user hints lack fleet commands:\n%s", joined)
-			}
 		case "superuser":
 			if !strings.Contains(joined, "control update status") {
 				t.Errorf("superuser hints lack rollout status:\n%s", joined)
 			}
+		}
+	}
+}
+
+// Named fleet-manager keys are described from their permissions.
+func TestDoctorLoginDescribesFleetManagerKeys(t *testing.T) {
+	for role, want := range map[string]string{
+		"fleet-manager":            "it can manage fleet machines and keys and discover peers, but not run work; it does not administer the gateway",
+		"fleet-manager-enroll":     "it can manage fleet machines and keys, discover peers and enroll machines, but not run work;",
+		"fleet-manager-run":        "it can manage fleet machines and keys, discover peers and run work; it does not administer the gateway",
+		"fleet-manager-enroll-run": "it can manage fleet machines and keys, discover peers, enroll machines and run work;",
+	} {
+		g := newDoctorGateway(t)
+		g.set(func(g *doctorGateway) { g.auth["role"] = role })
+		c := doctorFind(t, runDoctor(t.Context(), doctorOptions(g, ""), nil), "login")
+		if c.Status != DoctorOK || !strings.HasPrefix(c.Detail, "fleet-manager key from saved login") || !strings.Contains(c.Detail, want) {
+			t.Errorf("%s login %+v", role, c)
 		}
 	}
 }
