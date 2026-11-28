@@ -146,8 +146,9 @@ type Node struct {
 	journalExtra int // Superseded cleanup intents since compaction; under pruneMu.
 	// journalAppend and journalReplace default to the store functions. Tests
 	// inject per-node faults here; production never changes them after New.
-	journalAppend  func(path string, data []byte) error
-	journalReplace func(path string, data []byte, mode os.FileMode) error
+	journalAppend   func(path string, data []byte) error
+	journalReplace  func(path string, data []byte, mode os.FileMode) error
+	writeTaskUpdate func(path string, value any) error
 }
 
 func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
@@ -191,6 +192,7 @@ func New(cfg Config, peerOptions ...transport.Options) (*Node, error) {
 	n.taskIDs = map[string]string{}
 	n.coldTasks = map[string]*coldTask{}
 	n.journalAppend, n.journalReplace = store.Append, store.Bytes
+	n.writeTaskUpdate = store.Write
 	n.work = workgate.New()
 	n.tcpListeners = make(chan struct{}, 32)
 	n.readClipboard, n.copyClipboard = clipboard.Read, clipboard.Copy

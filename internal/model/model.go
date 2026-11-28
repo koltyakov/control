@@ -173,6 +173,9 @@ type Task struct {
 	ResultArtifact *Artifact       `json:"resultArtifact,omitempty"`
 	Artifacts      []Artifact      `json:"artifacts,omitempty"`
 	Error          string          `json:"error,omitempty"`
+	// CompletionPersistenceFailed means the worker could not confirm the
+	// terminal record write. The provider may already have succeeded.
+	CompletionPersistenceFailed bool `json:"completionPersistenceFailed,omitempty"`
 	// Usage is the terminal command invocation's resource accounting, if any.
 	Usage *CommandUsage `json:"usage,omitempty"`
 	// Pruned marks a terminal task whose record, logs, result, and workspace

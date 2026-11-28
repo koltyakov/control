@@ -34,17 +34,18 @@ var errTaskCleanupPersistence = errors.New("persist task cleanup")
 // taskTombstone is the durable remainder of a pruned task: enough to answer a
 // reconciliation query and to reject or deduplicate a resubmitted ID.
 type taskTombstone struct {
-	ID             string    `json:"id"`
-	Owner          string    `json:"owner"`
-	Spec           string    `json:"spec"`
-	Capability     string    `json:"capability"`
-	State          string    `json:"state"`
-	Error          string    `json:"error,omitempty"`
-	Created        time.Time `json:"created"`
-	Updated        time.Time `json:"updated"`
-	Pruned         time.Time `json:"pruned"`
-	CleanupPending bool      `json:"cleanupPending,omitempty"`
-	Checksum       string    `json:"checksum,omitempty"`
+	ID                          string    `json:"id"`
+	Owner                       string    `json:"owner"`
+	Spec                        string    `json:"spec"`
+	Capability                  string    `json:"capability"`
+	State                       string    `json:"state"`
+	Error                       string    `json:"error,omitempty"`
+	CompletionPersistenceFailed bool      `json:"completionPersistenceFailed,omitempty"`
+	Created                     time.Time `json:"created"`
+	Updated                     time.Time `json:"updated"`
+	Pruned                      time.Time `json:"pruned"`
+	CleanupPending              bool      `json:"cleanupPending,omitempty"`
+	Checksum                    string    `json:"checksum,omitempty"`
 }
 
 func (t taskTombstone) checksum() string {
@@ -102,7 +103,11 @@ func (t taskTombstone) hasLegacyChecksum(raw []byte) bool {
 }
 
 func (t taskTombstone) task() model.Task {
-	return model.Task{ID: t.ID, Owner: t.Owner, Spec: model.TaskSpec{ID: t.ID, Capability: t.Capability}, State: t.State, Error: t.Error, Created: t.Created, Updated: t.Updated, Pruned: true}
+	return model.Task{
+		ID: t.ID, Owner: t.Owner, Spec: model.TaskSpec{ID: t.ID, Capability: t.Capability},
+		State: t.State, Error: t.Error, Created: t.Created, Updated: t.Updated, Pruned: true,
+		CompletionPersistenceFailed: t.CompletionPersistenceFailed,
+	}
 }
 
 func (n *Node) tombstonePath() string {
@@ -318,7 +323,11 @@ func (n *Node) pruneTasks(now time.Time) error {
 	var victims []taskTombstone
 	for i, task := range candidates {
 		if i < excess || (retention > 0 && now.Sub(task.Updated) > retention) {
-			victims = append(victims, taskTombstone{ID: task.ID, Owner: task.Owner, Spec: n.taskDigestLocked(task), Capability: task.Spec.Capability, State: task.State, Error: task.Error, Created: task.Created, Updated: task.Updated, Pruned: now.UTC(), CleanupPending: true})
+			victims = append(victims, taskTombstone{
+				ID: task.ID, Owner: task.Owner, Spec: n.taskDigestLocked(task), Capability: task.Spec.Capability,
+				State: task.State, Error: task.Error, Created: task.Created, Updated: task.Updated,
+				CompletionPersistenceFailed: task.CompletionPersistenceFailed, Pruned: now.UTC(), CleanupPending: true,
+			})
 		}
 	}
 	n.mu.Unlock()

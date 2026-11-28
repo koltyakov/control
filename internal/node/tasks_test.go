@@ -42,6 +42,73 @@ func execSpec(t *testing.T, id, mode string) model.TaskSpec {
 	return model.TaskSpec{ID: id, Capability: "exec.run", Args: model.JSON(executable(t, mode))}
 }
 
+func TestTaskCompletionPersistenceFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		failWrite      bool
+		recordReplaced bool
+		prune          bool
+		recoveredState string
+	}{
+		{name: "provider failure", recoveredState: "failed"},
+		{name: "write fails before rename", failWrite: true, recoveredState: "interrupted"},
+		{name: "directory sync fails after rename", failWrite: true, recordReplaced: true, recoveredState: "succeeded"},
+		{name: "fallback pruned before restart", failWrite: true, prune: true, recoveredState: "failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, calls := pipelineNode(t)
+			cfg := n.Config
+			if tc.failWrite {
+				n.writeTaskUpdate = func(path string, value any) error {
+					if tc.recordReplaced {
+						// Model the visible file after rename but before directory
+						// sync confirms durability. Do not depend on OS fault injection.
+						if err := store.Write(path, value); err != nil {
+							return err
+						}
+					}
+					return errors.New("injected completion write failure")
+				}
+			}
+			const owner = "alice"
+			spec := pipelineSpec("completion", pipelineArgs{Fail: !tc.failWrite, InlineResult: "provider result"})
+			ctx := t.Context()
+			if _, err := n.startTaskContext(ctx, owner, spec); err != nil {
+				t.Fatal(err)
+			}
+			got := pipelineFinished(t, n, ctx, owner, spec.ID, "failed")
+			if got.CompletionPersistenceFailed != tc.failWrite || string(got.Result) != `"provider result"` {
+				t.Fatalf("unexpected completion: %+v", got)
+			}
+			if strings.HasPrefix(got.Error, "persist task completion:") != tc.failWrite ||
+				bytes.Contains(model.JSON(got), []byte(`"completionPersistenceFailed":`)) != tc.failWrite {
+				t.Fatalf("unexpected wire diagnostic: %s", model.JSON(got))
+			}
+			page, err := n.taskPage(ctx, owner, "", 1)
+			if err != nil || len(page.Tasks) != 1 || page.Tasks[0].CompletionPersistenceFailed != tc.failWrite {
+				t.Fatalf("task page: %+v, %v", page, err)
+			}
+			again, err := n.startTaskContext(ctx, owner, spec)
+			if err != nil || again.State != got.State || again.CompletionPersistenceFailed != tc.failWrite || calls.Load() != 1 {
+				t.Fatalf("duplicate submission: %+v, %v; provider calls=%d", again, err, calls.Load())
+			}
+			if tc.prune {
+				if err := n.pruneTasks(got.Updated.Add(time.Duration(cfg.TaskRetentionHours+1) * time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := n.Close(); err != nil {
+				t.Fatal(err)
+			}
+			restarted := openLocalNode(t, cfg)
+			recovered, err := restarted.startTaskContext(ctx, owner, spec)
+			if err != nil || recovered.State != tc.recoveredState || recovered.Pruned != tc.prune || recovered.CompletionPersistenceFailed != tc.prune {
+				t.Fatalf("unexpected recovery: %+v, %v", recovered, err)
+			}
+		})
+	}
+}
+
 func TestBlockingTaskGetWakesOnCompletion(t *testing.T) {
 	t.Parallel()
 	n := localNode(t, nil)

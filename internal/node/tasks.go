@@ -418,7 +418,7 @@ func (n *Node) updateTask(id string, change func(*model.Task)) (model.Task, erro
 	next := cloneTask(n.tasks[id])
 	n.mu.Unlock()
 	change(&next)
-	err := store.Write(n.taskPath(id), next)
+	err := n.writeTaskUpdate(n.taskPath(id), next)
 	var digest string
 	if err == nil && next.Terminal() {
 		digest = specDigest(next.Spec)
@@ -528,6 +528,7 @@ func (n *Node) finishTask(id string, ctx context.Context, result any, artifacts 
 		stored := n.tasks[id]
 		final(stored)
 		stored.State, stored.Error = "failed", persistedTaskError("persist task completion: "+writeErr.Error())
+		stored.CompletionPersistenceFailed = true
 		task = *stored
 		n.recordRecentTaskLocked(stored)
 	}
@@ -582,7 +583,11 @@ func (n *Node) taskMethod(ctx context.Context, owner, method string, args json.R
 					n.mu.Unlock()
 					return nil, errors.New("task listing exceeds 100 records; use tasks.page with limit and cursor")
 				}
-				tasks = append(tasks, model.Task{ID: task.ID, Owner: task.Owner, Spec: model.TaskSpec{ID: task.ID, Capability: task.Spec.Capability, Tags: slices.Clone(task.Spec.Tags)}, State: task.State, Phase: task.Phase, Created: task.Created, Updated: task.Updated})
+				tasks = append(tasks, model.Task{
+					ID: task.ID, Owner: task.Owner, Spec: model.TaskSpec{ID: task.ID, Capability: task.Spec.Capability, Tags: slices.Clone(task.Spec.Tags)},
+					State: task.State, Phase: task.Phase, Created: task.Created, Updated: task.Updated,
+					CompletionPersistenceFailed: task.CompletionPersistenceFailed,
+				})
 			}
 		}
 		n.mu.Unlock()

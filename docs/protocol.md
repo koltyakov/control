@@ -746,7 +746,11 @@ Use `control exec NODE --detach --id ID -- COMMAND ARG...` or MCP `control_task_
 
 ## Bounded task results and recovery
 
-After a successful terminal write, the worker keeps task metadata, the specification digest and artifact references in memory. Full task reads, including duplicate submissions, read the persisted payload after checking ownership. Pruning waits for existing file readers. A failed terminal write keeps the failure record in memory rather than reading an older outcome from disk.
+After a successful terminal write, the worker keeps task metadata, the specification digest and artifact references in memory. Full task reads, including duplicate submissions, read the persisted payload after checking ownership. Pruning waits for existing file readers.
+
+If the terminal write returns an error, the worker keeps the result and artifact references in memory and reports `state: "failed"`, an `error` beginning with `persist task completion:`, and `completionPersistenceFailed: true`. This flag means the worker could not confirm that it saved the outcome. The provider may have succeeded; do not replay it based on this flag. Ordinary provider failures omit the flag, as do older workers. Task reads, duplicate submissions, task listings and workflow reconciliation summaries carry the flag when present.
+
+Before pruning, restart recovers the task record found on disk. If the previous queued or running record remains, recovery marks it `interrupted`. If rename succeeded before the directory sync failed, the terminal record may be visible and recovery reports that outcome. Neither record contains the live fallback flag, and recovery does not rerun the task. If retention prunes the fallback before restart, its checksummed tombstone preserves the flag. Older workers cannot verify a tombstone containing this new field; tombstones without the field keep their existing checksums.
 
 Successful cleanup appends a checksummed tombstone with `cleanupPending` cleared. The latest entry for the same task supersedes the prior intent. The worker compacts after 1,024 superseded entries or when completion takes history beyond the 50,000 target plus 1,024 entries of slack. Pending intents survive compaction. An uncertain journal write still requires a synced replacement before the next append.
 

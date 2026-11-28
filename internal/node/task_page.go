@@ -51,12 +51,8 @@ func (n *Node) taggedTaskPage(ctx context.Context, owner, cursor, tag string, li
 		ids = ids[:limit]
 	}
 	for _, id := range ids {
-		t := n.tasks[id]
-		summary := model.TaskSummary{ID: id, Capability: t.Spec.Capability, State: t.State, Phase: t.Phase, Created: t.Created, Updated: t.Updated, Error: t.Error, Tags: slices.Clone(t.Spec.Tags)}
-		if len(summary.Error) > 1024 {
-			summary.Error = summary.Error[:1024]
-			summary.ErrorTruncated = true
-		}
+		summary := model.SummarizeTask(*n.tasks[id])
+		summary.Tags = slices.Clone(summary.Tags)
 		page.Tasks = append(page.Tasks, summary)
 	}
 	n.mu.Unlock()
